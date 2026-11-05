@@ -17,9 +17,15 @@ integration and no playback of its own: it works with anything the machine is pl
   *current* theme so it composes with whatever skin you use; restored on disable).
 - **Agent moods** — thinking / tool / approval / error / streaming / done, with
   restore-on-clear so nothing latches.
+- **Display controls** — an opacity slider, a behaviour profile (calm / balanced / intense;
+  calm is reduced-motion-safe and never uses strobe presets), and switches for agent-mood
+  reactions, accent pulse and automatic preset rotation. Settable by you or by the agent.
+- **Follows the audio, not a screensaver** — sustained silence fades the visual out and
+  stops rendering, so nothing keeps glowing with no sound playing.
 - **Optional theme** — an Aura theme whose palette follows the audio. Opt-in; disabling
   restores the theme you had before.
-- **`aura_control`** — the agent can turn Aura on/off, set intensity, pick a preset, set a mood.
+- **`aura_control`** — the agent can turn Aura on/off, set intensity, opacity and behaviour,
+  pick a preset, set a mood.
 
 ## Privacy and safety
 

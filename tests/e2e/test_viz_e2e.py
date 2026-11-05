@@ -759,6 +759,21 @@ def test_silence_black_tone_moves_and_cpu(chrome, aura):
         assert cpu > 0, "no CPU measured"
         assert frames1 > frames0, "render loop stalled"
         print("PASS cpu-measured %.0f%% of one core over %.1fs" % (100.0 * cpu / dt, dt), flush=True)
+
+        # Silence gate: the visual follows the audio, so a bright preset must not
+        # free-run once capture goes quiet. Measured before the gate existed: 20
+        # of 21 curated presets stayed lit at mean 24..155 with no audio.
+        aura.mode = "silence"
+        time.sleep(2.2)
+        e = sample(tab)
+        time.sleep(1.2)
+        f = sample(tab)
+        print("silence-gate after tone: %s / %s" % (e, f), flush=True)
+        assert e["mean"] <= 3 and f["mean"] <= 3, "silence gate must darken a rich preset, got %s / %s" % (e, f)
+        assert abs(e["mean"] - f["mean"]) <= 1, "paused canvas must not invent motion: %s -> %s" % (e, f)
+        snap = snapshot(tab)
+        assert snap.get("silent") is True, "page must report silent=true, got %r" % snap.get("silent")
+        print("PASS silence-gate mean=%d silent=%s" % (e["mean"], snap.get("silent")), flush=True)
     finally:
         tab.close()
 

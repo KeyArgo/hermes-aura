@@ -172,3 +172,27 @@ apply. All three toggles can be turned back on live without a reload.
 
 `aura_control` forwards to `/api/control`, so `opacity` and `behavior` are settable by the agent
 with no extra plumbing.
+
+## 10. Silence gate (additive, 2026-11-05)
+
+Butterchurn presets advance on their own internal clock as well as the audio, so a bright preset
+keeps glowing after capture stops. Measured in muted headless Chrome: with silence-only PCM and
+`features.silence=true`, 20 of 21 curated presets stayed lit (mean 24..155 of 255).
+
+The page therefore treats audio as the thing being visualised, not as a garnish:
+
+- `feedPcm()` and `features` events are the only sources of audio presence. A frame with
+  `flags & 1` (silence) or `features.silence=true` does **not** count.
+- After `SILENCE_MS` = 1200 ms with no audio presence, the canvas fades out over
+  `SILENCE_FADE_MS` = 600 ms and its WebGL drawing buffer is cleared; `viz.render()` stops being
+  called (the rAF loop keeps ticking but does nothing) and `snapshot().silent` becomes `true`.
+- Any non-silent frame resumes rendering immediately at the user's `opacity`; no reload, no
+  preset reload, and the mood/preset state is preserved across the pause.
+- The gate is subordinate to `enabled` and to a hard blocker: when Aura is off or the GPU has
+  fallen back, the canvas is hidden anyway.
+- `__aura.sampleNow()` honours the gate (it clears instead of rendering), so a measurement never
+  wakes a paused preset up.
+
+Consequence for testing: a silence assertion is now a test of the gate, not of a lucky preset.
+`tools/silence_probe.py` measures the whole curated set (21/21 dark, mean 0, lit 0.000).
+

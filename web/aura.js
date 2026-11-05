@@ -94,6 +94,11 @@
     droppedFrames: 0,
     lastSeq: 0,
     lastFeatures: null,
+    // Silence gate: the visual follows the audio. No audio -> the canvas fades
+    // out and its drawing buffer is cleared, so a preset never free-runs on its
+    // own internal motion with nothing playing. lastAudioAt is a page-clock ms.
+    lastAudioAt: 0,
+    renderPaused: false,
     canvas: { w: 0, h: 0, cssW: 0, cssH: 0 }
   };
 
@@ -120,6 +125,7 @@
   let resizeQueued = false;
   let rafId = null;
   let lastRenderAt = 0;
+  let silenceTimer = null;
   let lastSample = null;
   let draggingIntensity = false;
   let draggingOpacity = false;
@@ -262,7 +268,8 @@
     if (dom.root) dom.root.dataset.fallback = fallback ? '1' : '0';
     if (dom.canvas) {
       dom.canvas.style.visibility = fallback ? 'hidden' : 'visible';
-      dom.canvas.style.opacity = state.enabled ? String(state.opacity) : String(state.opacity * 0.35);
+      dom.canvas.style.opacity = state.renderPaused ? '0'
+        : (state.enabled ? String(state.opacity) : String(state.opacity * 0.35));
     }
     if (dom.conn) {
       dom.conn.dataset.state = socket.state === 'connected' ? 'connected'
@@ -820,6 +827,7 @@
     const initial = pickInitialPreset();
     if (initial) loadPresetByName(initial, 0);
     if (state.enabled) startLoop();
+    if (!silenceTimer) silenceTimer = setInterval(tickSilence, 250);
     return true;
   }
 
@@ -875,6 +883,7 @@
     rafId = requestAnimationFrame(loop);
     if (!viz || !state.enabled) return;
     if (hardBlocker()) return;
+    if (state.renderPaused) return; // silence gate: nothing to draw
     const interval = 1000 / quality.fpsCap;
     if (ts - lastRenderAt < interval - 1.5) return;
     const t0 = now();
@@ -912,12 +921,80 @@
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
   }
 
+  // ---------------------------------------------------------------------------
+  // silence gate
+  // ---------------------------------------------------------------------------
+
+  // Butterchurn presets animate on their own internal time as well as the audio,
+  // so a bright preset keeps glowing with nothing playing (measured: 20 of 21
+  // curated presets stayed lit at mean 24..155 in silence). The visual is
+  // supposed to follow the audio, so sustained silence fades the canvas out and
+  // clears its drawing buffer; any audio resumes it at the user's opacity.
+  const SILENCE_MS = 1200;
+  const SILENCE_FADE_MS = 600;
+
+  function clearVisual() {
+    if (!dom.canvas) return;
+    let gl = null;
+    try { gl = dom.canvas.getContext('webgl2'); } catch (_) { gl = null; }
+    if (!gl) return;
+    try {
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    } catch (_) { /* a lost context clears on restore anyway */ }
+  }
+
+  function pauseVisual() {
+    if (state.renderPaused) return;
+    state.renderPaused = true;
+    if (dom.canvas) {
+      dom.canvas.style.transition = 'opacity ' + SILENCE_FADE_MS + 'ms ease';
+      dom.canvas.style.opacity = '0';
+    }
+    clearVisual();
+    if (dom.root) dom.root.dataset.silence = '1';
+  }
+
+  function resumeVisual() {
+    if (!state.renderPaused) return;
+    state.renderPaused = false;
+    if (dom.canvas) dom.canvas.style.opacity = state.enabled ? String(state.opacity) : String(state.opacity * 0.35);
+    if (dom.root) dom.root.dataset.silence = '0';
+    lastRenderAt = 0;
+    if (viz) { try { viz.render(); } catch (_) {} }
+  }
+
+  // Called for every PCM frame and every feature event: silence=true means the
+  // capture produced no audio, so it must not count as audio presence.
+  function noteAudio(silent) {
+    if (silent) return;
+    state.lastAudioAt = now();
+    if (state.renderPaused) resumeVisual();
+  }
+
+  function tickSilence() {
+    if (!state.enabled) { if (state.renderPaused) resumeVisual(); return; }
+    if (hardBlocker()) return;
+    const quiet = now() - state.lastAudioAt;
+    if (quiet > SILENCE_MS) {
+      pauseVisual();
+    } else if (state.renderPaused) {
+      resumeVisual();
+    }
+  }
+
   function sampleNow() {
     if (!viz || !dom.canvas) return null;
-    try { viz.render(); } catch (e) { recordError(e); return null; }
     let gl = null;
     try { gl = dom.canvas.getContext('webgl2'); } catch (e) { gl = null; }
     if (!gl) return null;
+    if (state.renderPaused) {
+      // Silence: the buffer is cleared, so a sample reads black without waking
+      // the preset up (viz.render() would draw a bright frame again).
+      clearVisual();
+    } else {
+      try { viz.render(); } catch (e) { recordError(e); return null; }
+    }
     const w = gl.drawingBufferWidth;
     const h = gl.drawingBufferHeight;
     if (!w || !h) return null;
@@ -1082,6 +1159,7 @@
   }
 
   function feedPcm(frame) {
+    noteAudio(frame.silence);
     if (!audio.node || !audio.ctx) return;
     if (socket.ws && socket.ws.bufferedAmount > 512 * 1024) {
       // Socket backed up: drop this frame rather than queue latency.
@@ -1125,6 +1203,7 @@
           flatness: clamp(num(ev.flatness, 0), 0, 1),
           silence: !!ev.silence
         };
+        noteAudio(!!ev.silence);
         updateMoodVisuals();
         break;
       }
@@ -1568,6 +1647,7 @@
         moodReactive: state.moodReactive,
         accentPulse: state.accentPulse,
         autoPreset: state.autoPreset,
+        silent: state.renderPaused,
         canvasOpacity: dom.canvas ? dom.canvas.style.opacity : null,
         scrimOpacity: dom.scrim ? dom.scrim.style.opacity : null,
         scrimMix: dom.scrim ? {
