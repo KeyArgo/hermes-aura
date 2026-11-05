@@ -1036,6 +1036,11 @@ def test_software_gl_auto_degrades_when_frame_budget_missed(chrome, aura):
     try:
         snap = wait_ready(tab)
         assert snap["quality"]["tier"] == "degraded-software"
+        # The degrade ladder needs frames: the silence gate pauses rendering when
+        # capture is quiet, so this test must feed tone or it would never measure
+        # a missed budget.
+        aura.mode = "tone"
+        time.sleep(1.0)
         print("baseline: canvas=%dx%d css=%dx%d renderScale=%.2f fpsCap=%d" % (
             snap["canvas"]["w"], snap["canvas"]["h"], snap["canvas"]["cssW"],
             snap["canvas"]["cssH"], snap["quality"]["renderScale"],

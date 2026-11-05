@@ -165,7 +165,15 @@ def test_calm_lowers_ceiling_refuses_strobe_and_has_no_hard_pulse(chrome, aura):
         assert calm["behaviorProfile"]["hard_pulse"] is False
 
         # Strobe preset must be refused under calm, accepted under balanced.
-        strobe = "Flexi - area 51"
+        # Pick it from the live catalogue: the curated set changes, and a preset
+        # that is no longer listed has no measured strobe flag to refuse.
+        import os
+        catalog_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "web", "presets.json")
+        catalog = json.load(open(catalog_path))
+        strobe = next(p["name"] for p in catalog["presets"] if p.get("strobe"))
+        print("calm strobe probe preset=%r" % strobe, flush=True)
         before = snapshot(tab)["preset"]
         aura.send_preset(strobe, blend_ms=0)
         time.sleep(1.0)
