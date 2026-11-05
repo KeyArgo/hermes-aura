@@ -21,7 +21,7 @@ Repo: /mnt/homes/Development/hermes-aura (LOCAL git only — nothing pushed yet)
 | 10 | Windows WASAPI loopback | 7 | 0.20 | implemented, never run on a real Windows machine |
 | 11 | macOS capture | 5 | 0.30 | implemented, needs BlackHole/virtual device, unverified |
 | 12 | in-app verification (accent pulse, theme restore, iframe sandbox) | 10 | 0.00 | structural only; needs the user to open Aura in Hermes |
-| 13 | demo video + stills | 5 | 0.50 | tools/record_demo.py reproducible; final recording not made |
+| 13 | demo video + stills | 5 | 0.90 | .demo/aura-demo.mp4: 277 frames, 13.8 fps, curated presets, music-only showcase + mood tail; stills dense |
 | 14 | docs, notices, plugin validation | 5 | 1.0 | README, THIRD_PARTY_NOTICES, `hermes plugins validate .` passes |
 | 15 | publish: repo, catalog PR, X post, submission form | 10 | 0.00 | all need the user's explicit OK |
 | 16 | cross-family review round (GLM/Qwen over the merged tree) | 5 | 0.00 | not started |

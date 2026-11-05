@@ -222,18 +222,26 @@ def main():
         top = [s["preset"] for s in ranked[:args.top]]
         print("TOP:", json.dumps(top), flush=True)
 
-        moods = ["idle", "thinking", "approval", "error", "streaming"]
-        plan = [(top[i % len(top)], moods[i % len(moods)], args.seconds / args.top)
-                for i in range(args.top)]
+        moods = ["thinking", "approval", "error", "streaming"]
+        showcase = top[:args.top]
+        # Two segments, because the mood engine deliberately overrides an explicit
+        # preset with the mood's family. Recording them together means the dense
+        # presets are never actually shown, which is what made the first attempt
+        # look sparse: 60 % music-only showcase, then 40 % agent-mood sequence.
+        show_s = args.seconds * 0.6
+        mood_s = args.seconds * 0.4
 
         def drive():
-            for name, mood, secs in plan:
-                aura.send_preset(name, blend_ms=700)
-                if mood != "idle":
-                    aura.send_mood(mood, 0.9, int(secs * 1000) + 500)
-                time.sleep(secs)
-                if mood != "idle":
-                    aura.send_mood("idle", 0.6, 1200)
+            per = show_s / max(1, len(showcase))
+            for name in showcase:
+                aura.send_preset(name, blend_ms=900)
+                time.sleep(per)
+            per = mood_s / len(moods)
+            for mood in moods:
+                aura.send_mood(mood, 0.9, int(per * 1000) + 400)
+                time.sleep(per)
+                aura.send_mood("idle", 0.6, 1200)
+                time.sleep(0.3)
 
         threading.Thread(target=drive, daemon=True).start()
         cdp.call("Page.startScreencast", {"format": "jpeg", "quality": 85, "maxWidth": width,
@@ -268,7 +276,9 @@ def main():
                     "-i", os.path.join(frames_dir, "f%04d.jpg"), "-c:v", "libx264",
                     "-pix_fmt", "yuv420p", "-crf", "20", "-movflags", "+faststart", mp4], check=True)
     stills = []
-    for frac in (0.15, 0.35, 0.55, 0.75, 0.92):
+    # Stills come from the music-only showcase, not the mood tail: the mood
+    # engine picks its own family and those frames are not the curated picks.
+    for frac in (0.08, 0.20, 0.32, 0.44, 0.56):
         i = max(1, min(len(frames), int(len(frames) * frac)))
         hero = os.path.join(args.out, "hero-%02d.jpg" % int(frac * 100))
         shutil.copy(frames[i - 1][0], hero)
