@@ -1,0 +1,98 @@
+[
+ {
+  "w": 364,
+  "h": 229,
+  "litFrac": 0.9989,
+  "colour": 0.231,
+  "hueEnt": 1.984,
+  "p10": 40,
+  "p90": 136,
+  "motion": 0,
+  "preset": "suksma - vector exp 1 - couldn\u2032t not",
+  "path": "/mnt/homes/Development/hermes-aura/.lanes/L5/.cand/01-vector.png"
+ },
+ {
+  "w": 364,
+  "h": 229,
+  "litFrac": 0.9962,
+  "colour": 0.275,
+  "hueEnt": 1.564,
+  "p10": 32,
+  "p90": 96,
+  "motion": 7.223,
+  "preset": "Flexi + Martin - cascading decay swing",
+  "path": "/mnt/homes/Development/hermes-aura/.lanes/L5/.cand/02-decay.png"
+ },
+ {
+  "w": 364,
+  "h": 229,
+  "litFrac": 0.9973,
+  "colour": 0.197,
+  "hueEnt": 1.484,
+  "p10": 32,
+  "p90": 184,
+  "motion": 8.511,
+  "preset": "cope + martin - mother-of-pearl",
+  "path": "/mnt/homes/Development/hermes-aura/.lanes/L5/.cand/03-pearl.png"
+ },
+ {
+  "w": 364,
+  "h": 229,
+  "litFrac": 0.9474,
+  "colour": 0.249,
+  "hueEnt": 1.589,
+  "p10": 48,
+  "p90": 240,
+  "motion": 12.349,
+  "preset": "flexi - what is the matrix",
+  "path": "/mnt/homes/Development/hermes-aura/.lanes/L5/.cand/04-matrix.png"
+ },
+ {
+  "w": 364,
+  "h": 229,
+  "litFrac": 0.9615,
+  "colour": 0.23,
+  "hueEnt": 0.787,
+  "p10": 72,
+  "p90": 224,
+  "motion": 13.827,
+  "preset": "Eo.S. + Zylot - skylight (Stained Glass Majesty mix)",
+  "path": "/mnt/homes/Development/hermes-aura/.lanes/L5/.cand/05-skylight.png"
+ },
+ {
+  "w": 364,
+  "h": 229,
+  "litFrac": 0.9477,
+  "colour": 0.139,
+  "hueEnt": 1.529,
+  "p10": 24,
+  "p90": 128,
+  "motion": 20.05,
+  "preset": "$$$ Royal - Mashup (220)",
+  "path": "/mnt/homes/Development/hermes-aura/.lanes/L5/.cand/06-royal.png"
+ },
+ {
+  "w": 364,
+  "h": 229,
+  "litFrac": 1,
+  "colour": 0.179,
+  "hueEnt": 2.081,
+  "p10": 80,
+  "p90": 136,
+  "motion": 10.539,
+  "preset": "Aderrasi - Songflower (Moss Posy)",
+  "path": "/mnt/homes/Development/hermes-aura/.lanes/L5/.cand/07-songflower.png"
+ },
+ {
+  "w": 364,
+  "h": 229,
+  "litFrac": 1,
+  "colour": 0.129,
+  "hueEnt": 1.831,
+  "p10": 96,
+  "p90": 240,
+  "motion": 13.642,
+  "preset": "Flexi, martin + geiss - dedicated to the sherwin maxawow",
+  "path": "/mnt/homes/Development/hermes-aura/.lanes/L5/.cand/08-sherwin.png"
+ }
+]

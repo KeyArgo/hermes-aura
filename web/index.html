@@ -50,6 +50,12 @@
   }
 
   /* Visualizer surface: scaled by JS to the container, then upscaled by CSS. */
+  #aura-stage {
+    position: absolute;
+    inset: 0;
+    transition: filter 900ms ease; /* mood saturate/contrast blends, never snaps */
+  }
+
   #aura-canvas {
     position: absolute;
     inset: 0;
@@ -241,6 +247,7 @@
      the decorative transitions so nothing flashes on state changes. */
   @media (prefers-reduced-motion: reduce) {
     #aura-canvas,
+    #aura-stage,
     #aura-tint,
     #aura-glow {
       transition-duration: 0.01ms;

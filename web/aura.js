@@ -48,6 +48,7 @@
     presetName: null,
     presetFamily: null,
     presetStrobe: false,
+    presetAnchor: null,
     frames: 0,
     badFrames: 0,
     droppedFrames: 0,
@@ -234,16 +235,35 @@
   // ---------------------------------------------------------------------------
 
   // gain = audio-reactivity multiplier on the PCM before Butterchurn,
-  // bright = CSS brightness lift, tint = red settle, pulse = accent pulse mode.
+  // bright = CSS brightness lift, tint = red settle, pulse = accent pulse mode,
+  // fx = saturate/contrast on the stage element (canvas keeps brightness only:
+  // the e2e parses the first filter function). The bundle exposes no runtime
+  // zoom/decay knobs (vendor/butterchurn.min.js: only loadPreset /
+  // setRendererSize / connectAudio) and is never patched — mood shape comes
+  // from preset-family selection, gain/brightness here, and the stage filter.
   const MOOD_MOD = {
-    idle:      { gain: 1.00, bright: 0.00, tint: 0.00, pulse: 'none',      floor: 0 },
-    thinking:  { gain: 1.30, bright: 0.14, tint: 0.00, pulse: 'breathe',   floor: 0 },
-    tool:      { gain: 1.12, bright: 0.04, tint: 0.00, pulse: 'none',      floor: 0 },
-    approval:  { gain: 1.15, bright: 0.08, tint: 0.00, pulse: 'attention', floor: 0.6 },
-    error:     { gain: 1.00, bright: 0.00, tint: 0.24, pulse: 'attention', floor: 0.6 },
-    streaming: { gain: 1.45, bright: 0.10, tint: 0.00, pulse: 'none',      floor: 0 },
-    done:      { gain: 0.95, bright: 0.02, tint: 0.00, pulse: 'settle',    floor: 0 }
+    idle:      { gain: 1.00, bright: 0.00, tint: 0.00, pulse: 'none',      floor: 0, fx: { saturate: 1.00, contrast: 1.00 } },
+    thinking:  { gain: 1.30, bright: 0.14, tint: 0.00, pulse: 'breathe',   floor: 0, fx: { saturate: 1.08, contrast: 1.06 } },
+    tool:      { gain: 1.12, bright: 0.04, tint: 0.00, pulse: 'none',      floor: 0, fx: { saturate: 1.03, contrast: 1.02 } },
+    approval:  { gain: 1.15, bright: 0.08, tint: 0.00, pulse: 'attention', floor: 0.6, fx: { saturate: 1.12, contrast: 1.14 } },
+    error:     { gain: 1.00, bright: 0.00, tint: 0.30, pulse: 'attention', floor: 0.6, fx: { saturate: 1.06, contrast: 1.08 } },
+    streaming: { gain: 1.45, bright: 0.10, tint: 0.00, pulse: 'none',      floor: 0, fx: { saturate: 1.14, contrast: 1.05 } },
+    done:      { gain: 0.95, bright: 0.02, tint: 0.00, pulse: 'settle',    floor: 0, fx: { saturate: 1.00, contrast: 1.00 } }
   };
+
+  // Preset families (web/presets.json `family`) that express each mood.
+  // null = keep whatever is playing (transient moods). Attention moods blend
+  // in over MOOD_BLEND_MS and the idle restore brings the previous preset back.
+  const MOOD_FAMILIES = {
+    idle: ['organic', 'liquid'],
+    thinking: ['geometric', 'fractal'],
+    tool: null,
+    approval: ['cosmic', 'geometric'],
+    error: ['liquid', 'cosmic'],
+    streaming: ['energy', 'geometric'],
+    done: null
+  };
+  const MOOD_BLEND_MS = 2200; // mood-driven preset changes crossfade, never cut
 
   const mood = {
     current: 'idle',
@@ -256,6 +276,7 @@
     pulse: null,
     pulsePeriod: ATTENTION_PULSE_MS
   };
+  const moodRot = Object.create(null); // per-mood preset rotation
 
   function moodMod() { return MOOD_MOD[mood.current] || MOOD_MOD.idle; }
 
@@ -344,6 +365,7 @@
 
     stopPulse();
     startPulse();
+    moodPresetHousekeeping(changed);
     updateMoodVisuals();
     updateMoodChip();
   }
@@ -389,6 +411,18 @@
     let bright = 1 + 0.10 * state.effectiveIntensity + mod.bright;
     if (state.reducedMotion) bright = 1 + (bright - 1) * 0.6;
     if (dom.canvas) dom.canvas.style.filter = 'brightness(' + bright.toFixed(2) + ')';
+
+    // Mood colour/contrast on the stage wrapper (canvas keeps brightness only).
+    if (dom.stage) {
+      const fx = mod.fx || {};
+      let sat = typeof fx.saturate === 'number' ? fx.saturate : 1;
+      let con = typeof fx.contrast === 'number' ? fx.contrast : 1;
+      if (state.reducedMotion) { sat = 1 + (sat - 1) * 0.5; con = 1 + (con - 1) * 0.5; }
+      const parts = [];
+      if (Math.abs(sat - 1) > 0.001) parts.push('saturate(' + sat.toFixed(2) + ')');
+      if (Math.abs(con - 1) > 0.001) parts.push('contrast(' + con.toFixed(2) + ')');
+      dom.stage.style.filter = parts.length ? parts.join(' ') : '';
+    }
 
     if (dom.root) {
       dom.root.style.setProperty('--aura-tint', String(mod.tint));
@@ -474,7 +508,7 @@
     return allowed[0].name;
   }
 
-  function loadPresetByName(name, blendMs) {
+  function loadPresetByName(name, blendMs, anchor) {
     if (!viz || typeof name !== 'string') return false;
     const map = presetMap();
     if (!map || !map[name]) return false;
@@ -488,10 +522,42 @@
       state.presetName = name;
       state.presetFamily = meta ? meta.family : null;
       state.presetStrobe = meta ? meta.strobe : false;
+      // anchor=false: a mood-driven choice, not the user's/server's selection —
+      // the idle restore blends back to state.presetAnchor.
+      if (anchor !== false) state.presetAnchor = name;
       return true;
     } catch (e) {
       recordError(e);
       return false;
+    }
+  }
+
+  // Mood → preset family: give each mood a visibly distinct shape. Runs on
+  // mood CHANGE only (server repeats never re-trigger), crossfades over
+  // MOOD_BLEND_MS, respects reduced-motion strobe filtering via
+  // allowedPresets(), and never fights an explicit preset for the anchor.
+  function moodPresetHousekeeping(changed) {
+    if (!changed || !catalog.presets.length) return;
+    if (mood.current === 'idle') {
+      if (state.presetAnchor && state.presetName !== state.presetAnchor) {
+        loadPresetByName(state.presetAnchor, MOOD_BLEND_MS + 800, false);
+      }
+      return;
+    }
+    const fams = MOOD_FAMILIES[mood.current];
+    if (!fams) return;
+    if (state.presetFamily && fams.indexOf(state.presetFamily) !== -1) return;
+    const pool = allowedPresets().filter((p) => fams.indexOf(p.family) !== -1);
+    if (!pool.length) return;
+    const next = (((moodRot[mood.current] || 0) + 1) % pool.length);
+    moodRot[mood.current] = next; // rotate so repeated moods vary the view
+    // Attention moods are short: blend in fast so the alarm lands immediately
+    // (and is fully blended before a ~1 s attention check window closes).
+    const blend = ATTENTION.includes(mood.current) ? 600 : MOOD_BLEND_MS;
+    if (loadPresetByName(pool[next].name, blend, false)) return;
+    // fallback: any allowed preset of a matching family (first choice)
+    for (const p of pool) {
+      if (loadPresetByName(p.name, blend, false)) return;
     }
   }
 
@@ -1253,6 +1319,7 @@
         preset: state.presetName,
         presetFamily: state.presetFamily,
         presetStrobe: state.presetStrobe,
+        presetAnchor: state.presetAnchor,
         fallbackReasons: Array.from(blockers.keys()),
         fallbackActive: !!hardBlocker(),
         message: dom.message && !dom.message.hidden ? dom.message.textContent : null,
