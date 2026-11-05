@@ -1,1 +1,990 @@
-export default { id: "aura", name: "Aura", register() {} }
+/**
+ * Aura — desktop half of the Aura Hermes plugin.
+ *
+ * Aura listens to what this computer is already playing and turns it into a
+ * MilkDrop-compatible stage plus an audio-reactive accent. This file is ONLY
+ * the desktop half: capture, analysis and the visualizer page belong to the
+ * Python/server and web halves. The desktop half reaches them through the one
+ * sanctioned door, `ctx.rest('/status')` and `ctx.rest('/control')`
+ * (dashboard/plugin_api.py), and hands the returned tokenised URL straight to
+ * an iframe.
+ *
+ * What it contributes (Hermes Desktop plugin SDK only — no core edits):
+ *   - a full-page stage at /aura (`ROUTES_AREA`) hosting the visualizer,
+ *   - a sidebar row (`SIDEBAR_NAV_AREA`) and a palette command (`PALETTE_AREA`),
+ *   - a status-bar chip (`statusBar.right`) showing on/off + capture backend,
+ *   - a compact right-hand pane (`panes`) so the stage can sit beside chat,
+ *   - an optional `THEMES_AREA` theme ('aura-live') the user must opt into,
+ *   - a settings page (`SETTINGS_PLUGINS_AREA`) with enable / intensity /
+ *     accent-follow / theme toggles.
+ *
+ * There is no backdrop slot in the SDK (see SPIKES.md S1), so Aura never
+ * promises "behind the chat": the stage is a page, the pane is a pane, and the
+ * ambient effect is the app accent, which we pulse by retinting the ACTIVE
+ * theme's accent — never by imposing a hue.
+ *
+ * Plain ESM, loaded uncompiled: `jsx()` calls only, no JSX syntax, no eval,
+ * no dynamic import. Imports are limited to @hermes/plugin-sdk, react and
+ * react/jsx-runtime. Every contribution and timer returns a disposer, and
+ * `register()` returns one disposer that stops polling, clears the accent
+ * override, restores the user's previous theme and removes every contribution.
+ */
+
+import {
+  $accentOverride,
+  atom,
+  Button,
+  host,
+  PALETTE_AREA,
+  PANES_AREA,
+  requestTheme,
+  ROUTES_AREA,
+  setAccentOverride,
+  SETTINGS_PLUGINS_AREA,
+  SIDEBAR_NAV_AREA,
+  STATUSBAR_AREAS,
+  StatusDot,
+  Switch,
+  THEMES_AREA,
+  TITLEBAR_AREAS,
+  useTheme,
+  useValue
+} from '@hermes/plugin-sdk'
+import { useEffect, useState } from 'react'
+import { jsx, jsxs } from 'react/jsx-runtime'
+
+const ID = 'aura'
+const ROUTE = '/aura'
+const THEME_NAME = 'aura-live'
+// The contract says /api/state is cheap and safe at <= 4 Hz. One tick is one
+// poll of /status (plus /state only while Aura is enabled), and the accent is
+// re-applied at most once per tick, so the app never repaints faster than 4 Hz.
+const POLL_MS = 250
+const ACCENT_MIN_GAP_MS = 250
+// Attention moods (approval/error) must not pulse faster than 2 Hz (CONTRACT §4).
+const ATTENTION_MIN_GAP_MS = 500
+const ACCENT_L_MIN = 0.34
+const ACCENT_L_MAX = 0.78
+
+const DEFAULT_SETTINGS = Object.freeze({
+  enabled: true,
+  intensity: 0.5,
+  followAudio: true,
+  themeOptIn: false
+})
+
+const EMPTY_LIVE = Object.freeze({
+  ok: false,
+  port: null,
+  url: '',
+  capture: '',
+  enabled: false,
+  error: '',
+  mood: '',
+  at: 0
+})
+
+// ------------------------------------------------------------------ utilities
+
+const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value))
+
+const clamp01 = value => {
+  const n = Number(value)
+  return Number.isFinite(n) ? clamp(n, 0, 1) : 0
+}
+
+/** Normalise #rgb/#rrggbb/#rrggbbaa to a lowercase #rrggbb, or null. */
+function normalizeHex(value) {
+  if (typeof value !== 'string') return null
+  const raw = value.trim()
+  const short = /^#([0-9a-f]{3})$/i.exec(raw)
+  if (short) {
+    const [r, g, b] = short[1].split('')
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase()
+  }
+  const long = /^#([0-9a-f]{6})(?:[0-9a-f]{2})?$/i.exec(raw)
+  return long ? `#${long[1]}`.toLowerCase() : null
+}
+
+function hexToHsl(hex) {
+  const clean = normalizeHex(hex)
+  if (!clean) return null
+  const r = parseInt(clean.slice(1, 3), 16) / 255
+  const g = parseInt(clean.slice(3, 5), 16) / 255
+  const b = parseInt(clean.slice(5, 7), 16) / 255
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  const l = (max + min) / 2
+  if (max === min) return { h: 0, s: 0, l }
+  const d = max - min
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+  let h
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) * 60
+  else if (max === g) h = ((b - r) / d + 2) * 60
+  else h = ((r - g) / d + 4) * 60
+  return { h, s, l }
+}
+
+function hslToHex(h, s, l) {
+  const hue = ((h % 360) + 360) % 360
+  const sat = clamp(s, 0, 1)
+  const lum = clamp(l, 0, 1)
+  const c = (1 - Math.abs(2 * lum - 1)) * sat
+  const x = c * (1 - Math.abs(((hue / 60) % 2) - 1))
+  const m = lum - c / 2
+  let rgb
+  if (hue < 60) rgb = [c, x, 0]
+  else if (hue < 120) rgb = [x, c, 0]
+  else if (hue < 180) rgb = [0, c, x]
+  else if (hue < 240) rgb = [0, x, c]
+  else if (hue < 300) rgb = [x, 0, c]
+  else rgb = [c, 0, x]
+  const toHex = v => Math.round((v + m) * 255).toString(16).padStart(2, '0')
+  return `#${toHex(rgb[0])}${toHex(rgb[1])}${toHex(rgb[2])}`
+}
+
+// The renderer always has a document; a headless import (the contract test)
+// does not, so every DOM touch is guarded.
+const doc = typeof document !== 'undefined' ? document : null
+
+/** Read the theme's published accent token. Never queries app markup. */
+function readCssAccent() {
+  if (!doc || typeof getComputedStyle !== 'function') return null
+  try {
+    return normalizeHex(getComputedStyle(doc.documentElement).getPropertyValue('--ui-accent'))
+  } catch {
+    return null
+  }
+}
+
+function accentOf(theme) {
+  const colors = theme && theme.colors
+  if (!colors || typeof colors !== 'object') return ''
+  return normalizeHex(colors.accent) || normalizeHex(colors.primary) || normalizeHex(colors.ring) || ''
+}
+
+// ------------------------------------------------------------- module state
+// Reset by register() so a hot reload starts from a clean slate.
+
+let ctxRef = null
+let disposed = false
+let pollDisposer = null
+let polling = false
+let liveFrame = null // latest /state frame — hot path, deliberately not an atom
+let liveKey = ''
+let overrideActive = false
+let lastAccentHex = null
+let lastAccentAt = 0
+let prevTheme = null
+let themeInfo = { name: '', accent: '' }
+let knownTheme = ''
+const disposers = []
+
+const $settings = atom({ ...DEFAULT_SETTINGS })
+const $live = atom({ ...EMPTY_LIVE })
+const $themeApplied = atom(false)
+
+// --------------------------------------------------------------- persistence
+
+function readSettings(ctx) {
+  const out = { ...DEFAULT_SETTINGS }
+  let raw = null
+  try {
+    raw = ctx.storage.get('settings', null)
+  } catch {
+    raw = null
+  }
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    if (typeof raw.enabled === 'boolean') out.enabled = raw.enabled
+    if (Number.isFinite(raw.intensity)) out.intensity = clamp01(raw.intensity)
+    if (typeof raw.followAudio === 'boolean') out.followAudio = raw.followAudio
+    if (typeof raw.themeOptIn === 'boolean') out.themeOptIn = raw.themeOptIn
+  }
+  return out
+}
+
+function writeSettings(patch) {
+  const next = { ...$settings.get(), ...patch }
+  $settings.set(next)
+  try {
+    ctxRef?.storage.set('settings', next)
+  } catch {
+    // Persistence is best-effort; the live value still applies.
+  }
+  return next
+}
+
+function setLive(patch) {
+  const next = { ...$live.get(), ...patch }
+  $live.set(next)
+  return next
+}
+
+function setError(message) {
+  setLive({ error: typeof message === 'string' ? message : '' })
+}
+
+// ------------------------------------------------------------- server control
+
+/**
+ * Push a change to the Python half. Every ctx.rest call is wrapped: a dead
+ * server degrades to a status message, never to a thrown error.
+ */
+async function pushControl(patch) {
+  if (!ctxRef || disposed) return false
+  try {
+    await ctxRef.rest('/control', { method: 'POST', body: patch, timeoutMs: 5000 })
+    return true
+  } catch {
+    setError('Aura could not apply that change — the local server is not answering.')
+    return false
+  }
+}
+
+async function poll() {
+  if (!ctxRef || disposed || polling) return
+  polling = true
+  try {
+    let status = null
+    let error = ''
+    try {
+      status = await ctxRef.rest('/status', { timeoutMs: 3000 })
+    } catch {
+      error = 'Aura’s local server is not running yet.'
+    }
+
+    const ok = Boolean(status && status.ok === true)
+    const enabled = ok ? status.enabled === true : $settings.get().enabled
+    let frame = null
+    if (ok) {
+      try {
+        frame = await ctxRef.rest('/state', { timeoutMs: 3000 })
+      } catch {
+        frame = null
+      }
+    }
+
+    const capture = ok && typeof status.capture === 'string' ? status.capture : ''
+    const url = ok && typeof status.url === 'string' && /^https?:\/\//.test(status.url) ? status.url : ''
+    const port = ok && Number.isFinite(status.port) ? status.port : null
+    const mood = frame && typeof frame.mood === 'string' ? frame.mood : ''
+    if (!ok && !error) error = 'Aura’s local server is starting…'
+
+    liveFrame = frame
+    const key = [ok, port, capture, enabled, url, error, mood].join('|')
+    if (key !== liveKey) {
+      liveKey = key
+      $live.set({
+        ok,
+        port,
+        url,
+        capture,
+        enabled,
+        error,
+        mood,
+        at: Date.now()
+      })
+    }
+    accentStep(Date.now())
+  } finally {
+    polling = false
+  }
+}
+
+// ------------------------------------------------------------- accent pulse
+
+/**
+ * The base colour is the user's own: an existing accent override if one is
+ * set, else the ACTIVE theme's accent (reported by ThemeProbe), else the
+ * theme's published --ui-accent token. If none resolves we leave appearance
+ * untouched rather than inventing a hue.
+ */
+function baseAccentHex() {
+  const override = $accentOverride.get()
+  const fromOverride = normalizeHex(override)
+  if (fromOverride) return fromOverride
+  const fromTheme = normalizeHex(themeInfo.accent)
+  if (fromTheme) return fromTheme
+  return readCssAccent()
+}
+
+/**
+ * Shift ONLY lightness/saturation of the user's accent inside a readable band.
+ * The hue is never replaced, so the pulse composes with whatever skin is active.
+ */
+function pulseHex(base, level, intensity) {
+  const hsl = hexToHsl(base)
+  if (!hsl) return null
+  const swing = 0.2 * clamp01(intensity)
+  const lightness = clamp(hsl.l + (clamp01(level) - 0.42) * swing, ACCENT_L_MIN, ACCENT_L_MAX)
+  const saturation = clamp(hsl.s * (0.85 + 0.3 * clamp01(level)), 0.18, 0.95)
+  return hslToHex(hsl.h, saturation, lightness)
+}
+
+function clearAccent(force = false) {
+  if (!overrideActive && !force) return
+  overrideActive = false
+  lastAccentHex = null
+  lastAccentAt = 0
+  setAccentOverride(null)
+}
+
+function accentStep(now) {
+  if (disposed) return
+  const settings = $settings.get()
+  const live = $live.get()
+  if (!live.ok || !live.enabled || !settings.followAudio || settings.intensity <= 0) {
+    clearAccent()
+    return
+  }
+  if (doc && doc.hidden) return // background window: no repaint work
+  const frame = liveFrame || {}
+  // The agent can change intensity through /control too: honour the lower of
+  // the two so a "quiet the room" request is not overridden by the slider.
+  const serverIntensity = Number.isFinite(frame.intensity) ? clamp01(frame.intensity) : null
+  const intensity = serverIntensity === null ? settings.intensity : Math.min(settings.intensity, serverIntensity)
+  if (intensity <= 0) {
+    clearAccent()
+    return
+  }
+  const attention = frame.mood === 'approval' || frame.mood === 'error'
+  const minGap = attention ? ATTENTION_MIN_GAP_MS : ACCENT_MIN_GAP_MS
+  if (now - lastAccentAt < minGap) return
+  const base = baseAccentHex()
+  if (!base) return
+  const next = pulseHex(base, clamp01(frame.level), intensity)
+  if (!next || next === lastAccentHex) return
+  lastAccentHex = next
+  lastAccentAt = now
+  overrideActive = true
+  setAccentOverride(next)
+}
+
+// ------------------------------------------------------------------- themes
+
+function applyThemeIfOptedIn() {
+  if (disposed || !ctxRef || $themeApplied.get()) return Boolean($themeApplied.get())
+  const before = themeInfo.name
+  if (!before) return false // the probe has not mounted yet; it retries
+  if (!requestTheme(THEME_NAME)) return false // refused rather than coerced
+  prevTheme = before
+  $themeApplied.set(true)
+  return true
+}
+
+function restoreTheme() {
+  if (!$themeApplied.get()) return
+  $themeApplied.set(false)
+  const back = prevTheme
+  prevTheme = null
+  if (back) requestTheme(back)
+}
+
+/** The probe reports the active skin. A user skin change drops our retint so
+ *  the pulse re-derives from the new accent instead of carrying the old hue. */
+function onThemeName(name) {
+  if (typeof name !== 'string' || !name || name === knownTheme) return
+  const first = !knownTheme
+  knownTheme = name
+  if (!first && overrideActive) {
+    clearAccent(true)
+  }
+  if ($settings.get().themeOptIn && !$themeApplied.get()) applyThemeIfOptedIn()
+}
+
+function setThemeOptIn(on) {
+  writeSettings({ themeOptIn: Boolean(on) })
+  if (on) applyThemeIfOptedIn()
+  else restoreTheme()
+}
+
+// ------------------------------------------------------------- enable switch
+
+async function setEnabled(next) {
+  if (!ctxRef || disposed) return
+  const enabled = Boolean(next)
+  writeSettings({ enabled })
+  if (!enabled) {
+    clearAccent(true)
+    restoreTheme()
+  } else if ($settings.get().themeOptIn) {
+    applyThemeIfOptedIn()
+  }
+  const ok = await pushControl({ enabled })
+  if (ok) {
+    setLive({ enabled, error: '' })
+    void poll()
+  }
+}
+
+async function toggleAndOpen() {
+  const live = $live.get()
+  const desired = live.ok ? !live.enabled : !$settings.get().enabled
+  await setEnabled(desired)
+  try {
+    host.navigate(ROUTE)
+  } catch {
+    // Navigation is the host's; a refusal must not break the toggle.
+  }
+}
+
+// ---------------------------------------------------------------------- UI
+
+function ThemeProbe() {
+  const active = useTheme()
+  const name = active && typeof active.themeName === 'string' ? active.themeName : ''
+  const accent = accentOf(active && active.theme)
+  if (name) themeInfo.name = name
+  if (accent) themeInfo.accent = accent
+  useEffect(() => {
+    onThemeName(name)
+  }, [name])
+  return null
+}
+
+function StageFrame({ url }) {
+  return jsx('iframe', {
+    src: url,
+    title: 'Aura visualizer',
+    // Same-origin is required: the page talks to its own 127.0.0.1 origin
+    // (WebSocket token + fetch) and the server sends no CORS headers.
+    sandbox: 'allow-scripts allow-same-origin allow-forms allow-downloads',
+    referrerPolicy: 'no-referrer',
+    allow: 'autoplay; fullscreen',
+    allowFullScreen: true,
+    style: {
+      flex: 1,
+      width: '100%',
+      height: '100%',
+      minWidth: 0,
+      minHeight: 0,
+      border: 0,
+      display: 'block',
+      background: 'var(--ui-bg)'
+    }
+  })
+}
+
+function StageMessage({ live, onRetry, busy }) {
+  const reason = live.error || (live.ok ? 'Aura is warming up…' : 'Aura’s local server is not running.')
+  return jsxs('div', {
+    style: {
+      flex: 1,
+      minHeight: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 10,
+      padding: 24,
+      textAlign: 'center'
+    },
+    children: [
+      jsx('div', {
+        key: 'title',
+        style: { fontSize: 13, color: 'var(--ui-text-primary)' },
+        children: 'The Aura stage is not available yet.'
+      }),
+      jsx('div', {
+        key: 'reason',
+        style: { fontSize: 12, color: 'var(--ui-text-secondary)', maxWidth: 420 },
+        children: reason
+      }),
+      jsx('div', {
+        key: 'hint',
+        style: { fontSize: 11, color: 'var(--ui-text-tertiary)', maxWidth: 460 },
+        children:
+          'Aura runs a local server on 127.0.0.1. Enable the Aura Python plugin (plugins.enabled) and restart Hermes if this keeps showing.'
+      }),
+      jsx(Button, {
+        key: 'retry',
+        size: 'sm',
+        variant: 'outline',
+        disabled: busy,
+        onClick: onRetry,
+        children: busy ? 'Checking…' : 'Retry'
+      })
+    ]
+  })
+}
+
+function Stage({ compact = false }) {
+  const live = useValue($live)
+  const [busy, setBusy] = useState(false)
+  const ready = live.ok && typeof live.url === 'string' && live.url.length > 0
+  const retry = () => {
+    setBusy(true)
+    void poll().finally(() => setBusy(false))
+  }
+
+  const body = ready
+    ? jsx(StageFrame, { url: live.url })
+    : jsx(StageMessage, { live, onRetry: retry, busy })
+
+  if (!compact) {
+    return jsxs('div', {
+      style: {
+        display: 'flex',
+        flexDirection: 'column',
+        width: '100%',
+        height: '100%',
+        minWidth: 0,
+        minHeight: 0,
+        overflow: 'hidden'
+      },
+      children: body
+    })
+  }
+
+  const capture = live.capture && live.capture !== 'none' ? live.capture : ''
+  const state = live.ok ? (live.enabled ? 'on' : 'off') : 'offline'
+  return jsxs('div', {
+    style: {
+      display: 'flex',
+      flexDirection: 'column',
+      width: '100%',
+      height: '100%',
+      minWidth: 0,
+      minHeight: 0,
+      overflow: 'hidden'
+    },
+    children: [
+      jsxs('div', {
+        key: 'head',
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '4px 8px',
+          flex: 'none',
+          borderBottom: '1px solid var(--ui-stroke-secondary)'
+        },
+        children: [
+          jsx(StatusDot, { key: 'dot', tone: live.ok ? (live.enabled ? 'good' : 'muted') : 'warn' }),
+          jsx('span', {
+            key: 'name',
+            style: { fontSize: 12, color: 'var(--ui-text-primary)' },
+            children: 'Aura'
+          }),
+          jsx('span', {
+            key: 'state',
+            style: { fontSize: 11, color: 'var(--ui-text-tertiary)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+            children: capture ? `${state} · ${capture}` : state
+          }),
+          jsx(Button, {
+            key: 'open',
+            variant: 'ghost',
+            size: 'micro',
+            title: 'Open the full Aura stage',
+            onClick: () => {
+              try {
+                host.navigate(ROUTE)
+              } catch {
+                // ignore
+              }
+            },
+            children: 'Open'
+          })
+        ]
+      }),
+      jsx('div', { key: 'body', style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }, children: body })
+    ]
+  })
+}
+
+function AuraChip() {
+  const live = useValue($live)
+  const settings = useValue($settings)
+  const ok = Boolean(live.ok)
+  const on = ok && Boolean(live.enabled)
+  const capture = live.capture && live.capture !== 'none' ? live.capture : ''
+  const tone = !ok ? 'warn' : on ? 'good' : 'muted'
+  const state = !ok ? 'offline' : on ? 'on' : 'off'
+  const detail = ok && on && capture ? ` · ${capture}` : ''
+  const title = !ok
+    ? 'Aura’s local server is not running. Click to try again and open the stage.'
+    : on
+      ? `Aura is listening${capture ? ` (${capture})` : ''}. Click to turn it off and open the stage.`
+      : `Aura is off${settings.enabled ? '' : ' (you turned it off)'}. Click to turn it on and open the stage.`
+  return jsx(Button, {
+    variant: 'ghost',
+    size: 'micro',
+    title,
+    'aria-label': `Aura ${state}${capture ? `, capture ${capture}` : ''}`,
+    onClick: () => {
+      void toggleAndOpen()
+    },
+    style: {
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 6,
+      color: on ? 'var(--ui-text-primary)' : 'var(--ui-text-secondary)'
+    },
+    children: jsxs('span', {
+      style: { display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' },
+      children: [
+        jsx(StatusDot, { key: 'dot', tone }),
+        jsx('span', { key: 'name', children: 'Aura' }),
+        jsx('span', { key: 'state', style: { color: 'var(--ui-text-tertiary)' }, children: `${state}${detail}` })
+      ]
+    })
+  })
+}
+
+function AuraSettings() {
+  const settings = useValue($settings)
+  const live = useValue($live)
+  const applied = useValue($themeApplied)
+
+  const serverLine = live.ok
+    ? `Server reachable on 127.0.0.1${live.port ? `:${live.port}` : ''}${live.capture ? ` · capture: ${live.capture}` : ''}`
+    : live.error || 'Server not reachable.'
+
+  const row = (label, hint, control) =>
+    jsxs('div', {
+      style: { display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0' },
+      children: [
+        jsxs('div', {
+          key: 'label',
+          style: { flex: 1, minWidth: 0 },
+          children: [
+            jsx('div', { key: 'title', style: { fontSize: 12, color: 'var(--ui-text-primary)' }, children: label }),
+            jsx('div', { key: 'hint', style: { fontSize: 11, color: 'var(--ui-text-tertiary)' }, children: hint })
+          ]
+        }),
+        jsx('div', { key: 'control', style: { flex: 'none', display: 'flex', alignItems: 'center' }, children: control })
+      ]
+    })
+
+  return jsxs('div', {
+    style: { display: 'flex', flexDirection: 'column', gap: 2, padding: '12px 4px', maxWidth: 640 },
+    children: [
+      jsx('h3', { key: 'title', style: { margin: 0, fontSize: 13, color: 'var(--ui-text-primary)' }, children: 'Aura' }),
+      jsx('div', {
+        key: 'server',
+        style: { fontSize: 11, color: 'var(--ui-text-tertiary)', paddingBottom: 6 },
+        children: serverLine
+      }),
+      jsx('div', {
+        key: 'enabled',
+        children: row(
+          'Aura enabled',
+          'Listens to system audio and drives the stage, the pane and the accent.',
+          jsx(Switch, {
+            checked: settings.enabled,
+            'aria-label': 'Aura enabled',
+            onCheckedChange: value => {
+              void setEnabled(value)
+            }
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'intensity',
+        children: row(
+          'Pulse intensity',
+          '0 turns the accent pulse off and returns your theme’s own accent.',
+          jsx('input', {
+            type: 'range',
+            min: 0,
+            max: 1,
+            step: 0.05,
+            value: settings.intensity,
+            'aria-label': 'Pulse intensity',
+            style: { width: 160, accentColor: 'var(--ui-accent)' },
+            onChange: event => {
+              const intensity = clamp01(event && event.target ? event.target.value : 0)
+              writeSettings({ intensity })
+              if (intensity <= 0) clearAccent(true)
+              else accentStep(Date.now())
+              void pushControl({ intensity })
+            }
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'follow',
+        children: row(
+          'Follow audio with app accent',
+          'Pulses the accent of the theme you are using; the hue is never replaced.',
+          jsx(Switch, {
+            checked: settings.followAudio,
+            'aria-label': 'Follow audio with app accent',
+            onCheckedChange: value => {
+              writeSettings({ followAudio: Boolean(value) })
+              if (!value) clearAccent(true)
+            }
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'theme',
+        children: row(
+          'Use Aura theme',
+          applied
+            ? 'Aura Live is active. Turning this off restores the theme you had before.'
+            : 'Optional deep-stage palette. Your current theme is restored when you turn it off.',
+          jsx(Switch, {
+            checked: settings.themeOptIn,
+            'aria-label': 'Use Aura theme',
+            onCheckedChange: value => setThemeOptIn(value)
+          })
+        )
+      })
+    ]
+  })
+}
+
+// --------------------------------------------------------------- theme data
+// A contributed DesktopTheme must carry literal colours (the SDK has no token
+// resolution inside `data`), so this is the one place hex values are correct.
+const AURA_THEME = {
+  name: THEME_NAME,
+  label: 'Aura Live',
+  description: 'Deep-stage palette with an electric accent, for Aura’s visualizer page.',
+  colors: {
+    background: '#f7f5ff',
+    foreground: '#1a1730',
+    card: '#ffffff',
+    cardForeground: '#1a1730',
+    muted: '#ece8fb',
+    mutedForeground: '#6b6484',
+    popover: '#ffffff',
+    popoverForeground: '#1a1730',
+    primary: '#6f57f0',
+    primaryForeground: '#ffffff',
+    secondary: '#e7e1fa',
+    secondaryForeground: '#241f45',
+    accent: '#7f66ff',
+    accentForeground: '#ffffff',
+    border: '#d8d2ee',
+    input: '#ffffff',
+    ring: '#6f57f0',
+    destructive: '#d93a5c',
+    destructiveForeground: '#ffffff'
+  },
+  darkColors: {
+    background: '#0b0a14',
+    foreground: '#e9e6f7',
+    card: '#12101f',
+    cardForeground: '#e9e6f7',
+    muted: '#1a1730',
+    mutedForeground: '#a8a2c4',
+    popover: '#141126',
+    popoverForeground: '#e9e6f7',
+    primary: '#8f7bff',
+    primaryForeground: '#0b0a14',
+    secondary: '#221d3d',
+    secondaryForeground: '#d9d3f2',
+    accent: '#b7a4ff',
+    accentForeground: '#0b0a14',
+    border: '#2a2444',
+    input: '#221d3d',
+    ring: '#8f7bff',
+    destructive: '#ff5f7e',
+    destructiveForeground: '#0b0a14'
+  },
+  typography: {
+    fontSans: 'Inter, system-ui, sans-serif',
+    fontMono: 'ui-monospace, SFMono-Regular, Menlo, monospace'
+  }
+}
+
+// --------------------------------------------------------------- teardown
+
+/** Instance guard: a hot reload registers a new instance, and a late call to
+ *  the OLD disposer must not tear down the new one. */
+let instanceSeq = 0
+
+function teardown() {
+  if (pollDisposer) {
+    try {
+      pollDisposer()
+    } catch {
+      // already cleared
+    }
+    pollDisposer = null
+  }
+  clearAccent(true)
+  restoreTheme()
+  while (disposers.length) {
+    const off = disposers.pop()
+    try {
+      off()
+    } catch {
+      // one broken disposer must not strand the rest
+    }
+  }
+  ctxRef = null
+  liveFrame = null
+  liveKey = ''
+  prevTheme = null
+  themeInfo = { name: '', accent: '' }
+  knownTheme = ''
+  $settings.set({ ...DEFAULT_SETTINGS })
+  $live.set({ ...EMPTY_LIVE })
+  $themeApplied.set(false)
+}
+
+// ------------------------------------------------------------------- export
+
+export default {
+  id: ID,
+  name: 'Aura',
+  description:
+    'Audio-reactive stage, accent pulse and optional theme for what this computer is playing. Local only: no recording, no account, no sound of its own.',
+  register(ctx) {
+    // Reset first: a hot reload must not inherit the previous instance's state.
+    const mine = ++instanceSeq
+    const dispose = () => {
+      if (disposed || mine !== instanceSeq) return
+      disposed = true
+      teardown()
+    }
+    disposed = false
+    ctxRef = ctx
+    polling = false
+    pollDisposer = null
+    liveFrame = null
+    liveKey = ''
+    overrideActive = false
+    lastAccentHex = null
+    lastAccentAt = 0
+    prevTheme = null
+    themeInfo = { name: '', accent: '' }
+    knownTheme = ''
+    disposers.length = 0
+    $themeApplied.set(false)
+    const settings = readSettings(ctx)
+    $settings.set(settings)
+    $live.set({ ...EMPTY_LIVE })
+
+    const track = disposer => {
+      if (typeof disposer === 'function') disposers.push(disposer)
+    }
+
+    track(
+      ctx.register({
+        id: 'stage',
+        area: ROUTES_AREA,
+        title: 'Aura',
+        data: { path: ROUTE },
+        render: () => jsx(Stage, {})
+      })
+    )
+
+    track(
+      ctx.register({
+        id: 'nav',
+        area: SIDEBAR_NAV_AREA,
+        data: { path: ROUTE, label: 'Aura', codicon: 'pulse' }
+      })
+    )
+
+    track(
+      ctx.register({
+        id: 'open-stage',
+        area: PALETTE_AREA,
+        data: {
+          id: 'aura.open',
+          label: 'Aura: Open stage',
+          keywords: ['aura', 'visualizer', 'milkdrop', 'music', 'stage', 'audio'],
+          run: () => {
+            try {
+              host.navigate(ROUTE)
+            } catch {
+              // ignore
+            }
+          }
+        }
+      })
+    )
+
+    track(
+      ctx.register({
+        id: 'status',
+        area: STATUSBAR_AREAS.right,
+        order: 20,
+        render: () => jsx(AuraChip, {})
+      })
+    )
+
+    track(
+      ctx.register({
+        id: 'pane',
+        area: PANES_AREA,
+        title: 'Aura',
+        data: {
+          placement: 'right',
+          dock: { pane: 'workspace', pos: 'right' },
+          width: '320px',
+          minWidth: '240px'
+        },
+        render: () => jsx(Stage, { compact: true })
+      })
+    )
+
+    // An invisible, permanently mounted probe: titlebar slots stay mounted
+    // across navigation, so this is where the active theme is read (useTheme
+    // is a hook) without reaching into app markup.
+    track(
+      ctx.register({
+        id: 'theme-probe',
+        area: TITLEBAR_AREAS.center,
+        render: () => jsx(ThemeProbe, {})
+      })
+    )
+
+    track(
+      ctx.register({
+        id: THEME_NAME,
+        area: THEMES_AREA,
+        data: AURA_THEME
+      })
+    )
+
+    // Settings ▸ Plugins. Older hosts without registerSettingsPage get the
+    // same page as a plain SETTINGS_PLUGINS_AREA contribution.
+    if (typeof ctx.registerSettingsPage === 'function') {
+      track(
+        ctx.registerSettingsPage({
+          id: 'settings',
+          title: 'Aura',
+          icon: 'pulse',
+          render: () => jsx(AuraSettings, {})
+        })
+      )
+    } else {
+      track(
+        ctx.register({
+          id: 'settings',
+          area: SETTINGS_PLUGINS_AREA,
+          title: 'Aura',
+          data: { children: [], icon: 'pulse' },
+          render: () => jsx(AuraSettings, {})
+        })
+      )
+    }
+
+    // Polling is the only timer; the host owns it, so it cannot outlive the
+    // plugin even if the returned disposer is never called.
+    pollDisposer = ctx.setInterval(() => {
+      void poll()
+    }, POLL_MS)
+
+    if (doc) {
+      track(
+        ctx.addEventListener(doc, 'visibilitychange', () => {
+          if (!doc.hidden) void poll()
+        })
+      )
+    }
+
+    if (typeof ctx.onDispose === 'function') ctx.onDispose(dispose)
+
+    void poll()
+    if (settings.themeOptIn) applyThemeIfOptedIn()
+
+    return dispose
+  }
+}
