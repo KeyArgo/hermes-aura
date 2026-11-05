@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from . import analysis, config, redact
+from . import analysis, behavior, config, redact
 from .capture import base as capture
 
 logger = logging.getLogger("aura.server")
@@ -293,6 +293,12 @@ def _config_event() -> dict:
         "reduced_motion": cfg["reduced_motion"],
         "capture": _STATE.capture_name,
         "theme_opt_in": cfg["theme_opt_in"],
+        "opacity": cfg["opacity"],
+        "behavior": cfg["behavior"],
+        "mood_reactive": bool(cfg["mood_reactive"]),
+        "accent_pulse": bool(cfg["accent_pulse"]),
+        "auto_preset": bool(cfg["auto_preset"]),
+        "behavior_profile": behavior.profile(cfg["behavior"]),
     }
 
 
@@ -633,6 +639,11 @@ class _Handler(BaseHTTPRequestHandler):
                 "mood": _STATE.mood,
                 "intensity": cfg["intensity"],
                 "preset": cfg["preset"] or _STATE.preset,
+                "opacity": cfg["opacity"],
+                "behavior": cfg["behavior"],
+                "mood_reactive": bool(cfg["mood_reactive"]),
+                "accent_pulse": bool(cfg["accent_pulse"]),
+                "auto_preset": bool(cfg["auto_preset"]),
             }
         return payload
 
@@ -643,6 +654,14 @@ class _Handler(BaseHTTPRequestHandler):
             "reduced_motion": cfg["reduced_motion"],
             "capture": _STATE.capture_name,
             "theme_opt_in": cfg["theme_opt_in"],
+            "enabled": bool(cfg["enabled"]),
+            "preset": cfg["preset"],
+            "opacity": cfg["opacity"],
+            "behavior": cfg["behavior"],
+            "mood_reactive": bool(cfg["mood_reactive"]),
+            "accent_pulse": bool(cfg["accent_pulse"]),
+            "auto_preset": bool(cfg["auto_preset"]),
+            "behavior_profile": behavior.profile(cfg["behavior"]),
         }
 
     def _serve_static(self, path: str) -> None:
@@ -875,18 +894,48 @@ def _validate_control(data) -> dict:
         if not isinstance(value, str) or value not in MOODS:
             raise ValueError("bad_mood")
         applied["mood"] = value
+    if "opacity" in data:
+        value = data["opacity"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("opacity_must_be_number")
+        value = float(value)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("opacity_out_of_range")
+        applied["opacity"] = value
+    if "behavior" in data:
+        value = data["behavior"]
+        if not isinstance(value, str):
+            raise ValueError("behavior_must_be_string")
+        value = value.strip().lower()
+        if value not in behavior.BEHAVIORS:
+            raise ValueError("bad_behavior")
+        applied["behavior"] = value
+    for toggle in ("mood_reactive", "accent_pulse", "auto_preset"):
+        if toggle in data:
+            if not isinstance(data[toggle], bool):
+                raise ValueError(toggle + "_must_be_bool")
+            applied[toggle] = data[toggle]
     return applied
 
 
 def _apply_control(data) -> dict:
     applied = _validate_control(data)
-    patch = {k: v for k, v in applied.items() if k in ("enabled", "intensity", "preset")}
+    patch = {k: v for k, v in applied.items()
+             if k in ("enabled", "intensity", "preset", "opacity", "behavior",
+                      "mood_reactive", "accent_pulse", "auto_preset")}
     if patch:
         cfg = config.merge_config(patch)
         if "preset" in applied:
             with _STATE.lock:
                 _STATE.preset = cfg["preset"]
         _broadcast_event(_config_event())
+    if applied.get("mood_reactive") is False:
+        # The agent-mood layer is off: no leftover mood, no latched pulse.
+        with _STATE.lock:
+            _STATE.mood = "idle"
+            _STATE.mood_intensity = 0.0
+            _STATE.mood_expiry = None
+            _STATE.mood_ttl_ms = 0
     if "mood" in applied:
         publish_mood(applied["mood"], 1.0, 0)
     if applied.get("enabled") is False:
@@ -1008,6 +1057,14 @@ def publish_mood(mood: str, intensity: float = 1.0, ttl_ms: int = 0) -> None:
             ttl_ms = max(0, int(ttl_ms))
         except (TypeError, ValueError):
             ttl_ms = 0
+        # mood_reactive=false stops the mood layer cleanly: a mood event still
+        # reaches pages (as idle) so nothing latches, but no mood is held.
+        try:
+            reactive = bool(config.get("mood_reactive", True))
+        except Exception:  # noqa: BLE001
+            reactive = True
+        if not reactive:
+            mood, intensity, ttl_ms = "idle", 0.0, 0
         now = time.monotonic()
         with _STATE.lock:
             if mood != _STATE.mood:

@@ -69,9 +69,15 @@ const ACCENT_L_MAX = 0.78
 const DEFAULT_SETTINGS = Object.freeze({
   enabled: true,
   intensity: 0.5,
-  followAudio: true,
+  opacity: 0.75,
+  behavior: 'balanced',
+  moodReactive: true,
+  accentPulse: true,
+  autoPreset: true,
   themeOptIn: false
 })
+
+const BEHAVIORS = ['calm', 'balanced', 'intense']
 
 const EMPTY_LIVE = Object.freeze({
   ok: false,
@@ -197,7 +203,13 @@ function readSettings(ctx) {
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
     if (typeof raw.enabled === 'boolean') out.enabled = raw.enabled
     if (Number.isFinite(raw.intensity)) out.intensity = clamp01(raw.intensity)
-    if (typeof raw.followAudio === 'boolean') out.followAudio = raw.followAudio
+    if (Number.isFinite(raw.opacity)) out.opacity = clamp01(raw.opacity)
+    if (typeof raw.behavior === 'string' && BEHAVIORS.includes(raw.behavior)) out.behavior = raw.behavior
+    if (typeof raw.moodReactive === 'boolean') out.moodReactive = raw.moodReactive
+    if (typeof raw.accentPulse === 'boolean') out.accentPulse = raw.accentPulse
+    // Legacy key from before accent_pulse existed: honour it, never write it.
+    else if (typeof raw.followAudio === 'boolean') out.accentPulse = raw.followAudio
+    if (typeof raw.autoPreset === 'boolean') out.autoPreset = raw.autoPreset
     if (typeof raw.themeOptIn === 'boolean') out.themeOptIn = raw.themeOptIn
   }
   return out
@@ -333,7 +345,7 @@ function accentStep(now) {
   if (disposed) return
   const settings = $settings.get()
   const live = $live.get()
-  if (!live.ok || !live.enabled || !settings.followAudio || settings.intensity <= 0) {
+  if (!live.ok || !live.enabled || !settings.accentPulse || settings.intensity <= 0) {
     clearAccent()
     return
   }
@@ -415,6 +427,52 @@ async function setEnabled(next) {
     setLive({ enabled, error: '' })
     void poll()
   }
+}
+
+async function setOpacity(next) {
+  if (!ctxRef || disposed) return
+  const opacity = clamp01(next)
+  writeSettings({ opacity })
+  await pushControl({ opacity })
+}
+
+async function setBehavior(next) {
+  if (!ctxRef || disposed) return
+  const behavior = BEHAVIORS.includes(next) ? next : 'balanced'
+  writeSettings({ behavior })
+  await pushControl({ behavior })
+}
+
+async function setMoodReactive(next) {
+  if (!ctxRef || disposed) return
+  const moodReactive = Boolean(next)
+  writeSettings({ moodReactive })
+  if (!moodReactive) {
+    // No stale mood-derived accent survives the switch-off.
+    clearAccent(true)
+  }
+  await pushControl({ mood_reactive: moodReactive })
+  if (moodReactive) void poll()
+}
+
+async function setAccentPulse(next) {
+  if (!ctxRef || disposed) return
+  const accentPulse = Boolean(next)
+  writeSettings({ accentPulse })
+  if (!accentPulse) {
+    // HARD RULE: the accent pulse must stop through setAccentOverride(null).
+    clearAccent(true)
+  } else {
+    accentStep(Date.now())
+  }
+  await pushControl({ accent_pulse: accentPulse })
+}
+
+async function setAutoPreset(next) {
+  if (!ctxRef || disposed) return
+  const autoPreset = Boolean(next)
+  writeSettings({ autoPreset })
+  await pushControl({ auto_preset: autoPreset })
 }
 
 async function toggleAndOpen() {
@@ -703,16 +761,102 @@ function AuraSettings() {
         )
       }),
       jsx('div', {
-        key: 'follow',
+        key: 'opacity',
         children: row(
-          'Follow audio with app accent',
+          'Visual opacity',
+          'Dims the stage and its scrim together; chat text and controls stay fully legible.',
+          jsxs('div', {
+            style: { display: 'flex', alignItems: 'center', gap: 8 },
+            children: [
+              jsx('input', {
+                key: 'slider',
+                type: 'range',
+                min: 0,
+                max: 100,
+                step: 1,
+                value: Math.round(settings.opacity * 100),
+                'aria-label': 'Visual opacity',
+                style: { width: 140, accentColor: 'var(--ui-accent)' },
+                onChange: event => {
+                  const raw = Number(event && event.target ? event.target.value : 75)
+                  const opacity = clamp01(raw / 100)
+                  void setOpacity(opacity)
+                }
+              }),
+              jsx('span', {
+                key: 'out',
+                style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 32, fontVariantNumeric: 'tabular-nums' },
+                children: `${Math.round(settings.opacity * 100)}%`
+              })
+            ]
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'behavior',
+        children: row(
+          'Behaviour profile',
+          'calm: lower ceiling, no strobe, no hard pulses. intense: faster pulse, stronger mood shifts.',
+          jsx('select', {
+            value: settings.behavior,
+            'aria-label': 'Behaviour profile',
+            style: {
+              font: 'inherit',
+              fontSize: 11,
+              color: 'var(--ui-text-primary)',
+              background: 'var(--ui-bg)',
+              border: '1px solid var(--ui-stroke-secondary)',
+              borderRadius: 6,
+              padding: '3px 6px'
+            },
+            onChange: event => {
+              const value = event && event.target ? String(event.target.value) : 'balanced'
+              void setBehavior(value)
+            },
+            children: BEHAVIORS.map(name =>
+              jsx('option', { key: name, value: name, children: name })
+            )
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'mood',
+        children: row(
+          'React to agent mood',
+          'Lets thinking, tool, approval and error change the stage. Off drops any held mood.',
+          jsx(Switch, {
+            checked: settings.moodReactive,
+            'aria-label': 'React to agent mood',
+            onCheckedChange: value => {
+              void setMoodReactive(value)
+            }
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'accent',
+        children: row(
+          'Accent pulse',
           'Pulses the accent of the theme you are using; the hue is never replaced.',
           jsx(Switch, {
-            checked: settings.followAudio,
-            'aria-label': 'Follow audio with app accent',
+            checked: settings.accentPulse,
+            'aria-label': 'Accent pulse',
             onCheckedChange: value => {
-              writeSettings({ followAudio: Boolean(value) })
-              if (!value) clearAccent(true)
+              void setAccentPulse(value)
+            }
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'autoPreset',
+        children: row(
+          'Automatic presets',
+          'Lets preset rotation follow the music and mood. Off keeps the current preset.',
+          jsx(Switch, {
+            checked: settings.autoPreset,
+            'aria-label': 'Automatic presets',
+            onCheckedChange: value => {
+              void setAutoPreset(value)
             }
           })
         )

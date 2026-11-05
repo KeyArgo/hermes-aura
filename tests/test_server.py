@@ -218,6 +218,16 @@ def test_token_file_mode_and_rotation(live, tmp_path):
     {"preset": 42},
     {"mood": "bogus"},
     {"mood": 3},
+    {"opacity": 1.5},
+    {"opacity": -0.1},
+    {"opacity": "dim"},
+    {"opacity": True},
+    {"behavior": "loud"},
+    {"behavior": 3},
+    {"mood_reactive": "yes"},
+    {"mood_reactive": 1},
+    {"accent_pulse": "on"},
+    {"auto_preset": 0},
     [],
 ])
 def test_control_rejects_bad_bodies(live, body):
@@ -270,6 +280,70 @@ def test_control_applies_and_persists(live, tmp_path):
     assert cfg["capture"] == "none"
     assert cfg["reduced_motion"] is False
     assert "theme_opt_in" in cfg
+
+
+def test_display_controls_apply_and_persist(live, tmp_path):
+    body = {"opacity": 0.2, "behavior": "calm", "mood_reactive": False,
+            "accent_pulse": False, "auto_preset": False}
+    status, payload = http_call(live["port"], "POST", "/api/control",
+                                token=live["token"], body=body)
+    assert status == 200
+    assert json_body(payload)["applied"] == body
+
+    stored = json.loads((tmp_path / "aura" / "config.json").read_text(encoding="utf-8"))
+    assert stored["opacity"] == 0.2
+    assert stored["behavior"] == "calm"
+    assert stored["mood_reactive"] is False
+    assert stored["accent_pulse"] is False
+    assert stored["auto_preset"] is False
+
+    status, payload = http_call(live["port"], "GET", "/api/config", token=live["token"])
+    cfg = json_body(payload)
+    assert cfg["opacity"] == 0.2
+    assert cfg["behavior"] == "calm"
+    assert cfg["mood_reactive"] is False
+    assert cfg["accent_pulse"] is False
+    assert cfg["auto_preset"] is False
+    profile = cfg["behavior_profile"]
+    assert profile["intensity_ceiling"] == 0.6
+    assert profile["pulse_hz_max"] == 0.0
+    assert profile["allow_strobe"] is False
+    assert profile["hard_pulse"] is False
+
+    status, payload = http_call(live["port"], "GET", "/api/state", token=live["token"])
+    state = json_body(payload)
+    assert state["opacity"] == 0.2
+    assert state["behavior"] == "calm"
+
+    # mood_reactive=false: the server holds idle, no latched mood.
+    status, _ = http_call(live["port"], "POST", "/api/control", token=live["token"],
+                          body={"mood": "error"})
+    assert status == 200
+    status, payload = http_call(live["port"], "GET", "/api/state", token=live["token"])
+    assert json_body(payload)["mood"] == "idle"
+
+    # Turning it back on works live, without a restart.
+    status, payload = http_call(live["port"], "POST", "/api/control", token=live["token"],
+                                body={"mood_reactive": True})
+    assert status == 200
+    assert json_body(payload)["applied"] == {"mood_reactive": True}
+    server.publish_mood("error", 0.9, 0)
+    status, payload = http_call(live["port"], "GET", "/api/state", token=live["token"])
+    assert json_body(payload)["mood"] == "error"
+
+
+def test_config_event_carries_display_controls(live):
+    status, _ = http_call(live["port"], "POST", "/api/control", token=live["token"],
+                          body={"opacity": 0.4, "behavior": "intense"})
+    assert status == 200
+    event = server._config_event()
+    assert event["opacity"] == 0.4
+    assert event["behavior"] == "intense"
+    assert event["behavior_profile"]["pulse_hz_max"] == 2.0
+    assert event["behavior_profile"]["mood_gain_scale"] > 1.0
+    assert isinstance(event["mood_reactive"], bool)
+    assert isinstance(event["accent_pulse"], bool)
+    assert isinstance(event["auto_preset"], bool)
 
 
 def test_presets_shape(live):

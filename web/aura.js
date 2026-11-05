@@ -36,6 +36,40 @@
   const ATTENTION_PULSE_MS = 1000;   // 1 Hz — contract caps attention at 2 Hz
   const DONE_SETTLE_MS = 1500;       // contract: done settles for ≤1.5 s
 
+  // CONTRACT.md §9: named behaviour profiles with concrete render parameters.
+  // Keep in sync with aura_core/behavior.py; the server also publishes this
+  // mapping in /api/config so a page never has to guess.
+  const BEHAVIOR_PROFILES = {
+    calm: {
+      intensity_ceiling: 0.6,
+      pulse_hz_max: 0,
+      preset_family: 'organic',
+      blend_ms: 2400,
+      mood_gain_scale: 0.35,
+      allow_strobe: false,
+      hard_pulse: false
+    },
+    balanced: {
+      intensity_ceiling: 1.0,
+      pulse_hz_max: 1.0,
+      preset_family: 'liquid',
+      blend_ms: 1200,
+      mood_gain_scale: 1.0,
+      allow_strobe: true,
+      hard_pulse: true
+    },
+    intense: {
+      intensity_ceiling: 1.0,
+      pulse_hz_max: 2.0,
+      preset_family: 'geometric',
+      blend_ms: 600,
+      mood_gain_scale: 1.35,
+      allow_strobe: true,
+      hard_pulse: true
+    }
+  };
+  const DEFAULT_BEHAVIOR = 'balanced';
+
   const state = {
     ready: false,
     errors: [],
@@ -45,6 +79,12 @@
     userIntensity: 0.6,
     effectiveIntensity: 0.6,
     sampleGain: 1.0,
+    opacity: 0.75,
+    behavior: DEFAULT_BEHAVIOR,
+    behaviorProfile: Object.assign({}, BEHAVIOR_PROFILES[DEFAULT_BEHAVIOR]),
+    moodReactive: true,
+    accentPulse: true,
+    autoPreset: true,
     presetName: null,
     presetFamily: null,
     presetStrobe: false,
@@ -81,6 +121,7 @@
   let lastRenderAt = 0;
   let lastSample = null;
   let draggingIntensity = false;
+  let draggingOpacity = false;
 
   // ---------------------------------------------------------------------------
   // small helpers
@@ -137,6 +178,52 @@
   }
 
   // ---------------------------------------------------------------------------
+  // visual opacity (CONTRACT.md §9) — dims the canvas AND its scrim together,
+  // never the chat text or the control chrome (they are separate elements).
+  //
+  // The scrim keeps the text legible: its element opacity never falls below
+  // 0.85, and its gradient alphas are compensated by the inverse of that
+  // opacity, so the effective contrast is never below today's scrim at any
+  // user opacity. Both layers are computed from `opacity`; neither is allowed
+  // to go fully transparent while the other does.
+  // ---------------------------------------------------------------------------
+
+  const SCRIM_BASE = { a: 82, b: 38, c: 62 };
+  const SCRIM_MIN_OPACITY = 0.85;
+
+  function scrimOpacityFor(opacity) {
+    const o = clamp(num(opacity, 0.75), 0, 1);
+    return SCRIM_MIN_OPACITY + (1 - SCRIM_MIN_OPACITY) * o; // 0.85 .. 1.0
+  }
+
+  function applyVisualOpacity() {
+    const o = clamp(num(state.opacity, 0.75), 0, 1);
+    const scrim = scrimOpacityFor(o);
+    const boost = 1 / scrim; // keeps effective gradient alpha at today's level
+    if (dom.canvas) {
+      // Aura off keeps its old dimmed look (0.35 of the chosen opacity).
+      dom.canvas.style.opacity = String(state.enabled ? o : o * 0.35);
+    }
+    if (dom.scrim) {
+      dom.scrim.style.opacity = String(scrim);
+      dom.scrim.style.setProperty('--aura-scrim-a', (Math.min(100, SCRIM_BASE.a * boost)).toFixed(1));
+      dom.scrim.style.setProperty('--aura-scrim-b', (Math.min(100, SCRIM_BASE.b * boost)).toFixed(1));
+      dom.scrim.style.setProperty('--aura-scrim-c', (Math.min(100, SCRIM_BASE.c * boost)).toFixed(1));
+    }
+    if (dom.root) dom.root.style.setProperty('--aura-visual-opacity', o.toFixed(3));
+  }
+
+  function setOpacityUI(value) {
+    state.opacity = clamp(num(value, 0.75), 0, 1);
+    if (dom.opacity) {
+      dom.opacity.value = String(Math.round(state.opacity * 100));
+      dom.opacity.setAttribute('aria-valuetext', Math.round(state.opacity * 100) + ' percent');
+    }
+    if (dom.opacityOut) dom.opacityOut.textContent = Math.round(state.opacity * 100) + '%';
+    applyVisualOpacity();
+  }
+
+  // ---------------------------------------------------------------------------
   // status / message rendering (theme vars only)
   // ---------------------------------------------------------------------------
 
@@ -174,7 +261,7 @@
     if (dom.root) dom.root.dataset.fallback = fallback ? '1' : '0';
     if (dom.canvas) {
       dom.canvas.style.visibility = fallback ? 'hidden' : 'visible';
-      dom.canvas.style.opacity = state.enabled ? '1' : '0.35';
+      dom.canvas.style.opacity = state.enabled ? String(state.opacity) : String(state.opacity * 0.35);
     }
     if (dom.conn) {
       dom.conn.dataset.state = socket.state === 'connected' ? 'connected'
@@ -259,6 +346,10 @@
 
   function moodMod() { return MOOD_MOD[mood.current] || MOOD_MOD.idle; }
 
+  function activeProfile() {
+    return state.behaviorProfile || BEHAVIOR_PROFILES[DEFAULT_BEHAVIOR];
+  }
+
   function stopPulse() {
     if (mood.pulse) { clearInterval(mood.pulse); mood.pulse = null; }
     if (dom.glow) dom.glow.classList.remove('peak');
@@ -269,8 +360,11 @@
     const mod = moodMod();
     if (!dom.glow) return;
     if (mod.pulse === 'none') return;
-    if (state.reducedMotion) {
-      // No strobe: a static accent wash instead of a pulsing one.
+    const profile = activeProfile();
+    // calm (hard_pulse false) and reduced-motion show a static accent wash:
+    // no hard pulses at all, but the attention mood is still visible.
+    if (state.reducedMotion || !profile.hard_pulse || !(profile.pulse_hz_max > 0)) {
+      mood.pulsePeriod = 0;
       dom.glow.style.setProperty('--aura-glow', '0.24');
       return;
     }
@@ -284,7 +378,9 @@
       }, mood.pulsePeriod);
       return;
     }
-    mood.pulsePeriod = ATTENTION_PULSE_MS; // 1 Hz ≤ 2 Hz cap
+    // Attention pulse: never faster than 2 Hz (profile ceiling), never slower
+    // than the 2 Hz contract cap allows us to slow it.
+    mood.pulsePeriod = Math.max(500, Math.round(1000 / profile.pulse_hz_max));
     mood.pulse = setInterval(() => {
       if (!flash.allow()) return;
       dom.glow.classList.add('peak');
@@ -307,6 +403,10 @@
   function applyMood(name, intensity, ttlMs) {
     if (!MOODS.includes(name)) name = 'idle';
     if (!state.enabled) name = 'idle';
+    // mood_reactive=false: the agent-mood layer is off, so every incoming
+    // mood is treated as idle. Nothing latches; turning it back on applies
+    // the next mood event without a reload.
+    if (!state.moodReactive) name = 'idle';
     const previous = mood.current;
     const changed = previous !== name;
 
@@ -364,6 +464,9 @@
 
   function effectiveIntensity() {
     const mod = moodMod();
+    const profile = activeProfile();
+    const ceiling = clamp(num(profile.intensity_ceiling, 1), 0, 1);
+    const gainScale = clamp(num(profile.mood_gain_scale, 1), 0, 2);
     const base = state.enabled ? state.userIntensity : 0;
     let floor = mod.floor || 0;
     if (ATTENTION.includes(mood.current)) {
@@ -371,7 +474,10 @@
       // contract floor of 0.6 always applies.
       floor = Math.max(floor, mood.serverIntensity);
     }
-    return clamp(Math.max(base * mod.gain, floor), 0, 1);
+    // Mood alters the render only as strongly as the profile allows; the
+    // attention floor still applies but never above the profile ceiling.
+    const lift = 1 + (mod.gain - 1) * gainScale;
+    return clamp(Math.max(base * lift, floor), 0, ceiling);
   }
 
   function sampleGain() {
@@ -383,16 +489,18 @@
 
   function updateMoodVisuals() {
     const mod = moodMod();
+    const profile = activeProfile();
+    const gainScale = clamp(num(profile.mood_gain_scale, 1), 0, 2);
     state.effectiveIntensity = effectiveIntensity();
     state.sampleGain = sampleGain();
 
-    let bright = 1 + 0.10 * state.effectiveIntensity + mod.bright;
+    let bright = 1 + 0.10 * state.effectiveIntensity + mod.bright * gainScale;
     if (state.reducedMotion) bright = 1 + (bright - 1) * 0.6;
     if (dom.canvas) dom.canvas.style.filter = 'brightness(' + bright.toFixed(2) + ')';
 
     if (dom.root) {
-      dom.root.style.setProperty('--aura-tint', String(mod.tint));
-      if (mod.pulse === 'none' || state.reducedMotion) {
+      dom.root.style.setProperty('--aura-tint', String(mod.tint * gainScale));
+      if (mod.pulse === 'none' || state.reducedMotion || !profile.hard_pulse) {
         const level = state.lastFeatures ? num(state.lastFeatures.level, 0) : 0;
         // Accent-only fallback needs to carry the room on its own; when the
         // visualizer is drawing, the glow is just a themed edge light.
@@ -403,6 +511,7 @@
       }
       dom.root.dataset.mood = mood.current;
       dom.root.dataset.attention = ATTENTION.includes(mood.current) ? '1' : '0';
+      dom.root.dataset.behavior = state.behavior;
     }
   }
 
@@ -460,16 +569,35 @@
     }
   }
 
+  function strobeAllowed() {
+    const profile = activeProfile();
+    return !state.reducedMotion && profile.allow_strobe !== false;
+  }
+
   function allowedPresets() {
-    return catalog.presets.filter((p) => !state.reducedMotion || !p.strobe);
+    return catalog.presets.filter((p) => strobeAllowed() || !p.strobe);
+  }
+
+  function pickPresetForFamily(family) {
+    if (!state.autoPreset) return null;
+    const allowed = allowedPresets();
+    if (!allowed.length) return null;
+    const match = allowed.filter((p) => p.family === family);
+    const pick = match.length ? match[0] : allowed[0];
+    const blend = num(activeProfile().blend_ms, 1200);
+    if (loadPresetByName(pick.name, blend)) return pick.name;
+    return null;
   }
 
   function pickInitialPreset() {
     const allowed = allowedPresets();
     if (!allowed.length) return null;
+    const family = activeProfile().preset_family;
+    const preferred = allowed.filter((p) => p.family === family);
+    if (preferred.length) return preferred[0].name;
     if (catalog.default) {
       const d = catalog.byName[catalog.default];
-      if (d && (!state.reducedMotion || !d.strobe)) return d.name;
+      if (d && (strobeAllowed() || !d.strobe)) return d.name;
     }
     return allowed[0].name;
   }
@@ -479,12 +607,13 @@
     const map = presetMap();
     if (!map || !map[name]) return false;
     const meta = catalog.byName[name];
-    if (state.reducedMotion && meta && meta.strobe) {
-      // No strobe presets for reduced-motion users.
+    if (meta && meta.strobe && !strobeAllowed()) {
+      // No strobe presets for reduced-motion users or the calm profile.
       return false;
     }
+    const blend = num(blendMs, num(activeProfile().blend_ms, 1200));
     try {
-      viz.loadPreset(map[name], clamp(num(blendMs, 0), 0, 8000));
+      viz.loadPreset(map[name], clamp(blend, 0, 8000));
       state.presetName = name;
       state.presetFamily = meta ? meta.family : null;
       state.presetStrobe = meta ? meta.strobe : false;
@@ -937,7 +1066,10 @@
         applyMood(ev.mood, num(ev.intensity, 0.6), num(ev.ttl_ms, 0));
         break;
       case 'preset':
-        loadPresetByName(ev.name, num(ev.blend_ms, 1200));
+        // auto_preset=false: rotation stops cleanly. A manual preset still
+        // arrives through the config event and is applied there.
+        if (!state.autoPreset) break;
+        loadPresetByName(ev.name, num(ev.blend_ms, num(activeProfile().blend_ms, 1200)));
         break;
       case 'config':
         applyConfig(ev);
@@ -1043,7 +1175,85 @@
     if (typeof cfg.intensity === 'number' && !draggingIntensity) {
       setIntensityUI(clamp(cfg.intensity, 0, 1));
     }
+    if (typeof cfg.opacity === 'number' && !draggingOpacity) {
+      setOpacityUI(clamp(cfg.opacity, 0, 1));
+    }
+    if (typeof cfg.behavior === 'string') {
+      setBehaviorUI(cfg.behavior, cfg.behavior_profile);
+    }
+    if (typeof cfg.mood_reactive === 'boolean') setMoodReactiveUI(cfg.mood_reactive);
+    if (typeof cfg.accent_pulse === 'boolean') setAccentPulseUI(cfg.accent_pulse);
+    if (typeof cfg.auto_preset === 'boolean') setAutoPresetUI(cfg.auto_preset);
+    // A manually chosen preset arrives through the config event; preset
+    // *rotation* arrives as its own event and is gated by auto_preset.
+    if (typeof cfg.preset === 'string' && cfg.preset && cfg.preset !== state.presetName) {
+      loadPresetByName(cfg.preset, num(activeProfile().blend_ms, 1200));
+    }
     if (typeof cfg.capture === 'string') applyCapture(cfg.capture);
+  }
+
+  function setBehaviorUI(name, serverProfile) {
+    const key = (typeof name === 'string' && Object.prototype.hasOwnProperty.call(BEHAVIOR_PROFILES, name))
+      ? name : DEFAULT_BEHAVIOR;
+    const p = Object.assign({}, BEHAVIOR_PROFILES[key]);
+    if (serverProfile && typeof serverProfile === 'object') {
+      // The server publishes the mapping (§9); take its numbers when sane.
+      for (const k of ['intensity_ceiling', 'pulse_hz_max', 'blend_ms', 'mood_gain_scale']) {
+        if (typeof serverProfile[k] === 'number' && isFinite(serverProfile[k])) p[k] = serverProfile[k];
+      }
+      if (typeof serverProfile.preset_family === 'string') p.preset_family = serverProfile.preset_family;
+      if (typeof serverProfile.allow_strobe === 'boolean') p.allow_strobe = serverProfile.allow_strobe;
+      if (typeof serverProfile.hard_pulse === 'boolean') p.hard_pulse = serverProfile.hard_pulse;
+    }
+    p.pulse_hz_max = clamp(num(p.pulse_hz_max, 0), 0, 2); // contract cap
+    p.intensity_ceiling = clamp(num(p.intensity_ceiling, 1), 0, 1);
+    state.behavior = key;
+    state.behaviorProfile = p;
+    if (dom.behavior) dom.behavior.value = key;
+    if (dom.root) dom.root.dataset.behavior = key;
+    if (state.presetStrobe && !strobeAllowed()) {
+      const calm = allowedPresets()[0];
+      if (calm) loadPresetByName(calm.name, num(p.blend_ms, 1200));
+    }
+    if (state.autoPreset && viz) pickPresetForFamily(p.preset_family);
+    stopPulse();
+    startPulse();
+    updateMoodVisuals();
+  }
+
+  function setMoodReactiveUI(on) {
+    const next = !!on;
+    if (next === state.moodReactive) return;
+    state.moodReactive = next;
+    if (dom.root) dom.root.dataset.moodReactive = next ? '1' : '0';
+    if (!next) {
+      // Drop any held mood and its pulse; nothing latched survives.
+      mood.previous = 'idle';
+      applyMood('idle', 0, 0);
+    } else {
+      // Turning it back on applies the server's current mood without a reload.
+      refreshMood();
+    }
+  }
+
+  function setAccentPulseUI(on) {
+    state.accentPulse = !!on;
+    if (dom.root) dom.root.dataset.accentPulse = state.accentPulse ? '1' : '0';
+  }
+
+  function setAutoPresetUI(on) {
+    const next = !!on;
+    state.autoPreset = next;
+    if (dom.root) dom.root.dataset.autoPreset = next ? '1' : '0';
+    if (next && viz) pickPresetForFamily(activeProfile().preset_family);
+  }
+
+  async function refreshMood() {
+    if (!state.moodReactive || !TOKEN) return;
+    const st = await getJson('/api/state');
+    if (st.ok && st.json && typeof st.json.mood === 'string' && MOODS.includes(st.json.mood)) {
+      applyMood(st.json.mood, num(st.json.intensity, 0.6), 4000);
+    }
   }
 
   function applyCapture(capture) {
@@ -1065,7 +1275,7 @@
     state.reducedMotion = next;
     if (dom.root) dom.root.dataset.reducedMotion = next ? '1' : '0';
     // Never strobe: if the current preset is flagged strobe, blend to a calm one.
-    if (next && state.presetStrobe) {
+    if (state.presetStrobe && !strobeAllowed()) {
       const calm = allowedPresets()[0];
       if (calm) loadPresetByName(calm.name, 1500);
     }
@@ -1119,6 +1329,15 @@
     }, 180);
   }
 
+  let opacityPostTimer = null;
+  function scheduleOpacityPost() {
+    if (opacityPostTimer) clearTimeout(opacityPostTimer);
+    opacityPostTimer = setTimeout(() => {
+      opacityPostTimer = null;
+      postControl({ opacity: Number(state.opacity.toFixed(3)) });
+    }, 180);
+  }
+
   function bindControls() {
     if (dom.slider) {
       dom.slider.addEventListener('pointerdown', () => { draggingIntensity = true; });
@@ -1134,6 +1353,29 @@
         scheduleIntensityPost();
       });
       dom.slider.addEventListener('keyup', () => { draggingIntensity = false; });
+    }
+    if (dom.opacity) {
+      dom.opacity.addEventListener('pointerdown', () => { draggingOpacity = true; });
+      dom.opacity.addEventListener('pointerup', () => { draggingOpacity = false; });
+      dom.opacity.addEventListener('input', () => {
+        const v = clamp(Number(dom.opacity.value) / 100, 0, 1);
+        draggingOpacity = true;
+        setOpacityUI(v);
+        scheduleOpacityPost();
+      });
+      dom.opacity.addEventListener('change', () => {
+        draggingOpacity = false;
+        scheduleOpacityPost();
+      });
+      dom.opacity.addEventListener('keyup', () => { draggingOpacity = false; });
+    }
+    if (dom.behavior) {
+      dom.behavior.addEventListener('change', () => {
+        const value = String(dom.behavior.value || '');
+        if (!Object.prototype.hasOwnProperty.call(BEHAVIOR_PROFILES, value)) return;
+        setBehaviorUI(value);
+        postControl({ behavior: value });
+      });
     }
     if (dom.toggle) {
       dom.toggle.addEventListener('click', () => {
@@ -1160,6 +1402,9 @@
     dom.conn = document.getElementById('aura-conn');
     dom.slider = document.getElementById('aura-intensity');
     dom.sliderOut = document.getElementById('aura-intensity-out');
+    dom.opacity = document.getElementById('aura-opacity');
+    dom.opacityOut = document.getElementById('aura-opacity-out');
+    dom.behavior = document.getElementById('aura-behavior');
     dom.toggle = document.getElementById('aura-toggle');
 
     const mq = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
@@ -1180,6 +1425,7 @@
     bindControls();
     observeResize();
     resizeCanvas();
+    applyVisualOpacity();
     updateMoodChip();
     renderStatus();
 
@@ -1250,6 +1496,19 @@
         intensity: Number(state.effectiveIntensity.toFixed(3)),
         userIntensity: Number(state.userIntensity.toFixed(3)),
         sampleGain: Number(state.sampleGain.toFixed(3)),
+        opacity: Number(state.opacity.toFixed(3)),
+        behavior: state.behavior,
+        behaviorProfile: Object.assign({}, state.behaviorProfile),
+        moodReactive: state.moodReactive,
+        accentPulse: state.accentPulse,
+        autoPreset: state.autoPreset,
+        canvasOpacity: dom.canvas ? dom.canvas.style.opacity : null,
+        scrimOpacity: dom.scrim ? dom.scrim.style.opacity : null,
+        scrimMix: dom.scrim ? {
+          a: dom.scrim.style.getPropertyValue('--aura-scrim-a'),
+          b: dom.scrim.style.getPropertyValue('--aura-scrim-b'),
+          c: dom.scrim.style.getPropertyValue('--aura-scrim-c')
+        } : null,
         preset: state.presetName,
         presetFamily: state.presetFamily,
         presetStrobe: state.presetStrobe,
@@ -1291,6 +1550,12 @@
     // e2e hook: let the test drive mood without a server (still used by WS events).
     applyMood,
     setIntensityUI,
+    setOpacityUI,
+    setBehaviorUI,
+    setMoodReactiveUI,
+    setAutoPresetUI,
+    setAccentPulseUI,
+    applyConfig,
     setEnabledUI,
     // expose internals for assertions
     _state: state,
