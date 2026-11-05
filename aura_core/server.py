@@ -67,6 +67,57 @@ PRESETS = [
 ]
 DEFAULT_PRESET = "aura-drift"
 
+# ---------------------------------------------------------------------------
+# static assets (the page the desktop half embeds)
+# ---------------------------------------------------------------------------
+
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+
+#: Path -> Content-Type. Only these exact files, plus one level under /vendor/.
+_STATIC_TYPES = {
+    "/aura.js": "text/javascript; charset=utf-8",
+    "/pcm-worklet.js": "text/javascript; charset=utf-8",
+    "/presets.json": "application/json; charset=utf-8",
+}
+_VENDOR_TYPES = {
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+}
+
+_PRESETS_CACHE: dict | None = None
+
+
+def _presets_payload() -> dict:
+    """Preset catalogue from web/presets.json — the page loads the same file.
+
+    The built-in PRESETS list is only a fallback: the page resolves preset names
+    against its own butterchurn bundle, so a name that is not in presets.json
+    would silently fail to load.
+    """
+    global _PRESETS_CACHE
+    if _PRESETS_CACHE is None:
+        payload: dict | None = None
+        try:
+            data = json.loads((WEB_DIR / "presets.json").read_text(encoding="utf-8"))
+            entries = [
+                {"name": p["name"], "family": p.get("family", "unknown"), "strobe": bool(p.get("strobe", False))}
+                for p in data.get("presets", [])
+                if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"]
+            ]
+            if entries:
+                default = data.get("default")
+                payload = {
+                    "presets": entries,
+                    "default": default if default in {e["name"] for e in entries} else entries[0]["name"],
+                }
+        except (OSError, ValueError, TypeError):
+            payload = None
+        _PRESETS_CACHE = payload or {"presets": PRESETS, "default": DEFAULT_PRESET}
+    return _PRESETS_CACHE
+
 
 # ---------------------------------------------------------------------------
 # shared state
@@ -237,6 +288,7 @@ def _config_event() -> dict:
     cfg = config.load_config()
     return {
         "type": "config",
+        "enabled": bool(cfg["enabled"]),
         "intensity": cfg["intensity"],
         "reduced_motion": cfg["reduced_motion"],
         "capture": _STATE.capture_name,
@@ -490,6 +542,14 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
+            if path in _STATIC_TYPES or path.startswith("/vendor/"):
+                # Static assets are served WITHOUT the token on purpose: the browser
+                # fetches <script src> itself and cannot attach an Authorization
+                # header, and rewriting every tag with ?token= is brittle. They
+                # carry no secrets (our JS + MIT bundles + the preset list); every
+                # data endpoint and the WebSocket stay token-gated.
+                self._serve_static(path)
+                return
             if not self._bearer_ok():
                 self._send_json({"ok": False, "error": "unauthorized"}, 401)
                 return
@@ -498,7 +558,7 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/state":
                 self._send_json(self._state())
             elif path == "/api/presets":
-                self._send_json({"presets": PRESETS, "default": DEFAULT_PRESET})
+                self._send_json(_presets_payload())
             elif path == "/api/config":
                 self._send_json(self._config())
             else:
@@ -585,8 +645,39 @@ class _Handler(BaseHTTPRequestHandler):
             "theme_opt_in": cfg["theme_opt_in"],
         }
 
+    def _serve_static(self, path: str) -> None:
+        """Serve one whitelisted asset from web/, refusing anything outside it."""
+        rel = path.lstrip("/")
+        if rel.startswith("vendor/"):
+            if rel.count("/") != 1:
+                self._send_json({"ok": False, "error": "not_found"}, 404)
+                return
+            ctype = _VENDOR_TYPES.get(Path(rel).suffix.lower(), "application/octet-stream")
+        else:
+            ctype = _STATIC_TYPES.get(path)
+            if ctype is None:
+                self._send_json({"ok": False, "error": "not_found"}, 404)
+                return
+        try:
+            target = (WEB_DIR / rel).resolve()
+            if not target.is_relative_to(WEB_DIR.resolve()) or not target.is_file():
+                raise OSError("outside web/ or missing")
+            payload = target.read_bytes()
+        except OSError:
+            self._send_json({"ok": False, "error": "not_found"}, 404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
     def _serve_index(self) -> None:
-        index = Path(__file__).resolve().parent.parent / "web" / "index.html"
+        index = WEB_DIR / "index.html"
         try:
             payload = index.read_bytes()
             ctype = "text/html; charset=utf-8"

@@ -536,3 +536,49 @@ def test_redact_text_masks_any_token_occurrence():
     out = redact.redact_text(f"GET /api/stream?token={token} HTTP/1.1", token)
     assert token not in out
     assert "s3cr" in out
+
+
+# ---------------------------------------------------------------------------
+# static assets + preset catalogue (page/server integration)
+# ---------------------------------------------------------------------------
+
+def test_static_assets_public_data_endpoints_gated(live):
+    for path in ("/aura.js", "/pcm-worklet.js", "/presets.json", "/vendor/butterchurn.min.js"):
+        status, payload = http_call(live["port"], "GET", path)
+        assert status == 200, path
+        assert payload, path
+    status, _ = http_call(live["port"], "GET", "/api/state")
+    assert status == 401
+    status, _ = http_call(live["port"], "GET", "/api/state", token=live["token"])
+    assert status == 200
+
+
+def test_static_serving_stays_inside_web_dir(live):
+    bad = ("/vendor/../../etc/passwd", "/vendor/sub/dir.js", "/not-a-file.js")
+    # Without the token an unknown path is refused at the gate (401) — either way
+    # it must never be served from outside web/.
+    for path in bad:
+        status, _ = http_call(live["port"], "GET", path)
+        assert status in (401, 404), (path, status)
+    for path in bad:
+        status, payload = http_call(live["port"], "GET", path, token=live["token"])
+        assert status == 404, (path, status)
+        assert b"passwd" not in payload
+
+
+def test_presets_come_from_the_page_catalogue(live):
+    status, payload = http_call(live["port"], "GET", "/api/presets", token=live["token"])
+    assert status == 200
+    data = json_body(payload)
+    names = {p["name"] for p in data["presets"]}
+    # web/presets.json is the same file the page resolves against, so every name
+    # here must be loadable in butterchurn. The old built-in list was not.
+    assert names, data
+    assert data["default"] in names
+    assert "aura-drift" not in names, "built-in fallback leaked instead of web/presets.json"
+
+
+def test_config_event_carries_enabled():
+    event = server._config_event()
+    assert event["type"] == "config"
+    assert isinstance(event["enabled"], bool)

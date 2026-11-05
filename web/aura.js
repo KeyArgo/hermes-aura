@@ -1036,6 +1036,9 @@
 
   function applyConfig(cfg) {
     if (!cfg || typeof cfg !== 'object') return;
+    // `enabled` is the server-side truth: the desktop chip and aura_control turn
+    // Aura on through /api/control, and the page must follow that change.
+    if (typeof cfg.enabled === 'boolean' && cfg.enabled !== state.enabled) setEnabledUI(cfg.enabled);
     if (typeof cfg.reduced_motion === 'boolean') setReducedMotion(cfg.reduced_motion || FORCE_REDUCED);
     if (typeof cfg.intensity === 'number' && !draggingIntensity) {
       setIntensityUI(clamp(cfg.intensity, 0, 1));

@@ -21,6 +21,10 @@ parallel and only the contract keeps them compatible.
 - `POST /api/control` body `{"enabled"?: bool, "intensity"?: 0..1, "preset"?: <str|null>, "mood"?: <mood>}` → 200 `{"ok": true, "applied": {...}}`; 400 on bad types/out-of-range.
 - `GET /api/stream` (WebSocket upgrade, token in query) → server pushes §2/§3 frames. Server closes with 1008 on bad token.
 - All JSON is UTF-8, `Content-Type: application/json`. No CORS headers needed: the page is served by this same origin.
+- **Static assets** (`/aura.js`, `/pcm-worklet.js`, `/presets.json`, `/vendor/*`) are served
+  WITHOUT the token. A browser fetches `<script src>` itself and cannot attach an Authorization
+  header, and rewriting every tag with `?token=` is brittle. They contain no secrets; every data
+  endpoint and the WebSocket remain token-gated. Paths are whitelisted and confined to `web/`.
 
 Port discovery for the desktop half goes through `dashboard/plugin_api.py` (§5) — never through a
 fixed port, a lease file, or a watcher.

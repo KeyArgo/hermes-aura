@@ -166,6 +166,33 @@ def control_payload(body: dict) -> tuple[int, dict]:
         return 502, {"ok": False, "error": "server_unreachable"}
 
 
+def state_payload() -> dict:
+    """Forward the server's /api/state — the desktop half's accent pulse reads this.
+
+    Without this route the accent pulse silently degrades to no-op (L3 polls
+    ``/state`` on the plugin_api proxy, not the server directly).
+    """
+    try:
+        _server, port, token = _live()
+        if port is None:
+            return {"ok": False, "error": "server_not_running"}
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/state",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Host": f"127.0.0.1:{port}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            payload = json.loads(resp.read().decode("utf-8") or "{}")
+        if isinstance(payload, dict):
+            payload.setdefault("ok", True)
+        return payload
+    except Exception as exc:  # noqa: BLE001 - the door must always answer
+        logger.info("aura dashboard: state failed (%s)", type(exc).__name__)
+        return {"ok": False, "error": "server_unreachable"}
+
+
 # ---------------------------------------------------------------------------
 # FastAPI routes mounted at /api/plugins/aura/
 # ---------------------------------------------------------------------------
@@ -173,6 +200,11 @@ def control_payload(body: dict) -> tuple[int, dict]:
 @router.get("/status")
 def status() -> dict:
     return status_payload()
+
+
+@router.get("/state")
+def state() -> dict:
+    return state_payload()
 
 
 @router.post("/control")

@@ -12,7 +12,7 @@ first4+last4 would otherwise leak most of it.
 from __future__ import annotations
 
 import re
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 _MASK = "\u2026"  # ellipsis
 
@@ -30,6 +30,7 @@ def mask_token(token: str | None) -> str:
 
 
 def _mask_query(parts) -> list:
+    """Kept for callers that already have parsed pairs (unused by redact_url)."""
     out = []
     for key, value in parts:
         if key.lower() in _TOKEN_KEYS and value:
@@ -40,18 +41,34 @@ def _mask_query(parts) -> list:
 
 
 def redact_url(url: str) -> str:
-    """Mask the token value in a URL, keeping scheme/host/port/path intact."""
+    """Mask the token value in a URL, keeping scheme/host/port/path intact.
+
+    The mask is written literally (``abcd…wxyz``), NOT re-encoded: running the
+    query through ``urlencode`` percent-encodes the ellipsis into ``%E2%80%A6``,
+    which reads as garbage in a model-facing status payload.
+    """
     if not isinstance(url, str) or not url:
         return url
     try:
         split = urlsplit(url)
     except ValueError:
         return url
-    try:
-        query = urlencode(_mask_query(parse_qsl(split.query, keep_blank_values=True)))
-    except (TypeError, ValueError):
+    if not split.query:
         return url
-    return urlunsplit((split.scheme, split.netloc, split.path, query, split.fragment))
+    parts = []
+    for pair in split.query.split("&"):
+        if not pair:
+            continue
+        key, sep, value = pair.partition("=")
+        try:
+            decoded = unquote(value)
+        except (TypeError, ValueError):
+            decoded = value
+        if sep and key.lower() in _TOKEN_KEYS and decoded:
+            parts.append(f"{key}={mask_token(decoded)}")
+        else:
+            parts.append(pair)
+    return urlunsplit((split.scheme, split.netloc, split.path, "&".join(parts), split.fragment))
 
 
 def redact_text(text: str, token: str | None = None) -> str:

@@ -171,7 +171,7 @@ def test_status_running_has_fields_and_redacted_url(plugin, monkeypatch):
     assert payload["intensity"] == 0.4
     assert "url" in payload
     assert SECRET not in json.dumps(payload)
-    assert "token=***" in payload["url"]
+    assert "token=s3cr" in payload["url"]
     assert payload["url"].startswith("http://127.0.0.1:4567/")
 
 
