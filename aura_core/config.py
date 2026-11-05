@@ -30,7 +30,16 @@ DEFAULTS = {
     "reduced_motion": False,
     # Kept for /api/config (§1) even though the task text lists four fields.
     "theme_opt_in": False,
+    # Display controls (CONTRACT.md §9). Opacity dims the canvas and its scrim
+    # together; behavior is a named profile with concrete render parameters.
+    "opacity": 0.75,
+    "behavior": "balanced",
+    "mood_reactive": True,
+    "accent_pulse": True,
+    "auto_preset": True,
 }
+
+BEHAVIORS = ("calm", "balanced", "intense")
 
 _lock = threading.RLock()
 
@@ -107,6 +116,22 @@ def _as_preset(value, default):
     return default
 
 
+def _as_opacity(value, default):
+    """Opacity is 0..1 like intensity; bools are not numbers here."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _as_behavior(value, default):
+    if isinstance(value, str) and value.strip().lower() in BEHAVIORS:
+        return value.strip().lower()
+    return default
+
+
 def normalise(raw) -> dict:
     """Return a fully-populated, type-safe config dict from arbitrary input."""
     cfg = dict(DEFAULTS)
@@ -117,6 +142,11 @@ def normalise(raw) -> dict:
     cfg["preset"] = _as_preset(raw.get("preset"), DEFAULTS["preset"])
     cfg["reduced_motion"] = _as_bool(raw.get("reduced_motion"), DEFAULTS["reduced_motion"])
     cfg["theme_opt_in"] = _as_bool(raw.get("theme_opt_in"), DEFAULTS["theme_opt_in"])
+    cfg["opacity"] = _as_opacity(raw.get("opacity"), DEFAULTS["opacity"])
+    cfg["behavior"] = _as_behavior(raw.get("behavior"), DEFAULTS["behavior"])
+    cfg["mood_reactive"] = _as_bool(raw.get("mood_reactive"), DEFAULTS["mood_reactive"])
+    cfg["accent_pulse"] = _as_bool(raw.get("accent_pulse"), DEFAULTS["accent_pulse"])
+    cfg["auto_preset"] = _as_bool(raw.get("auto_preset"), DEFAULTS["auto_preset"])
     return cfg
 
 

@@ -488,6 +488,77 @@ await recordAsync('intensity 0 clears the accent override and pushes the change'
   assert.deepEqual(a.controls.at(-1), { intensity: 0 })
 })
 
+await recordAsync('opacity slider persists and pushes the display control', async () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  let slider = null
+  walk(tree, node => {
+    if (!slider && node.type === 'input' && node.props && node.props['aria-label'] === 'Visual opacity') slider = node
+  })
+  assert.ok(slider, 'no opacity slider rendered')
+  assert.equal(slider.props.min, 0)
+  assert.equal(slider.props.max, 100)
+  slider.props.onChange({ target: { value: '40' } })
+  await sleep(30)
+  assert.deepEqual(a.controls.at(-1), { opacity: 0.4 })
+})
+
+await recordAsync('behaviour select offers calm/balanced/intense and pushes the choice', async () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  let select = null
+  walk(tree, node => {
+    if (!select && node.type === 'select' && node.props && node.props['aria-label'] === 'Behaviour profile') select = node
+  })
+  assert.ok(select, 'no behaviour select rendered')
+  const values = (select.props.children || []).map(option => option.props.value)
+  assert.deepEqual(values, ['calm', 'balanced', 'intense'])
+  select.props.onChange({ target: { value: 'calm' } })
+  await sleep(30)
+  assert.deepEqual(a.controls.at(-1), { behavior: 'calm' })
+})
+
+await recordAsync('accent pulse switch off clears the override and pushes accent_pulse=false', async () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  let accentSwitch = null
+  walk(tree, node => {
+    if (!accentSwitch && node.props && node.props['aria-label'] === 'Accent pulse') accentSwitch = node
+  })
+  assert.ok(accentSwitch, 'no accent pulse switch rendered')
+  accentSwitch.props.onCheckedChange(false)
+  await sleep(30)
+  assert.equal(sdk.calls.accent.at(-1), null, 'accent override was not cleared')
+  assert.deepEqual(a.controls.at(-1), { accent_pulse: false })
+})
+
+await recordAsync('mood-reactive switch off leaves no stale accent and pushes mood_reactive=false', async () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  let moodSwitch = null
+  walk(tree, node => {
+    if (!moodSwitch && node.props && node.props['aria-label'] === 'React to agent mood') moodSwitch = node
+  })
+  assert.ok(moodSwitch, 'no mood-reactive switch rendered')
+  moodSwitch.props.onCheckedChange(false)
+  await sleep(30)
+  assert.equal(sdk.calls.accent.at(-1), null, 'mood switch left a stale accent')
+  assert.deepEqual(a.controls.at(-1), { mood_reactive: false })
+})
+
+await recordAsync('automatic-presets switch pushes auto_preset=false', async () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  let autoSwitch = null
+  walk(tree, node => {
+    if (!autoSwitch && node.props && node.props['aria-label'] === 'Automatic presets') autoSwitch = node
+  })
+  assert.ok(autoSwitch, 'no auto-preset switch rendered')
+  autoSwitch.props.onCheckedChange(false)
+  await sleep(30)
+  assert.deepEqual(a.controls.at(-1), { auto_preset: false })
+})
+
 await recordAsync('status-bar chip toggles Aura off and opens the stage', async () => {
   const chip = a.contributions.find(c => c.area === 'statusBar.right')
   const button = renderContribution(chip)

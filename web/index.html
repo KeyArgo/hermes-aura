@@ -60,20 +60,24 @@
     transition: opacity 240ms ease, filter 600ms ease;
   }
 
-  /* Scrim keeps the chrome text readable over a bright preset. */
+  /* Scrim keeps the chrome text readable over a bright preset. The gradient
+     alphas are JS-driven (--aura-scrim-a/b/c) from the user's opacity setting:
+     the element dims with the canvas but its alphas are compensated so the
+     effective contrast never drops below the pre-opacity behaviour. */
   #aura-scrim {
     position: absolute;
     inset: 0;
     pointer-events: none;
     background:
       linear-gradient(to top,
-        color-mix(in srgb, var(--aura-bg) 82%, transparent) 0%,
-        color-mix(in srgb, var(--aura-bg) 38%, transparent) 26%,
+        color-mix(in srgb, var(--aura-bg) calc(var(--aura-scrim-a, 82) * 1%), transparent) 0%,
+        color-mix(in srgb, var(--aura-bg) calc(var(--aura-scrim-b, 38) * 1%), transparent) 26%,
         transparent 52%),
       linear-gradient(to bottom,
-        color-mix(in srgb, var(--aura-bg) 62%, transparent) 0%,
+        color-mix(in srgb, var(--aura-bg) calc(var(--aura-scrim-c, 62) * 1%), transparent) 0%,
         transparent 22%);
     z-index: 2;
+    transition: opacity 240ms ease;
   }
 
   /* Error settle tint (semantic red, mixed from the theme accent). */
@@ -201,11 +205,29 @@
     accent-color: var(--aura-accent);
     background: transparent;
   }
-  #aura-intensity-out {
+  #aura-intensity-out,
+  #aura-opacity-out {
     min-width: 3.2em;
     font-variant-numeric: tabular-nums;
     font-size: 11px;
     color: var(--aura-text);
+  }
+  #aura-opacity {
+    flex: 0 1 auto;
+    min-width: 64px;
+    max-width: 160px;
+    accent-color: var(--aura-accent);
+    background: transparent;
+  }
+  #aura-behavior {
+    appearance: none;
+    font: inherit;
+    font-size: 11px;
+    color: var(--aura-text);
+    background: color-mix(in srgb, var(--aura-bg) 70%, transparent);
+    border: 1px solid color-mix(in srgb, var(--aura-text) 26%, transparent);
+    border-radius: 6px;
+    padding: 3px 6px;
   }
   #aura-toggle {
     margin-left: auto;
@@ -270,6 +292,15 @@
     <input id="aura-intensity" type="range" min="0" max="100" step="1" value="60"
            aria-label="Aura intensity" aria-valuetext="60 percent">
     <output id="aura-intensity-out" for="aura-intensity">60%</output>
+    <label for="aura-opacity">Opacity</label>
+    <input id="aura-opacity" type="range" min="0" max="100" step="1" value="75"
+           aria-label="Aura opacity" aria-valuetext="75 percent">
+    <output id="aura-opacity-out" for="aura-opacity">75%</output>
+    <select id="aura-behavior" aria-label="Aura behaviour profile">
+      <option value="calm">calm</option>
+      <option value="balanced" selected>balanced</option>
+      <option value="intense">intense</option>
+    </select>
     <button id="aura-toggle" type="button" aria-pressed="true">On</button>
   </div>
 </div>

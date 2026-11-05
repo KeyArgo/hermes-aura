@@ -114,3 +114,61 @@ them swallow-and-log exceptions (a broken capture must never break an agent turn
 
 Playback, music sources, DJ voice, multi-device sync, cover art, recording to disk, network
 audio. Aura only listens to what the machine is already playing.
+
+## 9. Display controls (additive, 2026-11-05)
+
+Additive to §1/§2/§4. No existing field changed meaning. New config keys are persisted in
+`<HERMES_HOME>/aura/config.json`, returned by `/api/config` and `/api/state`, carried in every
+`config` event, and accepted by `POST /api/control` (400 on bad type/range, same style as
+`intensity`).
+
+### 9.1 Keys
+
+| key | type | default | validation |
+|---|---|---|---|
+| `opacity` | number 0..1 | 0.75 | non-numeric/bool -> `opacity_must_be_number`; outside 0..1 -> `opacity_out_of_range` |
+| `behavior` | `"calm"` \| `"balanced"` \| `"intense"` | `"balanced"` | non-string -> `behavior_must_be_string`; unknown -> `bad_behavior` |
+| `mood_reactive` | bool | `true` | non-bool -> `mood_reactive_must_be_bool` |
+| `accent_pulse` | bool | `true` | non-bool -> `accent_pulse_must_be_bool` |
+| `auto_preset` | bool | `true` | non-bool -> `auto_preset_must_be_bool` |
+
+`/api/config` and `config` events additionally carry `behavior_profile` — the concrete mapping
+below, so a page never has to guess. Corrupt/missing config values are coerced to defaults on
+load; only `/api/control` rejects with 400.
+
+### 9.2 Opacity
+
+The page applies `opacity` to the visualizer canvas and computes the scrim from it. The scrim's
+element opacity is `0.85 + 0.15 * opacity` (0.85..1.0) and its gradient alphas are multiplied by
+the inverse of that opacity, so the scrim's effective contrast is never below the pre-opacity
+behaviour at any user opacity, and neither layer is ever fully transparent. Text and control
+chrome are separate elements and are not dimmed. Live application only; no restart, no reload.
+
+### 9.3 Behaviour profiles
+
+Measured parameters (also in `aura_core/behavior.py` and `web/aura.js`):
+
+| parameter | calm | balanced | intense |
+|---|---|---|---|
+| intensity ceiling | 0.60 | 1.00 | 1.00 |
+| pulse rate ceiling (Hz) | 0.0 (no hard pulse) | 1.0 | 2.0 |
+| preset-family preference | organic | liquid | geometric |
+| preset blend time (ms) | 2400 | 1200 | 600 |
+| mood gain scale | 0.35 | 1.0 | 1.35 |
+| strobe presets allowed | no | yes | yes |
+| hard pulses | no (static wash) | yes | yes |
+
+`calm` is the reduced-motion-safe profile: no strobe presets, the lowest ceiling and no hard
+pulses; an attention mood still shows a static accent wash.
+
+Hard invariants every profile keeps: attention pulse ≤ 2 Hz (the page additionally clamps
+`pulse_hz_max` to 2), flash limiter ≤ 3 flashes/s, `done` settles to idle within 1.5 s,
+restore-on-clear, and mood never touches the audio graph. `mood_reactive=false` makes the server
+hold `idle` (no latched mood, no leftover pulse); `auto_preset=false` makes the page ignore
+`preset` rotation events while manual presets (delivered through the `config` event) still
+apply. All three toggles can be turned back on live without a reload.
+
+### 9.4 Agent tool
+
+`aura_control` forwards to `/api/control`, so `opacity` and `behavior` are settable by the agent
+with no extra plumbing.

@@ -42,6 +42,15 @@ WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 CHROME = "/usr/bin/google-chrome-stable"
 TOKEN = "e2e_" + base64.urlsafe_b64encode(b"aura-e2e-token-0123456789abcdef").decode().rstrip("=")
 MOODS = {"idle", "thinking", "tool", "approval", "error", "streaming", "done"}
+BEHAVIORS = {"calm", "balanced", "intense"}
+BEHAVIOR_PROFILES = {
+    "calm": {"intensity_ceiling": 0.6, "pulse_hz_max": 0.0, "preset_family": "organic",
+             "blend_ms": 2400, "mood_gain_scale": 0.35, "allow_strobe": False, "hard_pulse": False},
+    "balanced": {"intensity_ceiling": 1.0, "pulse_hz_max": 1.0, "preset_family": "liquid",
+                 "blend_ms": 1200, "mood_gain_scale": 1.0, "allow_strobe": True, "hard_pulse": True},
+    "intense": {"intensity_ceiling": 1.0, "pulse_hz_max": 2.0, "preset_family": "geometric",
+                "blend_ms": 600, "mood_gain_scale": 1.35, "allow_strobe": True, "hard_pulse": True},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +146,11 @@ class FakeAura:
         self.mode = "silence"          # silence | tone
         self.enabled = True
         self.intensity = 0.6
+        self.opacity = 0.75
+        self.behavior = "balanced"
+        self.mood_reactive = True
+        self.accent_pulse = True
+        self.auto_preset = True
         self.mood = "idle"
         self.preset = None
         self.control_posts = []
@@ -188,7 +202,11 @@ class FakeAura:
                 if parsed.path == "/api/state":
                     body = dict(aura._last_features)
                     body.update({"enabled": aura.enabled, "mood": aura.mood,
-                                 "intensity": aura.intensity, "preset": aura.preset})
+                                 "intensity": aura.intensity, "preset": aura.preset,
+                                 "opacity": aura.opacity, "behavior": aura.behavior,
+                                 "mood_reactive": aura.mood_reactive,
+                                 "accent_pulse": aura.accent_pulse,
+                                 "auto_preset": aura.auto_preset})
                     return self._json(200, body)
                 if parsed.path == "/api/presets":
                     return self._file("presets.json")
@@ -196,6 +214,12 @@ class FakeAura:
                     return self._json(200, {
                         "intensity": aura.intensity, "reduced_motion": False,
                         "capture": aura.capture, "theme_opt_in": False,
+                        "enabled": aura.enabled, "preset": aura.preset,
+                        "opacity": aura.opacity, "behavior": aura.behavior,
+                        "mood_reactive": aura.mood_reactive,
+                        "accent_pulse": aura.accent_pulse,
+                        "auto_preset": aura.auto_preset,
+                        "behavior_profile": dict(BEHAVIOR_PROFILES[aura.behavior]),
                     })
                 return self._static(parsed.path)
 
@@ -221,15 +245,31 @@ class FakeAura:
                         return self._json(400, {"error": "bad intensity"})
                 if "mood" in body and body["mood"] not in MOODS:
                     return self._json(400, {"error": "bad mood"})
+                if "opacity" in body:
+                    v = body["opacity"]
+                    if isinstance(v, bool) or not isinstance(v, (int, float)) or not (0 <= v <= 1):
+                        return self._json(400, {"error": "bad opacity"})
+                if "behavior" in body and body["behavior"] not in BEHAVIORS:
+                    return self._json(400, {"error": "bad behavior"})
+                for toggle in ("mood_reactive", "accent_pulse", "auto_preset"):
+                    if toggle in body and not isinstance(body[toggle], bool):
+                        return self._json(400, {"error": "bad " + toggle})
                 aura.control_posts.append(body)
                 if "enabled" in body:
                     aura.enabled = body["enabled"]
                 if "intensity" in body:
                     aura.intensity = float(body["intensity"])
+                if "opacity" in body:
+                    aura.opacity = float(body["opacity"])
+                if "behavior" in body:
+                    aura.behavior = body["behavior"]
+                for toggle in ("mood_reactive", "accent_pulse", "auto_preset"):
+                    if toggle in body:
+                        setattr(aura, toggle, body[toggle])
                 if "preset" in body:
                     aura.preset = body["preset"]
                 if "mood" in body:
-                    aura.mood = body["mood"]
+                    aura.mood = body["mood"] if aura.mood_reactive else "idle"
                 return self._json(200, {"ok": True, "applied": body})
 
             def _json(self, code, obj):
@@ -411,7 +451,13 @@ class FakeAura:
         for c in clients:
             c.send_json({"type": "config", "intensity": self.intensity,
                          "reduced_motion": False, "capture": self.capture,
-                         "theme_opt_in": False})
+                         "theme_opt_in": False, "enabled": self.enabled,
+                         "preset": self.preset, "opacity": self.opacity,
+                         "behavior": self.behavior,
+                         "mood_reactive": self.mood_reactive,
+                         "accent_pulse": self.accent_pulse,
+                         "auto_preset": self.auto_preset,
+                         "behavior_profile": dict(BEHAVIOR_PROFILES[self.behavior])})
 
 
 # ---------------------------------------------------------------------------
