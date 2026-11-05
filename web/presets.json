@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "note": "Curated subset for Aura 0.1. strobe=true means the preset's own animation flashes hard and repeatedly (measured: mean-luma jumps >=12/255 at >=0.5/s, or >=25/255 peak delta in muted headless Chrome with a steady tone). Reduced-motion users only ever see strobe=false presets.",
+  "default": "Flexi - mindblob [shiny mix]",
+  "presets": [
+    { "name": "Flexi - mindblob [shiny mix]", "family": "organic", "strobe": false },
+    { "name": "Flexi - alien fish pond", "family": "organic", "strobe": false },
+    { "name": "Flexi - predator-prey-spirals", "family": "organic", "strobe": false },
+    { "name": "Flexi - area 51", "family": "geometric", "strobe": true },
+    { "name": "Flexi + Martin - astral projection", "family": "cosmic", "strobe": false },
+    { "name": "Flexi + Martin - cascading decay swing", "family": "fractal", "strobe": false },
+    { "name": "Geiss - Reaction Diffusion 2", "family": "organic", "strobe": false },
+    { "name": "Geiss - Cauldron - painterly 2 (saturation remix)", "family": "liquid", "strobe": false },
+    { "name": "Martin - liquid arrows", "family": "liquid", "strobe": false },
+    { "name": "martin - glass corridor", "family": "geometric", "strobe": false },
+    { "name": "martin - ghost city", "family": "cosmic", "strobe": false },
+    { "name": "martin - frosty caves 2", "family": "organic", "strobe": false },
+    { "name": "martin - reflections on black tiles", "family": "geometric", "strobe": true },
+    { "name": "Rovastar - Oozing Resistance", "family": "liquid", "strobe": false },
+    { "name": "Unchained - Rewop", "family": "geometric", "strobe": false },
+    { "name": "Zylot - Paint Spill (Music Reactive Paint Mix)", "family": "liquid", "strobe": false },
+    { "name": "Zylot - True Visionary (Final Mix)", "family": "cosmic", "strobe": false },
+    { "name": "_Geiss - Desert Rose 2", "family": "organic", "strobe": false },
+    { "name": "Martin - charisma", "family": "cosmic", "strobe": true },
+    { "name": "martin - infinity (2010 update)", "family": "fractal", "strobe": true }
+  ]
+}
