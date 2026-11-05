@@ -90,7 +90,23 @@ The desktop half and the agent tool must never guess a port. This module is the 
   or shows the message if WebGL is absent entirely.
 - Token mismatch → 401 / WS 1008, never a blank frame with no explanation.
 
-## 7. Non-goals for 0.1
+## 7. Internal Python API (agreed between L1 and L4; import from `aura_core.server`)
+
+The plugin glue and the desktop port-discovery module must not reimplement the server. L1
+provides, in `aura_core/server.py`, module-level functions:
+
+- `ensure_server() -> None` — start the server in a daemon thread if it is not running. Idempotent,
+  never blocks `register()` for more than ~100 ms.
+- `get_port() -> int | None` — live port, or `None` when the server has not started.
+- `publish_mood(mood: str, intensity: float, ttl_ms: int) -> None` — queue a mood transition for
+  connected pages; no-op when there are no clients. Must never raise into a hook.
+- `publish_config() -> None` — push the current config after a control change.
+- `stop_server() -> None` — clean shutdown: close sockets, join threads, leave no process/port.
+
+L4 calls only these. L1 must keep them safe to call from any thread, and must make every one of
+them swallow-and-log exceptions (a broken capture must never break an agent turn).
+
+## 8. Non-goals for 0.1
 
 Playback, music sources, DJ voice, multi-device sync, cover art, recording to disk, network
 audio. Aura only listens to what the machine is already playing.
