@@ -1106,7 +1106,15 @@
         armGestureResume();
       }
     });
-    try { await ctx.resume(); } catch (e) { recordError(e); }
+    // Autoplay-blocked contexts never resolve resume() until the user gestures,
+    // and boot() must not wait on that: the page still has to connect, show the
+    // mood/status, and arm the gesture resume. Race it with a short timeout.
+    try {
+      const resumed = ctx.resume();
+      if (resumed && typeof resumed.then === 'function') {
+        Promise.race([resumed, new Promise((r) => setTimeout(r, 300))]).catch(() => {});
+      }
+    } catch (e) { recordError(e); }
     if (ctx.state !== 'running') {
       block('audio', 'Audio is paused until you click — showing the accent-only fallback.');
       armGestureResume();
