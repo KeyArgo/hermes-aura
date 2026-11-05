@@ -17,7 +17,7 @@ Repo: /mnt/homes/Development/hermes-aura (LOCAL git only — nothing pushed yet)
 | 6 | mood engine + agent hooks | 6 | 0.90 | mood.py + hooks; approval pulse and restore covered by e2e |
 | 7 | display controls (opacity, behaviour, 3 switches) | 6 | 0.90 | L6 merged; verified headless + node contract test |
 | 8 | silence gate (visual follows audio) | 4 | 1.0 | 21/21 presets dark in silence, mean 0, lit 0.000 |
-| 9 | test suite (unit + e2e + integration) | 8 | 0.90 | 178 tests; full run in progress at time of writing |
+| 9 | test suite (unit + e2e + integration) | 8 | 1.0 | 178 passed, exit 0 (log: .last-test.log); includes the silence-gate test and a tone-fed degrade test |
 | 10 | Windows WASAPI loopback | 7 | 0.20 | implemented, never run on a real Windows machine |
 | 11 | macOS capture | 5 | 0.30 | implemented, needs BlackHole/virtual device, unverified |
 | 12 | in-app verification (accent pulse, theme restore, iframe sandbox) | 10 | 0.00 | structural only; needs the user to open Aura in Hermes |
