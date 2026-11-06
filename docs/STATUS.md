@@ -23,8 +23,8 @@ Repo: /mnt/homes/Development/hermes-aura (LOCAL git only — nothing pushed yet)
 | 12 | in-app verification (accent pulse, theme restore, iframe sandbox) | 10 | 0.00 | structural only; needs the user to open Aura in Hermes |
 | 13 | demo video + stills | 5 | 0.90 | .demo/aura-demo.mp4: 277 frames, 13.8 fps, curated presets, music-only showcase + mood tail; stills dense |
 | 14 | docs, notices, plugin validation | 5 | 1.0 | README, THIRD_PARTY_NOTICES, `hermes plugins validate .` passes |
-| 15 | publish: repo, catalog PR, X post, submission form | 10 | 0.00 | all need the user's explicit OK |
-| 16 | cross-family review round (GLM/Qwen over the merged tree) | 5 | 0.00 | not started |
+| 15 | publish: repo, catalog PR, X post, submission form | 10 | 0.20 | drafts ready in docs/PUBLISH.md (catalog YAML, PR body, blurb, X post); repo has no remote; every step needs the user's OK |
+| 16 | cross-family review round | 5 | 0.30 | GLM (C/D) + DeepSeek (A/B) reviewers dispatched over the merged tree; findings pending |
 
 ## Remaining work, in order
 
