@@ -259,6 +259,11 @@ def test_toggles_stop_and_resume_without_reload(chrome, aura):
         print("mood_reactive on: mood=%s (no reload)" % applied["mood"], flush=True)
         assert applied["moodReactive"] is True
 
+        # Rotation is tested independently of mood-driven preset steering.
+        aura.send_mood("idle", intensity=0, ttl_ms=0, repeat=True)
+        wait_for(tab, "window.__aura.snapshot().mood", lambda mood: mood == "idle",
+                 timeout=6, label="mood cleared before preset test")
+
         # auto_preset off: rotation events are ignored, manual preset still applies.
         _apply(tab, {"auto_preset": False})
         time.sleep(0.3)

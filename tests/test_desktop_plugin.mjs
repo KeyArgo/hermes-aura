@@ -9,8 +9,9 @@
  *   3. register() contributes the expected areas and returns a disposer that
  *      removes every contribution, clears the timers, clears the accent
  *      override and restores the theme it replaced,
- *   4. the polling interval is never faster than 4 Hz,
- *   5. the static SDK rules hold: no eval / new Function / JSX / dynamic
+ *   4. the stage returns to chat, with no status-bar contribution,
+ *   5. the polling interval is never faster than 4 Hz,
+ *   6. the static SDK rules hold: no eval / new Function / JSX / dynamic
  *      import, no imports outside the three allowed specifiers, no
  *      document.querySelector('[data-slot=...]'), no document.body observer,
  *      no console output.
@@ -123,6 +124,7 @@ function makeCtx(settings) {
   const contributions = []
   const timers = []
   const controls = []
+  const requests = []
   const disposers = []
   const storage = new Map()
   if (settings) storage.set('settings', settings)
@@ -180,6 +182,7 @@ function makeCtx(settings) {
       }
     },
     async rest(route, options = {}) {
+      requests.push({ route, options })
       if (route === '/status') {
         return {
           ok: true,
@@ -210,7 +213,7 @@ function makeCtx(settings) {
     }
   }
 
-  return { ctx, contributions, timers, controls, disposers }
+  return { ctx, contributions, timers, controls, disposers, requests, storage }
 }
 
 // -------------------------------------------------------------- static checks
@@ -285,15 +288,21 @@ export const requestTheme = name => {
 }
 
 export const host = {
+  state: { focusedStoredSessionId: { get: () => 'chat/123' } },
   navigate: route => { calls.navigations.push(route) },
   notify: message => { calls.notifications.push(message) }
 }
 
 export const useValue = store => store.get()
 
+export const themeState = { name: 'nous', accent: '#8b7cff' }
+
 export const useTheme = () => ({
-  themeName: 'nous',
-  theme: { name: 'nous', colors: { accent: '#8b7cff', primary: '#8b7cff', ring: '#8b7cff' } },
+  themeName: themeState.name,
+  theme: {
+    name: themeState.name,
+    colors: { accent: themeState.accent, primary: themeState.accent, ring: themeState.accent }
+  },
   setTheme: () => {},
   mode: 'dark',
   resolvedMode: 'dark',
@@ -322,7 +331,7 @@ export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left'
 fs.writeFileSync(
   reactStub,
   `// Stub of react: hooks are synchronous no-ops so a component can be called
-// outside a renderer; the test only invokes the theme probe and the chip.
+// outside a renderer; the test invokes the theme probe and stage.
 export const Fragment = Symbol.for('react.fragment')
 export function useState(initial) {
   const value = typeof initial === 'function' ? initial() : initial
@@ -345,18 +354,92 @@ export const Fragment = Symbol.for('react.fragment')
 `
 )
 
-// The plugin reads document/getComputedStyle for the theme accent and the
-// background-window check; a minimal stand-in keeps the import headless.
+// The plugin reads document/getComputedStyle for the theme accent, the
+// background-window check and the imperatively mounted backdrop; a minimal
+// stand-in keeps the import headless while still recording backdrop mounts.
+const bodyChildren = []
+const headChildren = []
+const createdElements = []
+function makeChildList(children) {
+  return {
+    children,
+    appendChild(node) {
+      node.parentNode = this
+      children.push(node)
+      return node
+    },
+    removeChild(node) {
+      const index = children.indexOf(node)
+      if (index >= 0) children.splice(index, 1)
+      node.parentNode = null
+      return node
+    }
+  }
+}
 globalThis.document = {
   hidden: false,
   visibilityState: 'visible',
   documentElement: {},
+  head: makeChildList(headChildren),
+  body: makeChildList(bodyChildren),
+  createElement(tagName) {
+    const node = {
+      tagName: String(tagName).toUpperCase(),
+      style: {},
+      attributes: {},
+      parentNode: null,
+      src: '',
+      textContent: '',
+      setAttribute(name, value) {
+        this.attributes[name] = String(value)
+      },
+      removeAttribute(name) {
+        delete this.attributes[name]
+      },
+      remove() {
+        if (this.parentNode) this.parentNode.removeChild(this)
+      }
+    }
+    createdElements.push(node)
+    return node
+  },
   addEventListener() {},
   removeEventListener() {}
 }
-globalThis.getComputedStyle = () => ({
-  getPropertyValue: name => (name === '--ui-accent' ? '#8b7cff' : '')
+const FAKE_VARS = {
+  '--ui-accent': '#8b7cff',
+  '--ui-base': '#0b0a14',
+  '--background': '#0b0a14',
+  '--card': '#221d3d',
+  '--ui-bg-chrome': '#12101f',
+  '--ui-bg-sidebar': '#1a1730',
+  '--ui-chat-surface-background': '#12101f'
+}
+const hexToRgb = hex => `rgb(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)})`
+globalThis.getComputedStyle = el => ({
+  // A probe element styled `background-color: var(--x)` resolves like a browser would.
+  backgroundColor: (() => {
+    const m = el && el.style && /^var\((--[a-z0-9-]+)\)$/.exec(el.style.backgroundColor || '')
+    return m && FAKE_VARS[m[1]] ? hexToRgb(FAKE_VARS[m[1]]) : 'rgba(0, 0, 0, 0)'
+  })(),
+  getPropertyValue: name => {
+    const vars = {
+      '--ui-accent': '#8b7cff',
+      '--ui-base': '#0b0a14',
+      '--ui-bg-chrome': '#12101f',
+      '--ui-bg-sidebar': '#1a1730',
+      '--ui-bg-editor': '#0b0a14',
+      '--ui-chat-surface-background': '#12101f',
+      '--ui-sidebar-surface-background': '#1a1730',
+      '--ui-editor-surface-background': '#0b0a14',
+      '--ui-widget-surface-background': '#221d3d'
+    }
+    return vars[name] || ''
+  }
 })
+
+const backdropFrames = () => bodyChildren.filter(node => node.tagName === 'IFRAME')
+const glassStyles = () => headChildren.filter(node => node.tagName === 'STYLE' && node.attributes.id === 'aura-glass')
 
 const pluginModule = await import(pathToFileURL(pluginCopy).href)
 const sdk = await import(pathToFileURL(sdkStub).href)
@@ -403,10 +486,25 @@ record('contributes the palette command', () => {
   assert.equal(typeof palette.data.run, 'function')
 })
 
-record('contributes the status-bar chip', () => {
-  const chip = a.contributions.find(c => c.area === 'statusBar.right')
-  assert.ok(chip, 'no statusBar.right contribution')
-  assert.equal(typeof chip.render, 'function')
+record('does not occupy the status bar', () => {
+  assert.ok(!a.contributions.some(c => c.area.startsWith('statusBar.')))
+})
+
+record('stage offers a way back to the current chat', () => {
+  const stage = renderContribution(a.contributions.find(c => c.area === 'routes'))
+  let back = null
+  walk(stage, node => { if (node.props && node.props['aria-label'] === 'Back to chat') back = node })
+  assert.ok(back, 'no Back to chat button')
+  back.props.onClick()
+  assert.equal(sdk.calls.navigations.at(-1), '/chat%2F123')
+  const saved = sdk.host.state.focusedStoredSessionId
+  try {
+    sdk.host.state.focusedStoredSessionId = { get: () => null }
+    back.props.onClick()
+    assert.equal(sdk.calls.navigations.at(-1), '/')
+  } finally {
+    sdk.host.state.focusedStoredSessionId = saved
+  }
 })
 
 record('contributes the compact right-hand pane', () => {
@@ -454,6 +552,157 @@ record('polls at 250 ms or slower (never faster than 4 Hz)', () => {
   assert.ok(a.timers.every(t => t.ms >= 250), 'a timer is faster than 250 ms')
 })
 
+await recordAsync('status request leaves time for a cold gateway', async () => {
+  await sleep(30)
+  const status = a.requests.find(call => call.route === '/status')
+  assert.ok(status && status.options.timeoutMs >= 10000, 'status timeout is too short for cold startup')
+})
+
+await recordAsync('backdrop mounts only when Aura is enabled, the theme is aura-live and status is ok', async () => {
+  await sleep(30)
+  assert.equal(backdropFrames().length, 0, 'backdrop mounted without the aura-live theme')
+  const probe = a.contributions.find(c => c.area === 'titleBar.center')
+  sdk.themeState.name = 'aura-live'
+  renderContribution(probe)
+  await sleep(20)
+  assert.equal(backdropFrames().length, 1, 'expected exactly one backdrop iframe')
+  const frame = backdropFrames()[0]
+  assert.match(frame.src, /[?&]overlay=1(?:&|$)/)
+  assert.equal(frame.style.position, 'fixed')
+  assert.equal(frame.style.inset, '0')
+  assert.equal(frame.style.width, '100vw')
+  assert.equal(frame.style.height, '100vh')
+  assert.equal(frame.style.border, '0')
+  assert.equal(frame.style.pointerEvents, 'none')
+  assert.equal(frame.style.zIndex, '-1')
+  // Visibility is the backdrop's own opacity (default 0.35).
+  assert.equal(frame.style.opacity, '0.35')
+  assert.equal(frame.style.mixBlendMode, undefined, 'backdrop must not blend over the UI')
+  assert.equal(frame.style.background, 'transparent')
+  assert.equal(frame.attributes['aria-hidden'], 'true')
+  assert.equal(frame.attributes.tabindex, '-1')
+  assert.equal(frame.attributes.title, 'Aura backdrop')
+  assert.equal(frame.attributes.sandbox, 'allow-scripts allow-same-origin allow-forms allow-downloads')
+  assert.equal(frame.attributes.referrerpolicy, 'no-referrer')
+  assert.equal(frame.attributes.allow, 'autoplay; fullscreen')
+})
+
+await recordAsync('glass style is injected exactly once with translucent theme variables', async () => {
+  const probe = a.contributions.find(c => c.area === 'titleBar.center')
+  renderContribution(probe)
+  a.timers.find(t => t.ms === 250).fn()
+  await sleep(30)
+  assert.equal(glassStyles().length, 1, 'expected exactly one aura-glass style')
+  const css = glassStyles()[0].textContent
+  // The theme's own background is painted once on <html>; everything above it is clear.
+  assert.match(css, /html \{ background: rgb\(11, 10, 20\) !important; \}/)
+  assert.match(css, /body, #root, #app \{ background: transparent !important; \}/)
+  // Big areas go fully clear so stacked panels cannot compound to near-solid.
+  for (const name of ['--background', '--ui-bg-chrome', '--ui-bg-sidebar', '--ui-chat-surface-background']) {
+    assert.match(css, new RegExp(name.replace(/[-]/g, '\\-') + ': transparent !important;'), `${name} not cleared`)
+  }
+  // --ui-base is the TEXT colour: glass must never touch it.
+  assert.doesNotMatch(css, /--ui-base/)
+  // Floating surfaces stay 90% solid for readability.
+  assert.match(css, /--card: color-mix\(in srgb, rgb\(34, 29, 61\) 90%, transparent\) !important;/)
+  assert.equal(backdropFrames().length, 1)
+})
+
+await recordAsync('background visibility defaults to 35 percent and clamps to 5..90', async () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  let visibility = null
+  walk(tree, node => {
+    if (!visibility && node.type === 'input' && node.props && node.props['aria-label'] === 'Background visibility') visibility = node
+  })
+  assert.ok(visibility, 'no Background visibility slider rendered')
+  assert.equal(visibility.props.min, 5)
+  assert.equal(visibility.props.max, 90)
+  assert.equal(visibility.props.value, 35)
+  assert.equal(backdropFrames()[0].style.opacity, '0.35')
+
+  visibility.props.onChange({ target: { value: '100' } })
+  await sleep(10)
+  assert.equal(backdropFrames()[0].style.opacity, '0.9', 'visibility was not clamped to 0.9')
+
+  visibility.props.onChange({ target: { value: '0' } })
+  await sleep(10)
+  assert.equal(backdropFrames()[0].style.opacity, '0.05', 'visibility was not clamped to 0.05')
+
+  visibility.props.onChange({ target: { value: '18' } })
+  await sleep(10)
+})
+
+await recordAsync('changing away from aura-live removes the backdrop and glass style', async () => {
+  const probe = a.contributions.find(c => c.area === 'titleBar.center')
+  sdk.themeState.name = 'nous'
+  renderContribution(probe)
+  await sleep(10)
+  assert.equal(backdropFrames().length, 0, 'backdrop survived a theme change')
+  assert.equal(glassStyles().length, 0, 'glass style survived a theme change')
+
+  sdk.themeState.name = 'aura-live'
+  renderContribution(probe)
+  await sleep(10)
+  assert.equal(backdropFrames().length, 1, 'backdrop did not return with the aura-live theme')
+  assert.equal(glassStyles().length, 1)
+})
+
+await recordAsync('disabling Aura removes the backdrop and enabling restores it', async () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  let enabledSwitch = null
+  walk(tree, node => {
+    if (!enabledSwitch && node.props && node.props['aria-label'] === 'Aura enabled') enabledSwitch = node
+  })
+  assert.ok(enabledSwitch, 'no Aura enabled switch rendered')
+  enabledSwitch.props.onCheckedChange(false)
+  await sleep(20)
+  assert.equal(backdropFrames().length, 0, 'backdrop survived disabling Aura')
+  assert.equal(glassStyles().length, 0, 'glass style survived disabling Aura')
+  enabledSwitch.props.onCheckedChange(true)
+  await sleep(40)
+  assert.equal(backdropFrames().length, 1, 'backdrop did not return when Aura was re-enabled')
+  assert.equal(glassStyles().length, 1)
+})
+
+record('no app-overlay on/off setting remains', () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  let oldSwitch = null
+  walk(tree, node => {
+    if (!oldSwitch && node.props && node.props['aria-label'] === 'App overlay') oldSwitch = node
+  })
+  assert.equal(oldSwitch, null, 'the old App overlay switch is still rendered')
+})
+
+await recordAsync('a slow status response does not trigger overlapping requests', async () => {
+  const oldRest = a.ctx.rest
+  let count = 0
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  a.ctx.rest = async (route, options) => {
+    if (route === '/status') {
+      count += 1
+      await gate
+    }
+    return oldRest(route, options)
+  }
+  try {
+    const tick = a.timers.find(t => t.ms === 250)
+    tick.fn()
+    await sleep(10)
+    tick.fn()
+    tick.fn()
+    await sleep(10)
+    assert.equal(count, 1)
+  } finally {
+    release()
+    await sleep(30)
+    a.ctx.rest = oldRest
+  }
+})
+
 await recordAsync('accent pulse applies a hex derived from the theme accent', async () => {
   const probe = a.contributions.find(c => c.area === 'titleBar.center')
   renderContribution(probe)
@@ -472,6 +721,49 @@ await recordAsync('one tick never applies more than one accent colour', async ()
   tick.fn()
   await sleep(30)
   assert.ok(sdk.calls.accent.length - before <= 1, 'accent applied more than once per tick')
+})
+
+await recordAsync('status timeout is reported without leaking error details', async () => {
+  const oldRest = a.ctx.rest
+  a.ctx.rest = async () => { throw new Error('Timed out connecting to Hermes backend after 3000ms token=secret') }
+  try {
+    a.timers.find(t => t.ms === 250).fn()
+    await sleep(30)
+    const stage = renderContribution(a.contributions.find(c => c.area === 'routes'))
+    let error = ''
+    walk(stage, node => { if (node.props && node.props.live) error = node.props.live.error })
+    assert.match(error, /timed out/i)
+    assert.doesNotMatch(error, /secret|token/)
+  } finally {
+    a.ctx.rest = oldRest
+    a.timers.find(t => t.ms === 250).fn()
+    await sleep(30)
+  }
+})
+
+await recordAsync('status failures are classified safely', async () => {
+  const oldRest = a.ctx.rest
+  try {
+    for (const [detail, expected] of [
+      ['403: profile_scope_mismatch token=secret', /selected profile/i],
+      ['Gateway ticket bootstrap failed token=secret', /gateway connection/i],
+      ['401 token=secret', /authorize/i],
+      ['unexpected token=secret', /could not complete/i]
+    ]) {
+      a.ctx.rest = async () => { throw new Error(detail) }
+      a.timers.find(t => t.ms === 250).fn()
+      await sleep(30)
+      const stage = renderContribution(a.contributions.find(c => c.area === 'routes'))
+      let error = ''
+    walk(stage, node => { if (node.props && node.props.live) error = node.props.live.error })
+      assert.match(error, expected)
+      assert.doesNotMatch(error, /secret|token/)
+    }
+  } finally {
+    a.ctx.rest = oldRest
+    a.timers.find(t => t.ms === 250).fn()
+    await sleep(30)
+  }
 })
 
 await recordAsync('intensity 0 clears the accent override and pushes the change', async () => {
@@ -559,16 +851,6 @@ await recordAsync('automatic-presets switch pushes auto_preset=false', async () 
   assert.deepEqual(a.controls.at(-1), { auto_preset: false })
 })
 
-await recordAsync('status-bar chip toggles Aura off and opens the stage', async () => {
-  const chip = a.contributions.find(c => c.area === 'statusBar.right')
-  const button = renderContribution(chip)
-  assert.equal(typeof button.props.onClick, 'function', 'chip has no onClick')
-  button.props.onClick()
-  await sleep(30)
-  assert.deepEqual(a.controls.at(-1), { enabled: false })
-  assert.ok(sdk.calls.navigations.includes('/aura'), 'did not navigate to /aura')
-})
-
 record('disposer removes every contribution, clears timers, accent and theme', () => {
   const themeCallsBefore = sdk.calls.themes.length
   disposeA()
@@ -576,11 +858,14 @@ record('disposer removes every contribution, clears timers, accent and theme', (
   assert.ok(a.timers.every(t => t.cleared), 'a timer survived dispose')
   assert.equal(sdk.calls.accent.at(-1), null, 'accent override survived dispose')
   assert.equal(sdk.calls.themes.length, themeCallsBefore, 'theme switched on a plugin that never opted in')
+  assert.equal(backdropFrames().length, 0, 'backdrop iframe survived dispose')
+  assert.equal(glassStyles().length, 0, 'glass style survived dispose')
   assert.doesNotThrow(() => disposeA(), 'dispose is not idempotent')
 })
 
 // ------------------------------------------------------------- scenario B
 
+sdk.themeState.name = 'nous'
 const b = makeCtx({ enabled: true, intensity: 0.5, followAudio: true, themeOptIn: true })
 let disposeB = null
 
@@ -598,6 +883,47 @@ record('disabling restores the theme that was active before', () => {
   disposeB()
   assert.equal(sdk.calls.themes.at(-1), 'nous', 'previous theme was not restored')
   assert.equal(b.contributions.length, 0)
+})
+
+// ------------------------------------------------------------- scenario C
+// Legacy storage: overlayOpacity migrates into glass once; a saved glass wins.
+
+sdk.themeState.name = 'aura-live'
+const c = makeCtx({ enabled: true, intensity: 0.5, overlayOpacity: 0.3 })
+const disposeC = pluginModule.default.register(c.ctx)
+
+await recordAsync('legacy overlayOpacity migrates into glass', async () => {
+  const probe = c.contributions.find(x => x.area === 'titleBar.center')
+  renderContribution(probe)
+  await sleep(30)
+  const settings = c.contributions.find(x => x.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  let visibility = null
+  walk(tree, node => {
+    if (!visibility && node.type === 'input' && node.props && node.props['aria-label'] === 'Background visibility') visibility = node
+  })
+  assert.ok(visibility, 'no Background visibility slider rendered')
+  assert.equal(visibility.props.value, 30, 'overlayOpacity 0.3 was not read as glass 0.3')
+  assert.equal(Object.prototype.hasOwnProperty.call(c.storage.get('settings'), 'overlay'), false)
+})
+
+record('a saved glass value wins over the legacy overlayOpacity key', () => {
+  disposeC()
+  sdk.themeState.name = 'aura-live'
+  const d = makeCtx({ enabled: true, intensity: 0.5, glass: 0.5, overlayOpacity: 0.3 })
+  const disposeD = pluginModule.default.register(d.ctx)
+  try {
+    const settings = d.contributions.find(x => x.area === 'settings.plugins')
+    const tree = renderContribution(settings)
+    let visibility = null
+    walk(tree, node => {
+      if (!visibility && node.type === 'input' && node.props && node.props['aria-label'] === 'Background visibility') visibility = node
+    })
+    assert.ok(visibility, 'no Background visibility slider rendered')
+    assert.equal(visibility.props.value, 50, 'glass 0.5 did not win over overlayOpacity 0.3')
+  } finally {
+    disposeD()
+  }
 })
 
 // --------------------------------------------------------------- reporting

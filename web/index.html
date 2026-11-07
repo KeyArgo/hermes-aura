@@ -225,7 +225,8 @@
     accent-color: var(--aura-accent);
     background: transparent;
   }
-  #aura-behavior {
+  #aura-behavior,
+  #aura-motion {
     appearance: none;
     font: inherit;
     font-size: 11px;
@@ -265,6 +266,22 @@
     #aura-message { bottom: 68px; }
   }
 
+  /* App overlay (?overlay=1): the page is only a canvas over the host window.
+     Everything else — chrome, labels, messages, scrims — stays unpainted. */
+  html.aura-overlay,
+  html.aura-overlay body,
+  html.aura-overlay #aura-root {
+    background: transparent !important;
+  }
+  html.aura-overlay #aura-bar,
+  html.aura-overlay #aura-message,
+  html.aura-overlay #aura-controls,
+  html.aura-overlay #aura-tint,
+  html.aura-overlay #aura-glow,
+  html.aura-overlay #aura-scrim {
+    display: none !important;
+  }
+
   /* Reduced motion: the JS already drops the pulse and strobe presets; also stop
      the decorative transitions so nothing flashes on state changes. */
   @media (prefers-reduced-motion: reduce) {
@@ -295,18 +312,24 @@
   <div id="aura-message" role="status" aria-live="polite" hidden></div>
 
   <div id="aura-controls">
-    <label for="aura-intensity">Intensity</label>
+    <label for="aura-intensity">Reaction strength</label>
     <input id="aura-intensity" type="range" min="0" max="100" step="1" value="60"
-           aria-label="Aura intensity" aria-valuetext="60 percent">
+           aria-label="Aura reaction strength" aria-valuetext="60 percent">
     <output id="aura-intensity-out" for="aura-intensity">60%</output>
     <label for="aura-opacity">Opacity</label>
     <input id="aura-opacity" type="range" min="0" max="100" step="1" value="75"
            aria-label="Aura opacity" aria-valuetext="75 percent">
     <output id="aura-opacity-out" for="aura-opacity">75%</output>
     <select id="aura-behavior" aria-label="Aura behaviour profile">
-      <option value="calm">calm</option>
-      <option value="balanced" selected>balanced</option>
+      <option value="calm" selected>calm</option>
+      <option value="balanced">balanced</option>
       <option value="intense">intense</option>
+    </select>
+    <label for="aura-motion">Motion</label>
+    <select id="aura-motion" aria-label="Aura motion source">
+      <option value="designs">Designs only</option>
+      <option value="both" selected>Designs + music</option>
+      <option value="music">Music only</option>
     </select>
     <button id="aura-toggle" type="button" aria-pressed="true">On</button>
   </div>

@@ -158,7 +158,7 @@ def test_real_server_real_page(live_server):
         assert boot.get("socketState") == "connected"
         assert boot.get("capture") == live_server["capture"]
 
-        # privacy default is OFF; the desktop chip/tool turns it on via /api/control
+        # privacy default is OFF; desktop settings or the tool can turn it on via /api/control
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/control",
             data=json.dumps({"enabled": True, "intensity": 0.6}).encode(),

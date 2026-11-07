@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import collections  # noqa: F401  (kept for downstream convenience)
 import json
+import importlib
 import logging
 import os
 import shutil
@@ -281,14 +282,17 @@ class NullCapture:
 def _backend_classes():
     """Imported lazily so a platform module's import failure cannot break probe."""
     classes = []
+    # Package-relative: inside Hermes this package is loaded under the plugin's
+    # namespace, not as top-level ``aura_core``; an absolute name fails there
+    # and silently leaves no backends at all.
     for module_name, attr in (
-        ("aura_core.capture.pipewire", "PipeWireCapture"),
-        ("aura_core.capture.pulse", "PulseCapture"),
-        ("aura_core.capture.wasapi", "WasapiCapture"),
-        ("aura_core.capture.macos", "MacosCapture"),
+        (".pipewire", "PipeWireCapture"),
+        (".pulse", "PulseCapture"),
+        (".wasapi", "WasapiCapture"),
+        (".macos", "MacosCapture"),
     ):
         try:
-            mod = __import__(module_name, fromlist=[attr])
+            mod = importlib.import_module(module_name, __package__)
             classes.append(getattr(mod, attr))
         except Exception as exc:  # noqa: BLE001 - a broken backend is just unavailable
             logger.debug("aura: backend %s import failed (%s)", module_name, type(exc).__name__)

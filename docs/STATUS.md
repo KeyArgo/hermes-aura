@@ -13,7 +13,7 @@ Repo: /mnt/homes/Development/hermes-aura (LOCAL git only — nothing pushed yet)
 | 2 | Linux loopback capture | 10 | 1.0 | S2 probe: 786432 bytes = 4.10 s stereo 48k, RMS rising |
 | 3 | server, WS PCM, analysis, redaction | 10 | 1.0 | tests/test_server.py, test_analysis.py green |
 | 4 | page, Butterchurn, curated presets | 12 | 0.95 | 21 presets measured; mood→family steering merged but only tested headless |
-| 5 | desktop half (stage route, chip, settings, accent pulse, theme) | 12 | 0.70 | plugin.js 30 KB, 35/35 contract tests; never run inside the real app |
+| 5 | desktop half (stage route, settings, accent pulse, theme) | 12 | 0.70 | stage exit and no status-bar contribution covered by desktop tests; stage unavailable in the real app |
 | 6 | mood engine + agent hooks | 6 | 0.90 | mood.py + hooks; approval pulse and restore covered by e2e |
 | 7 | display controls (opacity, behaviour, 3 switches) | 6 | 0.90 | L6 merged; verified headless + node contract test |
 | 8 | silence gate (visual follows audio) | 4 | 1.0 | 21/21 presets dark in silence, mean 0, lit 0.000 |

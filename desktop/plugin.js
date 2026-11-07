@@ -12,16 +12,16 @@
  * What it contributes (Hermes Desktop plugin SDK only — no core edits):
  *   - a full-page stage at /aura (`ROUTES_AREA`) hosting the visualizer,
  *   - a sidebar row (`SIDEBAR_NAV_AREA`) and a palette command (`PALETTE_AREA`),
- *   - a status-bar chip (`statusBar.right`) showing on/off + capture backend,
  *   - a compact right-hand pane (`panes`) so the stage can sit beside chat,
  *   - an optional `THEMES_AREA` theme ('aura-live') the user must opt into,
- *   - a settings page (`SETTINGS_PLUGINS_AREA`) with enable / intensity /
- *     accent-follow / theme toggles.
+ *   - a settings page (`SETTINGS_PLUGINS_AREA`) with enable / reaction strength /
+ *     background visibility / motion / accent-follow / theme controls.
  *
- * There is no backdrop slot in the SDK (see SPIKES.md S1), so Aura never
- * promises "behind the chat": the stage is a page, the pane is a pane, and the
- * ambient effect is the app accent, which we pulse by retinting the ACTIVE
- * theme's accent — never by imposing a hue.
+ * The SDK has no backdrop slot (see SPIKES.md S1), so selecting the Aura Live
+ * theme mounts one click-through iframe behind the app and injects a single
+ * glass stylesheet: panels become translucent versions of the ACTIVE theme's
+ * own colours while the visualizer sits behind them. The accent is still
+ * pulsed by retinting that theme's accent — never by imposing a hue.
  *
  * Plain ESM, loaded uncompiled: `jsx()` calls only, no JSX syntax, no eval,
  * no dynamic import. Imports are limited to @hermes/plugin-sdk, react and
@@ -42,7 +42,6 @@ import {
   setAccentOverride,
   SETTINGS_PLUGINS_AREA,
   SIDEBAR_NAV_AREA,
-  STATUSBAR_AREAS,
   StatusDot,
   Switch,
   THEMES_AREA,
@@ -74,10 +73,17 @@ const DEFAULT_SETTINGS = Object.freeze({
   moodReactive: true,
   accentPulse: true,
   autoPreset: true,
-  themeOptIn: false
+  themeOptIn: false,
+  glass: 0.35,
+  motion: 'both'
 })
 
+const GLASS_MIN = 0.05
+const GLASS_MAX = 0.9
+
 const BEHAVIORS = ['calm', 'balanced', 'intense']
+const MOTIONS = ['designs', 'both', 'music']
+const MOTION_LABELS = { designs: 'Designs only', both: 'Designs + music', music: 'Music only' }
 
 const EMPTY_LIVE = Object.freeze({
   ok: false,
@@ -97,6 +103,11 @@ const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value))
 const clamp01 = value => {
   const n = Number(value)
   return Number.isFinite(n) ? clamp(n, 0, 1) : 0
+}
+
+const clampGlass = value => {
+  const n = Number(value)
+  return Number.isFinite(n) ? clamp(n, GLASS_MIN, GLASS_MAX) : DEFAULT_SETTINGS.glass
 }
 
 /** Normalise #rgb/#rrggbb/#rrggbbaa to a lowercase #rrggbb, or null. */
@@ -178,6 +189,9 @@ let pollDisposer = null
 let polling = false
 let liveFrame = null // latest /state frame — hot path, deliberately not an atom
 let liveKey = ''
+let backdropEl = null
+let backdropUrl = ''
+let glassStyleEl = null
 let overrideActive = false
 let lastAccentHex = null
 let lastAccentAt = 0
@@ -211,6 +225,11 @@ function readSettings(ctx) {
     else if (typeof raw.followAudio === 'boolean') out.accentPulse = raw.followAudio
     if (typeof raw.autoPreset === 'boolean') out.autoPreset = raw.autoPreset
     if (typeof raw.themeOptIn === 'boolean') out.themeOptIn = raw.themeOptIn
+    if (typeof raw.motion === 'string' && MOTIONS.includes(raw.motion)) out.motion = raw.motion
+    // Migrate the old overlay strength once: a saved `glass` always wins, and
+    // the legacy key is never written back.
+    if (Number.isFinite(raw.glass)) out.glass = clampGlass(raw.glass)
+    else if (Number.isFinite(raw.overlayOpacity)) out.glass = clampGlass(raw.overlayOpacity)
   }
   return out
 }
@@ -234,6 +253,179 @@ function setLive(patch) {
 
 function setError(message) {
   setLive({ error: typeof message === 'string' ? message : '' })
+}
+
+// ------------------------------------------------------------- backdrop theme
+// The active `aura-live` theme turns the visualizer into the app's backdrop:
+// one click-through iframe behind every panel (z-index -1). Panels stay opaque
+// enough to read because glass rewrites their surface variables to translucent
+// versions of the theme's own colours.
+
+function backdropSrc(url) {
+  if (!url) return ''
+  const separator = url.indexOf('?') === -1 ? '?' : '&'
+  return `${url}${separator}overlay=1`
+}
+
+// Background-only tokens (never ink: `--ui-base` is the text colour). Big
+// areas get the full glass; floating surfaces stay more solid so menus,
+// cards and bubbles remain readable over the visuals.
+const GLASS_AREAS = [
+  '--background',
+  '--sidebar',
+  '--ui-bg-chrome',
+  '--ui-bg-sidebar',
+  '--ui-bg-editor',
+  '--ui-bg-tertiary',
+  '--ui-chat-surface-background',
+  '--ui-sidebar-surface-background',
+  '--ui-editor-surface-background',
+  '--ui-terminal-surface-background',
+  '--ui-surface-background'
+]
+const GLASS_FLOATING = [
+  '--muted',
+  '--card',
+  '--popover',
+  '--ui-bg-card',
+  '--ui-bg-elevated',
+  '--ui-widget-surface-background',
+  '--ui-chat-bubble-background'
+]
+
+/** The browser-resolved colour of a token (handles var(), color-mix(), oklch()). */
+function resolvedColor(name) {
+  if (!doc || !doc.body || typeof getComputedStyle !== 'function') return ''
+  let probe = null
+  try {
+    probe = doc.createElement('div')
+    probe.style.position = 'absolute'
+    probe.style.width = '0'
+    probe.style.height = '0'
+    probe.style.visibility = 'hidden'
+    probe.style.backgroundColor = `var(${name})`
+    doc.body.appendChild(probe)
+    const value = String(getComputedStyle(probe).backgroundColor || '').trim()
+    return value && value !== 'rgba(0, 0, 0, 0)' && value !== 'transparent' ? value : ''
+  } catch {
+    return ''
+  } finally {
+    try {
+      if (probe) probe.remove()
+    } catch {
+      // detached already
+    }
+  }
+}
+
+// Panels stack (window bg under chrome under chat surface), so translucency
+// per layer compounds to near-solid. Instead the big areas go fully clear and
+// visibility is set in ONE place: the backdrop's opacity over the theme's own
+// solid background, painted on <html>. Floating surfaces stay mostly solid.
+function glassCss() {
+  const base = resolvedColor('--background')
+  let declarations = ''
+  for (const name of GLASS_AREAS) declarations += `${name}: transparent !important;`
+  for (const name of GLASS_FLOATING) {
+    const color = resolvedColor(name)
+    // !important: the theme writes these inline on <html>; a plain rule loses.
+    if (color) declarations += `${name}: color-mix(in srgb, ${color} 90%, transparent) !important;`
+  }
+  return [
+    base ? `html { background: ${base} !important; }` : '',
+    'body, #root, #app { background: transparent !important; }',
+    `:root { ${declarations} }`
+  ].filter(Boolean).join('\n')
+}
+
+function applyGlassStyle(glass) {
+  if (!doc || !doc.head || typeof doc.head.appendChild !== 'function') return
+  // Measure the theme's own colours, not the previous glass.
+  if (glassStyleEl) removeGlassStyle()
+  if (!glassStyleEl) {
+    glassStyleEl = doc.createElement('style')
+    glassStyleEl.setAttribute('id', 'aura-glass')
+    doc.head.appendChild(glassStyleEl)
+  }
+  glassStyleEl.textContent = glassCss()
+  if (backdropEl) backdropEl.style.opacity = String(clampGlass(glass))
+}
+
+function removeGlassStyle() {
+  if (!glassStyleEl) return
+  try {
+    glassStyleEl.remove()
+  } catch {
+    try {
+      if (glassStyleEl.parentNode) glassStyleEl.parentNode.removeChild(glassStyleEl)
+    } catch {
+      // detached already
+    }
+  }
+  glassStyleEl = null
+}
+
+function removeBackdrop() {
+  if (backdropEl) {
+    try {
+      backdropEl.remove()
+    } catch {
+      try {
+        if (backdropEl.parentNode) backdropEl.parentNode.removeChild(backdropEl)
+      } catch {
+        // detached already
+      }
+    }
+  }
+  backdropEl = null
+  backdropUrl = ''
+  removeGlassStyle()
+}
+
+/** Keep exactly one backdrop mounted, in sync with the theme and live status. */
+function syncBackdrop() {
+  const settings = $settings.get()
+  const live = $live.get()
+  const url = live.ok && typeof live.url === 'string' && /^https?:\/\//.test(live.url) ? live.url : ''
+  // The server's enabled flag is the truth (the pane uses it too); the local
+  // copy can be stale, which silently kept the backdrop away.
+  const enabled = live.ok ? live.enabled === true : settings.enabled
+  const wanted = Boolean(doc && enabled && knownTheme === THEME_NAME && url)
+  if (!wanted) {
+    removeBackdrop()
+    return
+  }
+
+  const src = backdropSrc(url)
+  if (!backdropEl) {
+    if (!doc.body || typeof doc.body.appendChild !== 'function') return
+    backdropEl = doc.createElement('iframe')
+    backdropEl.setAttribute('aria-hidden', 'true')
+    backdropEl.setAttribute('tabindex', '-1')
+    backdropEl.setAttribute('title', 'Aura backdrop')
+    // Same sandbox/referrer/allow contract as StageFrame.
+    backdropEl.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-downloads')
+    backdropEl.setAttribute('referrerpolicy', 'no-referrer')
+    backdropEl.setAttribute('allow', 'autoplay; fullscreen')
+    backdropEl.setAttribute('allowfullscreen', '')
+    const style = backdropEl.style
+    style.position = 'fixed'
+    style.inset = '0'
+    style.width = '100vw'
+    style.height = '100vh'
+    style.border = '0'
+    style.pointerEvents = 'none'
+    style.zIndex = '-1'
+    style.opacity = String(clampGlass(settings.glass))
+    style.background = 'transparent'
+    backdropUrl = src
+    backdropEl.src = src
+  } else if (backdropUrl !== src) {
+    backdropUrl = src
+    backdropEl.src = src
+  }
+  if (backdropEl.parentNode !== doc.body) doc.body.appendChild(backdropEl)
+  applyGlassStyle(settings.glass)
 }
 
 // ------------------------------------------------------------- server control
@@ -260,9 +452,20 @@ async function poll() {
     let status = null
     let error = ''
     try {
-      status = await ctxRef.rest('/status', { timeoutMs: 3000 })
-    } catch {
-      error = 'Aura’s local server is not running yet.'
+      status = await ctxRef.rest('/status', { timeoutMs: 10000 })
+    } catch (cause) {
+      const detail = String(cause && cause.message || '')
+      if (/timed?\s*out/i.test(detail)) {
+        error = 'The Aura status request timed out while connecting to Hermes.'
+      } else if (/profile_scope_mismatch/i.test(detail)) {
+        error = 'Hermes rejected the Aura request for the selected profile.'
+      } else if (/ticket bootstrap/i.test(detail)) {
+        error = 'Hermes could not establish the local gateway connection.'
+      } else if (/\b(?:401|403)\b/.test(detail)) {
+        error = 'Hermes could not authorize the Aura status request.'
+      } else {
+        error = 'Hermes could not complete the Aura status request.'
+      }
     }
 
     const ok = Boolean(status && status.ok === true)
@@ -297,6 +500,7 @@ async function poll() {
         at: Date.now()
       })
     }
+    syncBackdrop()
     accentStep(Date.now())
   } finally {
     polling = false
@@ -401,6 +605,7 @@ function onThemeName(name) {
   if (!first && overrideActive) {
     clearAccent(true)
   }
+  syncBackdrop()
   if ($settings.get().themeOptIn && !$themeApplied.get()) applyThemeIfOptedIn()
 }
 
@@ -422,6 +627,7 @@ async function setEnabled(next) {
   } else if ($settings.get().themeOptIn) {
     applyThemeIfOptedIn()
   }
+  syncBackdrop()
   const ok = await pushControl({ enabled })
   if (ok) {
     setLive({ enabled, error: '' })
@@ -434,6 +640,19 @@ async function setOpacity(next) {
   const opacity = clamp01(next)
   writeSettings({ opacity })
   await pushControl({ opacity })
+}
+
+async function setGlass(next) {
+  if (!ctxRef || disposed) return
+  writeSettings({ glass: clampGlass(next) })
+  syncBackdrop()
+}
+
+async function setMotion(next) {
+  if (!ctxRef || disposed) return
+  const motion = MOTIONS.includes(next) ? next : 'both'
+  writeSettings({ motion })
+  await pushControl({ motion })
 }
 
 async function setBehavior(next) {
@@ -473,17 +692,6 @@ async function setAutoPreset(next) {
   const autoPreset = Boolean(next)
   writeSettings({ autoPreset })
   await pushControl({ auto_preset: autoPreset })
-}
-
-async function toggleAndOpen() {
-  const live = $live.get()
-  const desired = live.ok ? !live.enabled : !$settings.get().enabled
-  await setEnabled(desired)
-  try {
-    host.navigate(ROUTE)
-  } catch {
-    // Navigation is the host's; a refusal must not break the toggle.
-  }
 }
 
 // ---------------------------------------------------------------------- UI
@@ -552,7 +760,7 @@ function StageMessage({ live, onRetry, busy }) {
         key: 'hint',
         style: { fontSize: 11, color: 'var(--ui-text-tertiary)', maxWidth: 460 },
         children:
-          'Aura runs a local server on 127.0.0.1. Enable the Aura Python plugin (plugins.enabled) and restart Hermes if this keeps showing.'
+          'Try again. If this continues, check the Hermes desktop log for the Aura status request.'
       }),
       jsx(Button, {
         key: 'retry',
@@ -590,7 +798,24 @@ function Stage({ compact = false }) {
         minHeight: 0,
         overflow: 'hidden'
       },
-      children: body
+      children: [
+        jsx('div', {
+          key: 'toolbar',
+          style: { display: 'flex', alignItems: 'center', padding: '6px 10px', flex: 'none', borderBottom: '1px solid var(--ui-stroke-secondary)' },
+          children: jsx(Button, {
+            variant: 'ghost',
+            size: 'sm',
+            'aria-label': 'Back to chat',
+            onClick: () => {
+              const focused = host.state && host.state.focusedStoredSessionId
+              const id = focused && typeof focused.get === 'function' ? focused.get() : null
+              host.navigate(id ? `/${encodeURIComponent(id)}` : '/')
+            },
+            children: '← Back to chat'
+          })
+        }),
+        body
+      ]
     })
   }
 
@@ -650,45 +875,6 @@ function Stage({ compact = false }) {
   })
 }
 
-function AuraChip() {
-  const live = useValue($live)
-  const settings = useValue($settings)
-  const ok = Boolean(live.ok)
-  const on = ok && Boolean(live.enabled)
-  const capture = live.capture && live.capture !== 'none' ? live.capture : ''
-  const tone = !ok ? 'warn' : on ? 'good' : 'muted'
-  const state = !ok ? 'offline' : on ? 'on' : 'off'
-  const detail = ok && on && capture ? ` · ${capture}` : ''
-  const title = !ok
-    ? 'Aura’s local server is not running. Click to try again and open the stage.'
-    : on
-      ? `Aura is listening${capture ? ` (${capture})` : ''}. Click to turn it off and open the stage.`
-      : `Aura is off${settings.enabled ? '' : ' (you turned it off)'}. Click to turn it on and open the stage.`
-  return jsx(Button, {
-    variant: 'ghost',
-    size: 'micro',
-    title,
-    'aria-label': `Aura ${state}${capture ? `, capture ${capture}` : ''}`,
-    onClick: () => {
-      void toggleAndOpen()
-    },
-    style: {
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: 6,
-      color: on ? 'var(--ui-text-primary)' : 'var(--ui-text-secondary)'
-    },
-    children: jsxs('span', {
-      style: { display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' },
-      children: [
-        jsx(StatusDot, { key: 'dot', tone }),
-        jsx('span', { key: 'name', children: 'Aura' }),
-        jsx('span', { key: 'state', style: { color: 'var(--ui-text-tertiary)' }, children: `${state}${detail}` })
-      ]
-    })
-  })
-}
-
 function AuraSettings() {
   const settings = useValue($settings)
   const live = useValue($live)
@@ -740,15 +926,16 @@ function AuraSettings() {
       jsx('div', {
         key: 'intensity',
         children: row(
-          'Pulse intensity',
-          '0 turns the accent pulse off and returns your theme’s own accent.',
+          'Reaction strength',
+          'How strongly audio and mood move the stage and the accent. 0 returns your theme’s own accent.',
           jsx('input', {
             type: 'range',
             min: 0,
             max: 1,
             step: 0.05,
             value: settings.intensity,
-            'aria-label': 'Pulse intensity',
+            disabled: settings.motion === 'designs',
+            'aria-label': 'Reaction strength',
             style: { width: 160, accentColor: 'var(--ui-accent)' },
             onChange: event => {
               const intensity = clamp01(event && event.target ? event.target.value : 0)
@@ -789,6 +976,64 @@ function AuraSettings() {
                 children: `${Math.round(settings.opacity * 100)}%`
               })
             ]
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'glass',
+        children: row(
+          'Background visibility',
+          'How much the Aura visuals show through the frosted panels. Lower keeps text crisp.',
+          jsxs('div', {
+            style: { display: 'flex', alignItems: 'center', gap: 8 },
+            children: [
+              jsx('input', {
+                key: 'slider',
+                type: 'range',
+                min: 5,
+                max: 90,
+                step: 1,
+                value: Math.round(settings.glass * 100),
+                'aria-label': 'Background visibility',
+                style: { width: 140, accentColor: 'var(--ui-accent)' },
+                onChange: event => {
+                  const raw = Number(event && event.target ? event.target.value : 35)
+                  void setGlass(raw / 100)
+                }
+              }),
+              jsx('span', {
+                key: 'out',
+                style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 32, fontVariantNumeric: 'tabular-nums' },
+                children: `${Math.round(settings.glass * 100)}%`
+              })
+            ]
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'motion',
+        children: row(
+          'Motion source',
+          'Designs only always animates; Designs + music follows playback and rests on designs; Music only settles in silence.',
+          jsx('select', {
+            value: settings.motion,
+            'aria-label': 'Motion source',
+            style: {
+              font: 'inherit',
+              fontSize: 11,
+              color: 'var(--ui-text-primary)',
+              background: 'var(--ui-bg)',
+              border: '1px solid var(--ui-stroke-secondary)',
+              borderRadius: 6,
+              padding: '3px 6px'
+            },
+            onChange: event => {
+              const value = event && event.target ? String(event.target.value) : 'both'
+              void setMotion(value)
+            },
+            children: MOTIONS.map(name =>
+              jsx('option', { key: name, value: name, children: MOTION_LABELS[name] })
+            )
           })
         )
       }),
@@ -951,6 +1196,7 @@ function teardown() {
   }
   clearAccent(true)
   restoreTheme()
+  removeBackdrop()
   while (disposers.length) {
     const off = disposers.pop()
     try {
@@ -986,6 +1232,8 @@ export default {
       teardown()
     }
     disposed = false
+    // A hot reload must not inherit a stale backdrop from the previous instance.
+    removeBackdrop()
     ctxRef = ctx
     polling = false
     pollDisposer = null
@@ -1041,15 +1289,6 @@ export default {
             }
           }
         }
-      })
-    )
-
-    track(
-      ctx.register({
-        id: 'status',
-        area: STATUSBAR_AREAS.right,
-        order: 20,
-        render: () => jsx(AuraChip, {})
       })
     )
 

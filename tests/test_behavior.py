@@ -80,10 +80,21 @@ def test_profile_families_exist_in_the_page_catalogue():
 def test_config_defaults_include_display_controls():
     cfg = config.normalise({})
     assert cfg["opacity"] == 0.75
-    assert cfg["behavior"] == "balanced"
+    assert cfg["behavior"] == "calm"
     assert cfg["mood_reactive"] is True
     assert cfg["accent_pulse"] is True
     assert cfg["auto_preset"] is True
+
+
+def test_config_motion_defaults_and_validation():
+    assert config.MOTIONS == ("designs", "both", "music")
+    cfg = config.normalise({})
+    assert cfg["motion"] == "both"
+    for value in config.MOTIONS:
+        assert config.normalise({"motion": value})["motion"] == value
+    assert config.normalise({"motion": "DESIGNS"})["motion"] == "designs"
+    for bad in ("", "loud", 3, None, True):
+        assert config.normalise({"motion": bad})["motion"] == "both"
 
 
 def test_config_coerces_bad_display_values_instead_of_raising():
@@ -95,7 +106,7 @@ def test_config_coerces_bad_display_values_instead_of_raising():
         "auto_preset": "yes",
     })
     assert cfg["opacity"] == 1.0
-    assert cfg["behavior"] == "balanced"
+    assert cfg["behavior"] == "calm"
     assert cfg["mood_reactive"] is False
     assert cfg["accent_pulse"] is False
     assert cfg["auto_preset"] is True
@@ -106,4 +117,4 @@ def test_config_coerces_bad_display_values_instead_of_raising():
 
     cfg = config.normalise({"opacity": True, "behavior": 7})
     assert cfg["opacity"] == 0.75
-    assert cfg["behavior"] == "balanced"
+    assert cfg["behavior"] == "calm"

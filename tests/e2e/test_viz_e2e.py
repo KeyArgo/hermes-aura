@@ -682,6 +682,36 @@ def aura():
 # tests
 # ---------------------------------------------------------------------------
 
+def test_visualizer_analyser_receives_pcm(chrome, aura):
+    tab = chrome.new_tab()
+    try:
+        tab.send('Page.addScriptToEvaluateOnNewDocument', {'source': """
+            window.__auraAnalysers = [];
+            const original = AudioContext.prototype.createAnalyser;
+            AudioContext.prototype.createAnalyser = function() {
+                const node = original.call(this);
+                window.__auraAnalysers.push(node);
+                return node;
+            };
+        """})
+        tab.navigate(page_url(aura.port))
+        wait_ready(tab)
+        amplitude = """(() => Math.max(0, ...window.__auraAnalysers.map(a => {
+            const samples = new Float32Array(a.fftSize);
+            a.getFloatTimeDomainData(samples);
+            return Math.max(...samples.map(Math.abs));
+        })))()"""
+        assert tab.ev('window.__auraAnalysers.length') > 0
+        assert tab.ev(amplitude) < 0.001
+        aura.mode = 'tone'
+        peak = wait_for(tab, amplitude, lambda n: n > 0.01, timeout=8, label='tone in visualizer analyser')
+        assert peak > 0.01
+        aura.mode = 'silence'
+        wait_for(tab, amplitude, lambda n: n < 0.001, timeout=8, label='silence in visualizer analyser')
+        assert tab.ev('window.__aura.snapshot().audio.mutedGain') == 0
+    finally:
+        tab.close()
+
 def test_silence_black_tone_moves_and_cpu(chrome, aura):
     tab = chrome.new_tab(page_url(aura.port))
     try:
@@ -724,7 +754,9 @@ def test_silence_black_tone_moves_and_cpu(chrome, aura):
         aura.send_preset("Zylot - True Visionary (Final Mix)", blend_ms=0)
         time.sleep(1.2)
         aura.mode = "tone"
-        c = wait_lit(tab, 0.08, timeout=15)
+        c = wait_for(tab, "window.__aura.sampleNow()",
+                     lambda s: bool(s and s["mean"] > 2 and s["lit"] > 0.08 * (s["w"] * s["h"] // 4)),
+                     timeout=15, label="bright tone frame")
         time.sleep(1.0)
         d = sample(tab)
         print("tone samples: %s / %s" % (c, d), flush=True)
@@ -790,7 +822,7 @@ def test_approval_mood_changes_render_pulses_and_restores(chrome, aura):
         sampled_before = (before["w"] * before["h"]) // 4
         assert before["lit"] > 0.04 * sampled_before, "tone baseline should be lit before the mood change: %s" % (before,)
 
-        aura.send_mood("approval", intensity=0.85, ttl_ms=1500)
+        aura.send_mood("approval", intensity=0.85, ttl_ms=5000)
         expect_mood(tab, "approval", timeout=6)
         time.sleep(0.8)
         during = sample(tab)
@@ -816,13 +848,19 @@ def test_approval_mood_changes_render_pulses_and_restores(chrome, aura):
             before["hash"], during["hash"], base["sampleGain"], snap["sampleGain"]), flush=True)
         print("PASS attention-pulse period=%dms flash<=3/s" % snap["pulsePeriodMs"], flush=True)
 
-        # Restore-on-clear: ttl 1500 ms, never latched.
-        time.sleep(2.2)
-        snap = snapshot(tab)
+        # Restore-on-clear after the TTL, allowing for slow software rendering.
+        snap = wait_for(tab, "window.__aura.snapshot()", lambda s: s and s.get("mood") == "idle",
+                        timeout=8, label="mood restored after TTL")
         print("after ttl: mood=%s previous=%s pulsePeriod=%s" % (
             snap["mood"], snap["previousMood"], snap["pulsePeriodMs"]), flush=True)
         assert snap["mood"] == "idle", "attention mood latched instead of restoring"
         print("PASS restore-on-clear mood=idle", flush=True)
+
+        # A short approval still expires without waiting for frame readback.
+        aura.send_mood("approval", intensity=0.85, ttl_ms=1500)
+        expect_mood(tab, "approval", timeout=6)
+        wait_for(tab, "window.__aura.snapshot().mood", lambda value: value == "idle",
+                 timeout=3.2, label="short approval TTL")
     finally:
         tab.close()
 

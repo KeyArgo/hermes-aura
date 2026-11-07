@@ -27,6 +27,14 @@
   const TOKEN = params.get('token') || '';
   const FORCE_NO_WEBGL = params.get('no-webgl') === '1';
   const FORCE_REDUCED = params.get('reduced-motion') === '1';
+  const OVERLAY = params.get('overlay') === '1';
+
+  if (OVERLAY) {
+    // Ambient install: nothing but the canvas may paint, and the page itself
+    // must stay transparent over the host window.
+    document.documentElement.classList.add('aura-overlay');
+    if (document.body) document.body.classList.add('aura-overlay');
+  }
 
   const MOODS = ['idle', 'thinking', 'tool', 'approval', 'error', 'streaming', 'done'];
   const ATTENTION = ['approval', 'error'];
@@ -68,7 +76,7 @@
       hard_pulse: true
     }
   };
-  const DEFAULT_BEHAVIOR = 'balanced';
+  const DEFAULT_BEHAVIOR = 'calm';
 
   const state = {
     ready: false,
@@ -82,6 +90,8 @@
     opacity: 0.75,
     behavior: DEFAULT_BEHAVIOR,
     behaviorProfile: Object.assign({}, BEHAVIOR_PROFILES[DEFAULT_BEHAVIOR]),
+    motion: 'both',
+    ambientFallback: false,
     moodReactive: true,
     accentPulse: true,
     autoPreset: true,
@@ -118,7 +128,20 @@
   const syncProbe = new Uint8Array(4);
 
   const dom = {};
-  const audio = { ctx: null, node: null, mute: null, sampleRate: 0 };
+  const audio = {
+    ctx: null,
+    node: null,
+    mute: null,
+    sampleRate: 0,
+    mixBus: null,
+    realGain: null,
+    ambientGain: null,
+    ambient: null,
+    mixTarget: ''
+  };
+  const MOTIONS = ['designs', 'both', 'music'];
+  const MOTION_SILENCE_MS = 1500; // both: rest on designs after this much quiet
+  const MOTION_FADE_S = 2;        // crossfade between real audio and designs
   const socket = { ws: null, state: 'boot', attempt: 0, timer: null };
   let viz = null;
   let catalog = { presets: [], byName: Object.create(null), default: null };
@@ -797,6 +820,150 @@
     }, { passive: true });
   }
 
+  // ---------------------------------------------------------------------------
+  // motion source: real audio, ambient designs, or both
+  // ---------------------------------------------------------------------------
+
+  function createAmbientSource(ctx, output) {
+    const bus = ctx.createGain();
+    bus.gain.value = 0.5;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 900;
+    filter.Q.value = 0.6;
+
+    const oscGain = ctx.createGain();
+    oscGain.gain.value = 0.18;
+    const oscA = ctx.createOscillator();
+    oscA.type = 'sine';
+    oscA.frequency.value = 110;
+    const oscB = ctx.createOscillator();
+    oscB.type = 'sine';
+    oscB.frequency.value = 110.45; // slow beating gives presets gentle drift
+    oscA.connect(oscGain);
+    oscB.connect(oscGain);
+    oscGain.connect(filter);
+
+    // Brown-ish noise through the same low-pass: texture without hiss.
+    const noise = ctx.createBufferSource();
+    const length = Math.max(1, Math.floor(ctx.sampleRate * 2));
+    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < length; i += 1) {
+      const white = Math.random() * 2 - 1;
+      last = last * 0.98 + white * 0.02;
+      data[i] = last * 3;
+    }
+    noise.buffer = buffer;
+    noise.loop = true;
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.value = 0.35;
+    noise.connect(noiseGain);
+    noiseGain.connect(filter);
+
+    // Very slow LFO on the bus gain: the designs breathe rather than sit still.
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = 0.045;
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.value = 0.28;
+    lfo.connect(lfoGain);
+    lfoGain.connect(bus.gain);
+
+    filter.connect(bus);
+    bus.connect(output);
+    try {
+      oscA.start();
+      oscB.start();
+      noise.start();
+      lfo.start();
+    } catch (e) {
+      recordError(e);
+    }
+    return { bus, oscA, oscB, noise, lfo };
+  }
+
+  function ensureMotionGraph() {
+    if (audio.mixBus) return true;
+    if (!audio.ctx || !audio.node) return false;
+    try {
+      const mixBus = audio.ctx.createGain();
+      const realGain = audio.ctx.createGain();
+      const ambientGain = audio.ctx.createGain();
+      realGain.gain.value = 1;
+      ambientGain.gain.value = 0;
+      // PCM and designs meet here; only the visualizer reads this bus. The
+      // worklet's own path to the speakers is still the gain-0 mute.
+      audio.node.connect(realGain);
+      realGain.connect(mixBus);
+      const ambient = createAmbientSource(audio.ctx, ambientGain);
+      ambientGain.connect(mixBus);
+      audio.mixBus = mixBus;
+      audio.realGain = realGain;
+      audio.ambientGain = ambientGain;
+      audio.ambient = ambient;
+      audio.mixTarget = '';
+      applyMotionMix(true);
+      return true;
+    } catch (e) {
+      recordError(e);
+      audio.mixBus = null;
+      audio.realGain = null;
+      audio.ambientGain = null;
+      return false;
+    }
+  }
+
+  function desiredMix() {
+    if (state.motion === 'designs') return 'ambient';
+    if (state.motion === 'music') return 'real';
+    return state.ambientFallback ? 'ambient' : 'real';
+  }
+
+  function rampGain(param, value, seconds) {
+    if (!param || !audio.ctx) return;
+    const t = audio.ctx.currentTime;
+    const fade = Math.max(0.01, seconds);
+    try {
+      param.cancelScheduledValues(t);
+      param.setValueAtTime(param.value, t);
+      param.linearRampToValueAtTime(value, t + fade);
+    } catch (_) {
+      try { param.value = value; } catch (e) { /* a dead context settles on its own */ }
+    }
+  }
+
+  function applyMotionMix(immediate) {
+    if (!audio.realGain || !audio.ambientGain) return;
+    const target = desiredMix();
+    if (audio.mixTarget === target) return;
+    audio.mixTarget = target;
+    const fade = immediate ? 0.01 : MOTION_FADE_S;
+    rampGain(audio.realGain.gain, target === 'real' ? 1 : 0, fade);
+    rampGain(audio.ambientGain.gain, target === 'ambient' ? 1 : 0, fade);
+  }
+
+  function ambientActive() {
+    if (state.motion === 'designs') return true;
+    return state.motion === 'both' && state.ambientFallback;
+  }
+
+  function setMotionUI(value) {
+    const motion = MOTIONS.indexOf(value) !== -1 ? value : 'both';
+    state.motion = motion;
+    state.ambientFallback = motion === 'designs';
+    if (dom.motion) dom.motion.value = motion;
+    if (dom.root) dom.root.dataset.motion = motion;
+    if (dom.slider) {
+      const disabled = motion === 'designs';
+      dom.slider.disabled = disabled;
+      if (dom.slider.setAttribute) dom.slider.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+    }
+    applyMotionMix();
+    if (ambientActive() && state.renderPaused) resumeVisual();
+  }
+
   function initViz() {
     if (viz) return true;
     if (hardBlocker() === 'webgl' || hardBlocker() === 'token' || hardBlocker() === 'capture') return false;
@@ -818,6 +985,8 @@
         height: state.canvas.h,
         pixelRatio: 1
       });
+      ensureMotionGraph();
+      viz.connectAudio(audio.mixBus || audio.node);
     } catch (e) {
       recordError(e);
       viz = null;
@@ -969,6 +1138,11 @@
   function noteAudio(silent) {
     if (silent) return;
     state.lastAudioAt = now();
+    if (state.motion === 'both' && state.ambientFallback) {
+      // Sound is back: crossfade from designs to the real audio.
+      state.ambientFallback = false;
+      applyMotionMix();
+    }
     if (state.renderPaused) resumeVisual();
   }
 
@@ -976,6 +1150,27 @@
     if (!state.enabled) { if (state.renderPaused) resumeVisual(); return; }
     if (hardBlocker()) return;
     const quiet = now() - state.lastAudioAt;
+
+    if (state.motion === 'both') {
+      const shouldRest = quiet > MOTION_SILENCE_MS;
+      if (shouldRest !== state.ambientFallback) {
+        state.ambientFallback = shouldRest;
+        applyMotionMix();
+      }
+      // Ambient designs keep drawing; the silence gate only applies to real audio.
+      if (state.renderPaused) resumeVisual();
+      return;
+    }
+
+    applyMotionMix();
+
+    if (state.motion === 'designs') {
+      // The designs are the source, so silence must not fade the canvas.
+      if (state.renderPaused) resumeVisual();
+      return;
+    }
+
+    // music: real audio only. In silence the visuals settle (no ambient).
     if (quiet > SILENCE_MS) {
       pauseVisual();
     } else if (state.renderPaused) {
@@ -1102,8 +1297,7 @@
       if (ctx.state === 'running') {
         unblock('audio');
       } else if (ctx.state === 'suspended') {
-        block('audio', 'Audio is paused until you click — showing the accent-only fallback.');
-        armGestureResume();
+        audioSuspended();
       }
     });
     // Autoplay-blocked contexts never resolve resume() until the user gestures,
@@ -1116,10 +1310,34 @@
       }
     } catch (e) { recordError(e); }
     if (ctx.state !== 'running') {
-      block('audio', 'Audio is paused until you click — showing the accent-only fallback.');
-      armGestureResume();
+      audioSuspended();
     }
     return true;
+  }
+
+  // The app backdrop is click-through, so it can never receive the gesture
+  // autoplay wants. There the designs keep drawing (presets animate on time
+  // alone) and resume is retried quietly; the parent window's own activation
+  // can unlock it through allow="autoplay".
+  let resumeRetry = null;
+  function audioSuspended() {
+    if (!OVERLAY) {
+      block('audio', 'Audio is paused until you click — showing the accent-only fallback.');
+      armGestureResume();
+      return;
+    }
+    unblock('audio');
+    if (!viz) initViz();
+    startLoop();
+    if (resumeRetry) return;
+    resumeRetry = setInterval(() => {
+      if (!audio.ctx || audio.ctx.state === 'running') {
+        clearInterval(resumeRetry);
+        resumeRetry = null;
+        return;
+      }
+      try { audio.ctx.resume().catch(() => {}); } catch (_) { /* retried next tick */ }
+    }, 2000);
   }
 
   let gestureArmed = false;
@@ -1321,7 +1539,7 @@
 
   function applyConfig(cfg) {
     if (!cfg || typeof cfg !== 'object') return;
-    // `enabled` is the server-side truth: the desktop chip and aura_control turn
+    // `enabled` is the server-side truth: desktop settings and aura_control turn
     // Aura on through /api/control, and the page must follow that change.
     if (typeof cfg.enabled === 'boolean' && cfg.enabled !== state.enabled) setEnabledUI(cfg.enabled);
     if (typeof cfg.reduced_motion === 'boolean') setReducedMotion(cfg.reduced_motion || FORCE_REDUCED);
@@ -1333,6 +1551,9 @@
     }
     if (typeof cfg.behavior === 'string') {
       setBehaviorUI(cfg.behavior, cfg.behavior_profile);
+    }
+    if (typeof cfg.motion === 'string') {
+      setMotionUI(cfg.motion);
     }
     if (typeof cfg.mood_reactive === 'boolean') setMoodReactiveUI(cfg.mood_reactive);
     if (typeof cfg.accent_pulse === 'boolean') setAccentPulseUI(cfg.accent_pulse);
@@ -1346,10 +1567,14 @@
   }
 
   function setBehaviorUI(name, serverProfile) {
-    const key = (typeof name === 'string' && Object.prototype.hasOwnProperty.call(BEHAVIOR_PROFILES, name))
+    const saved = (typeof name === 'string' && Object.prototype.hasOwnProperty.call(BEHAVIOR_PROFILES, name))
       ? name : DEFAULT_BEHAVIOR;
+    // Overlay mode is ambient and must stay calm by default. Only an explicit
+    // saved 'intense' choice survives, because the user asked for that.
+    const key = (OVERLAY && saved !== 'intense') ? 'calm' : saved;
     const p = Object.assign({}, BEHAVIOR_PROFILES[key]);
-    if (serverProfile && typeof serverProfile === 'object') {
+    const profileMatches = key === saved;
+    if (profileMatches && serverProfile && typeof serverProfile === 'object') {
       // The server publishes the mapping (§9); take its numbers when sane.
       for (const k of ['intensity_ceiling', 'pulse_hz_max', 'blend_ms', 'mood_gain_scale']) {
         if (typeof serverProfile[k] === 'number' && isFinite(serverProfile[k])) p[k] = serverProfile[k];
@@ -1411,7 +1636,14 @@
 
   function applyCapture(capture) {
     state.capture = capture;
-    if (capture === 'none') {
+    if (capture === 'none' && state.motion !== 'music') {
+      // No capture, but designs still move on the ambient source.
+      unblock('capture');
+      state.ambientFallback = true;
+      applyMotionMix();
+      if (!viz) initViz();
+      else startLoop();
+    } else if (capture === 'none') {
       block('capture', 'No system audio is available on this machine — showing the accent-only fallback.');
       if (viz) stopLoop();
     } else {
@@ -1530,6 +1762,14 @@
         postControl({ behavior: value });
       });
     }
+    if (dom.motion) {
+      dom.motion.addEventListener('change', () => {
+        const value = String(dom.motion.value || '');
+        if (MOTIONS.indexOf(value) === -1) return;
+        setMotionUI(value);
+        postControl({ motion: value });
+      });
+    }
     if (dom.toggle) {
       dom.toggle.addEventListener('click', () => {
         const next = !state.enabled;
@@ -1558,7 +1798,10 @@
     dom.opacity = document.getElementById('aura-opacity');
     dom.opacityOut = document.getElementById('aura-opacity-out');
     dom.behavior = document.getElementById('aura-behavior');
+    dom.motion = document.getElementById('aura-motion');
     dom.toggle = document.getElementById('aura-toggle');
+    if (dom.motion) dom.motion.value = state.motion;
+    if (dom.slider) dom.slider.disabled = state.motion === 'designs';
 
     const mq = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
     state.reducedMotion = FORCE_REDUCED || !!(mq && mq.matches);
@@ -1596,7 +1839,7 @@
       socket.state = 'refused';
     } else if (health.ok && health.json) {
       state.capture = String(health.json.capture || 'unknown');
-      if (state.capture === 'none') {
+      if (state.capture === 'none' && state.motion === 'music') {
         block('capture', 'No system audio is available on this machine — showing the accent-only fallback.');
       }
     }
@@ -1652,9 +1895,12 @@
         opacity: Number(state.opacity.toFixed(3)),
         behavior: state.behavior,
         behaviorProfile: Object.assign({}, state.behaviorProfile),
+        motion: state.motion,
+        ambientFallback: state.ambientFallback,
         moodReactive: state.moodReactive,
         accentPulse: state.accentPulse,
         autoPreset: state.autoPreset,
+        overlay: OVERLAY,
         silent: state.renderPaused,
         canvasOpacity: dom.canvas ? dom.canvas.style.opacity : null,
         scrimOpacity: dom.scrim ? dom.scrim.style.opacity : null,
@@ -1687,7 +1933,10 @@
           state: audio.ctx ? audio.ctx.state : null,
           sampleRate: audio.sampleRate,
           worklet: !!audio.node,
-          mutedGain: audio.mute ? audio.mute.gain.value : null
+          mutedGain: audio.mute ? audio.mute.gain.value : null,
+          motionMix: audio.mixTarget || null,
+          realGain: audio.realGain ? audio.realGain.gain.value : null,
+          ambientGain: audio.ambientGain ? audio.ambientGain.gain.value : null
         },
         flash: {
           accepted: flash.history.length,
@@ -1707,6 +1956,7 @@
     setIntensityUI,
     setOpacityUI,
     setBehaviorUI,
+    setMotionUI,
     setMoodReactiveUI,
     setAutoPresetUI,
     setAccentPulseUI,

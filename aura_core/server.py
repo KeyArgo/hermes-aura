@@ -46,6 +46,7 @@ VERSION = "0.1.0"
 SAMPLE_RATE = 48000
 FRAME_SAMPLES = 1024
 FEATURE_INTERVAL_S = 0.1  # ≤10 Hz (§2)
+CAPTURE_RETRY_S = 10.0  # while on silence, look for a real backend this often
 MOOD_KEEPALIVE_S = 2.0
 MAX_CONTROL_BYTES = 64 * 1024
 MAX_WS_QUEUE_PCM = 4      # ~85 ms of audio; older frames are dropped
@@ -298,6 +299,7 @@ def _config_event() -> dict:
         "mood_reactive": bool(cfg["mood_reactive"]),
         "accent_pulse": bool(cfg["accent_pulse"]),
         "auto_preset": bool(cfg["auto_preset"]),
+        "motion": cfg["motion"],
         "behavior_profile": behavior.profile(cfg["behavior"]),
     }
 
@@ -349,6 +351,7 @@ def _mood_tick(now: float) -> None:
 def _capture_loop(stop_event: threading.Event) -> None:
     analyser = analysis.Analyser()
     cap = None
+    preferred = None
     try:
         preferred = config.capture_override()
         if preferred and preferred not in ("pipewire", "pulse", "wasapi", "macos", "none"):
@@ -367,9 +370,27 @@ def _capture_loop(stop_event: threading.Event) -> None:
 
     last_feature = 0.0
     last_data = time.monotonic()
+    last_probe = last_data
     try:
         while not stop_event.is_set():
             now = time.monotonic()
+            if (cap.name == "none" and preferred != "none"
+                    and now - last_probe >= CAPTURE_RETRY_S):
+                # The first probe can miss audio (busy host at startup, sound
+                # server or device not ready yet); never lock in silence.
+                last_probe = now
+                try:
+                    retry = capture.open_capture(preferred)
+                except Exception:  # noqa: BLE001
+                    retry = None
+                if retry is not None and retry.name != "none":
+                    cap = retry
+                    with _STATE.lock:
+                        _STATE.capture_obj = cap
+                        _STATE.capture_name = cap.name
+                    _log("aura: capture backend %s (after retry)", cap.name)
+                    publish_config()  # open pages still show "no system audio"
+                now = time.monotonic()
             frame = None
             try:
                 frame = cap.read(FRAME_SAMPLES)
@@ -383,11 +404,14 @@ def _capture_loop(stop_event: threading.Event) -> None:
                         _broadcast_event({"type": "error", "code": "capture_lost",
                                           "message": "audio capture stopped; visualizer is idle"})
                 frame = b"\x00" * (FRAME_SAMPLES * 4)
-                if cap.name == "none":
-                    time.sleep(0.02)
             else:
                 last_data = now
                 _STATE.capture_lost_reported = False
+            if cap.name == "none":
+                # NullCapture returns silence instantly; pace it to real time or
+                # this thread spins a full core and starves the host's GIL.
+                if stop_event.wait(FRAME_SAMPLES / capture.SAMPLE_RATE):
+                    break
 
             ts_ms = int(now * 1000)
             with _STATE.lock:
@@ -644,6 +668,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "mood_reactive": bool(cfg["mood_reactive"]),
                 "accent_pulse": bool(cfg["accent_pulse"]),
                 "auto_preset": bool(cfg["auto_preset"]),
+                "motion": cfg["motion"],
             }
         return payload
 
@@ -661,6 +686,7 @@ class _Handler(BaseHTTPRequestHandler):
             "mood_reactive": bool(cfg["mood_reactive"]),
             "accent_pulse": bool(cfg["accent_pulse"]),
             "auto_preset": bool(cfg["auto_preset"]),
+            "motion": cfg["motion"],
             "behavior_profile": behavior.profile(cfg["behavior"]),
         }
 
@@ -910,6 +936,14 @@ def _validate_control(data) -> dict:
         if value not in behavior.BEHAVIORS:
             raise ValueError("bad_behavior")
         applied["behavior"] = value
+    if "motion" in data:
+        value = data["motion"]
+        if not isinstance(value, str):
+            raise ValueError("motion_must_be_string")
+        value = value.strip().lower()
+        if value not in config.MOTIONS:
+            raise ValueError("bad_motion")
+        applied["motion"] = value
     for toggle in ("mood_reactive", "accent_pulse", "auto_preset"):
         if toggle in data:
             if not isinstance(data[toggle], bool):
@@ -922,7 +956,7 @@ def _apply_control(data) -> dict:
     applied = _validate_control(data)
     patch = {k: v for k, v in applied.items()
              if k in ("enabled", "intensity", "preset", "opacity", "behavior",
-                      "mood_reactive", "accent_pulse", "auto_preset")}
+                      "mood_reactive", "accent_pulse", "auto_preset", "motion")}
     if patch:
         cfg = config.merge_config(patch)
         if "preset" in applied:
@@ -1004,15 +1038,19 @@ def _start_server() -> None:
 # public internal API (CONTRACT §7) — all swallow-and-log
 # ---------------------------------------------------------------------------
 
+_START_LOCK = threading.Lock()
+
+
 def ensure_server() -> None:
     """Start the server in a daemon thread if it is not running. Idempotent."""
     try:
-        with _STATE.lock:
-            running = (_STATE.httpd is not None and _STATE.thread is not None
-                       and _STATE.thread.is_alive())
-        if running:
-            return
-        _start_server()
+        with _START_LOCK:
+            with _STATE.lock:
+                running = (_STATE.httpd is not None and _STATE.thread is not None
+                           and _STATE.thread.is_alive())
+            if running:
+                return
+            _start_server()
     except Exception as exc:  # noqa: BLE001 - never block register()/a hook
         _log("aura: server start failed (%s)", type(exc).__name__)
 
@@ -1092,6 +1130,11 @@ def publish_config() -> None:
 
 def stop_server() -> None:
     """Clean shutdown: close sockets, join threads, leave no listener."""
+    with _START_LOCK:
+        _stop_server_locked()
+
+
+def _stop_server_locked() -> None:
     try:
         with _STATE.lock:
             httpd = _STATE.httpd

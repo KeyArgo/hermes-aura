@@ -332,6 +332,33 @@ def test_display_controls_apply_and_persist(live, tmp_path):
     assert json_body(payload)["mood"] == "error"
 
 
+def test_control_accepts_motion_and_persists_it(live, tmp_path):
+    status, payload = http_call(live["port"], "POST", "/api/control",
+                                token=live["token"], body={"motion": "designs"})
+    assert status == 200
+    assert json_body(payload)["applied"] == {"motion": "designs"}
+
+    stored = json.loads((tmp_path / "aura" / "config.json").read_text(encoding="utf-8"))
+    assert stored["motion"] == "designs"
+
+    status, payload = http_call(live["port"], "GET", "/api/config", token=live["token"])
+    assert json_body(payload)["motion"] == "designs"
+    assert server._config_event()["motion"] == "designs"
+
+    status, payload = http_call(live["port"], "POST", "/api/control",
+                                token=live["token"], body={"motion": "MUSIC"})
+    assert status == 200
+    assert json_body(payload)["applied"] == {"motion": "music"}
+
+
+@pytest.mark.parametrize("body", [{"motion": "loud"}, {"motion": 3}, {"motion": True}])
+def test_control_rejects_bad_motion(live, body):
+    status, payload = http_call(live["port"], "POST", "/api/control",
+                                token=live["token"], body=body)
+    assert status == 400
+    assert json_body(payload)["ok"] is False
+
+
 def test_config_event_carries_display_controls(live):
     status, _ = http_call(live["port"], "POST", "/api/control", token=live["token"],
                           body={"opacity": 0.4, "behavior": "intense"})

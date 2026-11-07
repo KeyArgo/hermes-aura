@@ -11,25 +11,31 @@ integration and no playback of its own: it works with anything the machine is pl
 
 ## What it does (0.1)
 
-- **Aura stage** — a full-window visualizer page (`/aura`, sidebar entry) with the chat
-  still reachable in its own pane.
+- **Aura stage** — a full-window visualizer page (`/aura`, sidebar entry) with a
+  Back to chat button and an optional compact pane.
 - **Accent pulse** — Hermes's accent colour follows the music (≤ 4 Hz, derived from your
   *current* theme so it composes with whatever skin you use; restored on disable).
 - **Agent moods** — thinking / tool / approval / error / streaming / done, with
   restore-on-clear so nothing latches.
-- **Display controls** — an opacity slider, a behaviour profile (calm / balanced / intense;
-  calm is reduced-motion-safe and never uses strobe presets), and switches for agent-mood
+- **Display controls** — opacity, background visibility, a behaviour profile (calm /
+  balanced / intense; calm is reduced-motion-safe and never uses strobe presets), a motion
+  source (designs only / designs + music / music only), and switches for agent-mood
   reactions, accent pulse and automatic preset rotation. Settable by you or by the agent.
-- **Follows the audio, not a screensaver** — sustained silence fades the visual out and
-  stops rendering, so nothing keeps glowing with no sound playing.
+- **Aura Live as a backdrop theme** — selecting the Aura Live theme puts the visualizer
+  behind the app (one click-through iframe) and turns the panels into frosted glass using
+  translucent versions of the active theme's own colours. Background visibility controls
+  how much shows through; text stays crisp. Disabling the theme removes everything.
+- **Motion that fits the room** — designs-only runs a quiet ambient source with no audio;
+  designs + music follows playback and rests on the designs after 1.5 s of silence;
+  music-only settles when nothing is playing.
 - **Optional theme** — an Aura theme whose palette follows the audio. Opt-in; disabling
   restores the theme you had before.
-- **`aura_control`** — the agent can turn Aura on/off, set intensity, opacity and behaviour,
-  pick a preset, set a mood.
+- **`aura_control`** — the agent can turn Aura on/off, set reaction strength, opacity,
+  behaviour and motion, pick a preset, set a mood.
 
 ## Privacy and safety
 
-- Off until you turn it on; a visible indicator; one click to stop.
+- Use the stage control or Aura settings to turn the visualizer off.
 - Captures **loopback** (what the machine plays), never the microphone.
 - Analysis happens in memory. Nothing is recorded to disk, nothing is sent anywhere.
 - Aura never plays, pauses or ducks audio.

@@ -33,13 +33,16 @@ DEFAULTS = {
     # Display controls (CONTRACT.md §9). Opacity dims the canvas and its scrim
     # together; behavior is a named profile with concrete render parameters.
     "opacity": 0.75,
-    "behavior": "balanced",
+    "behavior": "calm",
     "mood_reactive": True,
     "accent_pulse": True,
     "auto_preset": True,
+    # Motion source for the visualizer: ambient designs, real audio, or both.
+    "motion": "both",
 }
 
 BEHAVIORS = ("calm", "balanced", "intense")
+MOTIONS = ("designs", "both", "music")
 
 _lock = threading.RLock()
 
@@ -132,6 +135,12 @@ def _as_behavior(value, default):
     return default
 
 
+def _as_motion(value, default):
+    if isinstance(value, str) and value.strip().lower() in MOTIONS:
+        return value.strip().lower()
+    return default
+
+
 def normalise(raw) -> dict:
     """Return a fully-populated, type-safe config dict from arbitrary input."""
     cfg = dict(DEFAULTS)
@@ -147,6 +156,7 @@ def normalise(raw) -> dict:
     cfg["mood_reactive"] = _as_bool(raw.get("mood_reactive"), DEFAULTS["mood_reactive"])
     cfg["accent_pulse"] = _as_bool(raw.get("accent_pulse"), DEFAULTS["accent_pulse"])
     cfg["auto_preset"] = _as_bool(raw.get("auto_preset"), DEFAULTS["auto_preset"])
+    cfg["motion"] = _as_motion(raw.get("motion"), DEFAULTS["motion"])
     return cfg
 
 

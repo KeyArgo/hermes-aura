@@ -86,7 +86,7 @@ stage, pulses the app accent colour with the music, and reacts to agent state. I
 pauses or ducks audio; capture is loopback only, never the microphone; all analysis is local.
 
 Safety posture:
-- Starts off; one chip click to stop; a visible status indicator.
+- Turn Aura off using the stage control or Aura settings.
 - Random ephemeral port on 127.0.0.1 with a per-process token file (0600). Static assets are
   public (a browser cannot attach a bearer to <script src>); every data endpoint and the
   WebSocket require the token. Host-header guard against DNS rebinding.
