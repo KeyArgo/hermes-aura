@@ -5,7 +5,7 @@ normalised to 100 %. `done` is the honest completion fraction (0.0 = untouched, 
 a real command, not by a claim). Remaining % = Σ(weight × (1 − done)) ÷ 120 × 100.
 
 Deadline: hackathon submission **Nov 11, 17:00 EST**; catalog PR target **Nov 9**.
-Repo: /mnt/homes/Development/hermes-aura (LOCAL git only — nothing pushed yet).
+Repo: /mnt/homes/Development/hermes-aura; private GitHub origin `KeyArgo/hermes-aura-live-dev`.
 
 | # | item | weight | done | evidence / blocker |
 |---|---|---|---|---|

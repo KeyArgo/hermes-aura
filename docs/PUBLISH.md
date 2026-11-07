@@ -1,19 +1,19 @@
 # Publishing Aura — drafts to approve
 
-Nothing here has been executed. Every step below is a public action and needs an explicit
-"go" from Daniel first (standing rule: ask before any public commit/PR/repo/post/form).
+Aura has been pushed to the private GitHub repository `KeyArgo/hermes-aura-live-dev`.
+Public release actions below remain drafts and need an explicit "go" from Daniel first.
 
 ## 0. Preconditions
 
-- Repo `/mnt/homes/Development/hermes-aura` is **local-only** (no remote configured). Check:
-  `git remote -v` (currently empty).
+- Repo `/mnt/homes/Development/hermes-aura` has private GitHub origin
+  `https://github.com/KeyArgo/hermes-aura-live-dev`.
 - The catalog requires a **public** repo and an **exact 40-char SHA** pin, submitted by the
   repository owner or a major contributor.
 - `hermes plugins validate .` passes (desktop-surface + security scan included).
 - Platform honesty: Linux verified; Windows and macOS implemented but **not** verified — the
   catalog description and README must say so.
 
-## 1. Create and push the repo (needs OK)
+## 1. Public repository for catalog submission (needs OK)
 
 Suggested name: `hermes-aura` under the user's account. Description:
 
