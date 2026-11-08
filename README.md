@@ -21,19 +21,24 @@ integration and no playback of its own: it works with anything the machine is pl
   Turn it on in Aura settings; Restore my theme turns it off and clears the override.
 - **Agent moods** — thinking / tool / approval / error / streaming / done, with
   restore-on-clear so nothing latches.
-- **Display controls** — opacity (new users start dim at 0.35), a behaviour profile
-  (calm / balanced / intense; balanced by default, calm is reduced-motion-safe and never uses
-  strobe presets), a motion source (default / music only / agent activity / agent + music;
-  agent + music by default), and switches for agent-mood reactions, accent pulse, reduced
-  motion and automatic preset rotation. Settable by you or by the agent.
+- **Display controls** — opacity, a behaviour profile (calm / balanced / intense; calm is
+  reduced-motion-safe and never uses strobe presets), a motion source (music or designs /
+  music only / agent activity / agent + music), a **Show** choice (**Always** / **Only while
+  active**) and switches for agent-mood reactions, accent pulse and automatic preset
+  rotation. Settable by you or by the agent. New installs start on Agent + music, Balanced,
+  0.35 opacity and Show: Always; saved settings keep their own values.
+- **Show: Only while active** — the backdrop iframe and `#aura-glass` style exist only while
+  the visual is actually moving. They fade in after 300 ms of sustained activity, stay
+  through short gaps between tool calls (2.5 s hysteresis), then fade out and are removed so
+  your own theme surfaces are restored exactly. The ramp is capped at 1.5 s (200 ms under
+  Gentle motion). The status-bar quick menu and Settings ▸ Plugins both expose it.
 - **Optional Aura Live theme (opt-in, off by default)** — a deep-stage palette. While it is the
   active theme it also drives the window backdrop. Your previous theme is restored when you turn
   it off, and **Restore my theme** disables every accent/theme/window-visual effect and cleans up.
-- **Motion that fits the room** — new users start on agent + music: it follows playback and
-  pauses only when the agent is idle and the room is silent; the both option follows playback and
-  rests on gentle designs after 1.5 s of silence; music-only settles when nothing is playing;
-  agent activity moves only while the agent is working and pauses after 2.5 s idle. The legacy
-  designs-only value still works.
+- **Motion that fits the room** — the default follows playback and rests on gentle designs after
+  1.5 s of silence; music-only settles when nothing is playing; agent activity moves only while
+  the agent is working and pauses after 2.5 s idle; agent + music also follows playback and pauses
+  only when the agent is idle and the room is silent. The legacy designs-only value still works.
 - **Optional theme** — an Aura theme whose palette follows the audio. Opt-in; disabling
   restores the theme you had before.
 - **`aura_control`** — the agent can turn Aura on/off, set reaction strength, opacity,
@@ -43,12 +48,13 @@ integration and no playback of its own: it works with anything the machine is pl
 
 The only host DOM Aura touches is gated behind an opt-in: while "Visual behind the app" (or the
 Aura Live theme) is on and Aura is enabled, it mounts one fixed, click-through, negative-z
-backdrop iframe and a single `#aura-glass` stylesheet. Switching the visual off, turning Aura
-off, **Restore my theme** and dispose remove both; while nothing is opted in nothing is injected
-at all, and the host `html`/`body`/root styles are never written. The accent override is the
-SDK's sanctioned, opt-in mechanism. Accent pulse and the Aura Live theme are off by default.
-**Restore my theme** turns the window visual, accent pulse and theme off, clears the accent
-override, restores your previous theme, and removes any effect Aura applied.
+backdrop iframe and a single `#aura-glass` stylesheet. With **Show: Only while active** both are
+mounted only while the visual moves and are removed again once the fade-out completes. Switching
+the visual off, turning Aura off, **Restore my theme** and dispose remove both; while nothing is
+opted in nothing is injected at all, and the host `html`/`body`/root styles are never written. The
+accent override is the SDK's sanctioned, opt-in mechanism. Accent pulse and the Aura Live theme
+are off by default. **Restore my theme** turns the window visual, accent pulse and theme off,
+clears the accent override, restores your previous theme, and removes any effect Aura applied.
 
 ## Privacy and safety
 

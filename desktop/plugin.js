@@ -91,15 +91,16 @@ const ACCENT_L_MAX = 0.78
 const DEFAULT_SETTINGS = Object.freeze({
   enabled: true,
   intensity: 0.5,
-  opacity: 0.75,
+  opacity: 0.35,
   behavior: 'balanced',
   moodReactive: true,
   accentPulse: false,
   autoPreset: true,
   themeOptIn: false,
   windowVisual: false,
-  motion: 'both',
-  reducedMotion: false
+  motion: 'agent_music',
+  reducedMotion: false,
+  showWhen: 'always'
 })
 
 // The plugin's own entry inside Settings ▸ Plugins (same shape the host's
@@ -114,6 +115,19 @@ const PULSE_REDUCED_OPACITY = 0.55
 // Above this audio level, and not flagged silent, counts as "music playing".
 const PULSE_MUSIC_LEVEL = 0.02
 
+// "Show: Only while active" timing. The visual is mounted only after 300 ms
+// of sustained activity, stays through short idle gaps (hysteresis so tool
+// calls do not flicker), and fades out after 2.5 s idle. The opacity ramp is
+// capped at 1.5 s, or 200 ms under reduced motion.
+const SHOW_FADE_IN_DELAY_MS = 300
+const SHOW_FADE_OUT_IDLE_MS = 2500
+const SHOW_FADE_MS = 1500
+const SHOW_FADE_REDUCED_MS = 200
+const SHOW_FADE_STEP_MS = 250
+
+const SHOW_WHEN_OPTIONS = ['always', 'active']
+const SHOW_WHEN_LABELS = { always: 'Always', active: 'Only while active' }
+
 const BEHAVIORS = ['calm', 'balanced', 'intense']
 const BEHAVIOR_LABELS = { calm: 'Calm', balanced: 'Balanced', intense: 'Intense' }
 // `designs` is accepted for configs saved before the agent modes existed, but
@@ -122,10 +136,10 @@ const MOTIONS = ['designs', 'both', 'music', 'agent', 'agent_music']
 const MOTION_OPTIONS = ['both', 'music', 'agent', 'agent_music']
 const MOTION_LABELS = {
   designs: 'Designs only (legacy)',
-  both: 'Default — music, or gentle designs',
+  both: 'Music, or gentle designs',
   music: 'Music only',
   agent: 'Agent activity',
-  agent_music: 'Agent + music'
+  agent_music: 'Agent + music (default)'
 }
 
 const EMPTY_LIVE = Object.freeze({
@@ -238,6 +252,20 @@ let themeInfo = { name: '', accent: '' }
 let knownTheme = ''
 const disposers = []
 
+// "Only while active" fade state. showVisible means the backdrop/glass are
+// allowed to exist; showOpacity is the local fade factor applied to the
+// iframe. Timers are host-owned and every one is cancelled on reset/dispose.
+let showVisible = false
+let showOpacity = 0
+let showTarget = 0
+let showDelayTimer = null
+let showIdleTimer = null
+let showRampTimer = null
+let showRampLeft = 0
+let showRampDelta = 0
+let showRampStepMs = SHOW_FADE_STEP_MS
+let showEpoch = 0
+
 const $settings = atom({ ...DEFAULT_SETTINGS })
 const $live = atom({ ...EMPTY_LIVE })
 const $themeApplied = atom(false)
@@ -271,6 +299,7 @@ function readSettings(ctx) {
     if (typeof raw.windowVisual === 'boolean') out.windowVisual = raw.windowVisual
     if (typeof raw.motion === 'string' && MOTIONS.includes(raw.motion)) out.motion = raw.motion
     if (typeof raw.reducedMotion === 'boolean') out.reducedMotion = raw.reducedMotion
+    if (typeof raw.showWhen === 'string' && SHOW_WHEN_OPTIONS.includes(raw.showWhen)) out.showWhen = raw.showWhen
     // Legacy `glass` / `overlayOpacity` keys are ignored: the old host-glass
     // visibility slider is gone; windowVisual + the backdrop replace it.
   }
@@ -300,9 +329,8 @@ function setError(message) {
 
 // Optional whole-window MilkDrop backdrop, enabled only by the user.
 // `reduced-motion=1` is the backdrop page's own force-switch (web/aura.js
-// FORCE_REDUCED): the server's /control does not take a reduced_motion key,
-// so this URL parameter is how the quick menu's Gentle motion switch reaches
-// the moving visual.
+// FORCE_REDUCED) and is also mirrored to the server's config through
+// /control, so both halves agree on the motion-sensitivity setting.
 function backdropSrc(url) {
   if (!url) return ''
   const params = ['overlay=1']
@@ -382,17 +410,14 @@ function glassCss() {
   ].filter(Boolean).join('\n')
 }
 
-function applyGlassStyle(glass) {
+function applyGlassStyle() {
   if (!doc || !doc.head || typeof doc.head.appendChild !== 'function') return
   // Measure the theme's own colours, not the previous glass.
   if (glassStyleEl) removeGlassStyle()
-  if (!glassStyleEl) {
-    glassStyleEl = doc.createElement('style')
-    glassStyleEl.setAttribute('id', 'aura-glass')
-    doc.head.appendChild(glassStyleEl)
-  }
+  glassStyleEl = doc.createElement('style')
+  glassStyleEl.setAttribute('id', 'aura-glass')
+  doc.head.appendChild(glassStyleEl)
   glassStyleEl.textContent = glassCss()
-  if (backdropEl) backdropEl.style.opacity = String(0.35)
 }
 
 function removeGlassStyle() {
@@ -426,20 +451,84 @@ function removeBackdrop() {
   removeGlassStyle()
 }
 
-/** Keep exactly one backdrop mounted, in sync with the theme and live status. */
-function syncBackdrop() {
+function liveUrl() {
+  const live = $live.get()
+  return live.ok && typeof live.url === 'string' && /^https?:\/\//.test(live.url) ? live.url : ''
+}
+
+/** The opt-in gate for the backdrop, independent of the fade state. */
+function showEligible() {
   const settings = $settings.get()
   const live = $live.get()
-  const url = live.ok && typeof live.url === 'string' && /^https?:\/\//.test(live.url) ? live.url : ''
-  // The server's enabled flag is the truth; the local copy can be stale,
-  // which silently kept the backdrop away.
   const enabled = live.ok ? live.enabled === true : settings.enabled
-  const wanted = Boolean(doc && enabled && (knownTheme === THEME_NAME || settings.windowVisual) && url)
-  if (!wanted) {
-    removeBackdrop()
-    return
-  }
+  return Boolean(doc && enabled && (knownTheme === THEME_NAME || settings.windowVisual) && liveUrl())
+}
 
+// Host-owned timers: cancel through the disposer the SDK returns. A stale
+// callback is also fenced by showEpoch, so an uncancellable host timer cannot
+// resurrect an old fade.
+function setShowTimer(fn, ms) {
+  if (ctxRef && typeof ctxRef.setTimeout === 'function') {
+    try {
+      return ctxRef.setTimeout(fn, ms)
+    } catch {
+      // fall through to the global timer
+    }
+  }
+  if (typeof setTimeout === 'function') {
+    try {
+      return setTimeout(fn, ms)
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+function clearShowTimer(handle) {
+  if (!handle) return
+  try {
+    if (typeof handle === 'function') {
+      handle()
+      return
+    }
+    if (ctxRef && typeof ctxRef.clearTimeout === 'function') {
+      ctxRef.clearTimeout(handle)
+      return
+    }
+    if (typeof clearTimeout === 'function') clearTimeout(handle)
+  } catch {
+    // already cleared
+  }
+}
+
+function cancelShowTimers() {
+  if (showDelayTimer) {
+    clearShowTimer(showDelayTimer)
+    showDelayTimer = null
+  }
+  if (showIdleTimer) {
+    clearShowTimer(showIdleTimer)
+    showIdleTimer = null
+  }
+  if (showRampTimer) {
+    clearShowTimer(showRampTimer)
+    showRampTimer = null
+  }
+  showRampLeft = 0
+}
+
+/** Drop every fade timer and state. The caller decides whether the backdrop
+ *  itself should stay (always mode) or go. */
+function resetShow() {
+  showEpoch += 1
+  cancelShowTimers()
+  showVisible = false
+  showOpacity = 0
+  showTarget = 0
+}
+
+function mountBackdrop(url, opacity) {
   const src = backdropSrc(url)
   if (!backdropEl) {
     if (!doc.body || typeof doc.body.appendChild !== 'function') return
@@ -462,7 +551,6 @@ function syncBackdrop() {
     style.border = '0'
     style.pointerEvents = 'none'
     style.zIndex = '-1'
-    style.opacity = String(0.35)
     style.background = 'transparent'
     backdropUrl = src
     backdropEl.src = src
@@ -470,8 +558,149 @@ function syncBackdrop() {
     backdropUrl = src
     backdropEl.src = src
   }
+  backdropEl.style.opacity = String(clamp01(opacity))
   if (backdropEl.parentNode !== doc.body) doc.body.appendChild(backdropEl)
-  if (!glassStyleEl) applyGlassStyle(0.35)
+  if (!glassStyleEl) applyGlassStyle()
+}
+
+/** Keep exactly one backdrop mounted, in sync with the theme, live status and
+ *  the "Show" mode. In "active" mode the fade state machine owns mounting. */
+function syncBackdrop() {
+  const settings = $settings.get()
+  if (!showEligible()) {
+    resetShow()
+    removeBackdrop()
+    return
+  }
+  if (settings.showWhen === 'active') {
+    if (!showVisible) {
+      removeBackdrop()
+      return
+    }
+    mountBackdrop(liveUrl(), showOpacity)
+    return
+  }
+  resetShow()
+  mountBackdrop(liveUrl(), 1)
+}
+
+function applyShowOpacity() {
+  if (backdropEl) backdropEl.style.opacity = String(clamp01(showOpacity))
+}
+
+/** Walk the opacity to showTarget over <= 1.5 s (<= 200 ms under reduced
+ *  motion). Reversals cancel the current ramp and start from where it is. */
+function beginShowRamp() {
+  const epoch = ++showEpoch
+  if (showRampTimer) {
+    clearShowTimer(showRampTimer)
+    showRampTimer = null
+  }
+  const reduced = Boolean($settings.get().reducedMotion)
+  const total = reduced ? SHOW_FADE_REDUCED_MS : SHOW_FADE_MS
+  const step = reduced ? SHOW_FADE_REDUCED_MS : SHOW_FADE_STEP_MS
+  const steps = Math.max(1, Math.round(total / step))
+  showRampStepMs = step
+  showRampLeft = steps
+  showRampDelta = (clamp01(showTarget) - clamp01(showOpacity)) / steps
+  if (Math.abs(showRampDelta) < 1e-4) {
+    showOpacity = clamp01(showTarget)
+    applyShowOpacity()
+    if (showOpacity <= 0) {
+      showVisible = false
+      showTarget = 0
+      removeBackdrop()
+    }
+    return
+  }
+  const tick = () => {
+    if (disposed || epoch !== showEpoch) return
+    showRampTimer = null
+    showRampLeft -= 1
+    showOpacity = clamp01(showOpacity + showRampDelta)
+    if (showRampLeft <= 0) {
+      showOpacity = clamp01(showTarget)
+      applyShowOpacity()
+      if (showOpacity <= 0) {
+        showVisible = false
+        showTarget = 0
+        removeBackdrop()
+      }
+      return
+    }
+    applyShowOpacity()
+    showRampTimer = setShowTimer(tick, showRampStepMs)
+  }
+  showRampTimer = setShowTimer(tick, showRampStepMs)
+}
+
+function beginFadeIn() {
+  if (disposed) return
+  if (!showEligible()) {
+    resetShow()
+    removeBackdrop()
+    return
+  }
+  showVisible = true
+  showTarget = 1
+  mountBackdrop(liveUrl(), showOpacity)
+  beginShowRamp()
+}
+
+function beginFadeOut() {
+  if (disposed || !showVisible) return
+  showTarget = 0
+  beginShowRamp()
+}
+
+/** Advance the "Only while active" state machine from the poll tick. Activity
+ *  must last 300 ms before the first fade-in; 2.5 s of idle starts fade-out.
+ *  Short gaps between tool calls stay inside the hysteresis window. */
+function updateShow() {
+  if (disposed) return
+  const settings = $settings.get()
+  if (!showEligible()) {
+    resetShow()
+    removeBackdrop()
+    return
+  }
+  if (settings.showWhen !== 'active') {
+    resetShow()
+    return
+  }
+  const moving = visualIsMoving()
+  if (moving) {
+    if (showIdleTimer) {
+      clearShowTimer(showIdleTimer)
+      showIdleTimer = null
+    }
+    if (!showVisible) {
+      if (!showDelayTimer) {
+        showDelayTimer = setShowTimer(() => {
+          showDelayTimer = null
+          if (disposed) return
+          if (!showEligible() || !visualIsMoving()) return
+          beginFadeIn()
+        }, SHOW_FADE_IN_DELAY_MS)
+      }
+    } else if (showTarget === 0) {
+      beginFadeIn()
+    }
+    return
+  }
+  if (showDelayTimer) {
+    clearShowTimer(showDelayTimer)
+    showDelayTimer = null
+  }
+  if (!showVisible) return
+  if (!showIdleTimer) {
+    showIdleTimer = setShowTimer(() => {
+      showIdleTimer = null
+      if (disposed) return
+      if (!showEligible() || visualIsMoving()) return
+      beginFadeOut()
+    }, SHOW_FADE_OUT_IDLE_MS)
+  }
 }
 
 // ------------------------------------------------------------- server control
@@ -489,6 +718,37 @@ async function pushControl(patch) {
     setError('Aura could not apply that change — the local server is not answering.')
     return false
   }
+}
+
+/**
+ * The server is the single source of truth for the display controls. Without
+ * this, a quick menu built from stale local storage showed a different motion
+ * or behaviour than the one actually driving the visual. Sync the five keys
+ * the server owns; local-only preferences (windowVisual, themeOptIn, showWhen)
+ * are never touched here.
+ */
+function syncFromServer(frame) {
+  if (!frame || typeof frame !== 'object') return
+  const current = $settings.get()
+  const patch = {}
+  if (typeof frame.motion === 'string' && MOTIONS.includes(frame.motion) && frame.motion !== current.motion) {
+    patch.motion = frame.motion
+  }
+  if (typeof frame.behavior === 'string' && BEHAVIORS.includes(frame.behavior) && frame.behavior !== current.behavior) {
+    patch.behavior = frame.behavior
+  }
+  if (Number.isFinite(frame.intensity)) {
+    const intensity = clamp01(frame.intensity)
+    if (intensity !== current.intensity) patch.intensity = intensity
+  }
+  if (Number.isFinite(frame.opacity)) {
+    const opacity = clamp01(frame.opacity)
+    if (opacity !== current.opacity) patch.opacity = opacity
+  }
+  if (typeof frame.reduced_motion === 'boolean' && frame.reduced_motion !== current.reducedMotion) {
+    patch.reducedMotion = frame.reduced_motion
+  }
+  if (Object.keys(patch).length) writeSettings(patch)
 }
 
 async function poll() {
@@ -532,6 +792,7 @@ async function poll() {
     if (!ok && !error) error = 'Aura’s local server is starting…'
 
     liveFrame = frame
+    syncFromServer(frame)
     const key = [ok, port, capture, enabled, url, error, mood].join('|')
     if (key !== liveKey) {
       liveKey = key
@@ -546,6 +807,7 @@ async function poll() {
         at: Date.now()
       })
     }
+    updateShow()
     syncBackdrop()
     accentStep(Date.now())
     pulseStep()
@@ -560,7 +822,7 @@ async function poll() {
  * Is the Aura visual actually moving right now? Music-led motions follow the
  * level/silence frame, agent-led motions follow the mood, and the ambient
  * profiles ('both' and legacy 'designs') rest on a gentle design that always
- * drifts. Only used for the status-bar dot — never for appearance itself.
+ * drifts. Used for the status-bar dot and for the "Only while active" fade.
  */
 function visualIsMoving() {
   const settings = $settings.get()
@@ -700,9 +962,11 @@ function onThemeName(name) {
   }
   if (!first && $settings.get().windowVisual) {
     writeSettings({ windowVisual: false })
+    resetShow()
     removeBackdrop()
   }
   if ($settings.get().themeOptIn && !$themeApplied.get()) applyThemeIfOptedIn()
+  updateShow()
 }
 
 function setThemeOptIn(on) {
@@ -722,6 +986,7 @@ async function setWindowVisual(on) {
     await setEnabled(true)
   }
   syncBackdrop()
+  updateShow()
 }
 
 /** One control that returns the host to the user's own appearance: turns off
@@ -730,6 +995,7 @@ async function setWindowVisual(on) {
 async function restoreMyTheme() {
   if (!ctxRef || disposed) return
   writeSettings({ accentPulse: false, themeOptIn: false, windowVisual: false })
+  resetShow()
   removeBackdrop()
   clearAccent(true)
   restoreTheme()
@@ -744,6 +1010,7 @@ async function setEnabled(next) {
   const enabled = Boolean(next)
   writeSettings({ enabled })
   if (!enabled) {
+    resetShow()
     removeBackdrop()
     clearAccent(true)
     restoreTheme()
@@ -766,22 +1033,37 @@ async function setOpacity(next) {
 
 async function setMotion(next) {
   if (!ctxRef || disposed) return
-  const motion = MOTIONS.includes(next) ? next : 'both'
+  const motion = MOTIONS.includes(next) ? next : DEFAULT_SETTINGS.motion
   writeSettings({ motion })
+  updateShow()
   await pushControl({ motion })
 }
 
 /** "Gentle motion (motion-sensitive)". The same key lives in the server's
- *  config (config.reduced_motion) but /control does not accept it yet, so
- *  the push is forwarded for any server that starts to, while the local
- *  effect — the backdrop's reduced-motion force-switch and the dot — applies
- *  immediately in this half. */
+ *  config (config.reduced_motion) and /control accepts it, so the server and
+ *  the backdrop's reduced-motion force-switch stay in agreement. The local
+ *  effect — the ramp cap and the dot — applies immediately in this half. */
 async function setReducedMotion(next) {
   if (!ctxRef || disposed) return
   const reducedMotion = Boolean(next)
   writeSettings({ reducedMotion })
   syncBackdrop()
+  updateShow()
   await pushControl({ reduced_motion: reducedMotion })
+}
+
+/** "Show: Always / Only while active". Desktop-only presentation choice: the
+ *  server has no such key, but the push keeps the one-door rule for every
+ *  quick-menu control and unknown keys are ignored by /control. */
+async function setShowWhen(next) {
+  if (!ctxRef || disposed) return
+  const showWhen = SHOW_WHEN_OPTIONS.includes(next) ? next : 'always'
+  writeSettings({ showWhen })
+  resetShow()
+  removeBackdrop()
+  if (showWhen === 'always') syncBackdrop()
+  else updateShow()
+  await pushControl({ show_when: showWhen })
 }
 
 /** Shared by the settings page and the quick menu: apply the intensity
@@ -1032,6 +1314,20 @@ function AuraQuickMenu() {
             })
           ),
           row(
+            'Show',
+            jsx('select', {
+              value: settings.showWhen,
+              'aria-label': 'Show',
+              style: selectStyle,
+              onChange: event => {
+                void setShowWhen(event && event.target ? String(event.target.value) : 'always')
+              },
+              children: SHOW_WHEN_OPTIONS.map(name =>
+                jsx('option', { key: name, value: name, children: SHOW_WHEN_LABELS[name] })
+              )
+            })
+          ),
+          row(
             'Gentle motion',
             jsx(Switch, {
               checked: settings.reducedMotion,
@@ -1191,7 +1487,7 @@ function AuraSettings() {
         key: 'motion',
         children: row(
           'Motion source',
-          'Default follows music or rests on gentle designs; Music only settles in silence; Agent activity moves only while the agent works and pauses after 2.5 s idle; Agent + music also follows playback.',
+          'Default (Agent + music) follows playback and agent activity; Music only settles in silence; Agent activity moves only while the agent works and pauses after 2.5 s idle; Music, or gentle designs rests on designs in silence.',
           jsx('select', {
             value: settings.motion,
             'aria-label': 'Motion source',
@@ -1210,6 +1506,33 @@ function AuraSettings() {
             },
             children: motionChoices(settings).map(name =>
               jsx('option', { key: name, value: name, children: MOTION_LABELS[name] })
+            )
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'show',
+        children: row(
+          'Show',
+          'Always keeps the backdrop and glass mounted. Only while active shows them just while the visual is moving, fading in after 300 ms of activity and removing the glass entirely after 2.5 s idle.',
+          jsx('select', {
+            value: settings.showWhen,
+            'aria-label': 'Show',
+            style: {
+              font: 'inherit',
+              fontSize: 11,
+              color: 'var(--ui-text-primary)',
+              background: 'var(--ui-bg)',
+              border: '1px solid var(--ui-stroke-secondary)',
+              borderRadius: 6,
+              padding: '3px 6px'
+            },
+            onChange: event => {
+              const value = event && event.target ? String(event.target.value) : 'always'
+              void setShowWhen(value)
+            },
+            children: SHOW_WHEN_OPTIONS.map(name =>
+              jsx('option', { key: name, value: name, children: SHOW_WHEN_LABELS[name] })
             )
           })
         )
@@ -1415,6 +1738,7 @@ function teardown() {
     }
     pollDisposer = null
   }
+  resetShow()
   removeBackdrop()
   clearAccent(true)
   restoreTheme()
@@ -1472,6 +1796,7 @@ export default {
     $menuOpen.set(false)
     $pulse.set(0)
     pulseIndex = 0
+    resetShow()
     const settings = readSettings(ctx)
     $settings.set(settings)
     $live.set({ ...EMPTY_LIVE })

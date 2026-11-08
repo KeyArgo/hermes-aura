@@ -147,8 +147,25 @@ function makeCtx(settings) {
   const storage = new Map()
   if (settings) storage.set('settings', settings)
   // Mirrors the real server: /status reports the enabled flag the last
-  // /control {enabled} actually applied, so off really stays off.
+  // /control {enabled} actually applied, so off really stays off. The display
+  // controls are mirrored too, so /state is a truthful server source.
   let serverEnabled = settings && typeof settings.enabled === 'boolean' ? settings.enabled : true
+  const serverSettings = {
+    motion: settings && typeof settings.motion === 'string' ? settings.motion : 'agent_music',
+    behavior: settings && typeof settings.behavior === 'string' ? settings.behavior : 'balanced',
+    intensity: settings && Number.isFinite(settings.intensity) ? settings.intensity : 0.5,
+    opacity: settings && Number.isFinite(settings.opacity) ? settings.opacity : 0.35,
+    reduced_motion: settings && typeof settings.reducedMotion === 'boolean' ? settings.reducedMotion : false
+  }
+  const serverFrame = {
+    level: 0.55,
+    bands: [0, 0, 0, 0, 0, 0, 0, 0],
+    onset: false,
+    centroid: 0.4,
+    flatness: 0.2,
+    silence: false,
+    mood: 'thinking'
+  }
 
   const ctx = {
     source: 'plugin:aura',
@@ -175,14 +192,14 @@ function makeCtx(settings) {
       disposers.push(fn)
     },
     setInterval(fn, ms) {
-      const record = { fn, ms, cleared: false }
+      const record = { fn, ms, kind: 'interval', cleared: false }
       timers.push(record)
       return () => {
         record.cleared = true
       }
     },
     setTimeout(fn, ms) {
-      const record = { fn, ms, cleared: false }
+      const record = { fn, ms, kind: 'timeout', cleared: false }
       timers.push(record)
       return () => {
         record.cleared = true
@@ -219,27 +236,31 @@ function makeCtx(settings) {
       }
       if (route === '/state') {
         return {
-          level: 0.55,
-          bands: [0, 0, 0, 0, 0, 0, 0, 0],
-          onset: false,
-          centroid: 0.4,
-          flatness: 0.2,
-          silence: false,
-          mood: 'thinking',
-          intensity: 0.5,
-          enabled: true
+          ...serverFrame,
+          bands: [...serverFrame.bands],
+          intensity: serverSettings.intensity,
+          opacity: serverSettings.opacity,
+          behavior: serverSettings.behavior,
+          motion: serverSettings.motion,
+          reduced_motion: serverSettings.reduced_motion,
+          enabled: serverEnabled
         }
       }
       if (route === '/control') {
         controls.push(options.body)
         if (options.body && typeof options.body.enabled === 'boolean') serverEnabled = options.body.enabled
+        if (options.body && typeof options.body.motion === 'string') serverSettings.motion = options.body.motion
+        if (options.body && typeof options.body.behavior === 'string') serverSettings.behavior = options.body.behavior
+        if (options.body && Number.isFinite(options.body.intensity)) serverSettings.intensity = options.body.intensity
+        if (options.body && Number.isFinite(options.body.opacity)) serverSettings.opacity = options.body.opacity
+        if (options.body && typeof options.body.reduced_motion === 'boolean') serverSettings.reduced_motion = options.body.reduced_motion
         return { ok: true }
       }
       throw new Error(`unexpected route ${route}`)
     }
   }
 
-  return { ctx, contributions, timers, controls, disposers, listeners, requests, storage }
+  return { ctx, contributions, timers, controls, disposers, listeners, requests, storage, serverSettings, serverFrame }
 }
 
 // -------------------------------------------------------------- static checks
@@ -573,9 +594,10 @@ record('contributes a permanently mounted theme probe', () => {
 })
 
 record('polls at 250 ms or slower (never faster than 4 Hz)', () => {
-  const interval = a.timers.find(t => t.ms && t.ms >= 250)
+  const intervals = a.timers.filter(t => t.kind === 'interval')
+  const interval = intervals.find(t => t.ms && t.ms >= 250)
   assert.ok(interval, 'no polling interval >= 250 ms')
-  assert.ok(a.timers.every(t => t.ms >= 250), 'a timer is faster than 250 ms')
+  assert.ok(intervals.every(t => t.ms >= 250), 'a poll interval is faster than 250 ms')
 })
 
 await recordAsync('status request leaves time for a cold gateway', async () => {
@@ -704,10 +726,10 @@ await recordAsync('motion select offers the agent modes and hides legacy designs
   assert.equal(options.includes('designs'), false, 'legacy designs is still offered')
   const labels = select.props.children.map(option => option.props.children)
   assert.deepEqual(labels, [
-    'Default — music, or gentle designs',
+    'Music, or gentle designs',
     'Music only',
     'Agent activity',
-    'Agent + music'
+    'Agent + music (default)'
   ])
 })
 
@@ -1095,6 +1117,43 @@ await recordAsync('accent pulse and Aura Live are off by default', async () => {
   assert.equal(themeSwitch.props.checked, false, 'Aura Live theme defaults on')
   assert.equal(hostStyles().length, 0)
   assert.equal(hostIframes().length, 0)
+
+  // Desktop defaults for a new user: agent_music, balanced, 0.35 opacity,
+  // "Show: Always". Saved settings keep their own values (covered elsewhere).
+  const motion = findSwitch(tree, 'Motion source')
+  assert.equal(motion.props.value, 'agent_music', 'motion default is not agent_music')
+  const behavior = (() => {
+    let found = null
+    walk(tree, node => {
+      if (!found && node.type === 'select' && node.props && node.props['aria-label'] === 'Behaviour profile') found = node
+    })
+    return found
+  })()
+  assert.equal(behavior.props.value, 'balanced', 'behaviour default is not balanced')
+  const opacity = (() => {
+    let found = null
+    walk(tree, node => {
+      if (!found && node.type === 'input' && node.props && node.props['aria-label'] === 'Visual opacity') found = node
+    })
+    return found
+  })()
+  assert.equal(opacity.props.value, 35, 'opacity default is not 0.35')
+  const show = (() => {
+    let found = null
+    walk(tree, node => {
+      if (!found && node.type === 'select' && node.props && node.props['aria-label'] === 'Show') found = node
+    })
+    return found
+  })()
+  assert.equal(show.props.value, 'always', 'showWhen default is not always')
+  const intensity = (() => {
+    let found = null
+    walk(tree, node => {
+      if (!found && node.type === 'input' && node.props && node.props['aria-label'] === 'Reaction strength') found = node
+    })
+    return found
+  })()
+  assert.equal(intensity.props.value, 0.5, 'intensity default is not 0.5')
 })
 
 record('dispose from the defaults scenario is clean', () => {
@@ -1175,7 +1234,7 @@ record('quick menu renders the button, every control and no stray popover state'
   })
   assert.ok(glyph && /A/.test(texts(glyph)), 'the "A" glyph is missing')
   const body = texts(tree)
-  for (const label of ['Reacts to', 'Intensity', 'Transparency', 'Style', 'All Aura settings']) {
+  for (const label of ['Reacts to', 'Intensity', 'Transparency', 'Style', 'Show', 'All Aura settings']) {
     assert.ok(body.includes(label), `quick menu is missing "${label}"`)
   }
   const motion = findByAria(tree, 'Reacts to')
@@ -1187,15 +1246,22 @@ record('quick menu renders the button, every control and no stray popover state'
   assert.deepEqual(
     motionOptions,
     [
-      ['both', 'Default — music, or gentle designs'],
+      ['both', 'Music, or gentle designs'],
       ['music', 'Music only'],
       ['agent', 'Agent activity'],
-      ['agent_music', 'Agent + music']
+      ['agent_music', 'Agent + music (default)']
     ],
     'Reacts-to options drifted from the settings page'
   )
   const style = findByAria(tree, 'Style')
   assert.ok(style && style.props.value === 'balanced', 'Style select missing or wrong')
+  const show = findByAria(tree, 'Show')
+  assert.ok(show && show.props.value === 'always', 'Show select missing or wrong')
+  const showOptions = []
+  walk(show, node => {
+    if (node.type === 'option') showOptions.push([node.props.value, texts(node)])
+  })
+  assert.deepEqual(showOptions, [['always', 'Always'], ['active', 'Only while active']], 'Show options drifted')
   const intensity = findByAria(tree, 'Intensity')
   const transparency = findByAria(tree, 'Transparency')
   assert.equal(intensity.props.value, 50, 'intensity slider mis-scaled')
@@ -1263,6 +1329,18 @@ await recordAsync('the style select pushes behaviour changes', async () => {
   assert.equal(findByAria(quickTree(), 'Style').props.value, 'calm', 'select did not round-trip')
 })
 
+await recordAsync('the Show control persists and pushes like every other quick-menu control', async () => {
+  findByAria(quickTree(), 'Show').props.onChange({ target: { value: 'active' } })
+  await sleep(30)
+  assert.equal(fSaved().showWhen, 'active', 'showWhen did not persist')
+  assert.deepEqual(fLastControl(), { show_when: 'active' }, 'showWhen push missing or wrong')
+  assert.equal(findByAria(quickTree(), 'Show').props.value, 'active', 'Show select did not round-trip')
+  // Back to Always so the later backdrop assertions are not timing-dependent.
+  findByAria(quickTree(), 'Show').props.onChange({ target: { value: 'always' } })
+  await sleep(30)
+  assert.equal(fSaved().showWhen, 'always', 'showWhen did not return to always')
+})
+
 await recordAsync('the dot breathes while the visual moves', async () => {
   await fTick()
   const first = quickDot(quickTree()).props.style.opacity
@@ -1322,6 +1400,203 @@ record('dispose from the quick-menu scenario is clean', () => {
   assert.equal(f.contributions.length, 0, 'the quick-menu contribution survived dispose')
   assert.ok(f.timers.every(t => t.cleared))
   assert.ok(f.listeners.every(t => t.removed), 'the quick menu leaked a listener')
+  assert.equal(hostIframes().length, 0)
+  assert.equal(hostStyles().length, 0)
+})
+
+// ------------------------------------------------------------- scenario G
+// "Show: Only while active": fake timers drive the fade state machine. The
+// backdrop and #aura-glass must exist only while the visual is moving and
+// must be removed again once the fade-out completes.
+
+const fireTimer = async (bucket, ms) => {
+  const record = bucket.timers.find(t => t.kind === 'timeout' && t.ms === ms && !t.cleared && !t.fired)
+  assert.ok(record, `no pending ${ms} ms timeout`)
+  record.fired = true
+  record.fn()
+  await sleep(10)
+}
+const firePoll = async bucket => {
+  const record = bucket.timers.find(t => t.kind === 'interval' && !t.cleared)
+  assert.ok(record, 'no polling interval')
+  record.fn()
+  await sleep(30)
+}
+const setMoving = (bucket, moving) => {
+  bucket.serverFrame.mood = moving ? 'thinking' : 'idle'
+  bucket.serverFrame.silence = !moving
+  bucket.serverFrame.level = moving ? 0.55 : 0
+}
+
+sdk.themeState.name = 'nous'
+const g = makeCtx({
+  enabled: true,
+  intensity: 0.5,
+  opacity: 0.35,
+  behavior: 'balanced',
+  motion: 'agent_music',
+  reducedMotion: false,
+  windowVisual: true,
+  showWhen: 'active'
+})
+const disposeG = pluginModule.default.register(g.ctx)
+await sleep(40)
+
+await recordAsync('Only while active: nothing is mounted before 300 ms of sustained activity', async () => {
+  assert.equal(hostIframes().length, 0, 'mounted the backdrop before the fade-in delay')
+  assert.equal(glassStyles().length, 0, 'mounted the glass before the fade-in delay')
+  assert.ok(
+    g.timers.some(t => t.kind === 'timeout' && t.ms === 300 && !t.cleared && !t.fired),
+    'no 300 ms fade-in delay timer'
+  )
+})
+
+await recordAsync('Only while active: fades in after sustained activity and mounts the glass', async () => {
+  await fireTimer(g, 300)
+  assert.equal(hostIframes().length, 1, 'the backdrop did not mount after the fade-in delay')
+  assert.equal(glassStyles().length, 1, 'the #aura-glass style did not mount with the backdrop')
+  assert.equal(hostIframes()[0].style.opacity, '0', 'the fade-in did not start at zero')
+  for (let i = 0; i < 6; i += 1) await fireTimer(g, 250)
+  assert.equal(hostIframes()[0].style.opacity, '1', 'the fade-in did not reach full opacity')
+})
+
+await recordAsync('Only while active: short idle gaps stay inside the hysteresis window', async () => {
+  setMoving(g, false)
+  await firePoll(g)
+  const idleTimer = g.timers.find(t => t.kind === 'timeout' && t.ms === 2500 && !t.cleared && !t.fired)
+  assert.ok(idleTimer, 'no 2.5 s fade-out timer after idle')
+  setMoving(g, true)
+  await firePoll(g)
+  assert.equal(idleTimer.cleared, true, 'resumed activity did not cancel the fade-out timer')
+  assert.equal(hostIframes().length, 1, 'a short idle gap removed the backdrop (flicker)')
+  assert.equal(hostIframes()[0].style.opacity, '1', 'a short idle gap dimmed the backdrop')
+})
+
+await recordAsync('Only while active: fades out after 2.5 s idle and removes the glass entirely', async () => {
+  setMoving(g, false)
+  await firePoll(g)
+  await fireTimer(g, 2500)
+  assert.equal(hostIframes().length, 1, 'the backdrop vanished before the fade-out ramp')
+  for (let i = 0; i < 6; i += 1) await fireTimer(g, 250)
+  assert.equal(hostIframes().length, 0, 'the backdrop survived the completed fade-out')
+  assert.equal(glassStyles().length, 0, 'the #aura-glass style survived the completed fade-out')
+  assert.equal(hostStyles().length, 0, 'a host stylesheet survived the completed fade-out')
+})
+
+await recordAsync('reduced motion caps the fade ramp at 200 ms', async () => {
+  g.serverSettings.reduced_motion = true
+  setMoving(g, true)
+  await firePoll(g)
+  await fireTimer(g, 300)
+  assert.equal(hostIframes().length, 1, 'the backdrop did not mount under reduced motion')
+  assert.ok(
+    g.timers.some(t => t.kind === 'timeout' && t.ms === 200 && !t.cleared && !t.fired),
+    'the fade-in ramp is not capped at 200 ms under reduced motion'
+  )
+  await fireTimer(g, 200)
+  assert.equal(hostIframes()[0].style.opacity, '1', 'the reduced-motion fade-in did not complete')
+  setMoving(g, false)
+  await firePoll(g)
+  await fireTimer(g, 2500)
+  assert.ok(
+    g.timers.some(t => t.kind === 'timeout' && t.ms === 200 && !t.cleared && !t.fired),
+    'the fade-out ramp is not capped at 200 ms under reduced motion'
+  )
+  await fireTimer(g, 200)
+  assert.equal(hostIframes().length, 0, 'the reduced-motion fade-out left the backdrop behind')
+  assert.equal(glassStyles().length, 0, 'the reduced-motion fade-out left the glass behind')
+})
+
+record('dispose from the active-fade scenario cancels timers and removes everything', () => {
+  disposeG()
+  assert.equal(g.contributions.length, 0, 'contributions survived dispose')
+  assert.ok(
+    g.timers.filter(t => t.kind === 'interval').every(t => t.cleared),
+    'a polling interval survived dispose'
+  )
+  assert.ok(
+    g.timers.filter(t => t.kind === 'timeout').every(t => t.cleared || t.fired),
+    'a fade timer survived dispose'
+  )
+  assert.ok(g.listeners.every(t => t.removed), 'a listener survived dispose')
+  assert.equal(hostIframes().length, 0)
+  assert.equal(hostStyles().length, 0)
+})
+
+// ------------------------------------------------------------- scenario H
+// The quick menu must read the server, not stale local storage. Simulate the
+// owner's real case: the server holds motion 'agent' / behaviour 'calm' while
+// the local saved settings disagree.
+
+sdk.themeState.name = 'nous'
+const h = makeCtx({
+  enabled: true,
+  intensity: 0.9,
+  opacity: 0.8,
+  behavior: 'intense',
+  motion: 'both',
+  reducedMotion: false,
+  windowVisual: false,
+  showWhen: 'always'
+})
+h.serverSettings.motion = 'agent'
+h.serverSettings.behavior = 'calm'
+h.serverSettings.intensity = 0.2
+h.serverSettings.opacity = 0.4
+h.serverSettings.reduced_motion = true
+const disposeH = pluginModule.default.register(h.ctx)
+await sleep(40)
+
+const hMenu = () => {
+  const menu = h.contributions.find(c => c.id === 'quick-menu')
+  assert.ok(menu, 'quick menu contribution vanished')
+  return renderContribution(menu)
+}
+
+await recordAsync('poll syncs stale local display settings from the server /state', async () => {
+  const saved = h.storage.get('settings')
+  assert.equal(saved.motion, 'agent', 'local motion was not synced from the server')
+  assert.equal(saved.behavior, 'calm', 'local behaviour was not synced from the server')
+  assert.equal(saved.intensity, 0.2, 'local intensity was not synced from the server')
+  assert.equal(saved.opacity, 0.4, 'local opacity was not synced from the server')
+  assert.equal(saved.reducedMotion, true, 'local reduced motion was not synced from the server')
+  const tree = hMenu()
+  assert.equal(findByAria(tree, 'Reacts to').props.value, 'agent', 'the menu still shows the stale motion')
+  assert.equal(findByAria(tree, 'Style').props.value, 'calm', 'the menu still shows the stale behaviour')
+  assert.equal(findByAria(tree, 'Intensity').props.value, 20, 'the menu still shows the stale intensity')
+  assert.equal(findByAria(tree, 'Transparency').props.value, 40, 'the menu still shows the stale opacity')
+  assert.equal(findByAria(tree, 'Gentle motion (motion-sensitive)').props.checked, true, 'the menu still shows stale reduced motion')
+})
+
+await recordAsync('every quick-menu control reaches /control and updates the server value', async () => {
+  findByAria(hMenu(), 'Reacts to').props.onChange({ target: { value: 'music' } })
+  await sleep(30)
+  assert.equal(h.serverSettings.motion, 'music', 'the server motion did not update')
+  findByAria(hMenu(), 'Style').props.onChange({ target: { value: 'intense' } })
+  await sleep(30)
+  assert.equal(h.serverSettings.behavior, 'intense', 'the server behaviour did not update')
+  findByAria(hMenu(), 'Intensity').props.onChange({ target: { value: '60' } })
+  await sleep(30)
+  assert.equal(h.serverSettings.intensity, 0.6, 'the server intensity did not update')
+  findByAria(hMenu(), 'Transparency').props.onChange({ target: { value: '30' } })
+  await sleep(30)
+  assert.equal(h.serverSettings.opacity, 0.3, 'the server opacity did not update')
+  findByAria(hMenu(), 'Gentle motion (motion-sensitive)').props.onCheckedChange(false)
+  await sleep(30)
+  assert.equal(h.serverSettings.reduced_motion, false, 'the server reduced_motion did not update')
+  findByAria(hMenu(), 'Show').props.onChange({ target: { value: 'active' } })
+  await sleep(30)
+  assert.deepEqual(h.controls.at(-1), { show_when: 'active' }, 'the Show control did not push')
+  await firePoll(h)
+  assert.equal(findByAria(hMenu(), 'Reacts to').props.value, 'music', 'a later poll reverted the server-synced motion')
+  assert.equal(findByAria(hMenu(), 'Style').props.value, 'intense', 'a later poll reverted the server-synced behaviour')
+})
+
+record('dispose from the server-sync scenario is clean', () => {
+  disposeH()
+  assert.equal(h.contributions.length, 0)
+  assert.ok(h.timers.filter(t => t.kind === 'interval').every(t => t.cleared))
+  assert.ok(h.listeners.every(t => t.removed))
   assert.equal(hostIframes().length, 0)
   assert.equal(hostStyles().length, 0)
 })
