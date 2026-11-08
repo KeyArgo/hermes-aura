@@ -27,6 +27,7 @@ BAND_CENTERS = (63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0)
 
 SILENCE_LEVEL = 0.02
 SILENCE_MS = 300.0
+FRAME_SILENCE_HOLD_MS = 250.0  # per-PCM-frame anti-flicker hold
 ONSET_THRESHOLD = 0.28
 ONSET_REFRACTORY_MS = 80.0
 AGC_FLOOR = 1e-6
@@ -164,6 +165,70 @@ def level_from_rms(rms: float) -> float:
         return 0.0
     db = 20.0 * math.log10(min(1.0, rms))
     return max(0.0, min(1.0, (db + 60.0) / 60.0))
+
+
+try:  # 3.12+: the sum of products runs in C, keeping per-frame RMS cheap
+    _sumprod = math.sumprod
+except AttributeError:  # pragma: no cover - Python < 3.12
+    def _sumprod(a, b):
+        return sum(x * y for x, y in zip(a, b))
+
+
+def frame_rms(samples) -> float:
+    """RMS of one PCM frame (float32 LE bytes, or any numeric sequence).
+
+    Lean by design: this runs for every outgoing audio frame (~47 fps), not
+    just the ~10 Hz feature windows. Values are deliberately *not* clamped —
+    ``level_from_rms`` clamps at 1.0 and maps NaN to 0.0 anyway.
+    """
+    if isinstance(samples, (bytes, bytearray, memoryview)):
+        raw = bytes(samples)
+        count = len(raw) // 4
+        if count == 0:
+            return 0.0
+        vals = struct.unpack(f"<{count}f", raw[: count * 4])
+    else:
+        try:
+            vals = tuple(float(v) for v in samples)
+        except (TypeError, ValueError):
+            return 0.0
+        count = len(vals)
+        if count == 0:
+            return 0.0
+    return math.sqrt(_sumprod(vals, vals) / count)
+
+
+class FrameSilence:
+    """Per-PCM-frame silence flag with a short hold (anti-flicker hysteresis).
+
+    ``Analyser`` refreshes its ``silence`` every ~100 ms and starts silent, so
+    copying that flag onto every outgoing PCM frame wrongly flags the first
+    frames of a song (and frames right after a quiet stretch) as silent while
+    they carry real audio. Instead, each frame is judged from *its own*
+    samples: silent only when its level is below ``silence_level`` *and* no
+    frame within the last ``hold_ms`` was loud. One quiet frame inside music
+    therefore keeps the flag held open; after ``hold_ms`` of quiet it flips.
+    """
+
+    def __init__(self, silence_level: float = SILENCE_LEVEL,
+                 hold_ms: float = FRAME_SILENCE_HOLD_MS):
+        self.silence_level = silence_level
+        self.hold_ms = hold_ms
+        self._last_loud_ms: float | None = None
+
+    def reset(self) -> None:
+        self._last_loud_ms = None
+
+    def is_silent(self, samples, ts_ms: float) -> bool:
+        ts = float(ts_ms)
+        if self._last_loud_ms is not None and ts < self._last_loud_ms:
+            ts = self._last_loud_ms  # keep monotonic; the hold never rewinds
+        if level_from_rms(frame_rms(samples)) >= self.silence_level:
+            self._last_loud_ms = ts
+            return False
+        if self._last_loud_ms is None:
+            return True  # nothing loud yet: silence from the start
+        return (ts - self._last_loud_ms) > self.hold_ms
 
 
 # ---------------------------------------------------------------------------

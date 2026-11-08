@@ -107,6 +107,70 @@ def test_loud_signal_clears_silence():
 
 
 # ---------------------------------------------------------------------------
+# per-PCM-frame silence (FrameSilence)
+# ---------------------------------------------------------------------------
+
+FRAME_MS = 1000.0 * analysis.FFT_SIZE / analysis.SAMPLE_RATE
+ZEROS = b"\x00" * (4 * analysis.FFT_SIZE)
+
+
+def test_frame_rms_matches_a_plain_python_reference():
+    values = sine(1000.0, amp=0.5)
+    expected = math.sqrt(sum(v * v for v in values) / len(values))
+    assert analysis.frame_rms(pcm(values)) == pytest.approx(expected, rel=1e-6)
+    assert analysis.frame_rms(values) == pytest.approx(expected, rel=1e-6)
+    assert analysis.frame_rms(b"") == 0.0
+    assert analysis.frame_rms(b"\x00\x00\x00") == 0.0
+
+
+def test_frame_rms_survives_nan_and_inf():
+    bad = struct.pack("<3f", float("nan"), float("inf"), 0.5)
+    assert analysis.level_from_rms(analysis.frame_rms(bad)) == 0.0
+
+
+def test_tone_frame_right_after_start_is_not_silent():
+    # The bug this guards: this flag used to come from the ~10 Hz features
+    # pump, which starts silent — real audio was flagged silent at startup.
+    tracker = analysis.FrameSilence()
+    assert tracker.is_silent(pcm(sine(440.0, amp=0.5)), ts_ms=0) is False
+
+
+def test_zero_frame_is_silent_from_the_start():
+    tracker = analysis.FrameSilence()
+    assert tracker.is_silent(ZEROS, ts_ms=0) is True
+    assert tracker.is_silent(ZEROS, ts_ms=1000) is True
+
+
+def test_tone_after_quiet_passage_is_not_flagged_silent():
+    tracker = analysis.FrameSilence()
+    for i in range(50):
+        assert tracker.is_silent(ZEROS, ts_ms=i * FRAME_MS) is True
+    assert tracker.is_silent(pcm(sine(1000.0, amp=0.4)), ts_ms=50 * FRAME_MS) is False
+
+
+def test_hold_prevents_flicker_on_one_quiet_frame_inside_music():
+    tracker = analysis.FrameSilence()
+    tone = pcm(sine(1000.0, amp=0.5))
+    flags = [tracker.is_silent(ZEROS if i == 20 else tone, ts_ms=i * FRAME_MS)
+             for i in range(40)]
+    assert not any(flags), flags  # the lone drop inside music never flips it
+
+    # Sustained quiet does flip the flag, but only once the hold expired.
+    flipped = next((i for i in range(40, 70)
+                    if tracker.is_silent(ZEROS, ts_ms=i * FRAME_MS)), None)
+    assert flipped is not None, "hold never expired"
+    assert (flipped - 39) * FRAME_MS > tracker.hold_ms
+    assert (flipped - 1 - 39) * FRAME_MS <= tracker.hold_ms
+
+
+def test_frame_silence_reset_clears_hold():
+    tracker = analysis.FrameSilence()
+    tracker.is_silent(pcm(sine(1000.0, amp=0.5)), ts_ms=0)
+    tracker.reset()
+    assert tracker.is_silent(ZEROS, ts_ms=10) is True
+
+
+# ---------------------------------------------------------------------------
 # onset
 # ---------------------------------------------------------------------------
 

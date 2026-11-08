@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import math
 import os
 import socket
 import struct
@@ -35,6 +36,25 @@ def live(tmp_path, monkeypatch):
     assert port and token, "server did not start"
     try:
         yield {"port": port, "token": token, "home": tmp_path}
+    finally:
+        server.stop_server()
+
+
+@pytest.fixture()
+def live_scripted(tmp_path, monkeypatch):
+    """Live server on a scripted fake capture; the sink sees every pushed frame."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("AURA_CAPTURE", "none")
+    cap = ScriptedCapture()
+    monkeypatch.setattr(server.capture, "open_capture", lambda preferred=None: cap)
+    monkeypatch.setattr(server, "_clients_snapshot", lambda: [cap.sink])
+    server.stop_server()
+    server.ensure_server()
+    port = server.get_port()
+    token = server.get_token()
+    assert port and token, "server did not start"
+    try:
+        yield {"port": port, "token": token, "capture": cap, "sink": cap.sink}
     finally:
         server.stop_server()
 
@@ -148,6 +168,57 @@ class WSClient:
             self.sock.close()
         except OSError:
             pass
+
+
+class _Sink:
+    """Stands in for a connected page: records what the capture loop pushes."""
+
+    def __init__(self):
+        self.pcms = []
+        self.events = []
+
+    def push_pcm(self, payload) -> None:
+        self.pcms.append(payload)
+
+    def push_event(self, obj) -> None:
+        self.events.append(obj)
+
+
+class ScriptedCapture:
+    """Fake capture backend whose frames the test controls, paced ~2x realtime."""
+
+    name = "scripted"
+
+    def __init__(self):
+        self.mode = "zeros"
+        self.sink = _Sink()
+        self._reads = 0
+        self._closed = False
+        self._tone = struct.pack(
+            f"<{server.FRAME_SAMPLES}f",
+            *[0.5 * math.sin(2 * math.pi * 440 * i / 48000)
+              + 0.3 * math.sin(2 * math.pi * 1500 * i / 48000)
+              for i in range(server.FRAME_SAMPLES)])
+        self._zeros = b"\x00" * (4 * server.FRAME_SAMPLES)
+
+    def read(self, n: int = server.FRAME_SAMPLES):
+        if self._closed:
+            return None
+        time.sleep(0.01)  # pace: the loop must not spin a core on a fake device
+        self._reads += 1
+        if self.mode == "tone":
+            return self._tone
+        if self.mode == "flicker":
+            # music with a 3-frame dropout every 24 reads — all inside the hold
+            return self._zeros if self._reads % 24 >= 21 else self._tone
+        return self._zeros
+
+    def close(self) -> None:
+        self._closed = True
+
+
+def _pcm_silence_flags(payloads) -> list:
+    return [struct.unpack("<4sBBHQQII", p[:32])[2] & 1 for p in payloads]
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +525,48 @@ def test_ws_handshake_and_binary_pcm_frame(live):
         assert ts_ms > 0
     finally:
         ws.close()
+
+
+def test_pcm_silence_flag_follows_its_own_frame(live_scripted, monkeypatch):
+    # Regression: the flag used to come from _STATE.features (~10 Hz, starts
+    # silent), so frames carrying real audio were flagged silent right after
+    # the page connected or after a quiet passage. Freeze the features pump
+    # at silence and check the PCM header anyway.
+    cap, sink = live_scripted["capture"], live_scripted["sink"]
+
+    def wait_for(pred, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if pred():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def features_silent():
+        with server._STATE.lock:
+            return server._STATE.features.get("silence") is True
+
+    assert wait_for(lambda: len(sink.pcms) >= 5), "capture loop pushed no PCM"
+    assert wait_for(features_silent), "quiet passage not reported silent"
+    assert all(_pcm_silence_flags(sink.pcms[:5])), "zeros not flagged silent"
+
+    monkeypatch.setattr(server, "FEATURE_INTERVAL_S", 3600.0)  # freeze features
+    cap.mode = "tone"
+    mark = len(sink.pcms)
+    assert wait_for(lambda: len(sink.pcms) >= mark + 10), "tone frames not pushed"
+    assert features_silent(), "features unfroze; test cannot pin the regression"
+    flags = _pcm_silence_flags(sink.pcms[mark:])
+    assert not any(flags), f"tone frames flagged silent while features lag: {flags}"
+
+    cap.mode = "flicker"
+    mark = len(sink.pcms)
+    assert wait_for(lambda: len(sink.pcms) >= mark + 48, timeout=5.0)
+    flags = _pcm_silence_flags(sink.pcms[mark:])
+    assert not any(flags), f"single dropouts flicked the flag: {flags}"
+
+    cap.mode = "zeros"
+    assert wait_for(lambda: sink.pcms and _pcm_silence_flags(sink.pcms[-1:])[0] == 1,
+                    timeout=2.0), "flag never flipped back to silent on real quiet"
 
 
 def test_ws_features_text_frame(live):

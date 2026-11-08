@@ -391,6 +391,7 @@ def _mood_tick(now: float) -> None:
 
 def _capture_loop(stop_event: threading.Event) -> None:
     analyser = analysis.Analyser()
+    frame_silence = analysis.FrameSilence()
     cap = None
     preferred = None
     try:
@@ -426,6 +427,7 @@ def _capture_loop(stop_event: threading.Event) -> None:
                     retry = None
                 if retry is not None and retry.name != "none":
                     cap = retry
+                    frame_silence.reset()
                     with _STATE.lock:
                         _STATE.capture_obj = cap
                         _STATE.capture_name = cap.name
@@ -458,7 +460,10 @@ def _capture_loop(stop_event: threading.Event) -> None:
             with _STATE.lock:
                 _STATE.pcm_seq += 1
                 seq = _STATE.pcm_seq
-                silence = bool(_STATE.features.get("silence"))
+            # Judge the flag from THIS frame: _STATE.features refreshes only
+            # ~10 Hz and starts silent, which used to flag the first frames of
+            # music (and frames right after a quiet stretch) as silent.
+            silence = frame_silence.is_silent(frame, ts_ms)
             if _clients_snapshot():
                 _broadcast_pcm(_ws_pcm_frame(seq, ts_ms, frame, silence))
 
