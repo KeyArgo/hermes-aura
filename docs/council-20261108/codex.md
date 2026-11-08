@@ -1,0 +1,13 @@
+1. **Win the first launch.** Keep the backdrop **opt-in**, as the current README specifies. Once enabled, default to **agent + music**, **50% intensity**, **balanced**, and **25% visual opacity** behind a readability scrim. Agent activity makes it respond even without music; music adds the wow when available. Start with one reliable, attractive preset. Test opacity against both light and dark themes before locking it.
+
+2. **Make agent state legible.** Use a small, consistent visual vocabulary: thinking = slow flow; tool = structured ripples; approval = steady amber halo; error = restrained red tint; done = brief settling glow. Keep the existing text and approval controls authoritative. Avoid glitching, flashing, or relying on color alone.
+
+3. **Let the theme breathe.** Fade Aura in when the agent works or music plays, then fade out after a few seconds of quiet. Keep the user’s theme and restore its normal surfaces when fully faded. Use hysteresis so quiet audio and rapid state changes don’t flicker. Make the behavior optional, preserve the quick off switch, and test contrast and layout on real desktops. The README and LIMITS.md flag host styling as an area needing real-desktop checks.
+
+4. **Ship a real reduced-motion mode.** Honor the OS preference by default, with a user override. Freeze preset animation and rotation, disable beat pulses, flashes, glitches and animated transitions; show state changes as subtle static tint changes and retain text labels. Switching it on should take effect immediately.
+
+5. **Give judges a 30-second story.** Record a real Hermes task: prompt → thinking → tool ripple → approval halo → completion, then play music and show the beat response. End by asking the agent to change the look with `aura_control`. Capture a short shareable clip and include a reproducible demo prompt; don’t make a demo-only animation masquerade as a live hook.
+
+6. **Curate for reliability.** Choose five visibly distinct, readable presets from the existing bundle and rotate slowly; avoid abrupt cuts. Add a quick-menu preset picker and “Restore my theme.” Put install instructions, Linux audio requirements, and a one-command smoke test in the submission.
+
+7. **Biggest risk: a beautiful demo that breaks the desktop or fails on the judge’s machine.** Reserve the final day for a clean Linux install, live audio, hook transitions, readable themes, disable/restore, and a no-audio fallback. Explicitly label Windows unverified and macOS as needing an audio device. Verify the current submission instructions directly before the deadline; the [announcement](https://twiscan.com/en/x/nousresearch) confirms the plugin hackathon, but I could not verify complete submission rules from it.

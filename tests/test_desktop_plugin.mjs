@@ -9,8 +9,9 @@
  *   3. register() contributes the expected areas and returns a disposer that
  *      removes every contribution, clears the timers and listeners, clears the
  *      accent override and restores the theme it replaced,
- *   4. the stage era is gone: no /aura route, sidebar row, palette command,
- *      pane or status-bar contribution — the backdrop and Settings are it,
+ *   4. the stage era is gone: no /aura route, sidebar row, palette command
+ *      or pane — the backdrop and Settings are the product, plus the
+ *      deliberate status-bar quick menu (see 9),
  *   5. the polling interval is never faster than 4 Hz,
  *   6. the static SDK rules hold: no eval / new Function / JSX / dynamic
  *      import, no imports outside the three allowed specifiers, no
@@ -23,7 +24,14 @@
  *      active aura-live theme) and vanish on switch-off, turning Aura off,
  *      Restore my theme and dispose,
  *   8. "Visual behind the app" turns Aura on when Aura was off, and shows a
- *      hint (instead of drawing nothing) when Aura is off while it is on.
+ *      hint (instead of drawing nothing) when Aura is off while it is on,
+ *   9. the status-bar quick menu registers on STATUSBAR_AREAS.right, renders
+ *      the owner's controls (on/off, "Reacts to", intensity, transparency,
+ *      style, gentle motion, All Aura settings), drives them through the
+ *      same /control pushes and storage writes as the settings page, keeps
+ *      the pulse dot still under reduced motion, adds the web half's
+ *      reduced-motion=1 force-switch to the backdrop URL, and leaves no
+ *      listener behind on dispose.
  *
  * To import the plugin without Hermes, a temp copy has its three import
  * specifiers rewritten to local stub modules; the stubs record the calls the
@@ -334,6 +342,12 @@ export const useTheme = () => ({
 export const Button = () => null
 export const Switch = () => null
 export const StatusDot = () => null
+// Host popover used by the status-bar quick menu; the real one owns
+// Escape/outside-click/focus, the stub just has to exist so the plugin's
+// import resolves and the descriptor tree can be walked.
+export const Popover = () => null
+export const PopoverTrigger = () => null
+export const PopoverContent = () => null
 
 export const PALETTE_AREA = 'palette'
 export const PANES_AREA = 'panes'
@@ -518,8 +532,14 @@ record('does not contribute the stage route, sidebar row, palette command or pan
   }
 })
 
-record('does not occupy the status bar', () => {
-  assert.ok(!a.contributions.some(c => c.area.startsWith('statusBar.')))
+record('occupies the status bar with exactly one quick-menu contribution', () => {
+  const statusBar = a.contributions.filter(c => c.area.startsWith('statusBar.'))
+  assert.equal(statusBar.length, 1, 'expected exactly one status-bar contribution')
+  const menu = statusBar[0]
+  assert.equal(menu.area, sdk.STATUSBAR_AREAS.right, 'quick menu must sit on the right')
+  assert.equal(menu.id, 'quick-menu')
+  assert.equal(typeof menu.render, 'function')
+  assert.ok(Number.isFinite(menu.order), 'quick menu needs a stable order')
 })
 
 record('contributes the Aura Live theme', () => {
@@ -1082,6 +1102,228 @@ record('dispose from the defaults scenario is clean', () => {
   assert.equal(e.contributions.length, 0)
   assert.ok(e.timers.every(t => t.cleared))
   assert.ok(e.listeners.every(t => t.removed))
+})
+
+// ------------------------------------------------------------- scenario F
+// The status-bar quick menu (owner ask: "small icon of an A ... with a drop
+// down" exposing the essentials). One register, one set of controls.
+
+sdk.themeState.name = 'nous'
+const f = makeCtx({
+  enabled: true,
+  intensity: 0.5,
+  opacity: 0.75,
+  behavior: 'balanced',
+  motion: 'both',
+  reducedMotion: false
+})
+const disposeF = pluginModule.default.register(f.ctx)
+
+const quickTree = () => {
+  const menu = f.contributions.find(c => c.id === 'quick-menu')
+  assert.ok(menu, 'quick menu contribution vanished')
+  return renderContribution(menu)
+}
+const findByAria = (tree, label) => {
+  let found = null
+  walk(tree, node => {
+    if (!found && node.props && node.props['aria-label'] === label) found = node
+  })
+  return found
+}
+const quickTrigger = tree => {
+  let found = null
+  walk(tree, node => {
+    if (
+      !found &&
+      node.type === sdk.Button &&
+      node.props &&
+      node.props['aria-label'] === 'Aura quick settings'
+    ) found = node
+  })
+  return found
+}
+const quickDot = tree => {
+  let found = null
+  walk(tree, node => {
+    if (
+      !found &&
+      node.type === 'span' &&
+      node.props &&
+      node.props.style &&
+      node.props.style.borderRadius === 999
+    ) found = node
+  })
+  return found
+}
+const fTick = async () => {
+  f.timers.find(t => t.ms === 250).fn()
+  await sleep(30)
+}
+const fSaved = () => f.storage.get('settings', {})
+const fLastControl = () => f.controls.at(-1)
+
+record('quick menu renders the button, every control and no stray popover state', () => {
+  const tree = quickTree()
+  const trigger = quickTrigger(tree)
+  assert.ok(trigger, 'no quick-menu trigger button')
+  assert.equal(trigger.props.title, 'Aura', 'the tooltip must read "Aura"')
+  assert.equal(trigger.props['aria-expanded'], false, 'menu must start closed')
+  let glyph = null
+  walk(tree, node => {
+    if (!glyph && node.type === 'span' && node.props && node.props.style && node.props.style.fontSize === 14) glyph = node
+  })
+  assert.ok(glyph && /A/.test(texts(glyph)), 'the "A" glyph is missing')
+  const body = texts(tree)
+  for (const label of ['Reacts to', 'Intensity', 'Transparency', 'Style', 'All Aura settings']) {
+    assert.ok(body.includes(label), `quick menu is missing "${label}"`)
+  }
+  const motion = findByAria(tree, 'Reacts to')
+  assert.ok(motion && motion.props.value === 'both', 'Reacts-to select missing or wrong')
+  const motionOptions = []
+  walk(motion, node => {
+    if (node.type === 'option') motionOptions.push([node.props.value, texts(node)])
+  })
+  assert.deepEqual(
+    motionOptions,
+    [
+      ['both', 'Default — music, or gentle designs'],
+      ['music', 'Music only'],
+      ['agent', 'Agent activity'],
+      ['agent_music', 'Agent + music']
+    ],
+    'Reacts-to options drifted from the settings page'
+  )
+  const style = findByAria(tree, 'Style')
+  assert.ok(style && style.props.value === 'balanced', 'Style select missing or wrong')
+  const intensity = findByAria(tree, 'Intensity')
+  const transparency = findByAria(tree, 'Transparency')
+  assert.equal(intensity.props.value, 50, 'intensity slider mis-scaled')
+  assert.equal(transparency.props.value, 75, 'transparency slider mis-scaled')
+  const enabled = findByAria(tree, 'Aura enabled')
+  const gentle = findByAria(tree, 'Gentle motion (motion-sensitive)')
+  assert.ok(enabled && enabled.props.checked === true, 'on/off switch missing or unchecked')
+  assert.ok(gentle && gentle.props.checked === false, 'gentle switch missing or wrong default')
+})
+
+record('quick menu trigger dims when Aura is off and lights up when on', () => {
+  const on = quickTrigger(quickTree())
+  assert.match(on.props.style.color, /--ui-accent/, 'enabled trigger is not accent-coloured')
+})
+
+await recordAsync('the quick menu on/off switch drives /control, storage and the dot', async () => {
+  const off = findByAria(quickTree(), 'Aura enabled')
+  off.props.onCheckedChange(false)
+  await sleep(30)
+  assert.deepEqual(fLastControl(), { enabled: false }, 'off did not push {enabled:false}')
+  assert.equal(fSaved().enabled, false, 'off did not persist')
+  await fTick()
+  const dot = quickDot(quickTree())
+  assert.equal(dot.props.style.opacity, 0, 'the dot keeps breathing while Aura is off')
+  const dim = quickTrigger(quickTree())
+  assert.match(dim.props.style.color, /--ui-text-tertiary/, 'trigger does not dim when off')
+  const back = findByAria(quickTree(), 'Aura enabled')
+  back.props.onCheckedChange(true)
+  await sleep(30)
+  assert.deepEqual(fLastControl(), { enabled: true }, 'on did not push {enabled:true}')
+  await fTick()
+  assert.match(quickTrigger(quickTree()).props.style.color, /--ui-accent/, 'trigger does not relight')
+})
+
+await recordAsync('changing "Reacts to" pushes and persists like the settings page', async () => {
+  findByAria(quickTree(), 'Reacts to').props.onChange({ target: { value: 'music' } })
+  await sleep(30)
+  assert.deepEqual(fLastControl(), { motion: 'music' }, 'motion push missing or wrong')
+  assert.equal(fSaved().motion, 'music', 'motion did not persist')
+  assert.equal(findByAria(quickTree(), 'Reacts to').props.value, 'music', 'select did not round-trip')
+})
+
+await recordAsync('the intensity slider round-trips through 0-100 and pushes 0-1', async () => {
+  findByAria(quickTree(), 'Intensity').props.onChange({ target: { value: '60' } })
+  await sleep(30)
+  assert.deepEqual(fLastControl(), { intensity: 0.6 }, 'intensity push missing or wrong')
+  assert.equal(fSaved().intensity, 0.6, 'intensity did not persist')
+  assert.equal(findByAria(quickTree(), 'Intensity').props.value, 60, 'slider did not round-trip')
+  assert.ok(texts(quickTree()).includes('60%'), 'intensity readout missing')
+})
+
+await recordAsync('the transparency slider round-trips through the opacity setting', async () => {
+  findByAria(quickTree(), 'Transparency').props.onChange({ target: { value: '30' } })
+  await sleep(30)
+  assert.deepEqual(fLastControl(), { opacity: 0.3 }, 'opacity push missing or wrong')
+  assert.equal(fSaved().opacity, 0.3, 'opacity did not persist')
+  assert.equal(findByAria(quickTree(), 'Transparency').props.value, 30, 'slider did not round-trip')
+})
+
+await recordAsync('the style select pushes behaviour changes', async () => {
+  findByAria(quickTree(), 'Style').props.onChange({ target: { value: 'calm' } })
+  await sleep(30)
+  assert.deepEqual(fLastControl(), { behavior: 'calm' }, 'behaviour push missing or wrong')
+  assert.equal(fSaved().behavior, 'calm', 'behaviour did not persist')
+  assert.equal(findByAria(quickTree(), 'Style').props.value, 'calm', 'select did not round-trip')
+})
+
+await recordAsync('the dot breathes while the visual moves', async () => {
+  await fTick()
+  const first = quickDot(quickTree()).props.style.opacity
+  assert.ok(first > 0, 'the dot is frozen while music plays')
+  await fTick()
+  const second = quickDot(quickTree()).props.style.opacity
+  assert.notEqual(second, first, 'the dot does not advance between ticks')
+})
+
+await recordAsync('gentle motion freezes the dot and pushes reduced_motion', async () => {
+  findByAria(quickTree(), 'Gentle motion (motion-sensitive)').props.onCheckedChange(true)
+  await sleep(30)
+  assert.equal(fSaved().reducedMotion, true, 'gentle motion did not persist')
+  assert.deepEqual(fLastControl(), { reduced_motion: true }, 'reduced_motion not forwarded')
+  await fTick()
+  assert.equal(quickDot(quickTree()).props.style.opacity, 0.55, 'reduced dot does not hold 0.55')
+  await fTick()
+  await fTick()
+  assert.equal(quickDot(quickTree()).props.style.opacity, 0.55, 'the dot still cycles under reduced motion')
+})
+
+await recordAsync('gentle motion flips the web half through the backdrop URL', async () => {
+  const settingsPage = f.contributions.find(c => c.area === 'settings.plugins')
+  const pageTree = renderContribution(settingsPage)
+  const visual = findByAria(pageTree, 'Visual behind the app')
+  assert.ok(visual, 'windowVisual switch missing')
+  visual.props.onCheckedChange(true)
+  await sleep(30)
+  assert.equal(hostIframes().length, 1, 'the window visual did not mount its backdrop')
+  assert.match(hostIframes()[0].src, /overlay=1/, 'backdrop src lost the overlay flag')
+  assert.match(hostIframes()[0].src, /reduced-motion=1/, 'gentle motion lost its force-switch')
+  findByAria(quickTree(), 'Gentle motion (motion-sensitive)').props.onCheckedChange(false)
+  await sleep(30)
+  assert.doesNotMatch(hostIframes()[0].src, /reduced-motion/, 'the force-switch stayed after gentle off')
+  visual.props.onCheckedChange(false)
+  await sleep(30)
+  assert.equal(hostIframes().length, 0, 'the backdrop survived the switch-off')
+})
+
+await recordAsync('"All Aura settings" navigates to the plugin settings page', async () => {
+  const navsBefore = sdk.calls.navigations.length
+  const button = (() => {
+    let found = null
+    walk(quickTree(), node => {
+      if (!found && node.type === sdk.Button && node.props && node.props['aria-label'] === 'All Aura settings') found = node
+    })
+    return found
+  })()
+  assert.ok(button, 'All Aura settings button missing')
+  button.props.onClick()
+  assert.equal(sdk.calls.navigations.length, navsBefore + 1, 'navigation did not happen')
+  assert.equal(sdk.calls.navigations.at(-1), '/settings?tab=plugins&agent=aura', 'wrong settings route')
+})
+
+record('dispose from the quick-menu scenario is clean', () => {
+  disposeF()
+  assert.equal(f.contributions.length, 0, 'the quick-menu contribution survived dispose')
+  assert.ok(f.timers.every(t => t.cleared))
+  assert.ok(f.listeners.every(t => t.removed), 'the quick menu leaked a listener')
+  assert.equal(hostIframes().length, 0)
+  assert.equal(hostStyles().length, 0)
 })
 
 // --------------------------------------------------------------- reporting

@@ -22,6 +22,15 @@
  *     turning Aura off, Restore my theme and dispose remove both again. If
  *     the visual is switched on while Aura is off, Aura is enabled through
  *     the same door the "Aura enabled" switch uses.
+ *   - a status-bar quick menu (`STATUSBAR_AREAS.right`): a small "A" glyph
+ *     button (dim when Aura is off, accent when on, with a tiny dot that
+ *     breathes only while the visual is actually moving) opens a host
+ *     Popover carrying Aura on/off, "Reacts to", intensity, transparency
+ *     (opacity), style (behaviour), "Gentle motion (motion-sensitive)" and
+ *     an "All Aura settings" jump. Every control calls the SAME handler the
+ *     settings page uses (writeSettings + pushControl); the Popover itself
+ *     owns Escape/outside-click/focus, and no stylesheet or listener is
+ *     added for it.
  *   - an invisible titlebar probe (`TITLEBAR_AREAS.center`) that reads the
  *     active theme (useTheme is a hook),
  *   - an opt-in, audio-reactive accent pulse via the sanctioned
@@ -50,9 +59,14 @@ import {
   $accentOverride,
   atom,
   Button,
+  host,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   requestTheme,
   setAccentOverride,
   SETTINGS_PLUGINS_AREA,
+  STATUSBAR_AREAS,
   Switch,
   THEMES_AREA,
   TITLEBAR_AREAS,
@@ -84,10 +98,24 @@ const DEFAULT_SETTINGS = Object.freeze({
   autoPreset: true,
   themeOptIn: false,
   windowVisual: false,
-  motion: 'both'
+  motion: 'both',
+  reducedMotion: false
 })
 
+// The plugin's own entry inside Settings ▸ Plugins (same shape the host's
+// own plugin-settings palette commands use).
+const SETTINGS_NAV_PATH = '/settings?tab=plugins&agent=aura'
+
+// Breathing levels for the status-bar pulse dot, walked one step per poll
+// tick (4 Hz): a gentle rise and fall while the visual is moving. Reduced
+// motion freezes the dot at PULSE_REDUCED_OPACITY instead of cycling.
+const PULSE_LEVELS = Object.freeze([0.18, 0.45, 0.8, 1, 0.8, 0.45])
+const PULSE_REDUCED_OPACITY = 0.55
+// Above this audio level, and not flagged silent, counts as "music playing".
+const PULSE_MUSIC_LEVEL = 0.02
+
 const BEHAVIORS = ['calm', 'balanced', 'intense']
+const BEHAVIOR_LABELS = { calm: 'Calm', balanced: 'Balanced', intense: 'Intense' }
 // `designs` is accepted for configs saved before the agent modes existed, but
 // it is no longer offered in the select. The four offered values are below.
 const MOTIONS = ['designs', 'both', 'music', 'agent', 'agent_music']
@@ -213,6 +241,11 @@ const disposers = []
 const $settings = atom({ ...DEFAULT_SETTINGS })
 const $live = atom({ ...EMPTY_LIVE })
 const $themeApplied = atom(false)
+// Quick-menu state: which way the host Popover is open (so dispose can close
+// it) and the current pulse-dot opacity (recomputed by the poll ticker).
+const $menuOpen = atom(false)
+const $pulse = atom(0)
+let pulseIndex = 0
 
 // --------------------------------------------------------------- persistence
 
@@ -237,6 +270,7 @@ function readSettings(ctx) {
     if (typeof raw.themeOptIn === 'boolean') out.themeOptIn = raw.themeOptIn
     if (typeof raw.windowVisual === 'boolean') out.windowVisual = raw.windowVisual
     if (typeof raw.motion === 'string' && MOTIONS.includes(raw.motion)) out.motion = raw.motion
+    if (typeof raw.reducedMotion === 'boolean') out.reducedMotion = raw.reducedMotion
     // Legacy `glass` / `overlayOpacity` keys are ignored: the old host-glass
     // visibility slider is gone; windowVisual + the backdrop replace it.
   }
@@ -265,10 +299,16 @@ function setError(message) {
 }
 
 // Optional whole-window MilkDrop backdrop, enabled only by the user.
+// `reduced-motion=1` is the backdrop page's own force-switch (web/aura.js
+// FORCE_REDUCED): the server's /control does not take a reduced_motion key,
+// so this URL parameter is how the quick menu's Gentle motion switch reaches
+// the moving visual.
 function backdropSrc(url) {
   if (!url) return ''
+  const params = ['overlay=1']
+  if ($settings.get().reducedMotion) params.push('reduced-motion=1')
   const separator = url.indexOf('?') === -1 ? '?' : '&'
-  return `${url}${separator}overlay=1`
+  return `${url}${separator}${params.join('&')}`
 }
 
 // Background-only tokens (never ink: `--ui-base` is the text colour). Big
@@ -508,9 +548,56 @@ async function poll() {
     }
     syncBackdrop()
     accentStep(Date.now())
+    pulseStep()
   } finally {
     polling = false
   }
+}
+
+// --------------------------------------------------------------- pulse dot
+
+/**
+ * Is the Aura visual actually moving right now? Music-led motions follow the
+ * level/silence frame, agent-led motions follow the mood, and the ambient
+ * profiles ('both' and legacy 'designs') rest on a gentle design that always
+ * drifts. Only used for the status-bar dot — never for appearance itself.
+ */
+function visualIsMoving() {
+  const settings = $settings.get()
+  const frame = liveFrame || {}
+  const level = Number.isFinite(frame.level) ? clamp01(frame.level) : 0
+  const musicPlaying = frame.silence !== true && level > PULSE_MUSIC_LEVEL
+  const agentActive = typeof frame.mood === 'string' && frame.mood !== '' && frame.mood !== 'idle'
+  if (settings.motion === 'agent') return agentActive
+  if (settings.motion === 'agent_music') return agentActive || musicPlaying
+  if (settings.motion === 'music') return musicPlaying
+  return true
+}
+
+/**
+ * Advance the pulse dot one breath step (once per poll tick, so never faster
+ * than 4 Hz). Reduced motion never cycles; it holds a steady dim dot. The
+ * value is handed to the React dot as an inline opacity — no stylesheet, no
+ * animation node, nothing added to the host document.
+ */
+function pulseStep() {
+  if (disposed) return
+  const settings = $settings.get()
+  const live = $live.get()
+  const enabled = live.ok ? live.enabled === true : settings.enabled
+  if (!enabled || !visualIsMoving()) {
+    pulseIndex = 0
+    if ($pulse.get() !== 0) $pulse.set(0)
+    return
+  }
+  if (settings.reducedMotion) {
+    if ($pulse.get() !== PULSE_REDUCED_OPACITY) $pulse.set(PULSE_REDUCED_OPACITY)
+    return
+  }
+  pulseIndex = $pulse.get() === 0 || $pulse.get() === PULSE_REDUCED_OPACITY
+    ? 0
+    : (pulseIndex + 1) % PULSE_LEVELS.length
+  $pulse.set(PULSE_LEVELS[pulseIndex])
 }
 
 // ------------------------------------------------------------- accent pulse
@@ -684,6 +771,35 @@ async function setMotion(next) {
   await pushControl({ motion })
 }
 
+/** "Gentle motion (motion-sensitive)". The same key lives in the server's
+ *  config (config.reduced_motion) but /control does not accept it yet, so
+ *  the push is forwarded for any server that starts to, while the local
+ *  effect — the backdrop's reduced-motion force-switch and the dot — applies
+ *  immediately in this half. */
+async function setReducedMotion(next) {
+  if (!ctxRef || disposed) return
+  const reducedMotion = Boolean(next)
+  writeSettings({ reducedMotion })
+  syncBackdrop()
+  await pushControl({ reduced_motion: reducedMotion })
+}
+
+/** Shared by the settings page and the quick menu: apply the intensity
+ *  locally (accent at once) and then push it — one door for both surfaces. */
+function applyIntensity(rawValue) {
+  const intensity = clamp01(rawValue)
+  writeSettings({ intensity })
+  if (intensity <= 0) clearAccent(true)
+  else accentStep(Date.now())
+  void pushControl({ intensity })
+}
+
+/** The motion select's offered values; a saved legacy `designs` keeps a
+ *  matching option so the select never lies about the stored value. */
+function motionChoices(settings) {
+  return settings.motion === 'designs' ? MOTION_OPTIONS.concat(['designs']) : MOTION_OPTIONS
+}
+
 async function setBehavior(next) {
   if (!ctxRef || disposed) return
   const behavior = BEHAVIORS.includes(next) ? next : 'balanced'
@@ -724,6 +840,238 @@ async function setAutoPreset(next) {
 }
 
 // ---------------------------------------------------------------------- UI
+
+/**
+ * The status-bar quick menu. A host Popover (the working pattern from the
+ * quota/revamp plugins) carries its own outside-click/Escape/focus handling,
+ * so this adds no listeners and no stylesheet. Every control reuses the same
+ * module handlers as the settings page: setEnabled, setMotion, applyIntensity,
+ * setOpacity, setBehavior, setReducedMotion. The panel is closed when we
+ * dispose (via $menuOpen) and whenever a control is used it stays open like
+ * the settings page so the user can stack changes.
+ */
+function AuraQuickMenu() {
+  const settings = useValue($settings)
+  const live = useValue($live)
+  const pulse = useValue($pulse)
+  const useHostNav = host && typeof host.navigate === 'function'
+  // Server flag wins while it answers, exactly like syncBackdrop does.
+  const auraOn = live.ok ? live.enabled === true : settings.enabled
+  const open = useValue($menuOpen)
+
+  const setOpen = value => {
+    if ($menuOpen.get() !== Boolean(value)) $menuOpen.set(Boolean(value))
+  }
+
+  const row = (label, control) =>
+    jsxs('div', {
+      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '7px 12px' },
+      children: [
+        jsx('div', {
+          style: { fontSize: 12, color: 'var(--ui-text-primary)', whiteSpace: 'nowrap' },
+          children: label
+        }),
+        jsx('div', { style: { display: 'flex', alignItems: 'center', flex: 'none' }, children: control })
+      ]
+    })
+
+  const sliderStyle = { width: 110, accentColor: 'var(--ui-accent)' }
+  const readout = value =>
+    jsx('span', {
+      style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30, textAlign: 'right', fontVariantNumeric: 'tabular-nums' },
+      children: `${Math.round(clamp01(value) * 100)}%`
+    })
+  const selectStyle = {
+    font: 'inherit',
+    fontSize: 11,
+    color: 'var(--ui-text-primary)',
+    background: 'var(--ui-bg)',
+    border: '1px solid var(--ui-stroke-secondary)',
+    borderRadius: 6,
+    padding: '3px 6px'
+  }
+
+  const glyphColor = auraOn ? 'var(--ui-accent)' : 'var(--ui-text-tertiary)'
+
+  return jsxs(Popover, {
+    open,
+    onOpenChange: setOpen,
+    children: [
+      jsx(PopoverTrigger, {
+        asChild: true,
+        children: jsx(Button, {
+          size: 'micro',
+          variant: 'ghost',
+          'aria-label': 'Aura quick settings',
+          'aria-haspopup': 'dialog',
+          'aria-expanded': open,
+          title: 'Aura',
+          style: { color: glyphColor, lineHeight: 1, fontWeight: 700 },
+          children: jsxs('span', {
+            'aria-hidden': true,
+            style: { display: 'inline-flex', alignItems: 'center', fontSize: 14, lineHeight: 1, letterSpacing: 0.5 },
+            children: [
+              'A',
+              // The breathing dot: opacity comes from the poll ticker, so it
+              // moves at most 4 Hz, sits still under reduced motion, and is
+              // away entirely while nothing moves or Aura is off. No CSS
+              // animation node exists to leak — the value is an inline style.
+              jsx('span', {
+                key: 'dot',
+                style: {
+                  display: 'inline-block',
+                  width: 5,
+                  height: 5,
+                  marginLeft: 3,
+                  borderRadius: 999,
+                  background: 'var(--ui-accent)',
+                  opacity: Number(pulse),
+                  transition: 'opacity 220ms ease-in-out'
+                }
+              })
+            ]
+          })
+        })
+      }),
+      jsx(PopoverContent, {
+        side: 'top',
+        align: 'end',
+        'aria-label': 'Aura quick settings',
+        style: {
+          minWidth: 264,
+          padding: '6px 0',
+          background: 'var(--ui-bg-elevated, var(--ui-bg))',
+          border: '1px solid var(--ui-stroke-secondary)',
+          borderRadius: 10,
+          boxShadow: '0 8px 28px rgba(0,0,0,0.28)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 1
+        },
+        children: [
+          row(
+            'Aura',
+            jsx(Switch, {
+              checked: settings.enabled,
+              'aria-label': 'Aura enabled',
+              onCheckedChange: value => {
+                void setEnabled(value)
+              }
+            })
+          ),
+          row(
+            'Reacts to',
+            jsx('select', {
+              value: settings.motion,
+              'aria-label': 'Reacts to',
+              style: selectStyle,
+              onChange: event => {
+                void setMotion(event && event.target ? String(event.target.value) : 'both')
+              },
+              children: motionChoices(settings).map(name =>
+                jsx('option', { key: name, value: name, children: MOTION_LABELS[name] })
+              )
+            })
+          ),
+          row(
+            'Intensity',
+            jsxs('div', {
+              style: { display: 'flex', alignItems: 'center', gap: 8 },
+              children: [
+                jsx('input', {
+                  key: 'slider',
+                  type: 'range',
+                  min: 0,
+                  max: 100,
+                  step: 1,
+                  value: Math.round(settings.intensity * 100),
+                  'aria-label': 'Intensity',
+                  style: sliderStyle,
+                  onChange: event => {
+                    applyIntensity(Number(event && event.target ? event.target.value : 0) / 100)
+                  }
+                }),
+                readout(settings.intensity)
+              ]
+            })
+          ),
+          row(
+            'Transparency',
+            jsxs('div', {
+              style: { display: 'flex', alignItems: 'center', gap: 8 },
+              children: [
+                jsx('input', {
+                  key: 'slider',
+                  type: 'range',
+                  min: 0,
+                  max: 100,
+                  step: 1,
+                  value: Math.round(settings.opacity * 100),
+                  'aria-label': 'Transparency',
+                  style: sliderStyle,
+                  onChange: event => {
+                    void setOpacity(clamp01(Number(event && event.target ? event.target.value : 0) / 100))
+                  }
+                }),
+                readout(settings.opacity)
+              ]
+            })
+          ),
+          row(
+            'Style',
+            jsx('select', {
+              value: settings.behavior,
+              'aria-label': 'Style',
+              style: selectStyle,
+              onChange: event => {
+                void setBehavior(event && event.target ? String(event.target.value) : 'balanced')
+              },
+              children: BEHAVIORS.map(name =>
+                jsx('option', { key: name, value: name, children: BEHAVIOR_LABELS[name] })
+              )
+            })
+          ),
+          row(
+            'Gentle motion',
+            jsx(Switch, {
+              checked: settings.reducedMotion,
+              'aria-label': 'Gentle motion (motion-sensitive)',
+              onCheckedChange: value => {
+                void setReducedMotion(value)
+              }
+            })
+          ),
+          useHostNav
+            ? jsxs('div', {
+              style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '8px 12px 4px', borderTop: '1px solid var(--ui-stroke-secondary)', marginTop: 2 },
+              children: [
+                jsx(Button, {
+                  size: 'micro',
+                  variant: 'ghost',
+                  'aria-label': 'All Aura settings',
+                  onClick: () => {
+                    setOpen(false)
+                    try {
+                      host.navigate(SETTINGS_NAV_PATH)
+                    } catch {
+                      // older hosts without navigate
+                    }
+                  },
+                  children: 'All Aura settings'
+                }),
+                jsx('span', {
+                  'aria-hidden': true,
+                  style: { fontSize: 10, color: 'var(--ui-text-tertiary)' },
+                  children: 'Aura'
+                })
+              ]
+            })
+            : null
+        ]
+      })
+    ]
+  })
+}
 
 function ThemeProbe() {
   const active = useTheme()
@@ -802,11 +1150,7 @@ function AuraSettings() {
             'aria-label': 'Reaction strength',
             style: { width: 160, accentColor: 'var(--ui-accent)' },
             onChange: event => {
-              const intensity = clamp01(event && event.target ? event.target.value : 0)
-              writeSettings({ intensity })
-              if (intensity <= 0) clearAccent(true)
-              else accentStep(Date.now())
-              void pushControl({ intensity })
+              applyIntensity(event && event.target ? event.target.value : 0)
             }
           })
         )
@@ -864,11 +1208,23 @@ function AuraSettings() {
               const value = event && event.target ? String(event.target.value) : 'both'
               void setMotion(value)
             },
-            children: (settings.motion === 'designs'
-              ? MOTION_OPTIONS.concat(['designs'])
-              : MOTION_OPTIONS).map(name =>
+            children: motionChoices(settings).map(name =>
               jsx('option', { key: name, value: name, children: MOTION_LABELS[name] })
             )
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'gentle',
+        children: row(
+          'Gentle motion (motion-sensitive)',
+          'The motion-sickness-friendly mode: calmer reaction, no strobe, no pulsing, and the reduced-motion visual profile in the window backdrop.',
+          jsx(Switch, {
+            checked: settings.reducedMotion,
+            'aria-label': 'Gentle motion (motion-sensitive)',
+            onCheckedChange: value => {
+              void setReducedMotion(value)
+            }
           })
         )
       }),
@@ -1079,6 +1435,9 @@ function teardown() {
   $settings.set({ ...DEFAULT_SETTINGS })
   $live.set({ ...EMPTY_LIVE })
   $themeApplied.set(false)
+  $menuOpen.set(false)
+  $pulse.set(0)
+  pulseIndex = 0
 }
 
 // ------------------------------------------------------------------- export
@@ -1110,6 +1469,9 @@ export default {
     knownTheme = ''
     disposers.length = 0
     $themeApplied.set(false)
+    $menuOpen.set(false)
+    $pulse.set(0)
+    pulseIndex = 0
     const settings = readSettings(ctx)
     $settings.set(settings)
     $live.set({ ...EMPTY_LIVE })
@@ -1159,6 +1521,19 @@ export default {
         })
       )
     }
+
+    // The status-bar quick menu (the owner's "small icon of an A ... with a
+    // drop down"). The contribution lives in the status bar; the panel is a
+    // host Popover, which owns its own Escape/outside-click/focus handling,
+    // so nothing here adds a listener or a node to clear on dispose.
+    track(
+      ctx.register({
+        id: 'quick-menu',
+        area: STATUSBAR_AREAS.right,
+        order: 127,
+        render: () => jsx(AuraQuickMenu, {})
+      })
+    )
 
     // Polling is the only timer; the host owns it, so it cannot outlive the
     // plugin even if the returned disposer is never called.

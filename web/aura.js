@@ -172,6 +172,21 @@
   let draggingIntensity = false;
   let draggingOpacity = false;
 
+  // Visual audio analysis is driven from the PCM stream itself, not from the
+  // Web Audio graph. An overlay iframe never gets the gesture that would unlock
+  // an AudioContext, so Butterchurn's own analysers would read flat silence.
+  // Instead we keep the most recent PCM and hand Butterchurn the byte arrays it
+  // would otherwise sample from an AnalyserNode.
+  const PCM_RING_SIZE = 1024;
+  const PCM_STALE_MS = 300;
+  const HARD_CUT_MIN_MS = 8000;
+  const pcmRing = new Float32Array(PCM_RING_SIZE);
+  let pcmWrite = 0;
+  let pcmFilled = 0;
+  let lastPcmAt = 0;
+  let fluxPrevRms = 0;
+  let lastHardCutAt = -Infinity;
+
   // ---------------------------------------------------------------------------
   // small helpers
   // ---------------------------------------------------------------------------
@@ -1100,7 +1115,7 @@
       if (p50 > 260 && !quality.degradedToFallback) {
         quality.degradedToFallback = true;
         block('perf', 'Rendering is too slow on this GPU — showing the accent-only fallback.');
-        if (viz) { try { viz.render(); } catch (_) {} }
+        if (viz) { try { renderFrame(); } catch (_) {} }
       }
       return;
     }
@@ -1120,7 +1135,7 @@
     if (ts - lastRenderAt < interval - 1.5) return;
     const t0 = now();
     try {
-      viz.render();
+      renderFrame();
     } catch (e) {
       recordError(e);
       block('webgl', 'The visualizer stopped — showing the accent-only fallback.');
@@ -1244,7 +1259,7 @@
     if (dom.canvas) dom.canvas.style.opacity = state.enabled ? String(state.opacity) : String(state.opacity * 0.35);
     if (dom.root) dom.root.dataset.silence = '0';
     lastRenderAt = 0;
-    if (viz) { try { viz.render(); } catch (_) {} }
+    if (viz) { try { renderFrame(); } catch (_) {} }
   }
 
   // Called for every PCM frame and every feature event: silence=true means the
@@ -1316,7 +1331,7 @@
       // the preset up (viz.render() would draw a bright frame again).
       clearVisual();
     } else {
-      try { viz.render(); } catch (e) { recordError(e); return null; }
+      try { renderFrame(); } catch (e) { recordError(e); return null; }
     }
     const w = gl.drawingBufferWidth;
     const h = gl.drawingBufferHeight;
@@ -1346,6 +1361,98 @@
       sampleGain: Number(state.sampleGain.toFixed(3))
     };
     return lastSample;
+  }
+
+  // ---------------------------------------------------------------------------
+  // audio-driven visuals — PCM ring buffer, independent of AudioContext state
+  // ---------------------------------------------------------------------------
+
+  // Pure: ordered PCM samples -> the three unsigned time-domain byte arrays
+  // Butterchurn expects (128 = silence). reducedMotion scales the deviation
+  // from silence so the preset reacts gently without hard cuts.
+  function buildAudioLevels(samples) {
+    const timeByteArray = new Uint8Array(PCM_RING_SIZE);
+    timeByteArray.fill(128);
+    const src = samples || new Float32Array(0);
+    const n = Math.min(src.length, PCM_RING_SIZE);
+    const start = src.length - n;
+    const scale = state.reducedMotion ? 0.5 : 1;
+    for (let i = 0; i < n; i += 1) {
+      const v = clamp(num(src[start + i], 0), -1, 1) * scale;
+      timeByteArray[PCM_RING_SIZE - n + i] = clamp(Math.round(128 + v * 127), 0, 255);
+    }
+    return {
+      timeByteArray,
+      timeByteArrayL: new Uint8Array(timeByteArray),
+      timeByteArrayR: new Uint8Array(timeByteArray)
+    };
+  }
+
+  function appendPcm(samples) {
+    for (let i = 0; i < samples.length; i += 1) {
+      pcmRing[pcmWrite] = clamp(samples[i], -1, 1);
+      pcmWrite = (pcmWrite + 1) % PCM_RING_SIZE;
+      if (pcmFilled < PCM_RING_SIZE) pcmFilled += 1;
+    }
+    lastPcmAt = now();
+  }
+
+  function latestPcm() {
+    const out = new Float32Array(PCM_RING_SIZE);
+    if (!pcmFilled) return out;
+    let idx = (pcmWrite - pcmFilled + PCM_RING_SIZE) % PCM_RING_SIZE;
+    for (let i = 0; i < pcmFilled; i += 1) {
+      out[i] = pcmRing[idx];
+      idx = (idx + 1) % PCM_RING_SIZE;
+    }
+    return out;
+  }
+
+  // No PCM for a while (or none yet): feed silence so presets settle the way
+  // MilkDrop does instead of free-running on stale samples.
+  function currentAudioLevels() {
+    if (!lastPcmAt || (now() - lastPcmAt) > PCM_STALE_MS) {
+      return buildAudioLevels(new Float32Array(PCM_RING_SIZE));
+    }
+    return buildAudioLevels(latestPcm());
+  }
+
+  function renderFrame() {
+    if (!viz) return false;
+    viz.render({ audioLevels: currentAudioLevels() });
+    return true;
+  }
+
+  // A strong onset may jump straight to a new preset ("hard cut"), but never
+  // more than once every 8 s, and never for calm/reduced-motion/auto-off.
+  function maybeHardCut() {
+    if (!viz || state.reducedMotion || !state.autoPreset) return false;
+    if (state.behavior === 'calm') return false;
+    const t = now();
+    if (t - lastHardCutAt < HARD_CUT_MIN_MS) return false;
+    const allowed = allowedPresets();
+    if (!allowed.length) return false;
+    const family = activeProfile().preset_family;
+    const preferred = allowed.filter((p) => p.family === family && p.name !== state.presetName);
+    const anyOther = allowed.filter((p) => p.name !== state.presetName);
+    const pool = preferred.length ? preferred : anyOther;
+    if (!pool.length) return false;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    if (!loadPresetByName(pick.name, 0, false)) return false;
+    lastHardCutAt = t;
+    return true;
+  }
+
+  // Local energy-flux onset detector on the incoming PCM. It complements the
+  // server's features.onset; both are rate-limited by maybeHardCut().
+  function detectLocalOnset(samples) {
+    if (!samples.length) return;
+    let sum = 0;
+    for (let i = 0; i < samples.length; i += 1) sum += samples[i] * samples[i];
+    const rms = Math.sqrt(sum / samples.length);
+    const rise = rms - fluxPrevRms;
+    fluxPrevRms = rms;
+    if (rms > 0.06 && rise > 0.05) maybeHardCut();
   }
 
   // ---------------------------------------------------------------------------
@@ -1449,14 +1556,13 @@
   // can unlock it through allow="autoplay".
   let resumeRetry = null;
   function audioSuspended() {
-    if (!OVERLAY) {
-      block('audio', 'Audio is paused until you click — showing the accent-only fallback.');
-      armGestureResume();
-      return;
-    }
+    // The visual no longer needs the Web Audio graph (PCM drives Butterchurn
+    // directly), so a suspended context is not a blocker anywhere — including
+    // the click-through overlay that can never get an autoplay gesture.
     unblock('audio');
     if (!viz) initViz();
     startLoop();
+    if (!OVERLAY) armGestureResume();
     if (resumeRetry) return;
     resumeRetry = setInterval(() => {
       if (!audio.ctx || audio.ctx.state === 'running') {
@@ -1514,7 +1620,6 @@
 
   function feedPcm(frame) {
     noteAudio(frame.silence);
-    if (!audio.node || !audio.ctx) return;
     if (socket.ws && socket.ws.bufferedAmount > 512 * 1024) {
       // Socket backed up: drop this frame rather than queue latency.
       state.droppedFrames += 1;
@@ -1526,6 +1631,13 @@
       // A silent frame is zeroes, never whatever the capture buffer held.
       samples = new Float32Array(frame.count);
     }
+    // Visual analysis always runs, at 48 kHz, whether or not the worklet graph
+    // is alive. This is what makes the backdrop follow the music.
+    const visualSamples = resampleMono(samples, frame.rate || 48000, 48000, gain);
+    appendPcm(visualSamples);
+    if (!frame.silence) detectLocalOnset(visualSamples);
+    else fluxPrevRms = 0;
+    if (!audio.node || !audio.ctx) return;
     const out = resampleMono(samples, frame.rate || 48000, audio.ctx.sampleRate || 48000, gain);
     try {
       audio.node.port.postMessage({ samples: out }, [out.buffer]);
@@ -1558,6 +1670,7 @@
           silence: !!ev.silence
         };
         noteAudio(!!ev.silence);
+        if (state.lastFeatures.onset && !state.lastFeatures.silence) maybeHardCut();
         updateMoodVisuals();
         break;
       }
@@ -2094,6 +2207,7 @@
     noteAgentMood,
     noteAudio,
     agentMotionGate,
+    buildAudioLevels,
     agentIdleGraceMs: AGENT_IDLE_GRACE_MS,
     setIntensityUI,
     setOpacityUI,
