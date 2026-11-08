@@ -82,17 +82,25 @@ def test_config_defaults_include_display_controls():
     assert cfg["opacity"] == 0.75
     assert cfg["behavior"] == "calm"
     assert cfg["mood_reactive"] is True
-    assert cfg["accent_pulse"] is True
+    assert cfg["accent_pulse"] is False
     assert cfg["auto_preset"] is True
+    assert cfg["theme_opt_in"] is False
+
+
+def test_theme_effects_are_opt_in_and_can_be_enabled_explicitly():
+    assert config.normalise({"accent_pulse": True})["accent_pulse"] is True
+    assert config.normalise({"theme_opt_in": True})["theme_opt_in"] is True
 
 
 def test_config_motion_defaults_and_validation():
-    assert config.MOTIONS == ("designs", "both", "music")
+    assert config.MOTIONS == ("designs", "both", "music", "agent", "agent_music")
     cfg = config.normalise({})
     assert cfg["motion"] == "both"
     for value in config.MOTIONS:
         assert config.normalise({"motion": value})["motion"] == value
     assert config.normalise({"motion": "DESIGNS"})["motion"] == "designs"
+    assert config.normalise({"motion": "AGENT"})["motion"] == "agent"
+    assert config.normalise({"motion": " Agent_Music "})["motion"] == "agent_music"
     for bad in ("", "loud", 3, None, True):
         assert config.normalise({"motion": bad})["motion"] == "both"
 

@@ -39,6 +39,10 @@
   const MOODS = ['idle', 'thinking', 'tool', 'approval', 'error', 'streaming', 'done'];
   const ATTENTION = ['approval', 'error'];
   const HARD_BLOCKERS = ['token', 'webgl', 'capture', 'audio', 'perf'];
+  // Capture is a data source, not a graphics prerequisite: in ambient mode the
+  // page keeps drawing and only says what is missing. No cause is guessed.
+  const CAPTURE_NONE_AMBIENT = 'System audio loopback is unavailable — ambient visuals continue; music reactivity is off.';
+  const CAPTURE_NONE_BLOCKED = 'System audio loopback is unavailable — showing the accent-only fallback.';
   const FLASH_WINDOW_MS = 1000;
   const FLASH_MAX_PER_WINDOW = 3;
   const ATTENTION_PULSE_MS = 1000;   // 1 Hz — contract caps attention at 2 Hz
@@ -92,8 +96,16 @@
     behaviorProfile: Object.assign({}, BEHAVIOR_PROFILES[DEFAULT_BEHAVIOR]),
     motion: 'both',
     ambientFallback: false,
+    // Agent-gated motion: tracked from the RAW mood stream, separate from the
+    // mood visuals, so moodReactive=false never freezes agent mode.
+    agentActive: false,
+    // -1 = no idle instant recorded yet (a real timestamp can be 0).
+    agentIdleSince: -1,
+    captureNotice: null,
     moodReactive: true,
-    accentPulse: true,
+    // Opt-in: the server default is off, and a page opened standalone starts
+    // with no pulse until the user (or the config event) turns it on.
+    accentPulse: false,
     autoPreset: true,
     presetName: null,
     presetFamily: null,
@@ -139,9 +151,15 @@
     ambient: null,
     mixTarget: ''
   };
-  const MOTIONS = ['designs', 'both', 'music'];
+  const MOTIONS = ['designs', 'both', 'music', 'agent', 'agent_music'];
   const MOTION_SILENCE_MS = 1500; // both: rest on designs after this much quiet
   const MOTION_FADE_S = 2;        // crossfade between real audio and designs
+  // Raw moods that mean the agent is doing something. `done` counts until it
+  // settles to idle (DONE_SETTLE_MS), exactly like the visual settle.
+  const AGENT_ACTIVE_MOODS = ['thinking', 'tool', 'streaming', 'approval', 'error', 'done'];
+  // Do not flicker the canvas between tool calls: an idle mood pauses only
+  // after this long, and any new active mood cancels the pending pause.
+  const AGENT_IDLE_GRACE_MS = 2500;
   const socket = { ws: null, state: 'boot', attempt: 0, timer: null };
   let viz = null;
   let catalog = { presets: [], byName: Object.create(null), default: null };
@@ -149,6 +167,7 @@
   let rafId = null;
   let lastRenderAt = 0;
   let silenceTimer = null;
+  let agentIdleTimer = null;
   let lastSample = null;
   let draggingIntensity = false;
   let draggingOpacity = false;
@@ -304,6 +323,9 @@
       showMessage(blockers.get(hard), 'warn');
     } else if (!state.enabled) {
       showMessage('Aura is off — the visualizer is paused.', 'info');
+    } else if (state.captureNotice) {
+      // Non-blocking: ambient visuals are still drawing behind this line.
+      showMessage(state.captureNotice, 'info');
     } else if (socket.state !== 'connected') {
       showMessage('Reconnecting to Aura…', 'info');
     } else {
@@ -453,6 +475,9 @@
 
   function applyMood(name, intensity, ttlMs) {
     if (!MOODS.includes(name)) name = 'idle';
+    // The agent activity gate always sees the RAW mood, even when mood colours
+    // are off or Aura is disabled (the gate itself respects disabled).
+    noteAgentMood(name);
     if (!state.enabled) name = 'idle';
     // mood_reactive=false: the agent-mood layer is off, so every incoming
     // mood is treated as idle. Nothing latches; turning it back on applies
@@ -915,9 +940,33 @@
     }
   }
 
+  function agentMotionMode() {
+    return state.motion === 'agent' || state.motion === 'agent_music';
+  }
+
+  // Recent real audio: the same window `music` mode uses to settle in silence.
+  function musicPresent() {
+    return (now() - state.lastAudioAt) <= SILENCE_MS;
+  }
+
+  // Pure gate, also exposed on window.__aura for the Node logic test.
+  // Returns null for the non-agent motion values.
+  function agentMotionGate(motion, agentActive, musicNow) {
+    if (motion === 'agent') {
+      return { ambient: !!agentActive, real: false, pause: !agentActive };
+    }
+    if (motion === 'agent_music') {
+      const real = !!musicNow;
+      return { ambient: !real && !!agentActive, real, pause: !agentActive && !real };
+    }
+    return null;
+  }
+
   function desiredMix() {
     if (state.motion === 'designs') return 'ambient';
     if (state.motion === 'music') return 'real';
+    if (state.motion === 'agent') return 'ambient';
+    if (state.motion === 'agent_music') return musicPresent() ? 'real' : 'ambient';
     return state.ambientFallback ? 'ambient' : 'real';
   }
 
@@ -946,6 +995,8 @@
 
   function ambientActive() {
     if (state.motion === 'designs') return true;
+    if (state.motion === 'agent') return state.agentActive;
+    if (state.motion === 'agent_music') return state.agentActive && !musicPresent();
     return state.motion === 'both' && state.ambientFallback;
   }
 
@@ -961,7 +1012,19 @@
       if (dom.slider.setAttribute) dom.slider.setAttribute('aria-disabled', disabled ? 'true' : 'false');
     }
     applyMotionMix();
-    if (ambientActive() && state.renderPaused) resumeVisual();
+    if (agentMotionMode()) {
+      // First sight of agent mode with no tracked mood: start the idle grace
+      // from now rather than pausing instantly on a mode switch.
+      if (!state.agentActive && state.agentIdleSince < 0) {
+        state.agentIdleSince = now();
+        scheduleAgentIdlePause();
+      }
+      evaluateAgentMotion();
+    } else if (ambientActive()) {
+      if (state.renderPaused) resumeVisual();
+    } else if (state.motion === 'music' && musicPresent() && state.renderPaused) {
+      resumeVisual();
+    }
   }
 
   function initViz() {
@@ -1102,6 +1165,57 @@
   const SILENCE_MS = 1200;
   const SILENCE_FADE_MS = 600;
 
+  // Agent activity gate. Driven by the RAW mood (before moodReactive/enabled
+  // coercion) so turning mood colours off cannot freeze agent motion.
+  function noteAgentMood(rawMood) {
+    const active = AGENT_ACTIVE_MOODS.indexOf(rawMood) !== -1;
+    if (active) {
+      state.agentActive = true;
+      state.agentIdleSince = -1;
+      if (agentIdleTimer) { clearTimeout(agentIdleTimer); agentIdleTimer = null; }
+      if (agentMotionMode()) {
+        applyMotionMix();
+        // Resume within the same tick as the mood event.
+        if (state.renderPaused) resumeVisual();
+      }
+      return;
+    }
+    if (!state.agentActive && state.agentIdleSince >= 0) {
+      // Keep the first idle instant; make sure the grace timer is armed.
+      if (!agentIdleTimer) scheduleAgentIdlePause();
+      return;
+    }
+    state.agentActive = false;
+    state.agentIdleSince = now();
+    scheduleAgentIdlePause();
+  }
+
+  function scheduleAgentIdlePause() {
+    if (!agentMotionMode()) return;
+    if (agentIdleTimer) { clearTimeout(agentIdleTimer); agentIdleTimer = null; }
+    const remaining = Math.max(0, AGENT_IDLE_GRACE_MS - (now() - state.agentIdleSince));
+    agentIdleTimer = setTimeout(() => {
+      agentIdleTimer = null;
+      evaluateAgentMotion();
+    }, remaining);
+  }
+
+  function evaluateAgentMotion() {
+    if (!agentMotionMode()) return;
+    if (!state.enabled) {
+      if (state.renderPaused) resumeVisual();
+      return;
+    }
+    if (hardBlocker()) return;
+    const gate = agentMotionGate(state.motion, state.agentActive, musicPresent());
+    if (!gate) return;
+    applyMotionMix();
+    const settled = state.agentIdleSince >= 0
+      && (now() - state.agentIdleSince) >= AGENT_IDLE_GRACE_MS;
+    if (gate.pause && settled) pauseVisual();
+    else if (state.renderPaused) resumeVisual();
+  }
+
   function clearVisual() {
     if (!dom.canvas) return;
     let gl = null;
@@ -1143,13 +1257,27 @@
       state.ambientFallback = false;
       applyMotionMix();
     }
-    if (state.renderPaused) resumeVisual();
+    if (state.motion === 'agent_music') applyMotionMix();
+    if (state.renderPaused) {
+      // agent: only agent activity moves the visual. agent_music: real audio
+      // also moves it. In plain agent mode, music alone must not wake it.
+      if (agentMotionMode()) {
+        if (state.agentActive || (state.motion === 'agent_music' && musicPresent())) resumeVisual();
+      } else {
+        resumeVisual();
+      }
+    }
   }
 
   function tickSilence() {
     if (!state.enabled) { if (state.renderPaused) resumeVisual(); return; }
     if (hardBlocker()) return;
     const quiet = now() - state.lastAudioAt;
+
+    if (agentMotionMode()) {
+      evaluateAgentMotion();
+      return;
+    }
 
     if (state.motion === 'both') {
       const shouldRest = quiet > MOTION_SILENCE_MS;
@@ -1563,7 +1691,7 @@
     if (typeof cfg.preset === 'string' && cfg.preset && cfg.preset !== state.presetName) {
       loadPresetByName(cfg.preset, num(activeProfile().blend_ms, 1200));
     }
-    if (typeof cfg.capture === 'string') applyCapture(cfg.capture);
+    if (typeof cfg.capture === 'string') syncCaptureFallback(cfg.capture);
   }
 
   function setBehaviorUI(name, serverProfile) {
@@ -1634,19 +1762,24 @@
     }
   }
 
-  function applyCapture(capture) {
+  function syncCaptureFallback(capture) {
     state.capture = capture;
     if (capture === 'none' && state.motion !== 'music') {
-      // No capture, but designs still move on the ambient source.
+      // No capture, but designs still move on the ambient source. This is an
+      // informational notice, never a hard blocker: the canvas keeps drawing.
       unblock('capture');
+      state.captureNotice = CAPTURE_NONE_AMBIENT;
       state.ambientFallback = true;
       applyMotionMix();
       if (!viz) initViz();
       else startLoop();
     } else if (capture === 'none') {
-      block('capture', 'No system audio is available on this machine — showing the accent-only fallback.');
+      // Music mode needs real audio for its visuals, so capture is a blocker here.
+      state.captureNotice = null;
+      block('capture', CAPTURE_NONE_BLOCKED);
       if (viz) stopLoop();
     } else {
+      state.captureNotice = null;
       unblock('capture');
       if (!viz) initViz();
       else startLoop();
@@ -1767,6 +1900,7 @@
         const value = String(dom.motion.value || '');
         if (MOTIONS.indexOf(value) === -1) return;
         setMotionUI(value);
+        if (state.capture === 'none') syncCaptureFallback(state.capture);
         postControl({ motion: value });
       });
     }
@@ -1840,7 +1974,7 @@
     } else if (health.ok && health.json) {
       state.capture = String(health.json.capture || 'unknown');
       if (state.capture === 'none' && state.motion === 'music') {
-        block('capture', 'No system audio is available on this machine — showing the accent-only fallback.');
+        block('capture', CAPTURE_NONE_BLOCKED);
       }
     }
 
@@ -1851,7 +1985,9 @@
     if (st.ok && st.json) {
       if (typeof st.json.enabled === 'boolean') setEnabledUI(st.json.enabled);
       if (typeof st.json.intensity === 'number') setIntensityUI(clamp(st.json.intensity, 0, 1));
-      if (typeof st.json.mood === 'string' && MOODS.includes(st.json.mood) && st.json.mood !== 'idle') {
+      if (typeof st.json.mood === 'string' && MOODS.includes(st.json.mood)) {
+        // Feed idle too: agent motion must start paused when the agent is idle
+        // at load, and move when /api/state reports an active mood.
         applyMood(st.json.mood, num(st.json.intensity, 0.6), 4000);
       }
     }
@@ -1897,6 +2033,8 @@
         behaviorProfile: Object.assign({}, state.behaviorProfile),
         motion: state.motion,
         ambientFallback: state.ambientFallback,
+        agentActive: state.agentActive,
+        agentIdleSince: state.agentIdleSince,
         moodReactive: state.moodReactive,
         accentPulse: state.accentPulse,
         autoPreset: state.autoPreset,
@@ -1953,6 +2091,10 @@
     sampleNow,
     // e2e hook: let the test drive mood without a server (still used by WS events).
     applyMood,
+    noteAgentMood,
+    noteAudio,
+    agentMotionGate,
+    agentIdleGraceMs: AGENT_IDLE_GRACE_MS,
     setIntensityUI,
     setOpacityUI,
     setBehaviorUI,

@@ -2,58 +2,67 @@
  * Aura — desktop half of the Aura Hermes plugin.
  *
  * Aura listens to what this computer is already playing and turns it into a
- * MilkDrop-compatible stage plus an audio-reactive accent. This file is ONLY
- * the desktop half: capture, analysis and the visualizer page belong to the
- * Python/server and web halves. The desktop half reaches them through the one
- * sanctioned door, `ctx.rest('/status')` and `ctx.rest('/control')`
+ * MilkDrop-compatible window visual plus an audio-reactive accent. This file
+ * is ONLY the desktop half: capture, analysis and the visualizer page belong
+ * to the Python/server and web halves. The desktop half reaches them through
+ * the one sanctioned door, `ctx.rest('/status')` and `ctx.rest('/control')`
  * (dashboard/plugin_api.py), and hands the returned tokenised URL straight to
  * an iframe.
  *
  * What it contributes (Hermes Desktop plugin SDK only — no core edits):
- *   - a full-page stage at /aura (`ROUTES_AREA`) hosting the visualizer,
- *   - a sidebar row (`SIDEBAR_NAV_AREA`) and a palette command (`PALETTE_AREA`),
- *   - a compact right-hand pane (`panes`) so the stage can sit beside chat,
- *   - an optional `THEMES_AREA` theme ('aura-live') the user must opt into,
  *   - a settings page (`SETTINGS_PLUGINS_AREA`) with enable / reaction strength /
- *     background visibility / motion / accent-follow / theme controls.
+ *     motion / accent-follow / window visual / theme controls, and Restore my
+ *     theme,
+ *   - an optional `THEMES_AREA` theme ('aura-live') the user must opt into,
+ *   - "Visual behind the app": one fixed, click-through backdrop iframe at
+ *     z-index -1 plus a single `#aura-glass` stylesheet that clears the app's
+ *     own big surfaces so the moving visual shows through. It appears only
+ *     when Aura is enabled AND the user opted in (the windowVisual switch or
+ *     the Aura Live theme) and a live URL exists. Turning the visual off,
+ *     turning Aura off, Restore my theme and dispose remove both again. If
+ *     the visual is switched on while Aura is off, Aura is enabled through
+ *     the same door the "Aura enabled" switch uses.
+ *   - an invisible titlebar probe (`TITLEBAR_AREAS.center`) that reads the
+ *     active theme (useTheme is a hook),
+ *   - an opt-in, audio-reactive accent pulse via the sanctioned
+ *     `setAccentOverride`.
  *
- * The SDK has no backdrop slot (see SPIKES.md S1), so selecting the Aura Live
- * theme mounts one click-through iframe behind the app and injects a single
- * glass stylesheet: panels become translucent versions of the ACTIVE theme's
- * own colours while the visualizer sits behind them. The accent is still
- * pulsed by retinting that theme's accent — never by imposing a hue.
+ * The old full-page stage and everything that opened it (the `/aura` route,
+ * the sidebar row, the palette command and the compact pane) was removed: the
+ * backdrop and the Settings page are the product.
+ *
+ * Host safety: the backdrop iframe and the `#aura-glass` style — mounted only
+ * behind the opt-in above — are the only host DOM Aura touches; nothing is
+ * injected while nothing is opted in, and the host `html`/`body`/root styles
+ * are never written. All other appearance effects go through the SDK
+ * (`setAccentOverride`, `requestTheme`). Accent pulse and the Aura Live theme
+ * are opt-in and off by default.
  *
  * Plain ESM, loaded uncompiled: `jsx()` calls only, no JSX syntax, no eval,
  * no dynamic import. Imports are limited to @hermes/plugin-sdk, react and
  * react/jsx-runtime. Every contribution and timer returns a disposer, and
  * `register()` returns one disposer that stops polling, clears the accent
- * override, restores the user's previous theme and removes every contribution.
+ * override, restores the user's previous theme, removes the backdrop and its
+ * glass style, and removes every contribution.
  */
 
 import {
   $accentOverride,
   atom,
   Button,
-  host,
-  PALETTE_AREA,
-  PANES_AREA,
   requestTheme,
-  ROUTES_AREA,
   setAccentOverride,
   SETTINGS_PLUGINS_AREA,
-  SIDEBAR_NAV_AREA,
-  StatusDot,
   Switch,
   THEMES_AREA,
   TITLEBAR_AREAS,
   useTheme,
   useValue
 } from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'aura'
-const ROUTE = '/aura'
 const THEME_NAME = 'aura-live'
 // The contract says /api/state is cheap and safe at <= 4 Hz. One tick is one
 // poll of /status (plus /state only while Aura is enabled), and the accent is
@@ -71,19 +80,25 @@ const DEFAULT_SETTINGS = Object.freeze({
   opacity: 0.75,
   behavior: 'balanced',
   moodReactive: true,
-  accentPulse: true,
+  accentPulse: false,
   autoPreset: true,
   themeOptIn: false,
-  glass: 0.35,
+  windowVisual: false,
   motion: 'both'
 })
 
-const GLASS_MIN = 0.05
-const GLASS_MAX = 0.9
-
 const BEHAVIORS = ['calm', 'balanced', 'intense']
-const MOTIONS = ['designs', 'both', 'music']
-const MOTION_LABELS = { designs: 'Designs only', both: 'Designs + music', music: 'Music only' }
+// `designs` is accepted for configs saved before the agent modes existed, but
+// it is no longer offered in the select. The four offered values are below.
+const MOTIONS = ['designs', 'both', 'music', 'agent', 'agent_music']
+const MOTION_OPTIONS = ['both', 'music', 'agent', 'agent_music']
+const MOTION_LABELS = {
+  designs: 'Designs only (legacy)',
+  both: 'Default — music, or gentle designs',
+  music: 'Music only',
+  agent: 'Agent activity',
+  agent_music: 'Agent + music'
+}
 
 const EMPTY_LIVE = Object.freeze({
   ok: false,
@@ -103,11 +118,6 @@ const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value))
 const clamp01 = value => {
   const n = Number(value)
   return Number.isFinite(n) ? clamp(n, 0, 1) : 0
-}
-
-const clampGlass = value => {
-  const n = Number(value)
-  return Number.isFinite(n) ? clamp(n, GLASS_MIN, GLASS_MAX) : DEFAULT_SETTINGS.glass
 }
 
 /** Normalise #rgb/#rrggbb/#rrggbbaa to a lowercase #rrggbb, or null. */
@@ -225,11 +235,10 @@ function readSettings(ctx) {
     else if (typeof raw.followAudio === 'boolean') out.accentPulse = raw.followAudio
     if (typeof raw.autoPreset === 'boolean') out.autoPreset = raw.autoPreset
     if (typeof raw.themeOptIn === 'boolean') out.themeOptIn = raw.themeOptIn
+    if (typeof raw.windowVisual === 'boolean') out.windowVisual = raw.windowVisual
     if (typeof raw.motion === 'string' && MOTIONS.includes(raw.motion)) out.motion = raw.motion
-    // Migrate the old overlay strength once: a saved `glass` always wins, and
-    // the legacy key is never written back.
-    if (Number.isFinite(raw.glass)) out.glass = clampGlass(raw.glass)
-    else if (Number.isFinite(raw.overlayOpacity)) out.glass = clampGlass(raw.overlayOpacity)
+    // Legacy `glass` / `overlayOpacity` keys are ignored: the old host-glass
+    // visibility slider is gone; windowVisual + the backdrop replace it.
   }
   return out
 }
@@ -255,12 +264,7 @@ function setError(message) {
   setLive({ error: typeof message === 'string' ? message : '' })
 }
 
-// ------------------------------------------------------------- backdrop theme
-// The active `aura-live` theme turns the visualizer into the app's backdrop:
-// one click-through iframe behind every panel (z-index -1). Panels stay opaque
-// enough to read because glass rewrites their surface variables to translucent
-// versions of the theme's own colours.
-
+// Optional whole-window MilkDrop backdrop, enabled only by the user.
 function backdropSrc(url) {
   if (!url) return ''
   const separator = url.indexOf('?') === -1 ? '?' : '&'
@@ -348,7 +352,7 @@ function applyGlassStyle(glass) {
     doc.head.appendChild(glassStyleEl)
   }
   glassStyleEl.textContent = glassCss()
-  if (backdropEl) backdropEl.style.opacity = String(clampGlass(glass))
+  if (backdropEl) backdropEl.style.opacity = String(0.35)
 }
 
 function removeGlassStyle() {
@@ -387,10 +391,10 @@ function syncBackdrop() {
   const settings = $settings.get()
   const live = $live.get()
   const url = live.ok && typeof live.url === 'string' && /^https?:\/\//.test(live.url) ? live.url : ''
-  // The server's enabled flag is the truth (the pane uses it too); the local
-  // copy can be stale, which silently kept the backdrop away.
+  // The server's enabled flag is the truth; the local copy can be stale,
+  // which silently kept the backdrop away.
   const enabled = live.ok ? live.enabled === true : settings.enabled
-  const wanted = Boolean(doc && enabled && knownTheme === THEME_NAME && url)
+  const wanted = Boolean(doc && enabled && (knownTheme === THEME_NAME || settings.windowVisual) && url)
   if (!wanted) {
     removeBackdrop()
     return
@@ -403,7 +407,9 @@ function syncBackdrop() {
     backdropEl.setAttribute('aria-hidden', 'true')
     backdropEl.setAttribute('tabindex', '-1')
     backdropEl.setAttribute('title', 'Aura backdrop')
-    // Same sandbox/referrer/allow contract as StageFrame.
+    // Sandboxed, click-through decoration: same-origin is required because
+    // the page talks to its own 127.0.0.1 origin and the server sends no CORS
+    // headers; pointer-events stay off so nothing can be clicked through it.
     backdropEl.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-downloads')
     backdropEl.setAttribute('referrerpolicy', 'no-referrer')
     backdropEl.setAttribute('allow', 'autoplay; fullscreen')
@@ -416,7 +422,7 @@ function syncBackdrop() {
     style.border = '0'
     style.pointerEvents = 'none'
     style.zIndex = '-1'
-    style.opacity = String(clampGlass(settings.glass))
+    style.opacity = String(0.35)
     style.background = 'transparent'
     backdropUrl = src
     backdropEl.src = src
@@ -425,7 +431,7 @@ function syncBackdrop() {
     backdropEl.src = src
   }
   if (backdropEl.parentNode !== doc.body) doc.body.appendChild(backdropEl)
-  applyGlassStyle(settings.glass)
+  if (!glassStyleEl) applyGlassStyle(0.35)
 }
 
 // ------------------------------------------------------------- server control
@@ -605,7 +611,10 @@ function onThemeName(name) {
   if (!first && overrideActive) {
     clearAccent(true)
   }
-  syncBackdrop()
+  if (!first && $settings.get().windowVisual) {
+    writeSettings({ windowVisual: false })
+    removeBackdrop()
+  }
   if ($settings.get().themeOptIn && !$themeApplied.get()) applyThemeIfOptedIn()
 }
 
@@ -615,6 +624,32 @@ function setThemeOptIn(on) {
   else restoreTheme()
 }
 
+/**
+ * "Visual behind the app". Turning it on while Aura is off turns Aura on
+ * through the same door as the "Aura enabled" switch: the owner hit the
+ * visual being ON while Aura was OFF, which used to draw nothing in silence.
+ */
+async function setWindowVisual(on) {
+  writeSettings({ windowVisual: Boolean(on) })
+  if (on && (!$live.get().enabled || !$settings.get().enabled)) {
+    await setEnabled(true)
+  }
+  syncBackdrop()
+}
+
+/** One control that returns the host to the user's own appearance: turns off
+ *  the accent pulse, clears any override, restores the previous theme and
+ *  removes every effect Aura may have applied. The plugin stays mounted. */
+async function restoreMyTheme() {
+  if (!ctxRef || disposed) return
+  writeSettings({ accentPulse: false, themeOptIn: false, windowVisual: false })
+  removeBackdrop()
+  clearAccent(true)
+  restoreTheme()
+  await pushControl({ accent_pulse: false })
+  if ($live.get().ok) void poll()
+}
+
 // ------------------------------------------------------------- enable switch
 
 async function setEnabled(next) {
@@ -622,12 +657,12 @@ async function setEnabled(next) {
   const enabled = Boolean(next)
   writeSettings({ enabled })
   if (!enabled) {
+    removeBackdrop()
     clearAccent(true)
     restoreTheme()
   } else if ($settings.get().themeOptIn) {
     applyThemeIfOptedIn()
   }
-  syncBackdrop()
   const ok = await pushControl({ enabled })
   if (ok) {
     setLive({ enabled, error: '' })
@@ -640,12 +675,6 @@ async function setOpacity(next) {
   const opacity = clamp01(next)
   writeSettings({ opacity })
   await pushControl({ opacity })
-}
-
-async function setGlass(next) {
-  if (!ctxRef || disposed) return
-  writeSettings({ glass: clampGlass(next) })
-  syncBackdrop()
 }
 
 async function setMotion(next) {
@@ -708,173 +737,6 @@ function ThemeProbe() {
   return null
 }
 
-function StageFrame({ url }) {
-  return jsx('iframe', {
-    src: url,
-    title: 'Aura visualizer',
-    // Same-origin is required: the page talks to its own 127.0.0.1 origin
-    // (WebSocket token + fetch) and the server sends no CORS headers.
-    sandbox: 'allow-scripts allow-same-origin allow-forms allow-downloads',
-    referrerPolicy: 'no-referrer',
-    allow: 'autoplay; fullscreen',
-    allowFullScreen: true,
-    style: {
-      flex: 1,
-      width: '100%',
-      height: '100%',
-      minWidth: 0,
-      minHeight: 0,
-      border: 0,
-      display: 'block',
-      background: 'var(--ui-bg)'
-    }
-  })
-}
-
-function StageMessage({ live, onRetry, busy }) {
-  const reason = live.error || (live.ok ? 'Aura is warming up…' : 'Aura’s local server is not running.')
-  return jsxs('div', {
-    style: {
-      flex: 1,
-      minHeight: 0,
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: 10,
-      padding: 24,
-      textAlign: 'center'
-    },
-    children: [
-      jsx('div', {
-        key: 'title',
-        style: { fontSize: 13, color: 'var(--ui-text-primary)' },
-        children: 'The Aura stage is not available yet.'
-      }),
-      jsx('div', {
-        key: 'reason',
-        style: { fontSize: 12, color: 'var(--ui-text-secondary)', maxWidth: 420 },
-        children: reason
-      }),
-      jsx('div', {
-        key: 'hint',
-        style: { fontSize: 11, color: 'var(--ui-text-tertiary)', maxWidth: 460 },
-        children:
-          'Try again. If this continues, check the Hermes desktop log for the Aura status request.'
-      }),
-      jsx(Button, {
-        key: 'retry',
-        size: 'sm',
-        variant: 'outline',
-        disabled: busy,
-        onClick: onRetry,
-        children: busy ? 'Checking…' : 'Retry'
-      })
-    ]
-  })
-}
-
-function Stage({ compact = false }) {
-  const live = useValue($live)
-  const [busy, setBusy] = useState(false)
-  const ready = live.ok && typeof live.url === 'string' && live.url.length > 0
-  const retry = () => {
-    setBusy(true)
-    void poll().finally(() => setBusy(false))
-  }
-
-  const body = ready
-    ? jsx(StageFrame, { url: live.url })
-    : jsx(StageMessage, { live, onRetry: retry, busy })
-
-  if (!compact) {
-    return jsxs('div', {
-      style: {
-        display: 'flex',
-        flexDirection: 'column',
-        width: '100%',
-        height: '100%',
-        minWidth: 0,
-        minHeight: 0,
-        overflow: 'hidden'
-      },
-      children: [
-        jsx('div', {
-          key: 'toolbar',
-          style: { display: 'flex', alignItems: 'center', padding: '6px 10px', flex: 'none', borderBottom: '1px solid var(--ui-stroke-secondary)' },
-          children: jsx(Button, {
-            variant: 'ghost',
-            size: 'sm',
-            'aria-label': 'Back to chat',
-            onClick: () => {
-              const focused = host.state && host.state.focusedStoredSessionId
-              const id = focused && typeof focused.get === 'function' ? focused.get() : null
-              host.navigate(id ? `/${encodeURIComponent(id)}` : '/')
-            },
-            children: '← Back to chat'
-          })
-        }),
-        body
-      ]
-    })
-  }
-
-  const capture = live.capture && live.capture !== 'none' ? live.capture : ''
-  const state = live.ok ? (live.enabled ? 'on' : 'off') : 'offline'
-  return jsxs('div', {
-    style: {
-      display: 'flex',
-      flexDirection: 'column',
-      width: '100%',
-      height: '100%',
-      minWidth: 0,
-      minHeight: 0,
-      overflow: 'hidden'
-    },
-    children: [
-      jsxs('div', {
-        key: 'head',
-        style: {
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '4px 8px',
-          flex: 'none',
-          borderBottom: '1px solid var(--ui-stroke-secondary)'
-        },
-        children: [
-          jsx(StatusDot, { key: 'dot', tone: live.ok ? (live.enabled ? 'good' : 'muted') : 'warn' }),
-          jsx('span', {
-            key: 'name',
-            style: { fontSize: 12, color: 'var(--ui-text-primary)' },
-            children: 'Aura'
-          }),
-          jsx('span', {
-            key: 'state',
-            style: { fontSize: 11, color: 'var(--ui-text-tertiary)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-            children: capture ? `${state} · ${capture}` : state
-          }),
-          jsx(Button, {
-            key: 'open',
-            variant: 'ghost',
-            size: 'micro',
-            title: 'Open the full Aura stage',
-            onClick: () => {
-              try {
-                host.navigate(ROUTE)
-              } catch {
-                // ignore
-              }
-            },
-            children: 'Open'
-          })
-        ]
-      }),
-      jsx('div', { key: 'body', style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }, children: body })
-    ]
-  })
-}
-
 function AuraSettings() {
   const settings = useValue($settings)
   const live = useValue($live)
@@ -883,6 +745,8 @@ function AuraSettings() {
   const serverLine = live.ok
     ? `Server reachable on 127.0.0.1${live.port ? `:${live.port}` : ''}${live.capture ? ` · capture: ${live.capture}` : ''}`
     : live.error || 'Server not reachable.'
+  // Same truth rule as syncBackdrop: the server flag wins while it answers.
+  const auraOn = live.ok ? live.enabled === true : settings.enabled
 
   const row = (label, hint, control) =>
     jsxs('div', {
@@ -913,7 +777,7 @@ function AuraSettings() {
         key: 'enabled',
         children: row(
           'Aura enabled',
-          'Listens to system audio and drives the stage, the pane and the accent.',
+          'Listens to system audio and drives the backdrop and the accent.',
           jsx(Switch, {
             checked: settings.enabled,
             'aria-label': 'Aura enabled',
@@ -927,7 +791,7 @@ function AuraSettings() {
         key: 'intensity',
         children: row(
           'Reaction strength',
-          'How strongly audio and mood move the stage and the accent. 0 returns your theme’s own accent.',
+          'How strongly audio and mood move the backdrop and the accent. 0 returns your theme’s own accent.',
           jsx('input', {
             type: 'range',
             min: 0,
@@ -951,7 +815,7 @@ function AuraSettings() {
         key: 'opacity',
         children: row(
           'Visual opacity',
-          'Dims the stage and its scrim together; chat text and controls stay fully legible.',
+          'Dims the backdrop and its scrim together; chat text and controls stay fully legible.',
           jsxs('div', {
             style: { display: 'flex', alignItems: 'center', gap: 8 },
             children: [
@@ -980,41 +844,10 @@ function AuraSettings() {
         )
       }),
       jsx('div', {
-        key: 'glass',
-        children: row(
-          'Background visibility',
-          'How much the Aura visuals show through the frosted panels. Lower keeps text crisp.',
-          jsxs('div', {
-            style: { display: 'flex', alignItems: 'center', gap: 8 },
-            children: [
-              jsx('input', {
-                key: 'slider',
-                type: 'range',
-                min: 5,
-                max: 90,
-                step: 1,
-                value: Math.round(settings.glass * 100),
-                'aria-label': 'Background visibility',
-                style: { width: 140, accentColor: 'var(--ui-accent)' },
-                onChange: event => {
-                  const raw = Number(event && event.target ? event.target.value : 35)
-                  void setGlass(raw / 100)
-                }
-              }),
-              jsx('span', {
-                key: 'out',
-                style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 32, fontVariantNumeric: 'tabular-nums' },
-                children: `${Math.round(settings.glass * 100)}%`
-              })
-            ]
-          })
-        )
-      }),
-      jsx('div', {
         key: 'motion',
         children: row(
           'Motion source',
-          'Designs only always animates; Designs + music follows playback and rests on designs; Music only settles in silence.',
+          'Default follows music or rests on gentle designs; Music only settles in silence; Agent activity moves only while the agent works and pauses after 2.5 s idle; Agent + music also follows playback.',
           jsx('select', {
             value: settings.motion,
             'aria-label': 'Motion source',
@@ -1031,7 +864,9 @@ function AuraSettings() {
               const value = event && event.target ? String(event.target.value) : 'both'
               void setMotion(value)
             },
-            children: MOTIONS.map(name =>
+            children: (settings.motion === 'designs'
+              ? MOTION_OPTIONS.concat(['designs'])
+              : MOTION_OPTIONS).map(name =>
               jsx('option', { key: name, value: name, children: MOTION_LABELS[name] })
             )
           })
@@ -1068,7 +903,7 @@ function AuraSettings() {
         key: 'mood',
         children: row(
           'React to agent mood',
-          'Lets thinking, tool, approval and error change the stage. Off drops any held mood.',
+          'Lets thinking, tool, approval and error change the visual. Off drops any held mood.',
           jsx(Switch, {
             checked: settings.moodReactive,
             'aria-label': 'React to agent mood',
@@ -1107,6 +942,20 @@ function AuraSettings() {
         )
       }),
       jsx('div', {
+        key: 'windowVisual',
+        children: row(
+          'Visual behind the app',
+          settings.windowVisual && !auraOn
+            ? 'Aura is off - turn it on to see the visual'
+            : 'Show the moving Aura visual behind the whole window. Turn off to restore your theme.',
+          jsx(Switch, {
+            checked: settings.windowVisual,
+            'aria-label': 'Visual behind the app',
+            onCheckedChange: value => setWindowVisual(value)
+          })
+        )
+      }),
+      jsx('div', {
         key: 'theme',
         children: row(
           'Use Aura theme',
@@ -1117,6 +966,22 @@ function AuraSettings() {
             checked: settings.themeOptIn,
             'aria-label': 'Use Aura theme',
             onCheckedChange: value => setThemeOptIn(value)
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'restore',
+        children: row(
+          'Restore my theme',
+          'Turns off the window visual, the accent pulse and Aura Live, clears every override and restores your previous theme.',
+          jsx(Button, {
+            size: 'sm',
+            variant: 'outline',
+            'aria-label': 'Restore my theme',
+            onClick: () => {
+              void restoreMyTheme()
+            },
+            children: 'Restore my theme'
           })
         )
       })
@@ -1130,7 +995,7 @@ function AuraSettings() {
 const AURA_THEME = {
   name: THEME_NAME,
   label: 'Aura Live',
-  description: 'Deep-stage palette with an electric accent, for Aura’s visualizer page.',
+  description: 'Deep-stage palette with an electric accent, for Aura’s window visual.',
   colors: {
     background: '#f7f5ff',
     foreground: '#1a1730',
@@ -1194,9 +1059,9 @@ function teardown() {
     }
     pollDisposer = null
   }
+  removeBackdrop()
   clearAccent(true)
   restoreTheme()
-  removeBackdrop()
   while (disposers.length) {
     const off = disposers.pop()
     try {
@@ -1222,7 +1087,7 @@ export default {
   id: ID,
   name: 'Aura',
   description:
-    'Audio-reactive stage, accent pulse and optional theme for what this computer is playing. Local only: no recording, no account, no sound of its own.',
+    'Audio-reactive window visual, accent pulse and optional theme for what this computer is playing. Local only: no recording, no account, no sound of its own.',
   register(ctx) {
     // Reset first: a hot reload must not inherit the previous instance's state.
     const mine = ++instanceSeq
@@ -1232,8 +1097,6 @@ export default {
       teardown()
     }
     disposed = false
-    // A hot reload must not inherit a stale backdrop from the previous instance.
-    removeBackdrop()
     ctxRef = ctx
     polling = false
     pollDisposer = null
@@ -1254,58 +1117,6 @@ export default {
     const track = disposer => {
       if (typeof disposer === 'function') disposers.push(disposer)
     }
-
-    track(
-      ctx.register({
-        id: 'stage',
-        area: ROUTES_AREA,
-        title: 'Aura',
-        data: { path: ROUTE },
-        render: () => jsx(Stage, {})
-      })
-    )
-
-    track(
-      ctx.register({
-        id: 'nav',
-        area: SIDEBAR_NAV_AREA,
-        data: { path: ROUTE, label: 'Aura', codicon: 'pulse' }
-      })
-    )
-
-    track(
-      ctx.register({
-        id: 'open-stage',
-        area: PALETTE_AREA,
-        data: {
-          id: 'aura.open',
-          label: 'Aura: Open stage',
-          keywords: ['aura', 'visualizer', 'milkdrop', 'music', 'stage', 'audio'],
-          run: () => {
-            try {
-              host.navigate(ROUTE)
-            } catch {
-              // ignore
-            }
-          }
-        }
-      })
-    )
-
-    track(
-      ctx.register({
-        id: 'pane',
-        area: PANES_AREA,
-        title: 'Aura',
-        data: {
-          placement: 'right',
-          dock: { pane: 'workspace', pos: 'right' },
-          width: '320px',
-          minWidth: '240px'
-        },
-        render: () => jsx(Stage, { compact: true })
-      })
-    )
 
     // An invisible, permanently mounted probe: titlebar slots stay mounted
     // across navigation, so this is where the active theme is read (useTheme

@@ -32,10 +32,17 @@ import socket
 import struct
 import threading
 import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+
+try:  # POSIX leader election; Windows keeps today's single-process behaviour.
+    import fcntl
+except ImportError:  # pragma: no cover - exercised only on Windows
+    fcntl = None  # type: ignore[assignment]
 
 from . import analysis, behavior, config, redact
 from .capture import base as capture
@@ -151,6 +158,40 @@ class _State:
 
 
 _STATE = _State()
+
+# ---------------------------------------------------------------------------
+# single-server leader election (CONTRACT §7)
+#
+# One server per HERMES_HOME.  ``flock`` is associated with the open file
+# description, so two module copies inside one process (the Hermes gateway
+# loads the plugin both namespaced and plain) also exclude each other.
+# ---------------------------------------------------------------------------
+
+_LOCK_FD: int | None = None
+# The resolved home this process registered/elected for. A gateway turn may run
+# under a context-local override pointing at another profile; such a call must
+# never start a second server here, it only forwards to that home's leader.
+_LOCK_HOME: str | None = None
+_TAKEOVER_AT = 0.0
+_TAKEOVER_LOCK = threading.Lock()
+_START_LOCK = threading.RLock()
+# True once a non-blocking lock attempt found a live leader for this home.
+_FOLLOWING = False
+
+
+def _home_key() -> str | None:
+    """The current context's Hermes home as a resolved string."""
+    try:
+        return str(config.hermes_home().resolve())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _is_own_home() -> bool:
+    """True when the current context resolves to the home this process serves."""
+    if _LOCK_HOME is None:
+        return True
+    return _home_key() == _LOCK_HOME
 
 
 def _log(msg: str, *args) -> None:
@@ -610,13 +651,26 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._bearer_ok():
                 self._send_json({"ok": False, "error": "unauthorized"}, 401)
                 return
-            if path != "/api/control":
+            if path not in ("/api/control", "/api/mood", "/api/config/push"):
                 self._send_json({"ok": False, "error": "not_found"}, 404)
                 return
             try:
                 data = self._body_json()
             except (ValueError, UnicodeDecodeError):
                 self._send_json({"ok": False, "error": "bad_json"}, 400)
+                return
+            if path == "/api/mood":
+                try:
+                    mood, intensity, ttl_ms = _validate_mood(data)
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, 400)
+                    return
+                publish_mood(mood, intensity, ttl_ms)
+                self._send_json({"ok": True, "mood": mood})
+                return
+            if path == "/api/config/push":
+                publish_config()
+                self._send_json({"ok": True})
                 return
             try:
                 applied = _apply_control(data)
@@ -891,6 +945,24 @@ def _read_exact(source, n: int) -> bytes | None:
 # control application
 # ---------------------------------------------------------------------------
 
+def _validate_mood(data) -> tuple[str, float, int]:
+    """Validate a /api/mood body; raise ValueError with a machine code."""
+    if not isinstance(data, dict):
+        raise ValueError("body_must_be_object")
+    mood = data.get("mood")
+    if not isinstance(mood, str) or mood not in MOODS:
+        raise ValueError("bad_mood")
+    intensity = data.get("intensity", 1.0)
+    if isinstance(intensity, bool) or not isinstance(intensity, (int, float)):
+        raise ValueError("intensity_must_be_number")
+    intensity = max(0.0, min(1.0, float(intensity)))
+    ttl_ms = data.get("ttl_ms", 0)
+    if isinstance(ttl_ms, bool) or not isinstance(ttl_ms, (int, float)):
+        raise ValueError("ttl_ms_must_be_number")
+    ttl_ms = max(0, int(ttl_ms))
+    return mood, intensity, ttl_ms
+
+
 def _validate_control(data) -> dict:
     """Validate a /api/control body; raise ValueError with a machine code."""
     if not isinstance(data, dict):
@@ -999,7 +1071,10 @@ class _Httpd(ThreadingHTTPServer):
 
 
 def _start_server() -> None:
-    """Create the socket, bind, and start serving + capture in daemon threads."""
+    """Create the socket, bind, and start serving + capture in daemon threads.
+
+    The caller must hold the leader lock (``_try_become_leader``).
+    """
     token = secrets.token_urlsafe(32)
     try:
         config.write_token(token)
@@ -1031,54 +1106,295 @@ def _start_server() -> None:
     with _STATE.lock:
         _STATE.capture_thread = cap_thread
     cap_thread.start()
+    _write_lease(token, port)
     _log("aura: listening on 127.0.0.1:%d", port)
+
+
+# ---------------------------------------------------------------------------
+# leader election helpers
+# ---------------------------------------------------------------------------
+
+def _pid_alive(pid: Any) -> bool:
+    """True when ``pid`` is a live process we can signal."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _write_lease(token: str, port: int) -> None:
+    """Advertise the leader to followers.  Never logs the token."""
+    try:
+        config.write_lease({
+            "pid": os.getpid(),
+            "port": int(port),
+            "token": token,
+            "started": time.time(),
+            "capture": _STATE.capture_name,
+        })
+    except OSError as exc:
+        _log("aura: lease write failed (%s)", type(exc).__name__)
+
+
+def _valid_lease() -> dict | None:
+    """The leader advertisement, but only while that pid is alive."""
+    lease = config.read_lease()
+    if not isinstance(lease, dict):
+        return None
+    pid = lease.get("pid")
+    port = lease.get("port")
+    token = lease.get("token")
+    if not _pid_alive(pid):
+        return None
+    if not isinstance(port, int) or isinstance(port, bool) or port <= 0:
+        return None
+    if not isinstance(token, str) or not token:
+        return None
+    return lease
+
+
+def _follower_lease() -> dict | None:
+    """A lease we may follow: never our own stale advertisement after stop."""
+    lease = _valid_lease()
+    if lease is None:
+        return None
+    if lease.get("pid") == os.getpid() and not _FOLLOWING:
+        return None
+    return lease
+
+
+def _try_acquire_lock() -> bool:
+    """Non-blocking leader lock.  Windows (no fcntl) behaves as before."""
+    global _LOCK_FD, _LOCK_HOME
+    if _LOCK_FD is not None:
+        return True
+    if fcntl is None:
+        # No flock on Windows: keep today's per-process server behaviour.
+        return True
+    try:
+        config._ensure_dir()
+        fd = os.open(str(config.lock_path()), os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        _log("aura: lock open failed (%s)", type(exc).__name__)
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return False
+    _LOCK_FD = fd
+    _LOCK_HOME = _home_key()
+    return True
+
+
+def _release_lock() -> None:
+    global _LOCK_FD, _LOCK_HOME, _TAKEOVER_AT, _FOLLOWING
+    fd = _LOCK_FD
+    _LOCK_FD = None
+    _LOCK_HOME = None
+    _TAKEOVER_AT = 0.0
+    _FOLLOWING = False
+    if fd is None:
+        return
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _is_leader() -> bool:
+    if fcntl is None:
+        return True
+    if _LOCK_FD is not None:
+        return True
+    with _STATE.lock:
+        return _STATE.httpd is not None
+
+
+def _server_running() -> bool:
+    with _STATE.lock:
+        return (_STATE.httpd is not None and _STATE.thread is not None
+                and _STATE.thread.is_alive())
+
+
+def _try_become_leader() -> bool:
+    """Retry the leader lock at most once per 2 s; start serving if acquired.
+
+    The caller must hold ``_START_LOCK``.
+    """
+    global _TAKEOVER_AT, _FOLLOWING, _LOCK_HOME
+    if not _is_own_home():
+        # A per-turn override points at another profile: never elect/start a
+        # second server here; the caller forwards to that home's leader.
+        _FOLLOWING = True
+        return False
+    if fcntl is None:
+        _FOLLOWING = False
+        _LOCK_HOME = _home_key()
+        if not _server_running():
+            _start_server()
+        return True
+    if _LOCK_FD is not None:
+        _FOLLOWING = False
+        if not _server_running():
+            _start_server()
+        return True
+    now = time.monotonic()
+    with _TAKEOVER_LOCK:
+        if now < _TAKEOVER_AT:
+            return False
+        _TAKEOVER_AT = now + 2.0
+    if not _try_acquire_lock():
+        _FOLLOWING = True
+        return False
+    _FOLLOWING = False
+    _start_server()
+    return True
+
+
+def _current_lease() -> dict | None:
+    """A valid leader lease for the *current* home, excluding our own server."""
+    lease = _valid_lease()
+    if lease is None or lease.get("pid") == os.getpid():
+        return None
+    return lease
+
+
+def _forward_target() -> dict | None:
+    """Lease to forward to for the current home, or ``None`` to publish locally."""
+    if _is_own_home():
+        with _START_LOCK:
+            leader = _is_leader()
+            if not leader and _FOLLOWING:
+                _try_become_leader()
+                leader = _is_leader()
+        if leader and _server_running():
+            return None
+        lease = _follower_lease()
+        return lease
+    return _current_lease()
+
+
+def _forward(path: str, body: dict, lease: dict) -> None:
+    """Fire-and-forget POST to the leader; never blocks or raises into a hook.
+
+    ``lease`` is the one for the *current* home, captured by the caller before
+    this thread starts.
+    """
+    port = lease.get("port")
+    token = lease.get("token")
+    if not isinstance(port, int) or isinstance(port, bool) or port <= 0:
+        return
+    if not isinstance(token, str) or not token:
+        return
+
+    def _post() -> None:
+        try:
+            data = json.dumps(body).encode("utf-8")
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}{path}",
+                data=data,
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(data)),
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=0.5) as resp:
+                resp.read()
+        except Exception:  # noqa: BLE001 - a forward must never break a turn
+            pass
+
+    threading.Thread(target=_post, name="aura-forward", daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
 # public internal API (CONTRACT §7) — all swallow-and-log
 # ---------------------------------------------------------------------------
 
-_START_LOCK = threading.Lock()
-
-
 def ensure_server() -> None:
-    """Start the server in a daemon thread if it is not running. Idempotent."""
+    """Start the server in a daemon thread if it is not running. Idempotent.
+
+    Only the process's own home is ever elected. Under a per-turn override
+    pointing at another profile this call must not start a second server.
+    """
     try:
         with _START_LOCK:
-            with _STATE.lock:
-                running = (_STATE.httpd is not None and _STATE.thread is not None
-                           and _STATE.thread.is_alive())
-            if running:
+            if _server_running():
                 return
-            _start_server()
+            if not _is_own_home():
+                return
+            _try_become_leader()
     except Exception as exc:  # noqa: BLE001 - never block register()/a hook
         _log("aura: server start failed (%s)", type(exc).__name__)
 
 
 def get_port() -> int | None:
-    """Live port, or ``None`` when the server has not started."""
+    """Live port for the *current* home (ours, or its leader's), else ``None``."""
     try:
-        with _STATE.lock:
-            if _STATE.httpd is None:
-                return None
-            return _STATE.port
+        if _is_own_home():
+            if _server_running():
+                with _STATE.lock:
+                    return _STATE.port
+            # Only a follower (or a lock holder whose thread died) retries here;
+            # a fresh/stopped process must not start a server just from get_port().
+            if _FOLLOWING or _LOCK_FD is not None:
+                with _START_LOCK:
+                    if not _server_running():
+                        _try_become_leader()
+                if _server_running():
+                    with _STATE.lock:
+                        return _STATE.port
+            lease = _follower_lease()
+        else:
+            lease = _current_lease()
+        if lease is None:
+            return None
+        return int(lease["port"])
     except Exception:  # noqa: BLE001
         return None
 
 
 def get_token() -> str | None:
-    """The in-process token (for the port-discovery door). Never log it raw."""
+    """Token for the current home (in-process, or its leader's). Never log raw."""
     try:
-        with _STATE.lock:
-            return _STATE.token
+        if _is_own_home() and _server_running():
+            with _STATE.lock:
+                return _STATE.token
+        lease = _follower_lease() if _is_own_home() else _current_lease()
+        if lease is None:
+            return None
+        return lease.get("token")
     except Exception:  # noqa: BLE001
         return None
 
 
 def get_capture() -> str:
     try:
-        with _STATE.lock:
-            return _STATE.capture_name
+        if _is_own_home() and _server_running():
+            with _STATE.lock:
+                return _STATE.capture_name
+        lease = _follower_lease() if _is_own_home() else _current_lease()
+        if lease is None:
+            return "none"
+        capture_name = lease.get("capture")
+        return capture_name if isinstance(capture_name, str) else "none"
     except Exception:  # noqa: BLE001
         return "none"
 
@@ -1103,6 +1419,13 @@ def publish_mood(mood: str, intensity: float = 1.0, ttl_ms: int = 0) -> None:
             reactive = True
         if not reactive:
             mood, intensity, ttl_ms = "idle", 0.0, 0
+        # Route at call time: the current home may be a per-turn profile
+        # override, not the home this process serves.
+        lease = _forward_target()
+        if lease is not None:
+            _forward("/api/mood", {"mood": mood, "intensity": intensity,
+                                   "ttl_ms": ttl_ms}, lease)
+            return
         now = time.monotonic()
         with _STATE.lock:
             if mood != _STATE.mood:
@@ -1122,6 +1445,10 @@ def publish_mood(mood: str, intensity: float = 1.0, ttl_ms: int = 0) -> None:
 def publish_config() -> None:
     """Push the current config to connected pages (after a control change)."""
     try:
+        lease = _forward_target()
+        if lease is not None:
+            _forward("/api/config/push", {}, lease)
+            return
         if _clients_snapshot():
             _broadcast_event(_config_event())
     except Exception as exc:  # noqa: BLE001
@@ -1131,7 +1458,20 @@ def publish_config() -> None:
 def stop_server() -> None:
     """Clean shutdown: close sockets, join threads, leave no listener."""
     with _START_LOCK:
+        with _STATE.lock:
+            was_leader = _STATE.httpd is not None
+            our_token = _STATE.token
         _stop_server_locked()
+        _release_lock()
+        if was_leader:
+            lease = config.read_lease()
+            if (isinstance(lease, dict)
+                    and lease.get("pid") == os.getpid()
+                    and lease.get("token") == our_token):
+                try:
+                    config.lease_path().unlink()
+                except OSError:
+                    pass
 
 
 def _stop_server_locked() -> None:

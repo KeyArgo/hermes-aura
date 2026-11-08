@@ -110,6 +110,28 @@ provides, in `aura_core/server.py`, module-level functions:
 L4 calls only these. L1 must keep them safe to call from any thread, and must make every one of
 them swallow-and-log exceptions (a broken capture must never break an agent turn).
 
+### 7.1 Single server per `HERMES_HOME`
+
+Only one Python process/module copy serves a given `HERMES_HOME`. Leadership is elected with
+`fcntl.flock(LOCK_EX | LOCK_NB)` on `<HERMES_HOME>/aura/server.lock` (0600), and the fd is held for
+the server's lifetime. Because `flock` is per open file description, two copies of the module inside
+one process also exclude each other.
+
+- The leader binds the socket, starts capture, writes `<HERMES_HOME>/aura/token`, and advertises
+  itself in `<HERMES_HOME>/aura/lease.json` (0600, atomic replace):
+  `{"pid", "port", "token", "started", "capture"}`. The token is never logged.
+- A follower does not bind or capture. `get_port()`, `get_token()` and `get_capture()` return the
+  leader's values from `lease.json`, but only while that `pid` is alive; otherwise they return
+  `None` / `"none"`.
+- `ensure_server()`, `get_port()` and every publish retry the lock at most once per 2 s; if the
+  leader has died, the follower acquires the lock and becomes the new leader (new token, new lease).
+- `stop_server()` releases the lock and removes `lease.json` only when the lease belongs to this
+  process/token.
+- Follower forwarding: `publish_mood` POSTs `{"mood","intensity","ttl_ms"}` to the leader's
+  `POST /api/mood`; `publish_config` POSTs `{}` to `POST /api/config/push`. Both use the bearer
+  token, run in a daemon thread with a 0.5 s timeout, and swallow every error (a hook never blocks
+  or raises). The leader's handlers call the local `publish_mood` / `publish_config`.
+
 ## 8. Non-goals for 0.1
 
 Playback, music sources, DJ voice, multi-device sync, cover art, recording to disk, network
@@ -129,8 +151,9 @@ Additive to §1/§2/§4. No existing field changed meaning. New config keys are 
 | `opacity` | number 0..1 | 0.75 | non-numeric/bool -> `opacity_must_be_number`; outside 0..1 -> `opacity_out_of_range` |
 | `behavior` | `"calm"` \| `"balanced"` \| `"intense"` | `"balanced"` | non-string -> `behavior_must_be_string`; unknown -> `bad_behavior` |
 | `mood_reactive` | bool | `true` | non-bool -> `mood_reactive_must_be_bool` |
-| `accent_pulse` | bool | `true` | non-bool -> `accent_pulse_must_be_bool` |
+| `accent_pulse` | bool | `false` | non-bool -> `accent_pulse_must_be_bool` |
 | `auto_preset` | bool | `true` | non-bool -> `auto_preset_must_be_bool` |
+| `motion` | `"designs"` \| `"both"` \| `"music"` \| `"agent"` \| `"agent_music"` | `"both"` | non-string -> `motion_must_be_string`; unknown -> `bad_motion`; `designs` stays accepted (legacy) but is no longer offered in the desktop select |
 
 `/api/config` and `config` events additionally carry `behavior_profile` — the concrete mapping
 below, so a page never has to guess. Corrupt/missing config values are coerced to defaults on
@@ -173,6 +196,25 @@ apply. All three toggles can be turned back on live without a reload.
 `aura_control` forwards to `/api/control`, so `opacity` and `behavior` are settable by the agent
 with no extra plumbing.
 
+### 9.5 Motion source
+
+`motion` selects what drives the visual. `both` (default) and `music` keep their existing
+behaviour. `designs` is legacy-accepted and behaves as designs-only.
+
+- `agent`: the ambient designs drive the visual only while the agent is active. Agent activity is
+  the RAW mood stream: `thinking`, `tool`, `streaming`, `approval`, `error`, and `done` until it
+  settles. When the raw mood is `idle`, the canvas pauses (`pauseVisual()`).
+- `agent_music`: moves while the agent is active (ambient designs) OR while real audio is playing;
+  real audio wins when both are present. Paused only when the agent is idle AND the capture is
+  silent.
+- Resume is immediate on an active mood event (same tick, well under 1 s).
+- Pause waits `AGENT_IDLE_GRACE_MS` = 2500 ms of raw idle so tool-call gaps do not flicker; any
+  new active mood cancels the pending pause.
+- The gate uses the raw mood independently of the mood visuals: `mood_reactive=false` forces the
+  visual mood to `idle` but does not freeze `agent`/`agent_music`.
+- At page load, if `/api/state` (or the first events) reports an active mood, the visual starts
+  moving. Disabled Aura behaves as before.
+
 ## 10. Silence gate (additive, 2026-11-05)
 
 Butterchurn presets advance on their own internal clock as well as the audio, so a bright preset
@@ -196,3 +238,23 @@ The page therefore treats audio as the thing being visualised, not as a garnish:
 Consequence for testing: a silence assertion is now a test of the gate, not of a lucky preset.
 `tools/silence_probe.py` measures the whole curated set (21/21 dark, mean 0, lit 0.000).
 
+## 11. Host safety (additive, 2026-11-08)
+
+Aura owns no host document styles beyond one sanctioned, opt-in visual: while "Visual behind the
+app" (or the Aura Live theme) is on, Aura is enabled and a tokenised URL is live, the desktop half
+mounts exactly one fixed, click-through, negative-z backdrop iframe and one `#aura-glass`
+stylesheet that clears the app's big surfaces so the visual shows through. Switching the visual
+off, turning Aura off, **Restore my theme** and disposal remove both; while nothing is opted in no
+host node or style is added at all, and the host `html`/`body`/root styles are never written.
+
+The accent pulse and the optional Aura Live theme are opt-in and off by default. **Restore my
+theme** turns the window visual, the accent pulse and the theme off, clears the accent override
+through `setAccentOverride(null)`, restores the previous theme, and removes every effect Aura
+applied. Disposal does the same and also removes all contributions, timers and listeners.
+
+The full-page stage (the `/aura` route, sidebar row, palette command and compact pane) was removed
+by owner decision: the backdrop and the Settings page are the product. The desktop half now
+contributes only the settings page, the theme, the backdrop, the accent pulse, the titlebar theme
+probe and polling. If "Visual behind the app" is switched on while Aura is off, the desktop half
+enables Aura through the same door as the "Aura enabled" switch (writeSettings + `POST /control
+{enabled:true}`), so the visual never silently draws nothing.

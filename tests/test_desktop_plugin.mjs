@@ -7,14 +7,23 @@
  *   1. the file is plain ESM that Node can parse (JSX syntax would fail here),
  *   2. its default export is { id, name, register },
  *   3. register() contributes the expected areas and returns a disposer that
- *      removes every contribution, clears the timers, clears the accent
- *      override and restores the theme it replaced,
- *   4. the stage returns to chat, with no status-bar contribution,
+ *      removes every contribution, clears the timers and listeners, clears the
+ *      accent override and restores the theme it replaced,
+ *   4. the stage era is gone: no /aura route, sidebar row, palette command,
+ *      pane or status-bar contribution — the backdrop and Settings are it,
  *   5. the polling interval is never faster than 4 Hz,
  *   6. the static SDK rules hold: no eval / new Function / JSX / dynamic
  *      import, no imports outside the three allowed specifiers, no
  *      document.querySelector('[data-slot=...]'), no document.body observer,
- *      no console output.
+ *      no console output,
+ *   7. host safety: with nothing opted in and no Aura Live theme active no
+ *      stylesheet and no backdrop iframe reach the host and no host
+ *      html/body/root style is mutated; the backdrop and the #aura-glass
+ *      style appear only behind an opt-in (the windowVisual switch or the
+ *      active aura-live theme) and vanish on switch-off, turning Aura off,
+ *      Restore my theme and dispose,
+ *   8. "Visual behind the app" turns Aura on when Aura was off, and shows a
+ *      hint (instead of drawing nothing) when Aura is off while it is on.
  *
  * To import the plugin without Hermes, a temp copy has its three import
  * specifiers rewritten to local stub modules; the stubs record the calls the
@@ -126,8 +135,12 @@ function makeCtx(settings) {
   const controls = []
   const requests = []
   const disposers = []
+  const listeners = []
   const storage = new Map()
   if (settings) storage.set('settings', settings)
+  // Mirrors the real server: /status reports the enabled flag the last
+  // /control {enabled} actually applied, so off really stays off.
+  let serverEnabled = settings && typeof settings.enabled === 'boolean' ? settings.enabled : true
 
   const ctx = {
     source: 'plugin:aura',
@@ -167,8 +180,12 @@ function makeCtx(settings) {
         record.cleared = true
       }
     },
-    addEventListener() {
-      return () => {}
+    addEventListener(target, type, fn) {
+      const record = { target, type, fn, removed: false }
+      listeners.push(record)
+      return () => {
+        record.removed = true
+      }
     },
     storage: {
       get(key, fallback) {
@@ -189,7 +206,7 @@ function makeCtx(settings) {
           port: 4321,
           url: 'http://127.0.0.1:4321/?token=not-shown-in-ui',
           capture: 'pipewire',
-          enabled: true
+          enabled: serverEnabled
         }
       }
       if (route === '/state') {
@@ -207,13 +224,14 @@ function makeCtx(settings) {
       }
       if (route === '/control') {
         controls.push(options.body)
+        if (options.body && typeof options.body.enabled === 'boolean') serverEnabled = options.body.enabled
         return { ok: true }
       }
       throw new Error(`unexpected route ${route}`)
     }
   }
 
-  return { ctx, contributions, timers, controls, disposers, requests, storage }
+  return { ctx, contributions, timers, controls, disposers, listeners, requests, storage }
 }
 
 // -------------------------------------------------------------- static checks
@@ -331,7 +349,7 @@ export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left'
 fs.writeFileSync(
   reactStub,
   `// Stub of react: hooks are synchronous no-ops so a component can be called
-// outside a renderer; the test invokes the theme probe and stage.
+// outside a renderer; the test invokes the theme probe and the settings page.
 export const Fragment = Symbol.for('react.fragment')
 export function useState(initial) {
   const value = typeof initial === 'function' ? initial() : initial
@@ -354,15 +372,17 @@ export const Fragment = Symbol.for('react.fragment')
 `
 )
 
-// The plugin reads document/getComputedStyle for the theme accent, the
-// background-window check and the imperatively mounted backdrop; a minimal
-// stand-in keeps the import headless while still recording backdrop mounts.
+// The plugin reads document/getComputedStyle for the theme accent and the
+// background-window check; a minimal stand-in keeps the import headless while
+// still proving the plugin never appends anything to the host document.
 const bodyChildren = []
 const headChildren = []
 const createdElements = []
+const documentElement = { style: {} }
 function makeChildList(children) {
   return {
     children,
+    style: {},
     appendChild(node) {
       node.parentNode = this
       children.push(node)
@@ -379,7 +399,7 @@ function makeChildList(children) {
 globalThis.document = {
   hidden: false,
   visibilityState: 'visible',
-  documentElement: {},
+  documentElement,
   head: makeChildList(headChildren),
   body: makeChildList(bodyChildren),
   createElement(tagName) {
@@ -438,8 +458,33 @@ globalThis.getComputedStyle = el => ({
   }
 })
 
-const backdropFrames = () => bodyChildren.filter(node => node.tagName === 'IFRAME')
-const glassStyles = () => headChildren.filter(node => node.tagName === 'STYLE' && node.attributes.id === 'aura-glass')
+const hostIframes = () => bodyChildren.filter(node => node.tagName === 'IFRAME')
+const hostStyles = () => headChildren.filter(node => node.tagName === 'STYLE')
+const glassStyles = () => hostStyles().filter(node => node.attributes.id === 'aura-glass')
+const hostHasNegativeZ = () =>
+  [...bodyChildren, ...headChildren].some(node => node.style && node.style.zIndex === '-1')
+
+function collectText(node, out) {
+  if (node === null || node === undefined) return out
+  if (typeof node === 'string' || typeof node === 'number') {
+    out.push(String(node))
+    return out
+  }
+  if (Array.isArray(node)) {
+    for (const child of node) collectText(child, out)
+    return out
+  }
+  if (typeof node === 'object' && 'type' in node && 'props' in node) collectText(node.props.children, out)
+  return out
+}
+const texts = element => collectText(element, []).join('\n')
+const findSwitch = (tree, label) => {
+  let found = null
+  walk(tree, node => {
+    if (!found && node.props && node.props['aria-label'] === label) found = node
+  })
+  return found
+}
 
 const pluginModule = await import(pathToFileURL(pluginCopy).href)
 const sdk = await import(pathToFileURL(sdkStub).href)
@@ -464,56 +509,17 @@ record('register() returns a disposer function', () => {
   assert.equal(typeof disposeA, 'function')
 })
 
-record('contributes the stage route /aura', () => {
-  const route = a.contributions.find(c => c.area === 'routes')
-  assert.ok(route, 'no routes contribution')
-  assert.deepEqual(route.data, { path: '/aura' })
-  assert.equal(typeof route.render, 'function')
-})
-
-record('contributes the sidebar nav row', () => {
-  const nav = a.contributions.find(c => c.area === 'sidebar.nav')
-  assert.ok(nav, 'no sidebar.nav contribution')
-  assert.equal(nav.data.path, '/aura')
-  assert.equal(nav.data.label, 'Aura')
-  assert.equal(nav.data.codicon, 'pulse')
-})
-
-record('contributes the palette command', () => {
-  const palette = a.contributions.find(c => c.area === 'palette')
-  assert.ok(palette, 'no palette contribution')
-  assert.equal(palette.data.label, 'Aura: Open stage')
-  assert.equal(typeof palette.data.run, 'function')
+record('does not contribute the stage route, sidebar row, palette command or pane', () => {
+  for (const area of ['routes', 'sidebar.nav', 'palette', 'panes']) {
+    assert.ok(
+      !a.contributions.some(c => c.area === area),
+      `a ${area} contribution survived the stage clean-up`
+    )
+  }
 })
 
 record('does not occupy the status bar', () => {
   assert.ok(!a.contributions.some(c => c.area.startsWith('statusBar.')))
-})
-
-record('stage offers a way back to the current chat', () => {
-  const stage = renderContribution(a.contributions.find(c => c.area === 'routes'))
-  let back = null
-  walk(stage, node => { if (node.props && node.props['aria-label'] === 'Back to chat') back = node })
-  assert.ok(back, 'no Back to chat button')
-  back.props.onClick()
-  assert.equal(sdk.calls.navigations.at(-1), '/chat%2F123')
-  const saved = sdk.host.state.focusedStoredSessionId
-  try {
-    sdk.host.state.focusedStoredSessionId = { get: () => null }
-    back.props.onClick()
-    assert.equal(sdk.calls.navigations.at(-1), '/')
-  } finally {
-    sdk.host.state.focusedStoredSessionId = saved
-  }
-})
-
-record('contributes the compact right-hand pane', () => {
-  const pane = a.contributions.find(c => c.area === 'panes')
-  assert.ok(pane, 'no panes contribution')
-  assert.equal(pane.data.placement, 'right')
-  assert.deepEqual(pane.data.dock, { pane: 'workspace', pos: 'right' })
-  assert.equal(pane.data.width, '320px')
-  assert.equal(typeof pane.render, 'function')
 })
 
 record('contributes the Aura Live theme', () => {
@@ -558,97 +564,149 @@ await recordAsync('status request leaves time for a cold gateway', async () => {
   assert.ok(status && status.options.timeoutMs >= 10000, 'status timeout is too short for cold startup')
 })
 
-await recordAsync('backdrop mounts only when Aura is enabled, the theme is aura-live and status is ok', async () => {
+await recordAsync('nothing is injected with no opt-in and no Aura Live theme', async () => {
   await sleep(30)
-  assert.equal(backdropFrames().length, 0, 'backdrop mounted without the aura-live theme')
+  assert.equal(hostStyles().length, 0, 'injected a stylesheet into the host head')
+  assert.equal(hostIframes().length, 0, 'mounted a backdrop iframe on the host body')
+  assert.equal(hostHasNegativeZ(), false, 'a host node uses a negative z-index')
+  assert.deepEqual(Object.keys(documentElement.style), [], 'host html/root style was mutated')
+  assert.deepEqual(Object.keys(document.body.style), [], 'host body style was mutated')
+})
+
+await recordAsync('the Aura Live theme alone also shows the backdrop, and leaving it removes it', async () => {
+  // Intended behaviour: the active aura-live theme mounts the backdrop even
+  // with windowVisual off (same condition as syncBackdrop).
   const probe = a.contributions.find(c => c.area === 'titleBar.center')
   sdk.themeState.name = 'aura-live'
   renderContribution(probe)
-  await sleep(20)
-  assert.equal(backdropFrames().length, 1, 'expected exactly one backdrop iframe')
-  const frame = backdropFrames()[0]
-  assert.match(frame.src, /[?&]overlay=1(?:&|$)/)
-  assert.equal(frame.style.position, 'fixed')
-  assert.equal(frame.style.inset, '0')
-  assert.equal(frame.style.width, '100vw')
-  assert.equal(frame.style.height, '100vh')
-  assert.equal(frame.style.border, '0')
-  assert.equal(frame.style.pointerEvents, 'none')
-  assert.equal(frame.style.zIndex, '-1')
-  // Visibility is the backdrop's own opacity (default 0.35).
-  assert.equal(frame.style.opacity, '0.35')
-  assert.equal(frame.style.mixBlendMode, undefined, 'backdrop must not blend over the UI')
-  assert.equal(frame.style.background, 'transparent')
-  assert.equal(frame.attributes['aria-hidden'], 'true')
-  assert.equal(frame.attributes.tabindex, '-1')
-  assert.equal(frame.attributes.title, 'Aura backdrop')
-  assert.equal(frame.attributes.sandbox, 'allow-scripts allow-same-origin allow-forms allow-downloads')
-  assert.equal(frame.attributes.referrerpolicy, 'no-referrer')
-  assert.equal(frame.attributes.allow, 'autoplay; fullscreen')
-})
-
-await recordAsync('glass style is injected exactly once with translucent theme variables', async () => {
-  const probe = a.contributions.find(c => c.area === 'titleBar.center')
+  a.timers.find(t => t.ms === 250).fn()
+  await sleep(30)
+  assert.equal(hostStyles().length, 1, 'the Aura Live theme did not mount the glass style')
+  assert.equal(hostIframes().length, 1, 'the Aura Live theme did not mount the backdrop')
+  assert.equal(hostIframes()[0].style.pointerEvents, 'none')
+  assert.equal(hostIframes()[0].style.zIndex, '-1')
+  sdk.themeState.name = 'nous'
   renderContribution(probe)
   a.timers.find(t => t.ms === 250).fn()
   await sleep(30)
-  assert.equal(glassStyles().length, 1, 'expected exactly one aura-glass style')
-  const css = glassStyles()[0].textContent
-  // The theme's own background is painted once on <html>; everything above it is clear.
-  assert.match(css, /html \{ background: rgb\(11, 10, 20\) !important; \}/)
-  assert.match(css, /body, #root, #app \{ background: transparent !important; \}/)
-  // Big areas go fully clear so stacked panels cannot compound to near-solid.
-  for (const name of ['--background', '--ui-bg-chrome', '--ui-bg-sidebar', '--ui-chat-surface-background']) {
-    assert.match(css, new RegExp(name.replace(/[-]/g, '\\-') + ': transparent !important;'), `${name} not cleared`)
-  }
-  // --ui-base is the TEXT colour: glass must never touch it.
-  assert.doesNotMatch(css, /--ui-base/)
-  // Floating surfaces stay 90% solid for readability.
-  assert.match(css, /--card: color-mix\(in srgb, rgb\(34, 29, 61\) 90%, transparent\) !important;/)
-  assert.equal(backdropFrames().length, 1)
+  assert.equal(glassStyles().length, 0, 'switching away from Aura Live left the #aura-glass style behind')
+  assert.equal(hostStyles().length, 0, 'switching away from Aura Live left a stylesheet behind')
+  assert.equal(hostIframes().length, 0, 'switching away from Aura Live left the backdrop behind')
+  assert.equal(hostHasNegativeZ(), false, 'a host node keeps a negative z-index')
+  assert.deepEqual(Object.keys(documentElement.style), [], 'host html/root style was mutated')
+  assert.deepEqual(Object.keys(document.body.style), [], 'host body style was mutated')
 })
 
-await recordAsync('background visibility defaults to 35 percent and clamps to 5..90', async () => {
+await recordAsync('whole-window visual is opt-in and restores the host when switched off', async () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  let toggle = null
+  walk(tree, node => {
+    if (!toggle && node.props && node.props['aria-label'] === 'Visual behind the app') toggle = node
+  })
+  assert.ok(toggle, 'whole-window visual switch missing')
+  assert.equal(toggle.props.checked, false)
+  toggle.props.onCheckedChange(true)
+  await sleep(30)
+  assert.equal(hostStyles().length, 1)
+  assert.equal(hostIframes().length, 1)
+  assert.equal(hostIframes()[0].style.pointerEvents, 'none')
+  toggle.props.onCheckedChange(false)
+  await sleep(30)
+  assert.equal(glassStyles().length, 0, 'the #aura-glass style survived the switch-off')
+  assert.equal(hostStyles().length, 0)
+  assert.equal(hostIframes().length, 0)
+})
+
+const findSettingsSwitches = tree => {
+  const found = {}
+  walk(tree, node => {
+    if (!node.props) return
+    if (node.props['aria-label'] === 'Aura enabled') found.enabled = node
+    if (node.props['aria-label'] === 'Visual behind the app') found.visual = node
+  })
+  return found
+}
+
+await recordAsync('the visual switch turns Aura on through the same door when Aura is off', async () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const switches = findSettingsSwitches(renderContribution(settings))
+  assert.ok(switches.enabled && switches.visual, 'missing Aura enabled / Visual behind the app switches')
+  switches.enabled.props.onCheckedChange(false)
+  await sleep(30)
+  switches.visual.props.onCheckedChange(true)
+  await sleep(40)
+  assert.deepEqual(a.controls.at(-1), { enabled: true }, 'the visual switch did not enable Aura via /control')
+  const saved = a.storage.get('settings')
+  assert.equal(saved.enabled, true, 'the visual switch did not enable Aura in the saved settings')
+  assert.equal(saved.windowVisual, true, 'the visual switch did not persist windowVisual')
+  // Clean up: visual off again, Aura stays on.
+  switches.visual.props.onCheckedChange(false)
+  await sleep(30)
+})
+
+await recordAsync('the visual row hints when the visual is on but Aura is off', async () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const switches = findSettingsSwitches(renderContribution(settings))
+  assert.ok(switches.enabled && switches.visual, 'missing switches')
+  switches.visual.props.onCheckedChange(true)
+  await sleep(30)
+  switches.enabled.props.onCheckedChange(false)
+  await sleep(30)
+  // windowVisual stays on, but nothing draws and the row says why.
+  const text = texts(renderContribution(settings))
+  assert.match(text, /Aura is off - turn it on to see the visual/)
+  assert.equal(hostStyles().length, 0, 'drew glass while Aura was off')
+  assert.equal(hostIframes().length, 0, 'drew a backdrop while Aura was off')
+  // Clean up: visual off, Aura on again.
+  switches.visual.props.onCheckedChange(false)
+  switches.enabled.props.onCheckedChange(true)
+  await sleep(30)
+})
+
+record('no Background visibility control remains', () => {
   const settings = a.contributions.find(c => c.area === 'settings.plugins')
   const tree = renderContribution(settings)
   let visibility = null
   walk(tree, node => {
     if (!visibility && node.type === 'input' && node.props && node.props['aria-label'] === 'Background visibility') visibility = node
   })
-  assert.ok(visibility, 'no Background visibility slider rendered')
-  assert.equal(visibility.props.min, 5)
-  assert.equal(visibility.props.max, 90)
-  assert.equal(visibility.props.value, 35)
-  assert.equal(backdropFrames()[0].style.opacity, '0.35')
-
-  visibility.props.onChange({ target: { value: '100' } })
-  await sleep(10)
-  assert.equal(backdropFrames()[0].style.opacity, '0.9', 'visibility was not clamped to 0.9')
-
-  visibility.props.onChange({ target: { value: '0' } })
-  await sleep(10)
-  assert.equal(backdropFrames()[0].style.opacity, '0.05', 'visibility was not clamped to 0.05')
-
-  visibility.props.onChange({ target: { value: '18' } })
-  await sleep(10)
+  assert.equal(visibility, null, 'the dropped host-glass control is still rendered')
 })
 
-await recordAsync('changing away from aura-live removes the backdrop and glass style', async () => {
-  const probe = a.contributions.find(c => c.area === 'titleBar.center')
-  sdk.themeState.name = 'nous'
-  renderContribution(probe)
-  await sleep(10)
-  assert.equal(backdropFrames().length, 0, 'backdrop survived a theme change')
-  assert.equal(glassStyles().length, 0, 'glass style survived a theme change')
-
-  sdk.themeState.name = 'aura-live'
-  renderContribution(probe)
-  await sleep(10)
-  assert.equal(backdropFrames().length, 1, 'backdrop did not return with the aura-live theme')
-  assert.equal(glassStyles().length, 1)
+await recordAsync('motion select offers the agent modes and hides legacy designs', async () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  const select = findSwitch(tree, 'Motion source')
+  assert.ok(select, 'Motion source select missing')
+  const options = select.props.children.map(option => option.props.value)
+  assert.deepEqual(options, ['both', 'music', 'agent', 'agent_music'], 'unexpected motion options')
+  assert.equal(options.includes('designs'), false, 'legacy designs is still offered')
+  const labels = select.props.children.map(option => option.props.children)
+  assert.deepEqual(labels, [
+    'Default — music, or gentle designs',
+    'Music only',
+    'Agent activity',
+    'Agent + music'
+  ])
 })
 
-await recordAsync('disabling Aura removes the backdrop and enabling restores it', async () => {
+await recordAsync('agent_music saves and reaches /control', async () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const select = findSwitch(renderContribution(settings), 'Motion source')
+  assert.ok(select, 'Motion source select missing')
+  select.props.onChange({ target: { value: 'agent_music' } })
+  await sleep(30)
+  assert.equal(a.storage.get('settings').motion, 'agent_music', 'agent_music was not persisted')
+  assert.deepEqual(a.controls.at(-1), { motion: 'agent_music' }, 'agent_music did not reach /control')
+  const rerendered = findSwitch(renderContribution(settings), 'Motion source')
+  assert.equal(rerendered.props.value, 'agent_music', 'saved motion did not round-trip into the select')
+  // Put the shared scenario back on its default for the remaining checks.
+  select.props.onChange({ target: { value: 'both' } })
+  await sleep(30)
+})
+
+await recordAsync('disabling Aura clears the accent and leaves the host untouched', async () => {
   const settings = a.contributions.find(c => c.area === 'settings.plugins')
   const tree = renderContribution(settings)
   let enabledSwitch = null
@@ -658,12 +716,13 @@ await recordAsync('disabling Aura removes the backdrop and enabling restores it'
   assert.ok(enabledSwitch, 'no Aura enabled switch rendered')
   enabledSwitch.props.onCheckedChange(false)
   await sleep(20)
-  assert.equal(backdropFrames().length, 0, 'backdrop survived disabling Aura')
-  assert.equal(glassStyles().length, 0, 'glass style survived disabling Aura')
+  assert.equal(sdk.calls.accent.at(-1), null, 'accent override survived disabling Aura')
+  assert.equal(hostStyles().length, 0)
+  assert.equal(hostIframes().length, 0)
   enabledSwitch.props.onCheckedChange(true)
   await sleep(40)
-  assert.equal(backdropFrames().length, 1, 'backdrop did not return when Aura was re-enabled')
-  assert.equal(glassStyles().length, 1)
+  assert.equal(hostStyles().length, 0)
+  assert.equal(hostIframes().length, 0)
 })
 
 record('no app-overlay on/off setting remains', () => {
@@ -729,11 +788,9 @@ await recordAsync('status timeout is reported without leaking error details', as
   try {
     a.timers.find(t => t.ms === 250).fn()
     await sleep(30)
-    const stage = renderContribution(a.contributions.find(c => c.area === 'routes'))
-    let error = ''
-    walk(stage, node => { if (node.props && node.props.live) error = node.props.live.error })
-    assert.match(error, /timed out/i)
-    assert.doesNotMatch(error, /secret|token/)
+    const text = texts(renderContribution(a.contributions.find(c => c.area === 'settings.plugins')))
+    assert.match(text, /timed out/i)
+    assert.doesNotMatch(text, /secret|token/)
   } finally {
     a.ctx.rest = oldRest
     a.timers.find(t => t.ms === 250).fn()
@@ -753,11 +810,9 @@ await recordAsync('status failures are classified safely', async () => {
       a.ctx.rest = async () => { throw new Error(detail) }
       a.timers.find(t => t.ms === 250).fn()
       await sleep(30)
-      const stage = renderContribution(a.contributions.find(c => c.area === 'routes'))
-      let error = ''
-    walk(stage, node => { if (node.props && node.props.live) error = node.props.live.error })
-      assert.match(error, expected)
-      assert.doesNotMatch(error, /secret|token/)
+      const text = texts(renderContribution(a.contributions.find(c => c.area === 'settings.plugins')))
+      assert.match(text, expected)
+      assert.doesNotMatch(text, /secret|token/)
     }
   } finally {
     a.ctx.rest = oldRest
@@ -851,15 +906,25 @@ await recordAsync('automatic-presets switch pushes auto_preset=false', async () 
   assert.deepEqual(a.controls.at(-1), { auto_preset: false })
 })
 
-record('disposer removes every contribution, clears timers, accent and theme', () => {
+await recordAsync('disposer removes every contribution, clears timers/listeners, accent, glass and theme', async () => {
+  // Mount an effect first so the clean-up assertions are not vacuous.
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const switches = findSettingsSwitches(renderContribution(settings))
+  switches.visual.props.onCheckedChange(true)
+  await sleep(30)
+  assert.equal(glassStyles().length, 1, 'the window visual did not mount its glass style')
+  assert.equal(hostIframes().length, 1, 'the window visual did not mount its backdrop')
   const themeCallsBefore = sdk.calls.themes.length
   disposeA()
   assert.equal(a.contributions.length, 0, 'contributions survived dispose')
   assert.ok(a.timers.every(t => t.cleared), 'a timer survived dispose')
+  assert.ok(a.listeners.length > 0, 'no listener was registered')
+  assert.ok(a.listeners.every(t => t.removed), 'a listener survived dispose')
   assert.equal(sdk.calls.accent.at(-1), null, 'accent override survived dispose')
   assert.equal(sdk.calls.themes.length, themeCallsBefore, 'theme switched on a plugin that never opted in')
-  assert.equal(backdropFrames().length, 0, 'backdrop iframe survived dispose')
-  assert.equal(glassStyles().length, 0, 'glass style survived dispose')
+  assert.equal(glassStyles().length, 0, 'the #aura-glass style survived dispose')
+  assert.equal(hostStyles().length, 0, 'a host style survived dispose')
+  assert.equal(hostIframes().length, 0, 'a host iframe survived dispose')
   assert.doesNotThrow(() => disposeA(), 'dispose is not idempotent')
 })
 
@@ -879,20 +944,53 @@ await recordAsync('theme opt-in selects aura-live only after the active theme is
   assert.ok(sdk.calls.themes.includes('aura-live'), 'aura-live was not requested')
 })
 
-record('disabling restores the theme that was active before', () => {
-  disposeB()
+await recordAsync('Restore my theme turns off effects, restores the previous theme and persists', async () => {
+  const settings = b.contributions.find(c => c.area === 'settings.plugins')
+  // Mount an effect first so the clean-up assertions are not vacuous.
+  const switches = findSettingsSwitches(renderContribution(settings))
+  switches.visual.props.onCheckedChange(true)
+  await sleep(30)
+  assert.equal(glassStyles().length, 1, 'the window visual did not mount its glass style')
+  assert.equal(hostIframes().length, 1, 'the window visual did not mount its backdrop')
+  const tree = renderContribution(settings)
+  let restore = null
+  walk(tree, node => {
+    if (!restore && node.props && node.props['aria-label'] === 'Restore my theme') restore = node
+  })
+  assert.ok(restore, 'no Restore my theme control rendered')
+  restore.props.onClick()
+  await sleep(30)
   assert.equal(sdk.calls.themes.at(-1), 'nous', 'previous theme was not restored')
+  assert.equal(sdk.calls.accent.at(-1), null, 'accent override was not cleared')
+  assert.deepEqual(b.controls.at(-1), { accent_pulse: false })
+  const saved = b.storage.get('settings')
+  assert.equal(saved.accentPulse, false, 'accent pulse was not turned off')
+  assert.equal(saved.themeOptIn, false, 'theme opt-in was not turned off')
+  assert.equal(saved.windowVisual, false, 'the window visual was not turned off')
+  assert.equal(hostStyles().length, 0, 'Restore my theme left a host style')
+  assert.equal(glassStyles().length, 0, 'Restore my theme left the #aura-glass style')
+  assert.equal(hostIframes().length, 0, 'Restore my theme left a host iframe')
+})
+
+record('dispose after Restore my theme is clean and does not re-request a theme', () => {
+  const themeCallsBefore = sdk.calls.themes.length
+  disposeB()
   assert.equal(b.contributions.length, 0)
+  assert.ok(b.timers.every(t => t.cleared))
+  assert.ok(b.listeners.every(t => t.removed))
+  assert.equal(sdk.calls.themes.length, themeCallsBefore, 'dispose requested a theme after restore')
 })
 
 // ------------------------------------------------------------- scenario C
-// Legacy storage: overlayOpacity migrates into glass once; a saved glass wins.
+// Legacy glass keys are accepted but ignored; host glass is gone. The active
+// theme is deliberately NOT aura-live, so any mounted glass would prove the
+// legacy keys themselves mounted something.
 
-sdk.themeState.name = 'aura-live'
-const c = makeCtx({ enabled: true, intensity: 0.5, overlayOpacity: 0.3 })
+sdk.themeState.name = 'nous'
+const c = makeCtx({ enabled: true, intensity: 0.5, overlayOpacity: 0.3, glass: 0.5, motion: 'designs' })
 const disposeC = pluginModule.default.register(c.ctx)
 
-await recordAsync('legacy overlayOpacity migrates into glass', async () => {
+await recordAsync('legacy glass keys are ignored and no host glass is mounted', async () => {
   const probe = c.contributions.find(x => x.area === 'titleBar.center')
   renderContribution(probe)
   await sleep(30)
@@ -902,28 +1000,88 @@ await recordAsync('legacy overlayOpacity migrates into glass', async () => {
   walk(tree, node => {
     if (!visibility && node.type === 'input' && node.props && node.props['aria-label'] === 'Background visibility') visibility = node
   })
-  assert.ok(visibility, 'no Background visibility slider rendered')
-  assert.equal(visibility.props.value, 30, 'overlayOpacity 0.3 was not read as glass 0.3')
-  assert.equal(Object.prototype.hasOwnProperty.call(c.storage.get('settings'), 'overlay'), false)
+  assert.equal(visibility, null, 'legacy host-glass control is still rendered')
+  assert.equal(glassStyles().length, 0, 'legacy glass keys mounted the #aura-glass style')
+  assert.equal(hostStyles().length, 0)
+  assert.equal(hostIframes().length, 0)
 })
 
-record('a saved glass value wins over the legacy overlayOpacity key', () => {
+record('a legacy designs motion value is accepted and shown as a legacy option', () => {
+  const settings = c.contributions.find(x => x.area === 'settings.plugins')
+  const select = findSwitch(renderContribution(settings), 'Motion source')
+  assert.ok(select, 'Motion source select missing')
+  assert.equal(select.props.value, 'designs', 'legacy designs was dropped from the saved settings')
+  const options = select.props.children.map(option => option.props.value)
+  assert.ok(options.includes('designs'), 'the saved legacy designs value has no matching option')
+  const legacy = select.props.children.find(option => option.props.value === 'designs')
+  assert.equal(legacy.props.children, 'Designs only (legacy)')
+})
+
+record('dispose from the legacy-storage scenario is clean', () => {
   disposeC()
-  sdk.themeState.name = 'aura-live'
-  const d = makeCtx({ enabled: true, intensity: 0.5, glass: 0.5, overlayOpacity: 0.3 })
-  const disposeD = pluginModule.default.register(d.ctx)
-  try {
-    const settings = d.contributions.find(x => x.area === 'settings.plugins')
-    const tree = renderContribution(settings)
-    let visibility = null
-    walk(tree, node => {
-      if (!visibility && node.type === 'input' && node.props && node.props['aria-label'] === 'Background visibility') visibility = node
-    })
-    assert.ok(visibility, 'no Background visibility slider rendered')
-    assert.equal(visibility.props.value, 50, 'glass 0.5 did not win over overlayOpacity 0.3')
-  } finally {
-    disposeD()
-  }
+  assert.equal(c.contributions.length, 0)
+  assert.ok(c.timers.every(t => t.cleared))
+  assert.ok(c.listeners.every(t => t.removed))
+})
+
+// ------------------------------------------------------------- scenario D
+// Disposal alone must restore the theme the user had before Aura.
+
+sdk.themeState.name = 'nous'
+const d = makeCtx({ enabled: true, intensity: 0.5, themeOptIn: true })
+const disposeD = pluginModule.default.register(d.ctx)
+
+await recordAsync('disposer restores the previous theme and removes listeners', async () => {
+  await sleep(20)
+  const probe = d.contributions.find(c => c.area === 'titleBar.center')
+  renderContribution(probe)
+  await sleep(20)
+  assert.ok(sdk.calls.themes.includes('aura-live'), 'aura-live was not requested')
+  disposeD()
+  assert.equal(sdk.calls.themes.at(-1), 'nous', 'previous theme was not restored on dispose')
+  assert.equal(d.contributions.length, 0)
+  assert.ok(d.timers.every(t => t.cleared))
+  assert.ok(d.listeners.every(t => t.removed))
+  assert.equal(hostStyles().length, 0)
+  assert.equal(hostIframes().length, 0)
+})
+
+// ------------------------------------------------------------- scenario E
+// Opt-in by default: a fresh install applies no accent override and no theme.
+
+const e = makeCtx()
+const disposeE = pluginModule.default.register(e.ctx)
+
+await recordAsync('accent pulse and Aura Live are off by default', async () => {
+  await sleep(20)
+  const accentBefore = sdk.calls.accent.length
+  const themesBefore = sdk.calls.themes.length
+  const probe = e.contributions.find(c => c.area === 'titleBar.center')
+  renderContribution(probe)
+  e.timers.find(t => t.ms === 250).fn()
+  await sleep(30)
+  assert.equal(sdk.calls.accent.length, accentBefore, 'accent was applied without opt-in')
+  assert.equal(sdk.calls.themes.length, themesBefore, 'a theme was requested without opt-in')
+  const settings = e.contributions.find(c => c.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  let accentSwitch = null
+  let themeSwitch = null
+  walk(tree, node => {
+    if (!accentSwitch && node.props && node.props['aria-label'] === 'Accent pulse') accentSwitch = node
+    if (!themeSwitch && node.props && node.props['aria-label'] === 'Use Aura theme') themeSwitch = node
+  })
+  assert.ok(accentSwitch && themeSwitch, 'opt-in switches are missing')
+  assert.equal(accentSwitch.props.checked, false, 'accent pulse defaults on')
+  assert.equal(themeSwitch.props.checked, false, 'Aura Live theme defaults on')
+  assert.equal(hostStyles().length, 0)
+  assert.equal(hostIframes().length, 0)
+})
+
+record('dispose from the defaults scenario is clean', () => {
+  disposeE()
+  assert.equal(e.contributions.length, 0)
+  assert.ok(e.timers.every(t => t.cleared))
+  assert.ok(e.listeners.every(t => t.removed))
 })
 
 // --------------------------------------------------------------- reporting

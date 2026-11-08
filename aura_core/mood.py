@@ -57,7 +57,8 @@ FLASH_ALLOWED = {
 #: Nominal pulse rate per mood (Hz).  Attention moods are additionally clamped
 #: to MAX_PULSE_HZ at build time.
 PULSE_HZ = {
-    "idle": 0.0,
+    # a resting room still breathes: 0.15 Hz, one slow wave every ~7 s, never a strobe
+    "idle": 0.15,
     "thinking": 0.5,
     "tool": 1.0,
     "approval": 2.0,
@@ -67,7 +68,9 @@ PULSE_HZ = {
 }
 
 DEFAULT_INTENSITY = {
-    "idle": 0.0,
+    # never zero: an untouched Aura is a calm, slowly moving field, not a black rectangle.
+    # (0.0 here was the reason a first-time user saw an empty stage and thought it was broken.)
+    "idle": 0.18,
     "thinking": 0.35,
     "tool": 0.50,
     "approval": 0.80,

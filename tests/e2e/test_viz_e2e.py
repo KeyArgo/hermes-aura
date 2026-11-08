@@ -11,8 +11,9 @@ Assertions:
   * an approval mood changes the render, pulses at ≤2 Hz, never exceeds 3 flashes/s,
     and restores to idle when its ttl expires;
   * the page reconnects after the server restarts;
-  * token 401, capture "none" and missing WebGL each show a one-line message and the
-    accent-only fallback instead of a blank frame;
+  * token 401, capture "none" and missing WebGL each show a one-line message;
+    capture "none" keeps drawing ambient visuals (never a blank frame or a hard
+    graphics blocker), while token/WebGL use the accent-only fallback;
   * prefers-reduced-motion lowers intensity and avoids strobe presets;
   * the intensity slider and on/off POST /api/control.
 
@@ -927,16 +928,24 @@ def test_capture_none_shows_message_and_fallback(chrome, aura):
     tab = chrome.new_tab(page_url(aura.port))
     try:
         snap = wait_for(tab, "window.__aura && window.__aura.snapshot()",
-                        lambda s: s and s.get("ready"), timeout=20, label="ready")
+                        lambda s: s and s.get("ready") and s.get("message"),
+                        timeout=20, label="ready")
         print("capture none: capture=%s fallback=%s message=%r" % (
             snap["capture"], snap["fallbackReasons"], snap["message"]), flush=True)
         assert snap["capture"] == "none"
-        assert "capture" in snap["fallbackReasons"]
-        assert snap["message"] and "No system audio" in snap["message"]
-        assert snap["fallbackActive"] is True
-        hidden = tab.ev("getComputedStyle(document.getElementById('aura-canvas')).visibility")
-        assert hidden == "hidden"
-        print("PASS capture-none message=%r" % snap["message"], flush=True)
+        assert "capture" not in snap["fallbackReasons"], \
+            "capture absence must not be a hard graphics blocker in ambient mode"
+        assert snap["fallbackActive"] is False
+        assert snap["messageTone"] == "info"
+        assert snap["message"] and "loopback" in snap["message"].lower()
+        assert "ambient" in snap["message"].lower()
+        assert snap["ambientFallback"] is True
+        visible = tab.ev("getComputedStyle(document.getElementById('aura-canvas')).visibility")
+        assert visible == "visible", "ambient visuals must keep drawing without capture"
+        snap = wait_for(tab, "window.__aura.snapshot()",
+                        lambda s: s and s["frames"] > 0, timeout=10, label="ambient frames")
+        print("PASS capture-none ambient message=%r frames=%d" % (
+            snap["message"], snap["frames"]), flush=True)
     finally:
         tab.close()
 

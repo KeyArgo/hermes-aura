@@ -35,14 +35,19 @@ DEFAULTS = {
     "opacity": 0.75,
     "behavior": "calm",
     "mood_reactive": True,
-    "accent_pulse": True,
+    # Opt-in: the host accent is never repainted unless the user asks for it.
+    "accent_pulse": False,
     "auto_preset": True,
-    # Motion source for the visualizer: ambient designs, real audio, or both.
+    # Motion source for the visualizer: ambient designs, real audio, both, or
+    # the agent's own activity (optionally alongside music).
     "motion": "both",
 }
 
 BEHAVIORS = ("calm", "balanced", "intense")
-MOTIONS = ("designs", "both", "music")
+# `designs` is legacy but still accepted and works; the desktop select no
+# longer offers it. The agent values gate the ambient designs on the raw mood
+# stream (see CONTRACT.md §9.1).
+MOTIONS = ("designs", "both", "music", "agent", "agent_music")
 
 _lock = threading.RLock()
 
@@ -51,8 +56,35 @@ _lock = threading.RLock()
 # paths
 # ---------------------------------------------------------------------------
 
+def _hermes_constants_home() -> Path | None:
+    """The context-local home Hermes reports, when the agent package is importable.
+
+    The gateway is one process serving several profiles and exposes a
+    context-local override while it runs a turn for a profile. That override
+    must win over the shared process ``HERMES_HOME``. Anything unexpected
+    (missing module, bad value, import-time failure) falls back to the env
+    logic below so tests and standalone use keep working.
+    """
+    try:
+        from hermes_constants import get_hermes_home as _get_home
+    except ImportError:
+        return None
+    try:
+        return Path(_get_home()).expanduser()
+    except Exception:  # noqa: BLE001 - any failure falls back to the env logic
+        return None
+
+
 def hermes_home() -> Path:
-    """The Hermes home directory, honouring ``HERMES_HOME`` at call time."""
+    """The Hermes home directory for the *current* context.
+
+    Resolution order: the Hermes context-local override (when importable), then
+    ``HERMES_HOME``, then the default. Evaluated at call time and never cached,
+    because a gateway turn can switch profiles between calls.
+    """
+    override = _hermes_constants_home()
+    if override is not None:
+        return override
     raw = os.environ.get("HERMES_HOME")
     if raw:
         try:
@@ -72,6 +104,16 @@ def config_path() -> Path:
 
 def token_path() -> Path:
     return aura_dir() / "token"
+
+
+def lock_path() -> Path:
+    """Leader-election lock for the single local server (CONTRACT §7)."""
+    return aura_dir() / "server.lock"
+
+
+def lease_path() -> Path:
+    """The leader's ``{pid,port,token,started,capture}`` advertisement."""
+    return aura_dir() / "lease.json"
 
 
 def _ensure_dir() -> Path:
@@ -241,6 +283,23 @@ def read_token() -> str:
         return token_path().read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def write_lease(payload: dict) -> None:
+    """Persist the leader advertisement, owner-only, atomically."""
+    with _lock:
+        _ensure_dir()
+        data = json.dumps(payload, sort_keys=True).encode("utf-8") + b"\n"
+        _atomic_write(lease_path(), data)
+
+
+def read_lease() -> dict | None:
+    """Read the leader advertisement; corrupt/missing input -> ``None``."""
+    try:
+        raw = json.loads(lease_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return raw if isinstance(raw, dict) else None
 
 
 def capture_override() -> str | None:
