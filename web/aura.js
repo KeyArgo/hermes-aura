@@ -38,7 +38,11 @@
 
   const MOODS = ['idle', 'thinking', 'tool', 'approval', 'error', 'streaming', 'done'];
   const ATTENTION = ['approval', 'error'];
-  const HARD_BLOCKERS = ['token', 'webgl', 'capture', 'audio', 'perf'];
+  // `perf` is deliberately NOT a hard blocker. A slow frame is still a moving
+  // backdrop; the render loop lowers its own resolution/frame budget and keeps
+  // drawing (REVamp's approach). A hard blocker hides the canvas, which in the
+  // click-through overlay means the whole backdrop goes black.
+  const HARD_BLOCKERS = ['token', 'webgl', 'capture', 'audio'];
   // Capture is a data source, not a graphics prerequisite: in ambient mode the
   // page keeps drawing and only says what is missing. No cause is guessed.
   const CAPTURE_NONE_AMBIENT = 'System audio loopback is unavailable — ambient visuals continue; music reactivity is off.';
@@ -80,7 +84,7 @@
       hard_pulse: true
     }
   };
-  const DEFAULT_BEHAVIOR = 'calm';
+  const DEFAULT_BEHAVIOR = 'balanced';
 
   const state = {
     ready: false,
@@ -115,6 +119,8 @@
     badFrames: 0,
     droppedFrames: 0,
     lastSeq: 0,
+    lastPcmSeq: 0,
+    lastRenderedPcmSeq: 0,
     lastFeatures: null,
     // Silence gate: the visual follows the audio. No audio -> the canvas fades
     // out and its drawing buffer is cleared, so a preset never free-runs on its
@@ -129,8 +135,10 @@
     renderer: 'unknown',
     software: false,
     renderScale: 1,
-    fpsCap: 60,
+    fpsCap: 30,
     degradeLevel: 0,
+    goodStreak: 0,
+    perfLimited: false,
     degradedToFallback: false
   };
 
@@ -166,9 +174,12 @@
   let resizeQueued = false;
   let rafId = null;
   let lastRenderAt = 0;
+  let renderErrorStreak = 0;
   let silenceTimer = null;
   let agentIdleTimer = null;
   let lastSample = null;
+  let probeRecorder = null;
+  let prevProbeBuf = null;
   let draggingIntensity = false;
   let draggingOpacity = false;
 
@@ -180,6 +191,17 @@
   const PCM_RING_SIZE = 1024;
   const PCM_STALE_MS = 300;
   const HARD_CUT_MIN_MS = 8000;
+  const HARD_CUT_MIN_MS_CALM = 20000;
+  // Auto-gain: quiet monitor captures must not quantise to 128 (silence).
+  // The envelope is deliberately slow so a kick keeps its relative contrast;
+  // gain is only ever boosted (never attenuates loud audio into clipping).
+  const AGC_TARGET_PEAK = 0.75;
+  const AGC_MIN_PEAK = 0.002;
+  const AGC_MAX_GAIN = 64;
+  const AGC_ENVELOPE_DECAY = 0.99;
+  const SILENCE_PEAK = 0.0015;
+  let agcGain = 1.0;
+  let agcPeak = 0.0;
   const pcmRing = new Float32Array(PCM_RING_SIZE);
   let pcmWrite = 0;
   let pcmFilled = 0;
@@ -341,6 +363,9 @@
     } else if (state.captureNotice) {
       // Non-blocking: ambient visuals are still drawing behind this line.
       showMessage(state.captureNotice, 'info');
+    } else if (blockers.has('perf')) {
+      // Non-blocking too: the canvas is still drawing at the reduced budget.
+      showMessage(blockers.get('perf'), 'info');
     } else if (socket.state !== 'connected') {
       showMessage('Reconnecting to Aura…', 'info');
     } else {
@@ -579,6 +604,35 @@
     return g;
   }
 
+  function isNearSilent(samples) {
+    if (!samples || !samples.length) return true;
+    let peak = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+      const v = Math.abs(samples[i]);
+      if (v > peak) peak = v;
+    }
+    return peak < SILENCE_PEAK;
+  }
+
+  // Slow rolling peak -> stable boost. Do not derive gain from a single frame
+  // or the kick itself gets flattened; the envelope spans several beats.
+  function updateAutoGain(samples) {
+    if (!samples || !samples.length) return agcGain;
+    let peak = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+      const v = Math.abs(samples[i]);
+      if (v > peak) peak = v;
+    }
+    agcPeak = Math.max(peak, agcPeak * AGC_ENVELOPE_DECAY);
+    if (agcPeak < AGC_MIN_PEAK) agcPeak = AGC_MIN_PEAK;
+    const desired = clamp(AGC_TARGET_PEAK / agcPeak, 1, AGC_MAX_GAIN);
+    // Fast attack when the signal is quiet; slow release when it gets loud.
+    const rate = desired > agcGain ? 0.08 : 0.5;
+    agcGain += (desired - agcGain) * rate;
+    agcGain = clamp(agcGain, 1, AGC_MAX_GAIN);
+    return agcGain;
+  }
+
   function updateMoodVisuals() {
     const mod = moodMod();
     const profile = activeProfile();
@@ -655,7 +709,12 @@
       const data = await res.json();
       const list = Array.isArray(data.presets) ? data.presets : [];
       catalog.presets = list.filter((p) => p && typeof p.name === 'string')
-        .map((p) => ({ name: p.name, family: String(p.family || 'misc'), strobe: !!p.strobe }));
+        .map((p) => ({
+          name: p.name,
+          family: String(p.family || 'misc'),
+          strobe: !!p.strobe,
+          beat: clamp(num(p.beat, 0), 0, 5)
+        }));
       catalog.byName = Object.create(null);
       for (const p of catalog.presets) catalog.byName[p.name] = p;
       catalog.default = typeof data.default === 'string' ? data.default : null;
@@ -665,7 +724,7 @@
       const map = presetMap();
       if (map) {
         catalog.presets = Object.keys(map).sort().slice(0, 20)
-          .map((name) => ({ name, family: 'misc', strobe: false }));
+          .map((name) => ({ name, family: 'misc', strobe: false, beat: 0 }));
         catalog.byName = Object.create(null);
         for (const p of catalog.presets) catalog.byName[p.name] = p;
         catalog.default = catalog.presets[0] ? catalog.presets[0].name : null;
@@ -686,8 +745,9 @@
     if (!state.autoPreset) return null;
     const allowed = allowedPresets();
     if (!allowed.length) return null;
-    const match = allowed.filter((p) => p.family === family);
-    const pick = match.length ? match[0] : allowed[0];
+    const byBeat = (a, b) => (b.beat || 0) - (a.beat || 0);
+    const match = allowed.filter((p) => p.family === family).sort(byBeat);
+    const pick = match.length ? match[0] : allowed.slice().sort(byBeat)[0];
     const blend = num(activeProfile().blend_ms, 1200);
     if (loadPresetByName(pick.name, blend)) return pick.name;
     return null;
@@ -697,7 +757,8 @@
     const allowed = allowedPresets();
     if (!allowed.length) return null;
     const family = activeProfile().preset_family;
-    const preferred = allowed.filter((p) => p.family === family);
+    const byBeat = (a, b) => (b.beat || 0) - (a.beat || 0);
+    const preferred = allowed.filter((p) => p.family === family).sort(byBeat);
     if (preferred.length) return preferred[0].name;
     if (catalog.default) {
       const d = catalog.byName[catalog.default];
@@ -801,8 +862,10 @@
     quality.software = webgl.software;
     quality.tier = webgl.ok ? (webgl.software ? 'degraded-software' : 'full') : 'none';
     // Software GL: reduced resolution scaled up, ~24 fps cap (SPIKES.md S3).
+    // Hardware: 30 fps, matching REVamp's MilkDrop budget — above that the extra
+    // frames cost CPU and are hard to tell apart.
     quality.renderScale = webgl.software ? 0.45 : 1;
-    quality.fpsCap = webgl.software ? 24 : 60;
+    quality.fpsCap = webgl.software ? 24 : 30;
     if (state.reducedMotion) {
       quality.renderScale *= 0.9;
       quality.fpsCap = Math.min(quality.fpsCap, 30);
@@ -1096,9 +1159,21 @@
   }
 
   function degradeLadder() {
+    // Deeper software steps: SwiftShader can be several times slower than a GPU,
+    // so shrinking the drawing buffer is the only lever that actually buys frames.
     return quality.software
-      ? [{ scale: 0.45, fps: 24 }, { scale: 0.34, fps: 20 }, { scale: 0.26, fps: 16 }]
-      : [{ scale: 1, fps: 60 }, { scale: 0.75, fps: 40 }, { scale: 0.55, fps: 30 }, { scale: 0.4, fps: 20 }];
+      ? [{ scale: 0.45, fps: 24 }, { scale: 0.34, fps: 20 }, { scale: 0.26, fps: 16 },
+         { scale: 0.18, fps: 12 }, { scale: 0.12, fps: 8 }]
+      : [{ scale: 1, fps: 30 }, { scale: 0.75, fps: 24 }, { scale: 0.55, fps: 18 },
+         { scale: 0.4, fps: 14 }, { scale: 0.3, fps: 10 }];
+  }
+
+  function applyQualityStep(level) {
+    const ladder = degradeLadder();
+    quality.degradeLevel = clamp(level, 0, ladder.length - 1);
+    quality.renderScale = ladder[quality.degradeLevel].scale;
+    quality.fpsCap = ladder[quality.degradeLevel].fps;
+    if (state.reducedMotion) quality.fpsCap = Math.min(quality.fpsCap, 30);
   }
 
   function evaluateDegrade() {
@@ -1107,23 +1182,51 @@
     const p50 = Math.max(medianFrameTime(), medianSyncTime());
     if (!p50) return;
     const budget = 1000 / quality.fpsCap;
-    if (p50 <= budget * 1.6) return;
-    const ladder = degradeLadder();
-    const next = Math.min(quality.degradeLevel + 1, ladder.length - 1);
-    if (next === quality.degradeLevel) {
-      // At the floor and still missing frames: accent-only beats a slideshow.
-      if (p50 > 260 && !quality.degradedToFallback) {
-        quality.degradedToFallback = true;
-        block('perf', 'Rendering is too slow on this GPU — showing the accent-only fallback.');
-        if (viz) { try { renderFrame(); } catch (_) {} }
+    if (p50 <= budget * 1.6) {
+      // Sustained headroom: step back up toward the original quality. Without
+      // this a transient stall would leave the backdrop permanently tiny.
+      quality.goodStreak += 1;
+      if (quality.goodStreak >= 6 && quality.degradeLevel > 0) {
+        quality.goodStreak = 0;
+        quality.perfLimited = false;
+        quality.degradedToFallback = false;
+        unblock('perf');
+        applyQualityStep(quality.degradeLevel - 1);
+        resizeCanvas();
       }
       return;
     }
-    quality.degradeLevel = next;
-    quality.renderScale = ladder[next].scale;
-    quality.fpsCap = ladder[next].fps;
-    if (state.reducedMotion) quality.fpsCap = Math.min(quality.fpsCap, 30);
+    quality.goodStreak = 0;
+    const ladder = degradeLadder();
+    const next = Math.min(quality.degradeLevel + 1, ladder.length - 1);
+    if (next === quality.degradeLevel) {
+      // At the floor and still missing frames. Do NOT stop drawing: REVamp's
+      // frame budget only skips frames, and a 4 fps backdrop still reacts to
+      // music while a hidden canvas is indistinguishable from a frozen one.
+      if (p50 > 260 && !quality.perfLimited) {
+        quality.perfLimited = true;
+        quality.degradedToFallback = true;
+        block('perf', 'Rendering is slow on this GPU — keeping a reduced frame rate.');
+      }
+      return;
+    }
+    quality.perfLimited = false;
+    quality.degradedToFallback = false;
+    if (blockers.has('perf')) unblock('perf');
+    applyQualityStep(next);
     resizeCanvas();
+  }
+
+  function noteRenderError(err) {
+    renderErrorStreak += 1;
+    // Keep the error list bounded and the console quiet during a bad streak.
+    if (renderErrorStreak === 1 || renderErrorStreak % 20 === 0) recordError(err);
+    if (renderErrorStreak % 10 === 0 && catalog.presets.length) {
+      // The preset itself may be what throws; rotate before giving up.
+      const allowed = allowedPresets();
+      const next = allowed.find((p) => p.name !== state.presetName) || allowed[0];
+      if (next) loadPresetByName(next.name, 0, false);
+    }
   }
 
   function loop(ts) {
@@ -1137,12 +1240,31 @@
     try {
       renderFrame();
     } catch (e) {
-      recordError(e);
-      block('webgl', 'The visualizer stopped — showing the accent-only fallback.');
+      // A preset (or a lost context) can throw. Never treat one bad frame as a
+      // permanent graphics failure: rotate away from the preset and keep going.
+      noteRenderError(e);
+      lastRenderAt = ts;
       return;
     }
+    renderErrorStreak = 0;
     lastRenderAt = ts;
     state.frames += 1;
+    if (probeRecorder) {
+      const cap = captureCanvas();
+      if (cap) {
+        probeRecorder.push({
+          t: Date.now(),
+          mean: cap.mean,
+          lit: cap.lit,
+          hash: cap.hash,
+          grid: cap.grid,
+          diff: cap.diff,
+          frames: state.frames,
+          audioRms: Number(pcmRms().toFixed(4))
+        });
+        if (probeRecorder.length > 6000) probeRecorder.shift();
+      }
+    }
     const dt = now() - t0;
     pushFrameTime(dt);
     if (state.frames % 5 === 0 && dom.canvas) {
@@ -1321,11 +1443,76 @@
     }
   }
 
-  function sampleNow() {
-    if (!viz || !dom.canvas) return null;
+  function pcmRms() {
+    try {
+      const pcm = latestPcm();
+      let sum = 0;
+      for (let i = 0; i < pcm.length; i += 1) sum += pcm[i] * pcm[i];
+      return Math.sqrt(sum / pcm.length);
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  // Read the current drawing buffer into a coarse 4x4 brightness grid. Mean
+  // luma alone barely moves when a preset reacts with motion rather than
+  // brightness, which made beat-response tests read as noise.
+  function captureCanvas() {
+    if (!dom.canvas) return null;
     let gl = null;
     try { gl = dom.canvas.getContext('webgl2'); } catch (e) { gl = null; }
     if (!gl) return null;
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    if (!w || !h) return null;
+    const buf = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    let diff = null;
+    if (prevProbeBuf && prevProbeBuf.length === buf.length) {
+      let d = 0;
+      let n = 0;
+      for (let i = 0; i < buf.length; i += 16) {
+        d += Math.abs(buf[i] - prevProbeBuf[i])
+          + Math.abs(buf[i + 1] - prevProbeBuf[i + 1])
+          + Math.abs(buf[i + 2] - prevProbeBuf[i + 2]);
+        n += 3;
+      }
+      diff = d / n;
+    }
+    prevProbeBuf = buf;
+    let sum = 0;
+    let lit = 0;
+    let hash = 0;
+    const stride = 16;
+    const cells = new Float64Array(16);
+    const counts = new Float64Array(16);
+    for (let i = 0; i < buf.length; i += stride) {
+      const v = buf[i] + buf[i + 1] + buf[i + 2];
+      sum += v;
+      if (v > 12) lit += 1;
+      hash = (hash * 31 + v) | 0;
+      const px = (i / 4) | 0;
+      const x = px % w;
+      const y = (px / w) | 0;
+      const cell = Math.min(3, (x * 4 / w) | 0) + 4 * Math.min(3, (y * 4 / h) | 0);
+      cells[cell] += v;
+      counts[cell] += 1;
+    }
+    const grid = [];
+    for (let c = 0; c < 16; c += 1) grid.push(counts[c] ? Math.round(cells[c] / counts[c] / 3) : 0);
+    return {
+      mean: Math.round(sum / (buf.length / stride) / 3),
+      lit,
+      hash,
+      grid,
+      diff,
+      w,
+      h
+    };
+  }
+
+  function sampleNow() {
+    if (!viz || !dom.canvas) return null;
     if (state.renderPaused) {
       // Silence: the buffer is cleared, so a sample reads black without waking
       // the preset up (viz.render() would draw a bright frame again).
@@ -1333,33 +1520,17 @@
     } else {
       try { renderFrame(); } catch (e) { recordError(e); return null; }
     }
-    const w = gl.drawingBufferWidth;
-    const h = gl.drawingBufferHeight;
-    if (!w || !h) return null;
-    const buf = new Uint8Array(w * h * 4);
-    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-    let sum = 0;
-    let lit = 0;
-    let hash = 0;
-    const stride = 16;
-    for (let i = 0; i < buf.length; i += stride) {
-      const v = buf[i] + buf[i + 1] + buf[i + 2];
-      sum += v;
-      if (v > 12) lit += 1;
-      hash = (hash * 31 + v) | 0;
-    }
-    lastSample = {
-      mean: Math.round(sum / (buf.length / stride) / 3),
-      lit,
-      hash,
-      w,
-      h,
+    const cap = captureCanvas();
+    if (!cap) return null;
+    lastSample = Object.assign(cap, {
       frames: state.frames,
+      audioRms: Number(pcmRms().toFixed(4)),
       mood: mood.current,
       preset: state.presetName,
       intensity: Number(state.effectiveIntensity.toFixed(3)),
-      sampleGain: Number(state.sampleGain.toFixed(3))
-    };
+      sampleGain: Number(state.sampleGain.toFixed(3)),
+      autoGain: Number(agcGain.toFixed(3))
+    });
     return lastSample;
   }
 
@@ -1420,6 +1591,7 @@
   function renderFrame() {
     if (!viz) return false;
     viz.render({ audioLevels: currentAudioLevels() });
+    state.lastRenderedPcmSeq = state.lastPcmSeq;
     return true;
   }
 
@@ -1427,9 +1599,9 @@
   // more than once every 8 s, and never for calm/reduced-motion/auto-off.
   function maybeHardCut() {
     if (!viz || state.reducedMotion || !state.autoPreset) return false;
-    if (state.behavior === 'calm') return false;
     const t = now();
-    if (t - lastHardCutAt < HARD_CUT_MIN_MS) return false;
+    const minMs = state.behavior === 'calm' ? HARD_CUT_MIN_MS_CALM : HARD_CUT_MIN_MS;
+    if (t - lastHardCutAt < minMs) return false;
     const allowed = allowedPresets();
     if (!allowed.length) return false;
     const family = activeProfile().preset_family;
@@ -1619,23 +1791,24 @@
   }
 
   function feedPcm(frame) {
-    noteAudio(frame.silence);
+    const samples = frame.samples;
+    // Trust the samples, not the server's stale silence bit. A quiet monitor
+    // capture can be flagged silent for up to 100 ms (features are stale), and
+    // zeroing it here used to discard the very audio that should drive Aura.
+    const nearSilent = isNearSilent(samples);
+    noteAudio(nearSilent);
     if (socket.ws && socket.ws.bufferedAmount > 512 * 1024) {
       // Socket backed up: drop this frame rather than queue latency.
       state.droppedFrames += 1;
       return;
     }
-    const gain = sampleGain();
-    let samples = frame.samples;
-    if (frame.silence) {
-      // A silent frame is zeroes, never whatever the capture buffer held.
-      samples = new Float32Array(frame.count);
-    }
+    const gain = sampleGain() * updateAutoGain(samples);
     // Visual analysis always runs, at 48 kHz, whether or not the worklet graph
     // is alive. This is what makes the backdrop follow the music.
     const visualSamples = resampleMono(samples, frame.rate || 48000, 48000, gain);
     appendPcm(visualSamples);
-    if (!frame.silence) detectLocalOnset(visualSamples);
+    state.lastPcmSeq = frame.seq;
+    if (!nearSilent) detectLocalOnset(samples);
     else fluxPrevRms = 0;
     if (!audio.node || !audio.ctx) return;
     const out = resampleMono(samples, frame.rate || 48000, audio.ctx.sampleRate || 48000, gain);
@@ -1790,6 +1963,7 @@
     if (typeof cfg.opacity === 'number' && !draggingOpacity) {
       setOpacityUI(clamp(cfg.opacity, 0, 1));
     }
+    if (typeof cfg.auto_preset === 'boolean') setAutoPresetUI(cfg.auto_preset);
     if (typeof cfg.behavior === 'string') {
       setBehaviorUI(cfg.behavior, cfg.behavior_profile);
     }
@@ -1798,7 +1972,6 @@
     }
     if (typeof cfg.mood_reactive === 'boolean') setMoodReactiveUI(cfg.mood_reactive);
     if (typeof cfg.accent_pulse === 'boolean') setAccentPulseUI(cfg.accent_pulse);
-    if (typeof cfg.auto_preset === 'boolean') setAutoPresetUI(cfg.auto_preset);
     // A manually chosen preset arrives through the config event; preset
     // *rotation* arrives as its own event and is gated by auto_preset.
     if (typeof cfg.preset === 'string' && cfg.preset && cfg.preset !== state.presetName) {
@@ -2026,6 +2199,27 @@
     }
   }
 
+  // A lost context is the one graphics failure that can recover on its own.
+  // Hide the canvas while it is gone (accent-only), then resume when the GPU
+  // hands it back instead of leaving a frozen frame forever.
+  function setupContextRecovery() {
+    if (!dom.canvas || !dom.canvas.addEventListener) return;
+    dom.canvas.addEventListener('webglcontextlost', (event) => {
+      try { event.preventDefault(); } catch (_) {}
+      block('webgl', 'The graphics context was lost — waiting for it to come back.');
+    }, false);
+    dom.canvas.addEventListener('webglcontextrestored', () => {
+      unblock('webgl');
+      renderErrorStreak = 0;
+      if (viz) {
+        try { resizeCanvas(); } catch (_) {}
+        startLoop();
+      } else {
+        initViz();
+      }
+    }, false);
+  }
+
   // ---------------------------------------------------------------------------
   // boot
   // ---------------------------------------------------------------------------
@@ -2047,6 +2241,7 @@
     dom.behavior = document.getElementById('aura-behavior');
     dom.motion = document.getElementById('aura-motion');
     dom.toggle = document.getElementById('aura-toggle');
+    setupContextRecovery();
     if (dom.motion) dom.motion.value = state.motion;
     if (dom.slider) dom.slider.disabled = state.motion === 'designs';
 
@@ -2134,6 +2329,9 @@
         badFrames: state.badFrames,
         droppedFrames: state.droppedFrames,
         lastSeq: state.lastSeq,
+        pcmSeq: state.lastPcmSeq,
+        renderedPcmSeq: state.lastRenderedPcmSeq,
+        autoGain: Number(agcGain.toFixed(3)),
         mood: mood.current,
         previousMood: mood.previous,
         moodTtl: mood.ttl,
@@ -2178,6 +2376,8 @@
           fpsCap: quality.fpsCap,
           degradeLevel: quality.degradeLevel,
           degradedToFallback: quality.degradedToFallback,
+          perfLimited: quality.perfLimited,
+          frameMs: Math.round(medianFrameTime()),
           syncMs: Math.round(medianSyncTime())
         },
         audio: {
@@ -2202,6 +2402,17 @@
       };
     },
     sampleNow,
+    // Frame-accurate probe: the loop records every rendered frame instead of
+    // rendering extra frames from a timer (which aliased a 120 BPM kick).
+    startProbe() {
+      probeRecorder = [];
+      return true;
+    },
+    stopProbe() {
+      const rows = probeRecorder || [];
+      probeRecorder = null;
+      return rows;
+    },
     // e2e hook: let the test drive mood without a server (still used by WS events).
     applyMood,
     noteAgentMood,
@@ -2221,6 +2432,13 @@
     // expose internals for assertions
     _state: state,
     _quality: quality,
+    _frameTimes: frameTimes,
+    _syncTimes: syncTimes,
+    _blockers: blockers,
+    hardBlocker,
+    degradeLadder,
+    evaluateDegrade,
+    noteRenderError,
     _viz: function () { return viz; }
   };
 

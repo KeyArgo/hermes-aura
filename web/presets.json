@@ -3,40 +3,215 @@
   "note": "Curated for beat reactivity and visual density. The original 20 were measured 2026-11-05 in muted headless Chrome (tests/e2e/probe_presets.py: tone mode, full-bundle screen then a 6 s strobe-grade pass); the 15 added 2026-11-08 were ranked by static reactivity from tools/score_presets.mjs (bass/mid/treb + att/beat/q1-q31 taps in frame/pixel/wave/shape equations, audio-driven wave settings) and then deep-probed the same way. 19 of these 35 fill >=90% of the frame. strobe=true is measured, not guessed: luma-grid jumps >=12/255 at >=0.5/s, or >=25/255 peak delta; when quick and deep passes disagree the flag is kept. Reduced-motion users only ever see strobe=false presets. Families steer the mood engine in aura.js: idle=organic/liquid calm, thinking=geometric/fractal structure, approval=cosmic contrast, error=liquid wash under the red tint, streaming=energy.",
   "default": "shifter - dark tides bdrv mix 2",
   "presets": [
-    { "name": "Flexi + Martin - cascading decay swing", "family": "organic", "strobe": false },
-    { "name": "Flexi - alien fish pond", "family": "organic", "strobe": false },
-    { "name": "cope + martin - mother-of-pearl", "family": "liquid", "strobe": false },
-    { "name": "Geiss - Reaction Diffusion 2", "family": "liquid", "strobe": false },
-    { "name": "Zylot - Paint Spill (Music Reactive Paint Mix)", "family": "liquid", "strobe": false },
-    { "name": "suksma - vector exp 1 - couldn′t not", "family": "geometric", "strobe": false },
-    { "name": "martin - glass corridor", "family": "geometric", "strobe": false },
-    { "name": "Eo.S. + Zylot - skylight (Stained Glass Majesty mix)", "family": "geometric", "strobe": false },
-    { "name": "flexi - bouncing balls [double mindblob neon mix]", "family": "geometric", "strobe": false },
-    { "name": "flexi - what is the matrix", "family": "geometric", "strobe": true },
-    { "name": "Flexi - smashing fractals [acid etching mix]", "family": "fractal", "strobe": false },
-    { "name": "Flexi - infused with the spiral", "family": "fractal", "strobe": false },
-    { "name": "Flexi, martin + geiss - dedicated to the sherwin maxawow", "family": "cosmic", "strobe": false },
-    { "name": "Flexi, fishbrain, Geiss + Martin - tokamak witchery", "family": "cosmic", "strobe": false },
-    { "name": "martin - ghost city", "family": "cosmic", "strobe": false },
-    { "name": "Unchained & Rovastar - Wormhole Pillars (Hall of Shadows mix)", "family": "cosmic", "strobe": false },
-    { "name": "Flexi + stahlregen - jelly showoff parade", "family": "cosmic", "strobe": false },
-    { "name": "$$$ Royal - Mashup (220)", "family": "energy", "strobe": true },
-    { "name": "_Mig_049", "family": "energy", "strobe": false },
-    { "name": "shifter - dark tides bdrv mix 2", "family": "energy", "strobe": false },
-    { "name": "fiShbRaiN + Flexi - witchcraft 2.0", "family": "organic", "strobe": false },
-    { "name": "martin - bombyx mori", "family": "organic", "strobe": false },
-    { "name": "Martin - liquid arrows", "family": "liquid", "strobe": false },
-    { "name": "martin - stormy sea (2010 update)", "family": "liquid", "strobe": false },
-    { "name": "Martin - QBikal - Surface Turbulence IIb", "family": "liquid", "strobe": false },
-    { "name": "martin [shadow harlequins shape code] - fata morgana", "family": "geometric", "strobe": false },
-    { "name": "An AdamFX n Martin Infusion 2 flexi - Why The Sky Looks Diffrent Today - AdamFx n Martin Infusion - Tack Tile Disfunction B", "family": "geometric", "strobe": false },
-    { "name": "suksma - heretical crosscut playpen", "family": "geometric", "strobe": false },
-    { "name": "martin - mandelbox explorer - high speed demo version", "family": "fractal", "strobe": false },
-    { "name": "Geiss - Spiral Artifact", "family": "fractal", "strobe": false },
-    { "name": "yin - 191 - Temporal singularities", "family": "cosmic", "strobe": false },
-    { "name": "TonyMilkdrop - Magellan's Nebula [Flexi - you enter first + multiverse]", "family": "cosmic", "strobe": false },
-    { "name": "Geiss + Flexi + Martin - disconnected", "family": "energy", "strobe": true },
-    { "name": "suksma - Rovastar - Sunflower Passion (Enlightment Mix)_Phat_edit + flexi und martin shaders - circumflex in character classes in regular expression", "family": "energy", "strobe": true },
-    { "name": "Eo.S. - glowsticks v2 05 and proton lights (+Krash′s beat code) _Phat_remix02b", "family": "energy", "strobe": true }
+    {
+      "name": "Flexi + Martin - cascading decay swing",
+      "family": "organic",
+      "strobe": false,
+      "beat": 2
+    },
+    {
+      "name": "Flexi - alien fish pond",
+      "family": "organic",
+      "strobe": false,
+      "beat": 1
+    },
+    {
+      "name": "cope + martin - mother-of-pearl",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 2
+    },
+    {
+      "name": "Geiss - Reaction Diffusion 2",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Zylot - Paint Spill (Music Reactive Paint Mix)",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "suksma - vector exp 1 - couldn\u2032t not",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 1
+    },
+    {
+      "name": "martin - glass corridor",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 2
+    },
+    {
+      "name": "Eo.S. + Zylot - skylight (Stained Glass Majesty mix)",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 1
+    },
+    {
+      "name": "flexi - bouncing balls [double mindblob neon mix]",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 1
+    },
+    {
+      "name": "flexi - what is the matrix",
+      "family": "geometric",
+      "strobe": true,
+      "beat": 1
+    },
+    {
+      "name": "Flexi - smashing fractals [acid etching mix]",
+      "family": "fractal",
+      "strobe": false,
+      "beat": 1
+    },
+    {
+      "name": "Flexi - infused with the spiral",
+      "family": "fractal",
+      "strobe": false,
+      "beat": 1
+    },
+    {
+      "name": "Flexi, martin + geiss - dedicated to the sherwin maxawow",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 1
+    },
+    {
+      "name": "Flexi, fishbrain, Geiss + Martin - tokamak witchery",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 5
+    },
+    {
+      "name": "martin - ghost city",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 1
+    },
+    {
+      "name": "Unchained & Rovastar - Wormhole Pillars (Hall of Shadows mix)",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Flexi + stahlregen - jelly showoff parade",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 1
+    },
+    {
+      "name": "$$$ Royal - Mashup (220)",
+      "family": "energy",
+      "strobe": true,
+      "beat": 2
+    },
+    {
+      "name": "_Mig_049",
+      "family": "energy",
+      "strobe": false,
+      "beat": 1
+    },
+    {
+      "name": "shifter - dark tides bdrv mix 2",
+      "family": "energy",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "fiShbRaiN + Flexi - witchcraft 2.0",
+      "family": "organic",
+      "strobe": false,
+      "beat": 5
+    },
+    {
+      "name": "martin - bombyx mori",
+      "family": "organic",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Martin - liquid arrows",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "martin - stormy sea (2010 update)",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Martin - QBikal - Surface Turbulence IIb",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "martin [shadow harlequins shape code] - fata morgana",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 5
+    },
+    {
+      "name": "An AdamFX n Martin Infusion 2 flexi - Why The Sky Looks Diffrent Today - AdamFx n Martin Infusion - Tack Tile Disfunction B",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 2
+    },
+    {
+      "name": "suksma - heretical crosscut playpen",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin - mandelbox explorer - high speed demo version",
+      "family": "fractal",
+      "strobe": false,
+      "beat": 2
+    },
+    {
+      "name": "Geiss - Spiral Artifact",
+      "family": "fractal",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "yin - 191 - Temporal singularities",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "TonyMilkdrop - Magellan's Nebula [Flexi - you enter first + multiverse]",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Geiss + Flexi + Martin - disconnected",
+      "family": "energy",
+      "strobe": true,
+      "beat": 4
+    },
+    {
+      "name": "suksma - Rovastar - Sunflower Passion (Enlightment Mix)_Phat_edit + flexi und martin shaders - circumflex in character classes in regular expression",
+      "family": "energy",
+      "strobe": true,
+      "beat": 2
+    },
+    {
+      "name": "Eo.S. - glowsticks v2 05 and proton lights (+Krash\u2032s beat code) _Phat_remix02b",
+      "family": "energy",
+      "strobe": true,
+      "beat": 4
+    }
   ]
 }

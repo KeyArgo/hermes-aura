@@ -42,6 +42,8 @@ import websocket
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 CHROME = "/usr/bin/google-chrome-stable"
 TOKEN = "e2e_" + base64.urlsafe_b64encode(b"aura-e2e-token-0123456789abcdef").decode().rstrip("=")
+BEAT_PERIOD_SAMPLES = 24000  # 120 BPM at 48 kHz
+BEAT_KICK_SAMPLES = 6720     # first 140 ms of each beat
 MOODS = {"idle", "thinking", "tool", "approval", "error", "streaming", "done"}
 BEHAVIORS = {"calm", "balanced", "intense"}
 BEHAVIOR_PROFILES = {
@@ -144,11 +146,15 @@ class FakeAura:
     def __init__(self):
         self.token = TOKEN
         self.capture = "pipewire"
-        self.mode = "silence"          # silence | tone
+        self.mode = "silence"          # silence | tone | beat
+        self.beat_amp = 0.01           # deliberately quiet: proves the auto-gain
+        self.beat_bpm = 120
+        self._beat_lock = threading.Lock()
         self.enabled = True
         self.intensity = 0.6
         self.opacity = 0.75
         self.behavior = "balanced"
+        self.motion = "both"         # contract default; audio tests opt into music
         self.mood_reactive = True
         self.accent_pulse = True
         self.auto_preset = True
@@ -217,6 +223,7 @@ class FakeAura:
                         "capture": aura.capture, "theme_opt_in": False,
                         "enabled": aura.enabled, "preset": aura.preset,
                         "opacity": aura.opacity, "behavior": aura.behavior,
+                        "motion": aura.motion,
                         "mood_reactive": aura.mood_reactive,
                         "accent_pulse": aura.accent_pulse,
                         "auto_preset": aura.auto_preset,
@@ -396,6 +403,35 @@ class FakeAura:
         self._phase += n
         return out
 
+    def _beat_samples(self, n=1024):
+        """A 120 BPM kick+hat pattern. Quiet by default: the page must auto-gain."""
+        period = 60.0 / max(1, self.beat_bpm)
+        amp = max(0.0, float(self.beat_amp))
+        out = []
+        for i in range(n):
+            t = ((self._phase + i) / 48000.0) % period
+            v = 0.0
+            if t < 0.14:
+                env = math.exp(-t / 0.045)
+                f = 55.0 - 20.0 * (t / 0.14)
+                v += 0.95 * env * math.sin(2 * math.pi * f * t)
+            v += 0.25 * math.sin(2 * math.pi * 55 * t) * math.exp(-t / 0.2)
+            u = (t - period / 2.0) % period
+            if u < 0.06:
+                env = math.exp(-u / 0.012)
+                seed = (int(((self._phase + i) / 48000.0) / 0.0001) % 997) / 997.0
+                v += 0.35 * env * (2 * seed - 1)
+            v += 0.08 * math.sin(2 * math.pi * 220 * t)
+            v += 0.05 * math.sin(2 * math.pi * 330 * t)
+            out.append(max(-1.0, min(1.0, v * amp)))
+        self._phase += n
+        return out
+
+    def phase_for_seq(self, seq):
+        """Beat phase at the start of PCM frame ``seq`` (for correlation)."""
+        with self._beat_lock:
+            return (self._phase - (self._seq - seq + 1) * 1024) % BEAT_PERIOD_SAMPLES
+
     def _feeder(self):
         last_features = 0.0
         last_mood = 0.0
@@ -404,23 +440,28 @@ class FakeAura:
             with self.lock:
                 clients = list(self.clients)
             if clients:
-                self._seq += 1
-                if self.mode == "tone":
-                    samples = self._tone_samples()
-                    silent = False
-                else:
-                    samples = [0.0] * 1024
-                    silent = True
+                with self._beat_lock:
+                    self._seq += 1
+                    if self.mode == "tone":
+                        samples = self._tone_samples()
+                        silent = False
+                    elif self.mode == "beat":
+                        samples = self._beat_samples()
+                        silent = False
+                    else:
+                        samples = [0.0] * 1024
+                        silent = True
                 for c in clients:
                     c.send_pcm(self._seq, samples, silence=silent)
                 if now - last_features >= 0.1:
                     last_features = now
-                    level = 0.72 if self.mode == "tone" else 0.0
-                    bands = [0.6, 0.7, 0.8, 0.55, 0.45, 0.35, 0.25, 0.15] if self.mode == "tone" else [0.0] * 8
+                    active = self.mode in ("tone", "beat")
+                    level = 0.72 if active else 0.0
+                    bands = [0.6, 0.7, 0.8, 0.55, 0.45, 0.35, 0.25, 0.15] if active else [0.0] * 8
                     self._last_features = {
                         "type": "features", "seq": self._seq, "ts_ms": int(now * 1000),
-                        "level": level, "bands": bands, "onset": self.mode == "tone",
-                        "centroid": 0.35, "flatness": 0.2, "silence": self.mode != "tone",
+                        "level": level, "bands": bands, "onset": active,
+                        "centroid": 0.35, "flatness": 0.2, "silence": not active,
                     }
                     for c in clients:
                         c.send_json(self._last_features)
@@ -455,6 +496,7 @@ class FakeAura:
                          "theme_opt_in": False, "enabled": self.enabled,
                          "preset": self.preset, "opacity": self.opacity,
                          "behavior": self.behavior,
+                         "motion": self.motion,
                          "mood_reactive": self.mood_reactive,
                          "accent_pulse": self.accent_pulse,
                          "auto_preset": self.auto_preset,
@@ -684,6 +726,7 @@ def aura():
 # ---------------------------------------------------------------------------
 
 def test_visualizer_analyser_receives_pcm(chrome, aura):
+    aura.motion = "music"
     tab = chrome.new_tab()
     try:
         tab.send('Page.addScriptToEvaluateOnNewDocument', {'source': """
@@ -714,6 +757,7 @@ def test_visualizer_analyser_receives_pcm(chrome, aura):
         tab.close()
 
 def test_silence_black_tone_moves_and_cpu(chrome, aura):
+    aura.motion = "music"
     tab = chrome.new_tab(page_url(aura.port))
     try:
         snap = wait_ready(tab)
@@ -751,8 +795,11 @@ def test_silence_black_tone_moves_and_cpu(chrome, aura):
         assert abs(a["mean"] - b["mean"]) <= 1, "silence must not invent motion: %s -> %s" % (a, b)
         assert a["lit"] <= 0.03 * sampled, "silence must stay visually dark, got %d/%d lit" % (a["lit"], sampled)
 
-        # Tone on a bright preset: real signal moves the render.
-        aura.send_preset("Zylot - True Visionary (Final Mix)", blend_ms=0)
+        # Tone on a bright preset: real signal moves the render. Pin the
+        # preset via config with auto-rotation off so an onset cannot replace it.
+        aura.auto_preset = False
+        aura.preset = "Zylot - True Visionary (Final Mix)"
+        aura.send_config()
         time.sleep(1.2)
         aura.mode = "tone"
         c = wait_for(tab, "window.__aura.sampleNow()",
@@ -1108,6 +1155,154 @@ def test_software_gl_auto_degrades_when_frame_budget_missed(chrome, aura):
         print("PASS auto-degrade level=%d scale=%.2f fpsCap=%d" % (
             snap["quality"]["degradeLevel"], snap["quality"]["renderScale"],
             snap["quality"]["fpsCap"]), flush=True)
+    finally:
+        tab.close()
+
+
+# Per-frame probe: render, read the real WebGL buffer, and record both the
+# canvas change and Butterchurn's own audio levels. Runs in the page's rAF loop
+# so Python is not in the timing path.
+BEAT_RECORD_JS = r"""
+(async () => {
+  const ms = %d;
+  const rows = [];
+  const start = performance.now();
+  const GW = 16, GH = 9;
+  let prev = null;
+  function step() {
+    const c = document.getElementById('aura-canvas');
+    if (!c) return;
+    const snap = window.__aura.sampleNow();
+    const viz = window.__aura._viz();
+    const al = viz && viz.renderer ? viz.renderer.audioLevels : null;
+    const gl = c.getContext('webgl2');
+    const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+    const buf = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    const grid = new Float32Array(GW * GH);
+    for (let y = 0; y < h; y += 3) for (let x = 0; x < w; x += 3) {
+      const i = (y * w + x) * 4;
+      const l = 0.2126 * buf[i] + 0.7152 * buf[i + 1] + 0.0722 * buf[i + 2];
+      grid[Math.floor(y / h * GH) * GW + Math.floor(x / w * GW)] += l;
+    }
+    let diff = 0;
+    if (prev) {
+      for (let i = 0; i < grid.length; i++) diff += Math.abs(grid[i] - prev[i]);
+      diff /= grid.length;
+    }
+    prev = grid;
+    const s = window.__aura.snapshot();
+    rows.push({
+      diff: +diff.toFixed(3), mean: snap ? snap.mean : 0, lit: snap ? snap.lit : 0,
+      bass: al ? al.bass : null, mid: al ? al.mid : null, treb: al ? al.treb : null,
+      seq: s.renderedPcmSeq || s.pcmSeq || s.lastSeq, preset: s.preset, silent: s.silent,
+      gain: s.sampleGain, autoGain: s.autoGain || 1, t: performance.now()
+    });
+  }
+  return await new Promise((res) => {
+    function tick() {
+      step();
+      if (performance.now() - start < ms) requestAnimationFrame(tick);
+      else res(rows);
+    }
+    requestAnimationFrame(tick);
+  });
+})()
+"""
+
+
+def _corr(xs, ys):
+    n = min(len(xs), len(ys))
+    if n < 5:
+        return 0.0
+    mx = sum(xs[:n]) / n
+    my = sum(ys[:n]) / n
+    num = sum((xs[i] - mx) * (ys[i] - my) for i in range(n))
+    dx = math.sqrt(sum((v - mx) ** 2 for v in xs[:n]))
+    dy = math.sqrt(sum((v - my) ** 2 for v in ys[:n]))
+    return num / (dx * dy) if dx and dy else 0.0
+
+
+def test_music_beat_reaction_is_visible(chrome, aura):
+    """A quiet 120 BPM kick must still drive bass and canvas motion.
+
+    Regression proof for c3e0e05: the PCM path was added but quiet monitor
+    audio quantised to 128 (silence) and the default preset barely moved. This
+    records per-frame Butterchurn levels and real canvas-grid deltas in-page,
+    derives the expected kick phase from the PCM frame sequence, and requires
+    kick-vs-rest bass and canvas-motion ratios, with a correlation diagnostic.
+    """
+    preset = "Zylot - Paint Spill (Music Reactive Paint Mix)"
+    tab = chrome.new_tab(page_url(aura.port))
+    try:
+        wait_ready(tab)
+        # Smaller CSS surface: headless SwiftShader needs the reduced pixels to
+        # sample enough frames per beat without changing the render path.
+        tab.send("Emulation.setDeviceMetricsOverride", {
+            "width": 640, "height": 480, "deviceScaleFactor": 1, "mobile": False
+        })
+        cfg = {
+            "behavior": "balanced",
+            "auto_preset": False,
+            "preset": preset,
+            "motion": "music",
+            "intensity": 0.6,
+        }
+        tab.ev("window.__aura.applyConfig(%s)" % json.dumps(cfg))
+        wait_for(tab, "window.__aura.snapshot()",
+                 lambda s: s and s.get("preset") == preset,
+                 timeout=10, label="beat preset loaded")
+        aura.beat_amp = 0.01  # -40 dBFS: the pre-fix path rounds this to silence
+        aura.mode = "beat"
+        time.sleep(0.6)
+        rows = tab.ev(BEAT_RECORD_JS % 8000) or []
+        print("beat rows=%d preset=%r amp=%g" % (
+            len(rows), rows[-1].get("preset") if rows else None, aura.beat_amp), flush=True)
+        assert len(rows) >= 15, "not enough frames sampled: %d" % len(rows)
+
+        # Frames are 1024 samples (~21 ms); a frame that straddles the 140 ms
+        # kick boundary is ambiguous, so use only frames wholly inside the kick
+        # or wholly in the quiet middle of the beat.
+        phases = [aura.phase_for_seq(r["seq"]) for r in rows]
+        bass = [float(r["bass"] or 0.0) for r in rows]
+        diffs = [float(r["diff"] or 0.0) for r in rows]
+        bass_post = [b for b, p in zip(bass, phases) if p < 5000]
+        bass_ctrl = [b for b, p in zip(bass, phases) if 8000 <= p < 21000]
+        diff_post = [d for d, p in zip(diffs, phases) if p < 5000]
+        diff_ctrl = [d for d, p in zip(diffs, phases) if 8000 <= p < 21000]
+        expected = [1.0 if p < 5000 else (0.0 if 8000 <= p < 21000 else None)
+                    for p in phases]
+        pairs = [(b, e) for b, e in zip(bass, expected) if e is not None]
+        bass_corr = _corr([b for b, _ in pairs], [e for _, e in pairs])
+        bass_ratio = ((sum(bass_post) / len(bass_post)) /
+                      max(1e-9, sum(bass_ctrl) / len(bass_ctrl)) if bass_post and bass_ctrl else 0.0)
+        diff_ratio = ((sum(diff_post) / len(diff_post)) /
+                      max(1e-9, sum(diff_ctrl) / len(diff_ctrl)) if diff_post and diff_ctrl else 0.0)
+        auto_gain = float(rows[-1].get("autoGain", 1.0) or 1.0)
+        print("beat reaction: rows=%d bassCorr=%.2f bassMax=%.2f bassRatio=%.2f "
+              "diffPost=%.1f diffCtrl=%.1f diffRatio=%.2f autoGain=%.2f" % (
+                  len(rows), bass_corr, max(bass), bass_ratio,
+                  sum(diff_post) / len(diff_post) if diff_post else 0.0,
+                  sum(diff_ctrl) / len(diff_ctrl) if diff_ctrl else 0.0,
+                  diff_ratio, auto_gain), flush=True)
+
+        assert auto_gain > 10, "quiet audio was not auto-gained: autoGain=%.2f" % auto_gain
+        assert max(bass) > 0.5, "quiet beat produced no bass level: max=%r" % max(bass)
+        assert bass_post and bass_ctrl, "beat phase did not cover both kick and rest frames"
+        assert bass_ratio > 1.2, "bass did not rise on kicks: ratio=%.2f" % bass_ratio
+        assert diff_post and diff_ctrl, "beat phase did not cover both kick and rest frames"
+        assert diff_ratio > 1.5, "canvas motion did not rise on kicks: ratio=%.2f" % diff_ratio
+
+        # Silence control: the same recording must stay dark and still.
+        aura.mode = "silence"
+        time.sleep(1.6)
+        silence_rows = tab.ev(BEAT_RECORD_JS % 2000) or []
+        assert silence_rows, "no silence frames"
+        assert snapshot(tab)["silent"] is True, "silence gate did not engage"
+        assert max(r["mean"] for r in silence_rows) <= 3, "silence invented brightness"
+        assert max(r["diff"] for r in silence_rows) <= 2, "silence invented motion"
+        print("PASS quiet-beat reaction autoGain=%.2f bassRatio=%.2f diffRatio=%.2f; silence dark/still" % (
+            auto_gain, bass_ratio, diff_ratio), flush=True)
     finally:
         tab.close()
 

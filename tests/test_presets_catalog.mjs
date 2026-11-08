@@ -9,7 +9,7 @@
  *
  * Covered:
  *   - schema keys intact (schema/note/default/presets) and every entry is
- *     { name, family, strobe } with strobe a strict boolean;
+ *     { name, family, strobe, beat } with strobe a strict boolean, beat 0-5;
  *   - every catalog name (and the default) exists in the vendored bundle;
  *   - no duplicate names;
  *   - >= 30 entries and >= 12 non-strobe entries (reduced-motion pool);
@@ -74,9 +74,10 @@ record('catalog keeps its schema keys', () => {
   assert.ok(Array.isArray(catalog.presets))
 })
 
-record('every entry is { name, family, strobe } only', () => {
+record('every entry is { name, family, strobe, beat }', () => {
   for (const p of catalog.presets) {
-    assert.deepEqual(Object.keys(p).sort(), ['family', 'name', 'strobe'], 'bad keys on ' + JSON.stringify(p.name))
+    assert.deepEqual(Object.keys(p).sort(), ['beat', 'family', 'name', 'strobe'], 'bad keys on ' + JSON.stringify(p.name))
+    assert.ok(Number.isInteger(p.beat) && p.beat >= 0 && p.beat <= 5, 'beat 0-5 on ' + p.name)
     assert.equal(typeof p.name, 'string')
     assert.ok(p.name.length > 0)
     assert.equal(typeof p.family, 'string')
