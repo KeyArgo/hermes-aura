@@ -359,6 +359,45 @@ def test_control_rejects_bad_motion(live, body):
     assert json_body(payload)["ok"] is False
 
 
+def test_control_accepts_reduced_motion_and_persists_it(live, tmp_path):
+    status, payload = http_call(live["port"], "POST", "/api/control",
+                                token=live["token"], body={"reduced_motion": True})
+    assert status == 200
+    assert json_body(payload)["applied"] == {"reduced_motion": True}
+
+    stored = json.loads((tmp_path / "aura" / "config.json").read_text(encoding="utf-8"))
+    assert stored["reduced_motion"] is True
+
+    status, payload = http_call(live["port"], "GET", "/api/config", token=live["token"])
+    assert json_body(payload)["reduced_motion"] is True
+    assert server._config_event()["reduced_motion"] is True
+    status, payload = http_call(live["port"], "GET", "/api/state", token=live["token"])
+    assert json_body(payload)["reduced_motion"] is True
+
+    status, payload = http_call(live["port"], "POST", "/api/control",
+                                token=live["token"], body={"reduced_motion": False})
+    assert status == 200
+    assert json_body(payload)["applied"] == {"reduced_motion": False}
+    stored = json.loads((tmp_path / "aura" / "config.json").read_text(encoding="utf-8"))
+    assert stored["reduced_motion"] is False
+    status, payload = http_call(live["port"], "GET", "/api/state", token=live["token"])
+    assert json_body(payload)["reduced_motion"] is False
+
+
+@pytest.mark.parametrize("body", [
+    {"reduced_motion": "yes"},
+    {"reduced_motion": "off"},
+    {"reduced_motion": 1},
+    {"reduced_motion": 0},
+    {"reduced_motion": None},
+])
+def test_control_rejects_bad_reduced_motion(live, body):
+    status, payload = http_call(live["port"], "POST", "/api/control",
+                                token=live["token"], body=body)
+    assert status == 400
+    assert json_body(payload)["ok"] is False
+
+
 def test_config_event_carries_display_controls(live):
     status, _ = http_call(live["port"], "POST", "/api/control", token=live["token"],
                           body={"opacity": 0.4, "behavior": "intense"})
@@ -371,6 +410,7 @@ def test_config_event_carries_display_controls(live):
     assert isinstance(event["mood_reactive"], bool)
     assert isinstance(event["accent_pulse"], bool)
     assert isinstance(event["auto_preset"], bool)
+    assert isinstance(event["reduced_motion"], bool)
 
 
 def test_presets_shape(live):

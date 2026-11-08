@@ -723,6 +723,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "accent_pulse": bool(cfg["accent_pulse"]),
                 "auto_preset": bool(cfg["auto_preset"]),
                 "motion": cfg["motion"],
+                "reduced_motion": bool(cfg["reduced_motion"]),
             }
         return payload
 
@@ -1016,7 +1017,7 @@ def _validate_control(data) -> dict:
         if value not in config.MOTIONS:
             raise ValueError("bad_motion")
         applied["motion"] = value
-    for toggle in ("mood_reactive", "accent_pulse", "auto_preset"):
+    for toggle in ("mood_reactive", "accent_pulse", "auto_preset", "reduced_motion"):
         if toggle in data:
             if not isinstance(data[toggle], bool):
                 raise ValueError(toggle + "_must_be_bool")
@@ -1028,7 +1029,8 @@ def _apply_control(data) -> dict:
     applied = _validate_control(data)
     patch = {k: v for k, v in applied.items()
              if k in ("enabled", "intensity", "preset", "opacity", "behavior",
-                      "mood_reactive", "accent_pulse", "auto_preset", "motion")}
+                      "mood_reactive", "accent_pulse", "auto_preset", "motion",
+                      "reduced_motion")}
     if patch:
         cfg = config.merge_config(patch)
         if "preset" in applied:

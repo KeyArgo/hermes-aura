@@ -79,12 +79,39 @@ def test_profile_families_exist_in_the_page_catalogue():
 
 def test_config_defaults_include_display_controls():
     cfg = config.normalise({})
-    assert cfg["opacity"] == 0.75
-    assert cfg["behavior"] == "calm"
+    assert cfg["opacity"] == 0.35
+    assert cfg["behavior"] == "balanced"
     assert cfg["mood_reactive"] is True
     assert cfg["accent_pulse"] is False
     assert cfg["auto_preset"] is True
     assert cfg["theme_opt_in"] is False
+
+
+def test_first_run_defaults_are_agent_led_and_gentle():
+    # New users land on: agent+music motion, mid intensity, balanced profile,
+    # low opacity (CONTRACT.md §9.1).
+    cfg = config.normalise({})
+    assert cfg["motion"] == "agent_music"
+    assert cfg["intensity"] == 0.5
+    assert cfg["behavior"] == "balanced"
+    assert cfg["opacity"] == 0.35
+    assert cfg == config.DEFAULTS
+
+
+def test_saved_config_keeps_its_values_and_only_fills_missing_keys(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "aura" / "config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    saved = {"motion": "both", "intensity": 0.9, "behavior": "calm", "opacity": 0.8}
+    path.write_text(json.dumps(saved), encoding="utf-8")
+    cfg = config.load_config()
+    assert cfg["motion"] == "both"
+    assert cfg["intensity"] == 0.9
+    assert cfg["behavior"] == "calm"
+    assert cfg["opacity"] == 0.8
+    # Only the keys the file never had fall back to the new defaults.
+    assert cfg["reduced_motion"] is config.DEFAULTS["reduced_motion"]
+    assert cfg["mood_reactive"] is config.DEFAULTS["mood_reactive"]
 
 
 def test_theme_effects_are_opt_in_and_can_be_enabled_explicitly():
@@ -95,14 +122,14 @@ def test_theme_effects_are_opt_in_and_can_be_enabled_explicitly():
 def test_config_motion_defaults_and_validation():
     assert config.MOTIONS == ("designs", "both", "music", "agent", "agent_music")
     cfg = config.normalise({})
-    assert cfg["motion"] == "both"
+    assert cfg["motion"] == "agent_music"
     for value in config.MOTIONS:
         assert config.normalise({"motion": value})["motion"] == value
     assert config.normalise({"motion": "DESIGNS"})["motion"] == "designs"
     assert config.normalise({"motion": "AGENT"})["motion"] == "agent"
     assert config.normalise({"motion": " Agent_Music "})["motion"] == "agent_music"
     for bad in ("", "loud", 3, None, True):
-        assert config.normalise({"motion": bad})["motion"] == "both"
+        assert config.normalise({"motion": bad})["motion"] == "agent_music"
 
 
 def test_config_coerces_bad_display_values_instead_of_raising():
@@ -114,7 +141,7 @@ def test_config_coerces_bad_display_values_instead_of_raising():
         "auto_preset": "yes",
     })
     assert cfg["opacity"] == 1.0
-    assert cfg["behavior"] == "calm"
+    assert cfg["behavior"] == "balanced"
     assert cfg["mood_reactive"] is False
     assert cfg["accent_pulse"] is False
     assert cfg["auto_preset"] is True
@@ -124,5 +151,5 @@ def test_config_coerces_bad_display_values_instead_of_raising():
     assert cfg["behavior"] == "calm"
 
     cfg = config.normalise({"opacity": True, "behavior": 7})
-    assert cfg["opacity"] == 0.75
-    assert cfg["behavior"] == "calm"
+    assert cfg["opacity"] == 0.35
+    assert cfg["behavior"] == "balanced"

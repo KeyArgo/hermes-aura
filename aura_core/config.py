@@ -32,15 +32,17 @@ DEFAULTS = {
     "theme_opt_in": False,
     # Display controls (CONTRACT.md §9). Opacity dims the canvas and its scrim
     # together; behavior is a named profile with concrete render parameters.
-    "opacity": 0.75,
-    "behavior": "calm",
+    # These are first-run defaults only; a saved config keeps its own values
+    # and a corrupt/missing key alone falls back here.
+    "opacity": 0.35,
+    "behavior": "balanced",
     "mood_reactive": True,
     # Opt-in: the host accent is never repainted unless the user asks for it.
     "accent_pulse": False,
     "auto_preset": True,
     # Motion source for the visualizer: ambient designs, real audio, both, or
     # the agent's own activity (optionally alongside music).
-    "motion": "both",
+    "motion": "agent_music",
 }
 
 BEHAVIORS = ("calm", "balanced", "intense")

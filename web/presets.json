@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "note": "Curated for visual density, measured 2026-11-05 in muted headless Chrome (tests/e2e/probe_presets.py: tone mode, full-bundle screen then a 6 s strobe-grade pass). Coverage = fraction of pixels with luma>16; 9 of these 20 fill >=90% of the frame. strobe=true is measured, not guessed: luma-grid jumps >=12/255 at >=0.5/s, or >=25/255 peak delta. Reduced-motion users only ever see strobe=false presets. Families steer the mood engine in aura.js: idle=organic/liquid calm, thinking=geometric/fractal structure, approval=cosmic contrast, error=liquid wash under the red tint, streaming=energy.",
+  "note": "Curated for beat reactivity and visual density. The original 20 were measured 2026-11-05 in muted headless Chrome (tests/e2e/probe_presets.py: tone mode, full-bundle screen then a 6 s strobe-grade pass); the 15 added 2026-11-08 were ranked by static reactivity from tools/score_presets.mjs (bass/mid/treb + att/beat/q1-q31 taps in frame/pixel/wave/shape equations, audio-driven wave settings) and then deep-probed the same way. 19 of these 35 fill >=90% of the frame. strobe=true is measured, not guessed: luma-grid jumps >=12/255 at >=0.5/s, or >=25/255 peak delta; when quick and deep passes disagree the flag is kept. Reduced-motion users only ever see strobe=false presets. Families steer the mood engine in aura.js: idle=organic/liquid calm, thinking=geometric/fractal structure, approval=cosmic contrast, error=liquid wash under the red tint, streaming=energy.",
   "default": "shifter - dark tides bdrv mix 2",
   "presets": [
     { "name": "Flexi + Martin - cascading decay swing", "family": "organic", "strobe": false },
@@ -22,6 +22,21 @@
     { "name": "Flexi + stahlregen - jelly showoff parade", "family": "cosmic", "strobe": false },
     { "name": "$$$ Royal - Mashup (220)", "family": "energy", "strobe": true },
     { "name": "_Mig_049", "family": "energy", "strobe": false },
-    { "name": "shifter - dark tides bdrv mix 2", "family": "energy", "strobe": false }
+    { "name": "shifter - dark tides bdrv mix 2", "family": "energy", "strobe": false },
+    { "name": "fiShbRaiN + Flexi - witchcraft 2.0", "family": "organic", "strobe": false },
+    { "name": "martin - bombyx mori", "family": "organic", "strobe": false },
+    { "name": "Martin - liquid arrows", "family": "liquid", "strobe": false },
+    { "name": "martin - stormy sea (2010 update)", "family": "liquid", "strobe": false },
+    { "name": "Martin - QBikal - Surface Turbulence IIb", "family": "liquid", "strobe": false },
+    { "name": "martin [shadow harlequins shape code] - fata morgana", "family": "geometric", "strobe": false },
+    { "name": "An AdamFX n Martin Infusion 2 flexi - Why The Sky Looks Diffrent Today - AdamFx n Martin Infusion - Tack Tile Disfunction B", "family": "geometric", "strobe": false },
+    { "name": "suksma - heretical crosscut playpen", "family": "geometric", "strobe": false },
+    { "name": "martin - mandelbox explorer - high speed demo version", "family": "fractal", "strobe": false },
+    { "name": "Geiss - Spiral Artifact", "family": "fractal", "strobe": false },
+    { "name": "yin - 191 - Temporal singularities", "family": "cosmic", "strobe": false },
+    { "name": "TonyMilkdrop - Magellan's Nebula [Flexi - you enter first + multiverse]", "family": "cosmic", "strobe": false },
+    { "name": "Geiss + Flexi + Martin - disconnected", "family": "energy", "strobe": true },
+    { "name": "suksma - Rovastar - Sunflower Passion (Enlightment Mix)_Phat_edit + flexi und martin shaders - circumflex in character classes in regular expression", "family": "energy", "strobe": true },
+    { "name": "Eo.S. - glowsticks v2 05 and proton lights (+Krash′s beat code) _Phat_remix02b", "family": "energy", "strobe": true }
   ]
 }

@@ -15,7 +15,7 @@ parallel and only the contract keeps them compatible.
 - Auth: `Authorization: Bearer <token>` for HTTP; `?token=<token>` for the WebSocket only
   (browsers cannot set headers on WS). A missing/incorrect token is 401, never a redirect.
 - `GET /healthz` → `{"ok": true, "version": "0.1.0", "pid": <int>, "capture": "pipewire"|"pulse"|"wasapi"|"none", "rate": 48000, "clients": <int>}`
-- `GET /api/state` → the newest feature frame (§3) plus `{"enabled": bool, "mood": <mood>, "intensity": <0..1>, "preset": <str|null>}`. Cheap; safe to poll at ≤4 Hz.
+- `GET /api/state` → the newest feature frame (§3) plus `{"enabled": bool, "mood": <mood>, "intensity": <0..1>, "preset": <str|null>, "reduced_motion": bool, ...}`. Cheap; safe to poll at ≤4 Hz.
 - `GET /api/presets` → `{"presets": [{"name": <str>, "family": <str>, "strobe": <bool>}], "default": <str>}`
 - `GET /api/config` → `{"intensity": <0..1>, "reduced_motion": bool, "capture": <backend>, "theme_opt_in": bool}`
 - `POST /api/control` body `{"enabled"?: bool, "intensity"?: 0..1, "preset"?: <str|null>, "mood"?: <mood>}` → 200 `{"ok": true, "applied": {...}}`; 400 on bad types/out-of-range.
@@ -148,12 +148,16 @@ Additive to §1/§2/§4. No existing field changed meaning. New config keys are 
 
 | key | type | default | validation |
 |---|---|---|---|
-| `opacity` | number 0..1 | 0.75 | non-numeric/bool -> `opacity_must_be_number`; outside 0..1 -> `opacity_out_of_range` |
+| `opacity` | number 0..1 | 0.35 | non-numeric/bool -> `opacity_must_be_number`; outside 0..1 -> `opacity_out_of_range` |
 | `behavior` | `"calm"` \| `"balanced"` \| `"intense"` | `"balanced"` | non-string -> `behavior_must_be_string`; unknown -> `bad_behavior` |
 | `mood_reactive` | bool | `true` | non-bool -> `mood_reactive_must_be_bool` |
 | `accent_pulse` | bool | `false` | non-bool -> `accent_pulse_must_be_bool` |
 | `auto_preset` | bool | `true` | non-bool -> `auto_preset_must_be_bool` |
-| `motion` | `"designs"` \| `"both"` \| `"music"` \| `"agent"` \| `"agent_music"` | `"both"` | non-string -> `motion_must_be_string`; unknown -> `bad_motion`; `designs` stays accepted (legacy) but is no longer offered in the desktop select |
+| `reduced_motion` | bool | `false` | non-bool -> `reduced_motion_must_be_bool` |
+| `motion` | `"designs"` \| `"both"` \| `"music"` \| `"agent"` \| `"agent_music"` | `"agent_music"` | non-string -> `motion_must_be_string`; unknown -> `bad_motion`; `designs` stays accepted (legacy) but is no longer offered in the desktop select |
+
+All defaults above are first-run only: a saved `config.json` keeps its own values and a
+corrupt/missing key alone falls back to the default.
 
 `/api/config` and `config` events additionally carry `behavior_profile` — the concrete mapping
 below, so a page never has to guess. Corrupt/missing config values are coerced to defaults on
@@ -198,8 +202,8 @@ with no extra plumbing.
 
 ### 9.5 Motion source
 
-`motion` selects what drives the visual. `both` (default) and `music` keep their existing
-behaviour. `designs` is legacy-accepted and behaves as designs-only.
+`motion` selects what drives the visual. `both` and `music` keep their existing behaviour.
+`agent_music` is the default. `designs` is legacy-accepted and behaves as designs-only.
 
 - `agent`: the ambient designs drive the visual only while the agent is active. Agent activity is
   the RAW mood stream: `thinking`, `tool`, `streaming`, `approval`, `error`, and `done` until it
