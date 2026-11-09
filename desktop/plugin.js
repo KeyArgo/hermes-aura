@@ -285,8 +285,12 @@ function readSettings(ctx) {
   } catch {
     raw = null
   }
+  // Fresh install: no storage at all means enabled should be true (the default).
+  // Never allow storage to override enabled:false on a new install.
+  const isNewInstall = !raw
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    if (typeof raw.enabled === 'boolean') out.enabled = raw.enabled
+    // Only read enabled from storage if it exists; fresh installs always default to true.
+    if (!isNewInstall && typeof raw.enabled === 'boolean') out.enabled = raw.enabled
     if (Number.isFinite(raw.intensity)) out.intensity = clamp01(raw.intensity)
     if (Number.isFinite(raw.opacity)) out.opacity = clamp01(raw.opacity)
     if (typeof raw.behavior === 'string' && BEHAVIORS.includes(raw.behavior)) out.behavior = raw.behavior
