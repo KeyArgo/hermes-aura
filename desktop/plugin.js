@@ -34,7 +34,11 @@
  *   - an invisible titlebar probe (`TITLEBAR_AREAS.center`) that reads the
  *     active theme (useTheme is a hook),
  *   - an opt-in, audio-reactive accent pulse via the sanctioned
- *     `setAccentOverride`.
+ *     `setAccentOverride`,
+ *   - a hidden dev readout: Ctrl+Shift+A toggles a fixed bottom-right stats
+ *     panel (sessions, session boost, intensity, mood, music level, silence,
+ *     fps, preset), refreshed every 100 ms from liveFrame and the state
+ *     atoms; the keydown listener and the timer die with dispose.
  *
  * The old full-page stage and everything that opened it (the `/aura` route,
  * the sidebar row, the palette command and the compact pane) was removed: the
@@ -1125,6 +1129,222 @@ async function setAutoPreset(next) {
   await pushControl({ auto_preset: autoPreset })
 }
 
+// ---------------------------------------------------------- dev stats panel
+// Hidden developer readout (owner ask: Ctrl+Shift+A). One fixed bottom-right
+// panel, 250 px, dark, mono, fed every 100 ms from liveFrame + the state
+// atoms. It is the only host DOM the panel touches; colours come from the
+// theme's own CSS variables (with dark fallbacks) so it reads correctly in
+// light and dark skins. The keydown listener and the 100 ms timer are both
+// host-owned/`track`ed and die with dispose. Nothing mounts until the hotkey
+// fires: hidden means zero DOM, zero timers, zero listeners beyond keydown.
+
+const DEV_STATS_REFRESH_MS = 100
+const DEV_STATS_ROWS = Object.freeze([
+  ['sessions', 'sessions'],
+  ['boost', 'boost'],
+  ['intensity', 'intensity'],
+  ['mood', 'mood'],
+  ['level', 'music level'],
+  ['silence', 'silence'],
+  ['fps', 'fps'],
+  ['preset', 'preset']
+])
+
+let devStatsEl = null
+let devStatsValueEls = null
+let devStatsTimer = null
+let devFps = 0
+let devFpsLastSeq = null
+let devFpsLastAt = 0
+
+function buildDevStatsPanel() {
+  const panel = doc.createElement('div')
+  panel.setAttribute('id', 'aura-dev-stats')
+  panel.setAttribute('role', 'status')
+  panel.setAttribute('aria-label', 'Aura dev stats')
+  const style = panel.style
+  style.position = 'fixed'
+  style.right = '16px'
+  style.bottom = '16px'
+  style.width = '250px'
+  style.boxSizing = 'border-box'
+  style.zIndex = '999999'
+  style.pointerEvents = 'none'
+  style.padding = '8px 10px'
+  style.borderRadius = '8px'
+  style.border = '1px solid var(--ui-stroke-secondary, #2a2a33)'
+  style.background = 'color-mix(in srgb, var(--ui-bg-elevated, #0c0c11) 92%, #000)'
+  style.color = 'var(--ui-text-primary, #e2e2ea)'
+  style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, monospace'
+  style.fontSize = '11px'
+  style.lineHeight = '1.55'
+  style.fontVariantNumeric = 'tabular-nums'
+  style.boxShadow = '0 8px 28px rgba(0,0,0,0.35)'
+
+  const header = doc.createElement('div')
+  header.textContent = 'AURA · dev stats'
+  header.style.color = 'var(--ui-accent, #8f8fff)'
+  header.style.fontWeight = '700'
+  header.style.letterSpacing = '0.04em'
+  header.style.marginBottom = '4px'
+  panel.appendChild(header)
+
+  devStatsValueEls = {}
+  for (const [key, label] of DEV_STATS_ROWS) {
+    const row = doc.createElement('div')
+    row.style.display = 'flex'
+    row.style.justifyContent = 'space-between'
+    row.style.gap = '8px'
+    const keyEl = doc.createElement('span')
+    keyEl.textContent = label
+    keyEl.style.color = 'var(--ui-text-tertiary, #8a8a96)'
+    const valueEl = doc.createElement('span')
+    valueEl.textContent = '—'
+    valueEl.style.textAlign = 'right'
+    row.appendChild(keyEl)
+    row.appendChild(valueEl)
+    panel.appendChild(row)
+    devStatsValueEls[key] = valueEl
+  }
+
+  const hint = doc.createElement('div')
+  hint.textContent = 'Ctrl+Shift+A to close'
+  hint.style.color = 'var(--ui-text-tertiary, #8a8a96)'
+  hint.style.marginTop = '4px'
+  hint.style.fontSize = '10px'
+  panel.appendChild(hint)
+  return panel
+}
+
+/** Observed feature-frame rate: seq advances per /state poll are turned into
+ *  an instantaneous fps and smoothed. Falls off to 0 when the stream stalls. */
+function devStatsFpsStep(frame) {
+  const seq = frame && Number.isFinite(frame.seq) ? frame.seq : null
+  const now = Date.now()
+  if (seq === null) {
+    devFps = 0
+    devFpsLastSeq = null
+    return
+  }
+  if (devFpsLastSeq === null) {
+    devFpsLastSeq = seq
+    devFpsLastAt = now
+    return
+  }
+  if (seq > devFpsLastSeq) {
+    const dt = now - devFpsLastAt
+    if (dt > 0) {
+      const inst = ((seq - devFpsLastSeq) * 1000) / dt
+      devFps = devFps > 0 ? devFps * 0.7 + inst * 0.3 : inst
+    }
+    devFpsLastSeq = seq
+    devFpsLastAt = now
+  } else if (now - devFpsLastAt > 1200) {
+    devFps = devFps < 0.1 ? 0 : devFps * 0.9
+  }
+}
+
+function devStatsTick() {
+  if (disposed || !devStatsEl || !devStatsValueEls) return
+  if (doc && doc.hidden) return
+  const frame = liveFrame || {}
+  const live = $live.get()
+  const settings = $settings.get()
+  devStatsFpsStep(frame)
+
+  const sessions = Number.isFinite(frame.sessions) ? String(frame.sessions) : '—'
+  const boost = Number.isFinite(frame.session_boost) ? `${frame.session_boost.toFixed(2)}x` : '—'
+  const serverIntensity = Number.isFinite(frame.intensity) ? clamp01(frame.intensity) : null
+  const intensity = serverIntensity === null
+    ? clamp01(settings.intensity)
+    : Math.min(clamp01(settings.intensity), serverIntensity)
+  const mood = (typeof live.mood === 'string' && live.mood)
+    || (typeof frame.mood === 'string' && frame.mood)
+    || '—'
+  const level = Number.isFinite(frame.level) ? clamp01(frame.level).toFixed(3) : '—'
+  const silence = frame.silence === true ? 'yes' : frame.silence === false ? 'no' : '—'
+  const fps = devFps > 0 ? devFps.toFixed(1) : '0.0'
+  const preset = typeof frame.preset === 'string' && frame.preset ? frame.preset : '—'
+
+  const values = { sessions, boost, intensity: `${Math.round(intensity * 100)}%`, mood, level, silence, fps, preset }
+  for (const [key] of DEV_STATS_ROWS) {
+    const el = devStatsValueEls[key]
+    const value = values[key]
+    if (el && el.textContent !== value) el.textContent = value
+  }
+}
+
+function clearDevStatsTimer() {
+  if (!devStatsTimer) return
+  const handle = devStatsTimer
+  devStatsTimer = null
+  try {
+    if (typeof handle === 'function') {
+      handle()
+      return
+    }
+    if (ctxRef && typeof ctxRef.clearInterval === 'function') {
+      ctxRef.clearInterval(handle)
+      return
+    }
+    if (typeof clearInterval === 'function') clearInterval(handle)
+  } catch {
+    // already cleared
+  }
+}
+
+function openDevStats() {
+  if (!doc || !doc.body || typeof doc.body.appendChild !== 'function' || devStatsEl) return
+  devFps = 0
+  devFpsLastSeq = null
+  devFpsLastAt = 0
+  devStatsEl = buildDevStatsPanel()
+  doc.body.appendChild(devStatsEl)
+  devStatsTick()
+  if (ctxRef && typeof ctxRef.setInterval === 'function') {
+    try {
+      devStatsTimer = ctxRef.setInterval(devStatsTick, DEV_STATS_REFRESH_MS)
+    } catch {
+      devStatsTimer = null
+    }
+  }
+  if (!devStatsTimer && typeof setInterval === 'function') {
+    devStatsTimer = setInterval(devStatsTick, DEV_STATS_REFRESH_MS)
+  }
+}
+
+function closeDevStats() {
+  clearDevStatsTimer()
+  if (devStatsEl) {
+    try {
+      devStatsEl.remove()
+    } catch {
+      try {
+        if (devStatsEl.parentNode) devStatsEl.parentNode.removeChild(devStatsEl)
+      } catch {
+        // detached already
+      }
+    }
+  }
+  devStatsEl = null
+  devStatsValueEls = null
+  devFps = 0
+  devFpsLastSeq = null
+  devFpsLastAt = 0
+}
+
+function onDevStatsKeydown(event) {
+  if (disposed || !event || event.defaultPrevented || event.repeat) return
+  if (event.code !== 'KeyA' || !event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey) return
+  try {
+    event.preventDefault()
+  } catch {
+    // synthetic events in tests may not support it
+  }
+  if (devStatsEl) closeDevStats()
+  else openDevStats()
+}
+
 // ---------------------------------------------------------------------- UI
 
 /**
@@ -1754,6 +1974,7 @@ function teardown() {
       // one broken disposer must not strand the rest
     }
   }
+  closeDevStats()
   ctxRef = null
   liveFrame = null
   liveKey = ''
@@ -1801,6 +2022,7 @@ export default {
     $pulse.set(0)
     pulseIndex = 0
     resetShow()
+    closeDevStats()
     const settings = readSettings(ctx)
     $settings.set(settings)
     $live.set({ ...EMPTY_LIVE })
@@ -1876,6 +2098,10 @@ export default {
           if (!doc.hidden) void poll()
         })
       )
+      // Hidden dev shortcut (Ctrl+Shift+A) for the stats overlay. The SDK
+      // disposer removes it on dispose, and the overlay itself is torn down
+      // by closeDevStats() in teardown().
+      track(ctx.addEventListener(doc, 'keydown', onDevStatsKeydown))
     }
 
     if (typeof ctx.onDispose === 'function') ctx.onDispose(dispose)
