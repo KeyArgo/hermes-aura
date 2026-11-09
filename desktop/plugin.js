@@ -358,7 +358,11 @@ function backdropSrc(url) {
   if (settings.backdropMode === 'video') {
     const base = url.split('?')[0].replace(/\/+$/, '')
     const videoUrl = typeof settings.videoUrl === 'string' ? settings.videoUrl.trim() : ''
-    return `${base}/player.html?url=${encodeURIComponent(videoUrl)}`
+    const urlParams = new URL(url, 'http://dummy.test').searchParams
+    const token = urlParams.get('token') || ''
+    const query = new URLSearchParams({ url: videoUrl })
+    if (token) query.append('token', token)
+    return `${base}/player.html?${query.toString()}`
   }
   const params = ['overlay=1']
   if (settings.reducedMotion) params.push('reduced-motion=1')
