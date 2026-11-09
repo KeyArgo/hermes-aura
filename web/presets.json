@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "note": "Curated for beat reactivity and visual density. The original 20 were measured 2026-11-05 in muted headless Chrome (tests/e2e/probe_presets.py: tone mode, full-bundle screen then a 6 s strobe-grade pass); the 15 added 2026-11-08 were ranked by static reactivity from tools/score_presets.mjs (bass/mid/treb + att/beat/q1-q31 taps in frame/pixel/wave/shape equations, audio-driven wave settings) and then deep-probed the same way. 19 of these 35 fill >=90% of the frame. strobe=true is measured, not guessed: luma-grid jumps >=12/255 at >=0.5/s, or >=25/255 peak delta; when quick and deep passes disagree the flag is kept. Reduced-motion users only ever see strobe=false presets. Families steer the mood engine in aura.js: idle=organic/liquid calm, thinking=geometric/fractal structure, approval=cosmic contrast, error=liquid wash under the red tint, streaming=energy.",
+  "note": "Curated for beat reactivity and visual density across the vendored butterchurn-presets@2.4.7 packs (base + Extra + Extra2 + MD1). Existing entries were measured in muted headless Chrome with tests/e2e/probe_presets.py; the 2026-11-08 expansion was ranked by static reactivity from tools/score_presets.mjs and screened with tools/probe_all_presets.py for compile failures, black frames and near-static output. strobe=true is conservative and measured: luma-grid jumps >=12/255 at >=0.5/s, or >=25/255 peak delta; reduced-motion users only ever see strobe=false presets. Families steer the mood engine in aura.js: idle=organic/liquid calm, thinking=geometric/fractal structure, approval=cosmic contrast, error=liquid wash under the red tint, streaming=energy.",
   "default": "shifter - dark tides bdrv mix 2",
   "presets": [
     {
@@ -34,7 +34,7 @@
       "beat": 4
     },
     {
-      "name": "suksma - vector exp 1 - couldn\u2032t not",
+      "name": "suksma - vector exp 1 - couldn′t not",
       "family": "geometric",
       "strobe": false,
       "beat": 1
@@ -208,10 +208,640 @@
       "beat": 2
     },
     {
-      "name": "Eo.S. - glowsticks v2 05 and proton lights (+Krash\u2032s beat code) _Phat_remix02b",
+      "name": "Eo.S. - glowsticks v2 05 and proton lights (+Krash′s beat code) _Phat_remix02b",
       "family": "energy",
       "strobe": true,
       "beat": 4
+    },
+    {
+      "name": "Rovastar-altarsofmadness(forgottenrea",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 5
+    },
+    {
+      "name": "Fumbling_Foo & Flexi, Martin, Orb, Unchained - Star Nova v7b",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 5
+    },
+    {
+      "name": "martin - elusive impressions mix2 - flacc mess proph nz+2",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 5
+    },
+    {
+      "name": "iMuS and  Rovastar - The Shroomery (psilobellum)",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 5
+    },
+    {
+      "name": "flexi + fishbrain - neon mindblob grafitti",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 5
+    },
+    {
+      "name": "martin - cherry brain wall mod",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 5
+    },
+    {
+      "name": "martin, fishbrain + flexi - mandelbox explorer v1 Eo.S. optimize [bipolar witchcraft mix]",
+      "family": "fractal",
+      "strobe": false,
+      "beat": 5
+    },
+    {
+      "name": "LuxXx - GrindFace  225 mg dose  ",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Flexi, fishbrain + Martin - witchery",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "baked - River of Illusion Dillusion [Bubble]",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "flexi + geiss - infused with the spiral (Heavy Oil Mix) nz+ rapery",
+      "family": "fractal",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin, flexi, fishbrain + sto - enterstate [random mashup]",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin - fruit machine",
+      "family": "energy",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Martin - journey into space",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin - bring up the big guns",
+      "family": "energy",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Martin - disco mix 3 -fast",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin - attack of the beast",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin + stahlregen - martin in da mash 12a",
+      "family": "energy",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "flexi + fishbrain - warpcraft [random mashup]",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "suksma - water cooled red uranium vs dotes - freeenergynow.net",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Martin - Diabolo",
+      "family": "energy",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin - witchcraft reloaded",
+      "family": "organic",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "flexi + fishbrain - witchcraft [complex terraforming]",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin - infinity (2010 update)",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Flexi + fiShbRaiN - operation fatcap II",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin - tunnel race",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Martin - bombyx mori mix2",
+      "family": "organic",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "flexi + fishbrain - witchcraft [complex terraforming - fiddling twists in the fabric of space]",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin - bombyx mori [flexi′s logarithmic edit]",
+      "family": "organic",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin - sparky caleidoscope",
+      "family": "energy",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "rce-ordinary + flexi - far away distance (custom beat detection + bipolar colour ghost mix)",
+      "family": "energy",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Martin - disco mix 6",
+      "family": "energy",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "baked - mushroom rainbows[acid Storm]",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin - satellite view",
+      "family": "organic",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin - the forge of Isengard",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin - disco mix 4",
+      "family": "energy",
+      "strobe": true,
+      "beat": 4
+    },
+    {
+      "name": "LuxXx - iWhat Happened Right After I Ate That Toxic Waste beta ii",
+      "family": "energy",
+      "strobe": true,
+      "beat": 4
+    },
+    {
+      "name": "martin - ludicrous speed",
+      "family": "energy",
+      "strobe": true,
+      "beat": 4
+    },
+    {
+      "name": "ech0 - liquid firesticks I",
+      "family": "liquid",
+      "strobe": true,
+      "beat": 3
+    },
+    {
+      "name": "444",
+      "family": "energy",
+      "strobe": true,
+      "beat": 3
+    },
+    {
+      "name": "Martin - cool morning",
+      "family": "energy",
+      "strobe": true,
+      "beat": 3
+    },
+    {
+      "name": "martin - basal ganglion",
+      "family": "energy",
+      "strobe": true,
+      "beat": 3
+    },
+    {
+      "name": "Rovastar - Hyperspace",
+      "family": "cosmic",
+      "strobe": true,
+      "beat": 2
+    },
+    {
+      "name": "Flexi - piercing",
+      "family": "energy",
+      "strobe": true,
+      "beat": 2
+    },
+    {
+      "name": "Unchained - Rewop",
+      "family": "energy",
+      "strobe": true,
+      "beat": 2
+    },
+    {
+      "name": "Cope - Passage (mandala mix)",
+      "family": "energy",
+      "strobe": true,
+      "beat": 2
+    },
+    {
+      "name": "cope - soar (v2.0)",
+      "family": "energy",
+      "strobe": true,
+      "beat": 2
+    },
+    {
+      "name": "martin - extreme heat",
+      "family": "energy",
+      "strobe": true,
+      "beat": 2
+    },
+    {
+      "name": "Zylot - Crossing Over (Paint Spatter mix)",
+      "family": "liquid",
+      "strobe": true,
+      "beat": 2
+    },
+    {
+      "name": "_Mig_014_version2",
+      "family": "energy",
+      "strobe": true,
+      "beat": 1
+    },
+    {
+      "name": "Zylot - True Visionary",
+      "family": "cosmic",
+      "strobe": true,
+      "beat": 1
+    },
+    {
+      "name": "Geiss - Reaction Diffusion 3",
+      "family": "energy",
+      "strobe": true,
+      "beat": 1
+    },
+    {
+      "name": "Aderrasi - Agitator",
+      "family": "energy",
+      "strobe": true,
+      "beat": 1
+    },
+    {
+      "name": "Aderrasi - Curse of the Mirror Emu",
+      "family": "energy",
+      "strobe": true,
+      "beat": 0
+    },
+    {
+      "name": "$$$ Royal - Mashup (441)",
+      "family": "energy",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "$$$ Royal - Mashup (337)",
+      "family": "energy",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "158",
+      "family": "organic",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Rozzor & Shreyas - Deeper Aesthetics",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Rovastar + Telek - Altars of Madness (Rolling Oceans Mix)",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "martin + flexi - diamond cutter [prismaticvortex.com] - camille - i wish i wish i wish i was constrained",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "DemonLD_-_Toxic_water_diffusion threx angela vs debi brown (nice)",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "suksma - gaeomaentaec - log smell 2 - steaming wienies2",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Rovastar - Harlequin′s Fractal Encounter - cancer of saints",
+      "family": "fractal",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Goody - Ego Decontructor",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Eo.S. + flexi - glowsticks v2 05 and proton lights (+Krash′s beat code) _Phat_remix02b + illumination (Stahl′s Mix)",
+      "family": "energy",
+      "strobe": false,
+      "beat": 4
+    },
+    {
+      "name": "Idiot - Marphets Surreal Dream (Hypnotic Spiral Mix)",
+      "family": "fractal",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "martin - chain breaker",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "martin - violet flash",
+      "family": "energy",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "martin - move this body",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Idiot - Star Of Annon",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "high-altitude basket unraveling - singh grooves nitrogen argon nz+",
+      "family": "energy",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Flexi + Martin - astral projection",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Flexi, Martin, Phat, Zylot + Eo.S - one way trip trap proof of concept [epileptic zoom tunnel edit]",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "goody + martin - crystal palace - schizotoxin - the wild iris bloom - 16 iterations",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "martin - crystal palace",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "martin - city of shadows",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Eo.S. - glowsticks v2 05 and proton lights (+Krash′s beat code) _Phat_remix07 recursive demons",
+      "family": "fractal",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "adam eatit fx 2 martin - disco mix, lodus, geiss, ludicrous speed,flexi, aderrasi n hexcollie",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "A Tribute to Martin - bombyx mori - Ft Flexi - AdamFX - StahlRegen - Krash - Rovastar -  Hd in Milk T",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "suksma - feign shoulder concern when i should be executed - everything is eternally shrinking",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "flexi + geiss - pogo-cubes on tokamak matter [mind over matter remix]2",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "flexi + geiss - pogo-cubes on tokamak matter (bccn Jelly V4)",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Flexi + Geiss - pogo-cubes on tokamak matter (Jelly 5.55)",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Rovastar + Che - Asylum Animations",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "EVET - RGB Singularity",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Geiss - Myriad Mosaics",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Unchained - All You Can Eat",
+      "family": "organic",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "martin + stahlregen - martin in da mash 3",
+      "family": "energy",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Flexi - alien web bouncer [26]",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "martin + stahlregen - martin in da mash 14",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Flexi + Martin - tunnel of supraschismatika",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Studio Music and Unchained - Rapid Alteration",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "martin - starfield sectors",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Flexi - crush ice 72",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Telek - Sine Wave",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "flexi - infused with the spiral (jelly 4.x cn)",
+      "family": "fractal",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "sawtooth grin roam",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "cope - digital sea",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Martin - charisma",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "suksma - nip tuck",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "martin - gate to moria",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "$$$ Royal - Mashup (197)",
+      "family": "energy",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "martin - shifter - armorial bearings of robotopia",
+      "family": "geometric",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "bdrv + al shifter - feathers (angel wings)_phat_remix4 bdrv et  AL  rmxmix bdrv et.AL5",
+      "family": "cosmic",
+      "strobe": false,
+      "beat": 3
+    },
+    {
+      "name": "Flexi + amandio c - piercing 05 - Kopie (2) - Kopie",
+      "family": "liquid",
+      "strobe": false,
+      "beat": 3
     }
   ]
 }

@@ -459,7 +459,7 @@
     pulse: null,
     pulsePeriod: ATTENTION_PULSE_MS
   };
-  const moodRot = Object.create(null); // per-mood preset rotation
+
 
   function moodMod() { return MOOD_MOD[mood.current] || MOOD_MOD.idle; }
 
@@ -699,16 +699,96 @@
   // presets
   // ---------------------------------------------------------------------------
 
+  // Extra MIT preset packs ship alongside the base pack. They are injected
+  // after the first frame so startup never waits on ~1.7 MB of extra presets.
+  const EXTRA_PACKS = ['butterchurnPresetsExtra', 'butterchurnPresetsExtra2', 'butterchurnPresetsMD1'];
+  const extraPacks = { started: false, loaded: 0 };
+  let mergedPresetCache = null;
+  let mergedPresetStamp = -1;
+
+  function packPresets(globalName) {
+    const p = window[globalName];
+    if (!p) return null;
+    return typeof p.getPresets === 'function' ? p.getPresets() : null;
+  }
+
   function presetMap() {
     try {
-      const p = window.butterchurnPresets;
-      if (!p) return null;
-      return (typeof p.getPresets === 'function' ? p.getPresets() : null);
+      const stamp = extraPacks.loaded;
+      if (mergedPresetCache && mergedPresetStamp === stamp) return mergedPresetCache;
+      const merged = Object.create(null);
+      const base = packPresets('butterchurnPresets');
+      if (!base) return null;
+      Object.assign(merged, base);
+      for (const name of EXTRA_PACKS) {
+        const extra = packPresets(name);
+        if (!extra) continue;
+        for (const key of Object.keys(extra)) {
+          if (!(key in merged)) merged[key] = extra[key];
+        }
+      }
+      mergedPresetCache = merged;
+      mergedPresetStamp = stamp;
+      return merged;
     } catch (e) {
       recordError(e);
       return null;
     }
   }
+
+  function loadExtraPacks() {
+    if (extraPacks.started) return;
+    extraPacks.started = true;
+    for (const name of EXTRA_PACKS) {
+      if (window[name]) {
+        extraPacks.loaded += 1;
+        mergedPresetCache = null;
+        continue;
+      }
+      const script = document.createElement('script');
+      script.src = 'vendor/' + name + '.min.js';
+      script.async = true;
+      script.onload = () => {
+        extraPacks.loaded += 1;
+        mergedPresetCache = null;
+      };
+      script.onerror = () => recordError(new Error('extra preset pack failed to load: ' + name));
+      document.body.appendChild(script);
+    }
+  }
+
+  // --- shuffle bag (tests/test_presets_catalog.mjs evaluates this block) ---
+  function createPresetShuffleBag(random) {
+    const rnd = typeof random === 'function' ? random : Math.random;
+    const bags = Object.create(null);
+    const key = (pool) => pool.map((p) => String(p && p.name)).filter(Boolean).sort().join('\u0000');
+    const refill = (pool, avoid) => {
+      const names = pool.map((p) => p && p.name).filter((n) => n && n !== avoid);
+      for (let i = names.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(rnd() * (i + 1));
+        const t = names[i];
+        names[i] = names[j];
+        names[j] = t;
+      }
+      return names;
+    };
+    return {
+      draw(pool, avoid) {
+        const list = (pool || []).filter((p) => p && p.name);
+        if (!list.length) return null;
+        const k = key(list);
+        let bag = bags[k];
+        if (!bag || !bag.length) bag = bags[k] = refill(list, avoid);
+        if (!bag.length) bag = bags[k] = refill(list, null);
+        return bag.shift() || null;
+      },
+      reset() {
+        for (const k of Object.keys(bags)) delete bags[k];
+      }
+    };
+  }
+  // --- end shuffle bag ---
+  const presetBag = createPresetShuffleBag(Math.random);
 
   async function loadCatalog() {
     try {
@@ -749,9 +829,15 @@
     return catalog.presets.filter((p) => strobeAllowed() || !p.strobe);
   }
 
+  function availableAllowedPresets() {
+    const map = presetMap();
+    if (!map) return [];
+    return allowedPresets().filter((p) => map[p.name]);
+  }
+
   function pickPresetForFamily(family) {
     if (!state.autoPreset) return null;
-    const allowed = allowedPresets();
+    const allowed = availableAllowedPresets();
     if (!allowed.length) return null;
     const byBeat = (a, b) => (b.beat || 0) - (a.beat || 0);
     const match = allowed.filter((p) => p.family === family).sort(byBeat);
@@ -762,8 +848,13 @@
   }
 
   function pickInitialPreset() {
-    const allowed = allowedPresets();
-    if (!allowed.length) return null;
+    const allowed = availableAllowedPresets();
+    if (!allowed.length) {
+      const map = presetMap();
+      if (!map) return null;
+      const names = Object.keys(map);
+      return names.length ? names.sort()[0] : null;
+    }
     const family = activeProfile().preset_family;
     const byBeat = (a, b) => (b.beat || 0) - (a.beat || 0);
     const preferred = allowed.filter((p) => p.family === family).sort(byBeat);
@@ -815,17 +906,16 @@
     const fams = MOOD_FAMILIES[mood.current];
     if (!fams) return;
     if (state.presetFamily && fams.indexOf(state.presetFamily) !== -1) return;
-    const pool = allowedPresets().filter((p) => fams.indexOf(p.family) !== -1);
+    const pool = availableAllowedPresets().filter((p) => fams.indexOf(p.family) !== -1);
     if (!pool.length) return;
-    const next = (((moodRot[mood.current] || 0) + 1) % pool.length);
-    moodRot[mood.current] = next; // rotate so repeated moods vary the view
     // Attention moods are short: blend in fast so the alarm lands immediately
     // (and is fully blended before a ~1 s attention check window closes).
     const blend = ATTENTION.includes(mood.current) ? 600 : MOOD_BLEND_MS;
-    if (loadPresetByName(pool[next].name, blend, false)) return;
-    // fallback: any allowed preset of a matching family (first choice)
-    for (const p of pool) {
-      if (loadPresetByName(p.name, blend, false)) return;
+    let attempts = pool.length;
+    while (attempts-- > 0) {
+      const name = presetBag.draw(pool, state.presetName);
+      if (!name) break;
+      if (loadPresetByName(name, blend, false)) return;
     }
   }
 
@@ -1146,6 +1236,14 @@
     if (initial) loadPresetByName(initial, 0);
     if (state.enabled) startLoop();
     if (!silenceTimer) silenceTimer = setInterval(tickSilence, 250);
+    // Load the extra packs only after the first frame is underway, during idle
+    // time (or at most 2 s later). Parsing ~1.7 MB must never delay first paint
+    // or the opening seconds of the visual.
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(() => loadExtraPacks(), { timeout: 2000 });
+    } else {
+      setTimeout(loadExtraPacks, 2000);
+    }
     return true;
   }
 
@@ -1231,9 +1329,13 @@
     if (renderErrorStreak === 1 || renderErrorStreak % 20 === 0) recordError(err);
     if (renderErrorStreak % 10 === 0 && catalog.presets.length) {
       // The preset itself may be what throws; rotate before giving up.
-      const allowed = allowedPresets();
-      const next = allowed.find((p) => p.name !== state.presetName) || allowed[0];
-      if (next) loadPresetByName(next.name, 0, false);
+      const allowed = availableAllowedPresets();
+      let attempts = allowed.length;
+      while (attempts-- > 0) {
+        const name = presetBag.draw(allowed, state.presetName);
+        if (!name) break;
+        if (loadPresetByName(name, 0, false)) break;
+      }
     }
   }
 
@@ -1610,17 +1712,22 @@
     const t = now();
     const minMs = state.behavior === 'calm' ? HARD_CUT_MIN_MS_CALM : HARD_CUT_MIN_MS;
     if (t - lastHardCutAt < minMs) return false;
-    const allowed = allowedPresets();
+    const allowed = availableAllowedPresets();
     if (!allowed.length) return false;
     const family = activeProfile().preset_family;
     const preferred = allowed.filter((p) => p.family === family && p.name !== state.presetName);
     const anyOther = allowed.filter((p) => p.name !== state.presetName);
     const pool = preferred.length ? preferred : anyOther;
     if (!pool.length) return false;
-    const pick = pool[Math.floor(Math.random() * pool.length)];
-    if (!loadPresetByName(pick.name, 0, false)) return false;
-    lastHardCutAt = t;
-    return true;
+    let attempts = pool.length;
+    while (attempts-- > 0) {
+      const name = presetBag.draw(pool, state.presetName);
+      if (!name) break;
+      if (!loadPresetByName(name, 0, false)) continue;
+      lastHardCutAt = t;
+      return true;
+    }
+    return false;
   }
 
   // Local energy-flux onset detector on the incoming PCM. It complements the
@@ -1965,14 +2072,6 @@
     // Aura on through /api/control, and the page must follow that change.
     if (typeof cfg.enabled === 'boolean' && cfg.enabled !== state.enabled) setEnabledUI(cfg.enabled);
     if (typeof cfg.reduced_motion === 'boolean') setReducedMotion(cfg.reduced_motion || FORCE_REDUCED);
-    // Dynamic session boost (§9.6): a multiplier on the saved intensity. It
-    // never touches the slider value; only the rendered intensity changes.
-    if (typeof cfg.session_boost === 'number') {
-      state.sessionBoost = clamp(num(cfg.session_boost, 1), 1, 2.5);
-    }
-    if (typeof cfg.sessions === 'number') {
-      state.sessions = Math.max(0, Math.round(num(cfg.sessions, 0)));
-    }
     if (typeof cfg.intensity === 'number' && !draggingIntensity) {
       setIntensityUI(clamp(cfg.intensity, 0, 1));
     }
@@ -2307,12 +2406,6 @@
 
     const st = await getJson('/api/state');
     if (st.ok && st.json) {
-      if (typeof st.json.session_boost === 'number') {
-        state.sessionBoost = clamp(num(st.json.session_boost, 1), 1, 2.5);
-      }
-      if (typeof st.json.sessions === 'number') {
-        state.sessions = Math.max(0, Math.round(num(st.json.sessions, 0)));
-      }
       if (typeof st.json.enabled === 'boolean') setEnabledUI(st.json.enabled);
       if (typeof st.json.intensity === 'number') setIntensityUI(clamp(st.json.intensity, 0, 1));
       if (typeof st.json.mood === 'string' && MOODS.includes(st.json.mood)) {
@@ -2360,8 +2453,6 @@
         pulsePeriodMs: mood.pulsePeriod,
         intensity: Number(state.effectiveIntensity.toFixed(3)),
         userIntensity: Number(state.userIntensity.toFixed(3)),
-        sessionBoost: Number(state.sessionBoost.toFixed(3)),
-        sessions: state.sessions,
         sampleGain: Number(state.sampleGain.toFixed(3)),
         opacity: Number(state.opacity.toFixed(3)),
         behavior: state.behavior,
