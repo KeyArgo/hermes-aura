@@ -2101,7 +2101,10 @@ export default {
       // Hidden dev shortcut (Ctrl+Shift+A) for the stats overlay. The SDK
       // disposer removes it on dispose, and the overlay itself is torn down
       // by closeDevStats() in teardown().
-      track(ctx.addEventListener(doc, 'keydown', onDevStatsKeydown))
+      if (doc) {
+        doc.addEventListener('keydown', onDevStatsKeydown)
+        track(() => doc.removeEventListener('keydown', onDevStatsKeydown))
+      }
     }
 
     if (typeof ctx.onDispose === 'function') ctx.onDispose(dispose)
