@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none" role="img" aria-label="InovinLabs mark">
+  <!-- InovinLabs mark. Hermes-family wing, drawn in Nous electric blue + off-white,
+       with a distinct silhouette so it reads as InovinLabs, not another author. -->
+  <defs>
+    <linearGradient id="il-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3350ff"/>
+      <stop offset="1" stop-color="#0000F2"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#0b1020"/>
+  <rect x="4" y="4" width="120" height="120" rx="28" stroke="url(#il-grad)" stroke-width="2"/>
+  <!-- two swept wings meeting at a keel -->
+  <path d="M30 88 C42 62 54 48 66 40 C60 58 56 72 56 88 Z" fill="url(#il-grad)"/>
+  <path d="M98 88 C86 62 74 48 62 40 C68 58 72 72 72 88 Z" fill="#F2F2F2"/>
+  <!-- keel line -->
+  <path d="M64 44 L64 92" stroke="#0000F2" stroke-width="3" stroke-linecap="round"/>
+  <!-- flight dot -->
+  <circle cx="64" cy="30" r="4" fill="#F2F2F2"/>
+</svg>

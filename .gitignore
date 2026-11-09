@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+*.db
+*.sqlite
+*.sqlite3
+data/
+*.log
+.DS_Store
+.hermes/
+proof/
+test-artifacts/
+opencode.json
