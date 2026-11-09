@@ -93,10 +93,6 @@
     capture: 'unknown',
     reducedMotion: false,
     userIntensity: 0.6,
-    // Dynamic intensity (§9.6): the server publishes a multiplier derived from
-    // the number of live chats; the user's saved intensity stays untouched.
-    sessionBoost: 1.0,
-    sessions: 0,
     effectiveIntensity: 0.6,
     sampleGain: 1.0,
     opacity: 0.75,
@@ -588,11 +584,7 @@
     const profile = activeProfile();
     const ceiling = clamp(num(profile.intensity_ceiling, 1), 0, 1);
     const gainScale = clamp(num(profile.mood_gain_scale, 1), 0, 2);
-    // Dynamic intensity: more active chats scale the user's saved base up,
-    // then the profile ceiling still caps the render (calm stays calm).
-    const base = state.enabled
-      ? clamp(state.userIntensity * clamp(num(state.sessionBoost, 1), 1, 2.5), 0, 1)
-      : 0;
+    const base = state.enabled ? state.userIntensity : 0;
     let floor = mod.floor || 0;
     if (ATTENTION.includes(mood.current)) {
       // The server's mood intensity is a lower bound for attention moods, and the
@@ -1965,14 +1957,6 @@
     // Aura on through /api/control, and the page must follow that change.
     if (typeof cfg.enabled === 'boolean' && cfg.enabled !== state.enabled) setEnabledUI(cfg.enabled);
     if (typeof cfg.reduced_motion === 'boolean') setReducedMotion(cfg.reduced_motion || FORCE_REDUCED);
-    // Dynamic session boost (§9.6): a multiplier on the saved intensity. It
-    // never touches the slider value; only the rendered intensity changes.
-    if (typeof cfg.session_boost === 'number') {
-      state.sessionBoost = clamp(num(cfg.session_boost, 1), 1, 2.5);
-    }
-    if (typeof cfg.sessions === 'number') {
-      state.sessions = Math.max(0, Math.round(num(cfg.sessions, 0)));
-    }
     if (typeof cfg.intensity === 'number' && !draggingIntensity) {
       setIntensityUI(clamp(cfg.intensity, 0, 1));
     }
@@ -2307,12 +2291,6 @@
 
     const st = await getJson('/api/state');
     if (st.ok && st.json) {
-      if (typeof st.json.session_boost === 'number') {
-        state.sessionBoost = clamp(num(st.json.session_boost, 1), 1, 2.5);
-      }
-      if (typeof st.json.sessions === 'number') {
-        state.sessions = Math.max(0, Math.round(num(st.json.sessions, 0)));
-      }
       if (typeof st.json.enabled === 'boolean') setEnabledUI(st.json.enabled);
       if (typeof st.json.intensity === 'number') setIntensityUI(clamp(st.json.intensity, 0, 1));
       if (typeof st.json.mood === 'string' && MOODS.includes(st.json.mood)) {
@@ -2360,8 +2338,6 @@
         pulsePeriodMs: mood.pulsePeriod,
         intensity: Number(state.effectiveIntensity.toFixed(3)),
         userIntensity: Number(state.userIntensity.toFixed(3)),
-        sessionBoost: Number(state.sessionBoost.toFixed(3)),
-        sessions: state.sessions,
         sampleGain: Number(state.sampleGain.toFixed(3)),
         opacity: Number(state.opacity.toFixed(3)),
         behavior: state.behavior,

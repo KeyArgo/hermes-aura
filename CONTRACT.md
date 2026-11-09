@@ -219,31 +219,6 @@ with no extra plumbing.
 - At page load, if `/api/state` (or the first events) reports an active mood, the visual starts
   moving. Disabled Aura behaves as before.
 
-### 9.6 Dynamic intensity from active chats (additive, 2026-11-08)
-
-More open Hermes chats make Aura more intense, on top of the user's saved intensity. The saved
-`intensity` value is never overwritten; the boost is a separate multiplier on the rendered
-intensity.
-
-- Session count source: Hermes' existing cross-process active-chat registry
-  (`<HERMES_HOME>/runtime/active_sessions.json`). The server prefers Hermes'
-  `hermes_cli.active_sessions.active_session_registry_snapshot()` (which prunes dead leases) and
-  falls back to a tolerant stdlib reader that ignores entries whose owner pid is dead. No new
-  external API or network call is introduced.
-- Boost formula: `multiplier = 1 + 0.15 * min(N, 10)` where N is the number of live active chat
-  sessions. 0 sessions = 1.0x, 1 = 1.15x, 5 = 1.75x, 10+ = 2.5x. The rendered intensity is
-  `min(1.0, saved_intensity * multiplier)`, so it saturates at the contract ceiling; the active
-  behaviour profile's `intensity_ceiling` still applies after saturation.
-- The leader server polls the registry every 2 s. When the count or multiplier changes it
-  broadcasts the existing `config` event with two additive fields:
-  `{"type":"config", ..., "sessions": <int>, "session_boost": <1.0..2.5>}`. `/api/state` and
-  `/api/config` carry the same two fields. A `config` event is only sent on change, so an idle
-  desktop is not chattered at every poll.
-- The page stores the multiplier separately (`state.sessionBoost`) and applies it in
-  `effectiveIntensity()`; the intensity slider continues to show and edit the user's saved base.
-  `mood_reactive`/`enabled` behaviour is unchanged: disabled Aura renders at zero base, and mood
-  gains apply on top of the boosted base exactly as before.
-
 ## 10. Silence gate (additive, 2026-11-05)
 
 Butterchurn presets advance on their own internal clock as well as the audio, so a bright preset

@@ -44,7 +44,7 @@ try:  # POSIX leader election; Windows keeps today's single-process behaviour.
 except ImportError:  # pragma: no cover - exercised only on Windows
     fcntl = None  # type: ignore[assignment]
 
-from . import analysis, behavior, config, redact, sessions
+from . import analysis, behavior, config, redact
 from .capture import base as capture
 
 logger = logging.getLogger("aura.server")
@@ -155,10 +155,6 @@ class _State:
         self.mood_last_sent = 0.0
         self.preset = None
         self.capture_lost_reported = False
-        # Dynamic intensity (§9.6): live active-chat count and its multiplier.
-        self.session_count = 0
-        self.session_boost = 1.0
-        self.session_thread: threading.Thread | None = None
 
 
 _STATE = _State()
@@ -330,21 +326,12 @@ def _broadcast_event(obj: dict) -> None:
         client.push_event(obj)
 
 
-def _session_boost_snapshot() -> dict:
-    with _STATE.lock:
-        return {
-            "sessions": _STATE.session_count,
-            "session_boost": _STATE.session_boost,
-        }
-
-
 def _config_event() -> dict:
     cfg = config.load_config()
     return {
         "type": "config",
         "enabled": bool(cfg["enabled"]),
         "intensity": cfg["intensity"],
-        **_session_boost_snapshot(),
         "reduced_motion": cfg["reduced_motion"],
         "capture": _STATE.capture_name,
         "theme_opt_in": cfg["theme_opt_in"],
@@ -396,31 +383,6 @@ def _mood_tick(now: float) -> None:
         _broadcast_event(_mood_event(mood, intensity, ttl))
         with _STATE.lock:
             _STATE.mood_last_sent = now
-
-
-def _session_boost_loop(stop_event: threading.Event) -> None:
-    """Poll the live chat-session count and push a config event on change (§9.6).
-
-    The boost is computed here rather than in the page so every connected page
-    sees the same value, and the config event stays the only carrier of the
-    user's saved intensity. Polling is cheap (one small JSON read) and only a
-    change broadcasts, so an idle desktop is not chattered at every 2 s.
-    """
-    while not stop_event.is_set():
-        try:
-            count = sessions.active_session_count()
-            boost = sessions.boost_multiplier(count)
-            with _STATE.lock:
-                changed = (count != _STATE.session_count
-                           or boost != _STATE.session_boost)
-                _STATE.session_count = count
-                _STATE.session_boost = boost
-            if changed and _clients_snapshot():
-                _broadcast_event(_config_event())
-        except Exception as exc:  # noqa: BLE001 - never kill the server loop
-            _log("aura: session boost poll failed (%s)", type(exc).__name__)
-        if stop_event.wait(2.0):
-            break
 
 
 # ---------------------------------------------------------------------------
@@ -759,8 +721,6 @@ class _Handler(BaseHTTPRequestHandler):
                 "enabled": bool(cfg["enabled"]),
                 "mood": _STATE.mood,
                 "intensity": cfg["intensity"],
-                "sessions": _STATE.session_count,
-                "session_boost": _STATE.session_boost,
                 "preset": cfg["preset"] or _STATE.preset,
                 "opacity": cfg["opacity"],
                 "behavior": cfg["behavior"],
@@ -776,7 +736,6 @@ class _Handler(BaseHTTPRequestHandler):
         cfg = config.load_config()
         return {
             "intensity": cfg["intensity"],
-            **_session_boost_snapshot(),
             "reduced_motion": cfg["reduced_motion"],
             "capture": _STATE.capture_name,
             "theme_opt_in": cfg["theme_opt_in"],
@@ -1153,14 +1112,7 @@ def _start_server() -> None:
                                   name="aura-capture", daemon=True)
     with _STATE.lock:
         _STATE.capture_thread = cap_thread
-        _STATE.session_count = 0
-        _STATE.session_boost = 1.0
     cap_thread.start()
-    session_thread = threading.Thread(target=_session_boost_loop, args=(stop_event,),
-                                      name="aura-sessions", daemon=True)
-    with _STATE.lock:
-        _STATE.session_thread = session_thread
-    session_thread.start()
     _write_lease(token, port)
     _log("aura: listening on 127.0.0.1:%d", port)
 
@@ -1535,14 +1487,12 @@ def _stop_server_locked() -> None:
             httpd = _STATE.httpd
             thread = _STATE.thread
             cap_thread = _STATE.capture_thread
-            session_thread = _STATE.session_thread
             stop_event = _STATE.stop_event
             clients = list(_STATE.clients)
             _STATE.httpd = None
             _STATE.thread = None
             _STATE.port = None
             _STATE.capture_thread = None
-            _STATE.session_thread = None
         if stop_event is not None:
             stop_event.set()
         for client in clients:
@@ -1560,8 +1510,6 @@ def _stop_server_locked() -> None:
             thread.join(timeout=3.0)
         if cap_thread is not None and cap_thread.is_alive():
             cap_thread.join(timeout=3.0)
-        if session_thread is not None and session_thread.is_alive():
-            session_thread.join(timeout=3.0)
         with _STATE.lock:
             _STATE.clients.clear()
             _STATE.token = None
@@ -1569,8 +1517,6 @@ def _stop_server_locked() -> None:
             _STATE.features = analysis.silence_features()
             _STATE.mood = "idle"
             _STATE.mood_expiry = None
-            _STATE.session_count = 0
-            _STATE.session_boost = 1.0
         _log("aura: server stopped")
     except Exception as exc:  # noqa: BLE001
         _log("aura: stop_server failed (%s)", type(exc).__name__)
