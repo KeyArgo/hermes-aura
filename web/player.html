@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aura video backdrop</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  #stage iframe, #stage video {
+    position: fixed; inset: 0; width: 100vw; height: 100vh; border: 0;
+  }
+  #stage video { object-fit: contain; }
+  #hint {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 24px; text-align: center; pointer-events: none;
+    color: #cfc9ff; font: 14px/1.5 system-ui, -apple-system, sans-serif;
+    background: radial-gradient(circle at 50% 40%, #221d3d, #0b0a14 70%);
+  }
+  #hint[hidden] { display: none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="hint" hidden>No video URL provided. Set one in Aura settings.</div>
+<script>
+(function () {
+  'use strict'
+
+  var params = new URLSearchParams(window.location.search)
+  var raw = (params.get('url') || '').trim()
+  var stage = document.getElementById('stage')
+  var hint = document.getElementById('hint')
+
+  function isHttpUrl(value) {
+    return /^https?:\/\//i.test(value)
+  }
+
+  function youtubeEmbed(value) {
+    var match = value.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([A-Za-z0-9_-]{11})/)
+    if (!match) return ''
+    return 'https://www.youtube.com/embed/' + match[1] +
+      '?autoplay=1&mute=1&loop=1&playlist=' + match[1] + '&controls=1&rel=0'
+  }
+
+  function isVideoFile(value) {
+    return /\.(mp4|webm|ogg|ogv|m4v|mov)(?:[?#]|$)/i.test(value)
+  }
+
+  function addFrame(src) {
+    var frame = document.createElement('iframe')
+    frame.src = src
+    frame.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen')
+    frame.setAttribute('allowfullscreen', '')
+    frame.setAttribute('referrerpolicy', 'no-referrer')
+    stage.appendChild(frame)
+  }
+
+  function addVideo(src) {
+    var video = document.createElement('video')
+    video.src = src
+    video.autoplay = true
+    video.muted = true
+    video.loop = true
+    video.playsInline = true
+    video.setAttribute('playsinline', '')
+    stage.appendChild(video)
+  }
+
+  if (!raw || !isHttpUrl(raw)) {
+    hint.hidden = false
+    return
+  }
+
+  var embed = youtubeEmbed(raw)
+  if (embed) {
+    addFrame(embed)
+  } else if (isVideoFile(raw)) {
+    addVideo(raw)
+  } else {
+    addFrame(raw)
+  }
+})()
+</script>
+</body>
+</html>

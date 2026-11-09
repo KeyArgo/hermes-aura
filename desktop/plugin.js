@@ -104,7 +104,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   windowVisual: false,
   motion: 'agent_music',
   reducedMotion: false,
-  showWhen: 'always'
+  showWhen: 'always',
+  backdropMode: 'aura',
+  videoUrl: ''
 })
 
 // The plugin's own entry inside Settings ▸ Plugins (same shape the host's
@@ -131,6 +133,13 @@ const SHOW_FADE_STEP_MS = 250
 
 const SHOW_WHEN_OPTIONS = ['always', 'active']
 const SHOW_WHEN_LABELS = { always: 'Always', active: 'Only while active' }
+
+// What the backdrop shows: the Aura visual (default) or a video player page
+// served from the same local origin. The URL is stored locally and handed to
+// web/player.html through its `?url=` query string.
+const BACKDROP_MODES = ['aura', 'video']
+const BACKDROP_MODE_LABELS = { aura: 'Aura visual', video: 'Video player' }
+const VIDEO_URL_MAX = 2048
 
 const BEHAVIORS = ['calm', 'balanced', 'intense']
 const BEHAVIOR_LABELS = { calm: 'Calm', balanced: 'Balanced', intense: 'Intense' }
@@ -308,6 +317,8 @@ function readSettings(ctx) {
     if (typeof raw.motion === 'string' && MOTIONS.includes(raw.motion)) out.motion = raw.motion
     if (typeof raw.reducedMotion === 'boolean') out.reducedMotion = raw.reducedMotion
     if (typeof raw.showWhen === 'string' && SHOW_WHEN_OPTIONS.includes(raw.showWhen)) out.showWhen = raw.showWhen
+    if (typeof raw.backdropMode === 'string' && BACKDROP_MODES.includes(raw.backdropMode)) out.backdropMode = raw.backdropMode
+    if (typeof raw.videoUrl === 'string') out.videoUrl = raw.videoUrl.trim().slice(0, VIDEO_URL_MAX)
     // Legacy `glass` / `overlayOpacity` keys are ignored: the old host-glass
     // visibility slider is gone; windowVisual + the backdrop replace it.
   }
@@ -335,14 +346,22 @@ function setError(message) {
   setLive({ error: typeof message === 'string' ? message : '' })
 }
 
-// Optional whole-window MilkDrop backdrop, enabled only by the user.
-// `reduced-motion=1` is the backdrop page's own force-switch (web/aura.js
-// FORCE_REDUCED) and is also mirrored to the server's config through
-// /control, so both halves agree on the motion-sensitivity setting.
+// Optional whole-window backdrop, enabled only by the user. In "aura" mode the
+// iframe points at the visualizer page on the local server (with its own
+// `overlay=1` / `reduced-motion=1` switches). In "video" mode it points at
+// web/player.html on the same origin, carrying the user's URL in `?url=`.
+// The server URL is absolute and tokenised, so the origin must be taken from
+// it — a bare `/player.html` would resolve against the Hermes app's origin.
 function backdropSrc(url) {
   if (!url) return ''
+  const settings = $settings.get()
+  if (settings.backdropMode === 'video') {
+    const base = url.split('?')[0].replace(/\/+$/, '')
+    const videoUrl = typeof settings.videoUrl === 'string' ? settings.videoUrl.trim() : ''
+    return `${base}/player.html?url=${encodeURIComponent(videoUrl)}`
+  }
   const params = ['overlay=1']
-  if ($settings.get().reducedMotion) params.push('reduced-motion=1')
+  if (settings.reducedMotion) params.push('reduced-motion=1')
   const separator = url.indexOf('?') === -1 ? '?' : '&'
   return `${url}${separator}${params.join('&')}`
 }
@@ -549,7 +568,7 @@ function mountBackdrop(url, opacity) {
     // headers; pointer-events stay off so nothing can be clicked through it.
     backdropEl.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-downloads')
     backdropEl.setAttribute('referrerpolicy', 'no-referrer')
-    backdropEl.setAttribute('allow', 'autoplay; fullscreen')
+    backdropEl.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture')
     backdropEl.setAttribute('allowfullscreen', '')
     const style = backdropEl.style
     style.position = 'fixed'
@@ -1074,6 +1093,37 @@ async function setShowWhen(next) {
   await pushControl({ show_when: showWhen })
 }
 
+/** "Backdrop: Aura visual / Video player". Local-only presentation choice;
+ *  unknown keys are ignored by /control, but pushing keeps the one-door rule
+ *  shared with every other quick-menu control. Remounts immediately so the
+ *  switch takes effect without waiting for a poll tick. */
+async function setBackdropMode(next) {
+  if (!ctxRef || disposed) return
+  const backdropMode = BACKDROP_MODES.includes(next) ? next : 'aura'
+  if ($settings.get().backdropMode === backdropMode) return
+  writeSettings({ backdropMode })
+  resetShow()
+  removeBackdrop()
+  if ($settings.get().showWhen === 'always') syncBackdrop()
+  else updateShow()
+  await pushControl({ backdrop_mode: backdropMode })
+}
+
+/** The video URL the player page should show. Trimmed and length-capped; the
+ *  page itself decides between a YouTube embed, a direct <video> and a raw
+ *  iframe. Empty is allowed and the page then shows its own hint. */
+async function setVideoUrl(next) {
+  if (!ctxRef || disposed) return
+  const videoUrl = typeof next === 'string' ? next.trim().slice(0, VIDEO_URL_MAX) : ''
+  if ($settings.get().videoUrl === videoUrl) return
+  writeSettings({ videoUrl })
+  resetShow()
+  removeBackdrop()
+  if ($settings.get().showWhen === 'always') syncBackdrop()
+  else updateShow()
+  await pushControl({ video_url: videoUrl })
+}
+
 /** Shared by the settings page and the quick menu: apply the intensity
  *  locally (accent at once) and then push it — one door for both surfaces. */
 function applyIntensity(rawValue) {
@@ -1396,6 +1446,7 @@ function AuraQuickMenu() {
     borderRadius: 6,
     padding: '3px 6px'
   }
+  const inputStyle = { ...selectStyle, width: 148 }
 
   const glyphColor = auraOn ? 'var(--ui-accent)' : 'var(--ui-text-tertiary)'
 
@@ -1551,6 +1602,40 @@ function AuraQuickMenu() {
               )
             })
           ),
+          row(
+            'Backdrop',
+            jsx('select', {
+              value: settings.backdropMode,
+              'aria-label': 'Backdrop mode',
+              style: selectStyle,
+              onChange: event => {
+                void setBackdropMode(event && event.target ? String(event.target.value) : 'aura')
+              },
+              children: BACKDROP_MODES.map(name =>
+                jsx('option', { key: name, value: name, children: BACKDROP_MODE_LABELS[name] })
+              )
+            })
+          ),
+          settings.backdropMode === 'video'
+            ? row(
+              'Video URL',
+              jsx('input', {
+                type: 'text',
+                key: settings.videoUrl,
+                defaultValue: settings.videoUrl,
+                placeholder: 'https://youtube.com/watch?v=...',
+                'aria-label': 'Video URL',
+                spellCheck: false,
+                style: inputStyle,
+                onKeyDown: event => {
+                  if (event && event.key === 'Enter' && event.currentTarget) event.currentTarget.blur()
+                },
+                onBlur: event => {
+                  void setVideoUrl(event && event.target ? String(event.target.value) : '')
+                }
+              })
+            )
+            : null,
           row(
             'Gentle motion',
             jsx(Switch, {
@@ -1761,6 +1846,66 @@ function AuraSettings() {
           })
         )
       }),
+      jsx('div', {
+        key: 'backdropMode',
+        children: row(
+          'Backdrop mode',
+          'Aura visual shows the audio-reactive visual. Video player shows a video you choose instead — YouTube links are embedded automatically, direct media files play inline, other URLs are framed as-is.',
+          jsx('select', {
+            value: settings.backdropMode,
+            'aria-label': 'Backdrop mode',
+            style: {
+              font: 'inherit',
+              fontSize: 11,
+              color: 'var(--ui-text-primary)',
+              background: 'var(--ui-bg)',
+              border: '1px solid var(--ui-stroke-secondary)',
+              borderRadius: 6,
+              padding: '3px 6px'
+            },
+            onChange: event => {
+              const value = event && event.target ? String(event.target.value) : 'aura'
+              void setBackdropMode(value)
+            },
+            children: BACKDROP_MODES.map(name =>
+              jsx('option', { key: name, value: name, children: BACKDROP_MODE_LABELS[name] })
+            )
+          })
+        )
+      }),
+      settings.backdropMode === 'video'
+        ? jsx('div', {
+          key: 'videoUrl',
+          children: row(
+            'Video URL',
+            'Paste a YouTube link (https://youtube.com/watch?v=...), a direct video file (.mp4/.webm/.ogg) or any embeddable page. Leave empty for a hint.',
+            jsx('input', {
+              type: 'text',
+              key: settings.videoUrl,
+              defaultValue: settings.videoUrl,
+              placeholder: 'https://youtube.com/watch?v=...',
+              'aria-label': 'Video URL',
+              spellCheck: false,
+              style: {
+                font: 'inherit',
+                fontSize: 11,
+                color: 'var(--ui-text-primary)',
+                background: 'var(--ui-bg)',
+                border: '1px solid var(--ui-stroke-secondary)',
+                borderRadius: 6,
+                padding: '3px 6px',
+                width: 260
+              },
+              onKeyDown: event => {
+                if (event && event.key === 'Enter' && event.currentTarget) event.currentTarget.blur()
+              },
+              onBlur: event => {
+                void setVideoUrl(event && event.target ? String(event.target.value) : '')
+              }
+            })
+          )
+        })
+        : null,
       jsx('div', {
         key: 'gentle',
         children: row(

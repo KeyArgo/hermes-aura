@@ -86,6 +86,7 @@ _STATIC_TYPES = {
     "/aura.js": "text/javascript; charset=utf-8",
     "/pcm-worklet.js": "text/javascript; charset=utf-8",
     "/presets.json": "application/json; charset=utf-8",
+    "/player.html": "text/html; charset=utf-8",
 }
 _VENDOR_TYPES = {
     ".js": "text/javascript; charset=utf-8",
