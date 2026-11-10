@@ -2569,10 +2569,19 @@ function mountPanelInto(hostNode) {
   chip.className = 'ap-chip'
   chip.title = 'Which build is this? Click to copy.'
   chip.textContent = buildLine($build.get()) || 'build …'
-  chip.addEventListener('click', event => {
+  chip.title = buildTitle($build.get()) || 'Which build is this? Click to copy.'
+  chip.addEventListener('click', async event => {
     if (event && event.preventDefault) event.preventDefault()
     const line = buildLine($build.get())
-    if (line) void copyText('Aura ' + line)
+    if (!line) return
+    // Say "copied" only when something was copied: a badge that lies is worse than no badge.
+    const copied = await copyText(line)   // exactly what the chip shows: v… · date · sha
+    chip.dataset.copied = copied ? '1' : 'failed'
+    chip.textContent = copied ? 'copied ✓' : 'copy failed'
+    setTimeout(() => {
+      delete chip.dataset.copied
+      if (chip.isConnected) chip.textContent = buildLine($build.get()) || 'build …'
+    }, 1400)
   })
 
   head.appendChild(name)
@@ -2683,7 +2692,9 @@ function syncPanel(force) {
   }
 
   const stamp = buildLine($build.get())
-  if (stamp && parts.chip && parts.chip.textContent !== stamp) parts.chip.textContent = stamp
+  if (stamp && parts.chip && !parts.chip.dataset.copied && parts.chip.textContent !== stamp) {
+    parts.chip.textContent = stamp
+  }
   const glyph = state.playing ? '⏸' : '▶'
   if (parts.play.textContent !== glyph) parts.play.textContent = glyph
   parts.time.textContent = state.duration
@@ -3778,6 +3789,18 @@ function buildLine(build) {
   return parts.join(' · ') + (build.dirty ? ' · modified' : '')
 }
 
+function buildTitle(build) {
+  if (!build || !build.version) return ''
+  return [
+    'Aura ' + build.version,
+    build.commit ? 'commit ' + build.commit : 'no commit (installed copy)',
+    build.commit_date ? 'committed ' + build.commit_date : '',
+    build.built_at ? 'installed ' + build.built_at : '',
+    build.channel ? 'channel ' + build.channel : '',
+    'click to copy this line',
+  ].filter(Boolean).join('\n')
+}
+
 /** The build chip: filled from the backend's /version, never from a number compiled in here. */
 function VersionChip() {
   const build = useValue($build)
@@ -3797,14 +3820,7 @@ function VersionChip() {
   const label = copyState === 'copied' ? 'copied ✓' : copyState === 'failed' ? 'copy failed' : line
   return jsx('button', {
     type: 'button',
-    title: [
-      'Aura ' + (build.version || 'unknown'),
-      build.commit ? 'commit ' + build.commit : 'no commit (installed copy)',
-      build.commit_date ? 'committed ' + build.commit_date : '',
-      build.built_at ? 'installed ' + build.built_at : '',
-      build.channel ? 'channel ' + build.channel : '',
-      'click to copy this line',
-    ].filter(Boolean).join('\n'),
+    title: buildTitle(build),
     onClick: async () => {
       // Say "copied" only when something was copied: a badge that lies is worse than no badge.
       const ok = await copyText('Aura ' + line)
