@@ -317,7 +317,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten)
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, video: $video, settings: $settings };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -2572,6 +2572,105 @@ record('panelVisible respects the host pane visibility atom', () => {
     else sdk.host.paneVisibility = previous
     dispose()
   }
+})
+
+await recordAsync('player coordinator reports, consumes commands, and restores a desktop handoff', async () => {
+  const x = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/one.mp4' })
+  let open = false
+  let player = { desktop: false }
+  let commands = []
+  const calls = []
+  const original = x.ctx.rest
+  x.ctx.rest = async (route, options = {}) => {
+    calls.push({ route, options })
+    if (route === '/player') return { ok: true, window: { open }, player }
+    if (route.startsWith('/player/commands?')) return { ok: true, head_seq: 2, commands }
+    if (route === '/player/report') return { ok: true }
+    if (route === '/window/open') { open = true; return { ok: true, window: {open: true} } }
+    if (route === '/window/close') { open = false; return { ok: true, closed: true, window: {open: false} } }
+    return original(route, options)
+  }
+  const dispose = pluginModule.default.register(x.ctx)
+  await sleep(80)
+  pluginModule.wiringTest.video.set({ playing: true, position: 12, duration: 90, videoId: 'abcdefghijk', title: 'one' })
+  await pluginModule.wiringTest.sync()
+  assert.ok(calls.some(c => c.route === '/player/report' && c.options.body.videoId === 'abcdefghijk'))
+  commands = [{ seq: 3, cmd: 'pause' }]
+  await pluginModule.wiringTest.sync()
+  assert.equal(pluginModule.wiringTest.video.get().playing, false)
+  pluginModule.wiringTest.video.set({ ...pluginModule.wiringTest.video.get(), playing: true })
+  await pluginModule.wiringTest.setWindow(true)
+  const sent = calls.find(c => c.route === '/window/open').options.body
+  assert.equal(sent.videoId, 'abcdefghijk')
+  assert.equal(sent.position, 12)
+  assert.equal(pluginModule.wiringTest.video.get().playing, false)
+  player = { desktop: true, url: 'https://youtube.com/playlist?list=abcdefghij', videoId: 'zyxwvutsrqp', position: 35, duration: 300, playing: true }
+  await pluginModule.wiringTest.sync()
+  open = false
+  await pluginModule.wiringTest.sync()
+  assert.equal(pluginModule.wiringTest.settings.get().videoUrl, player.url)
+  assert.equal(pluginModule.wiringTest.settings.get().videoPositions[player.url].videoId, player.videoId)
+  assert.equal(pluginModule.wiringTest.settings.get().videoPositions[player.url].position, 35)
+  pluginModule.wiringTest.video.set({ ...pluginModule.wiringTest.video.get(), playing: true })
+  player = { desktop: false }
+  open = true // An agent, rather than the page button, opened the window.
+  await pluginModule.wiringTest.sync()
+  assert.equal(pluginModule.wiringTest.video.get().playing, false)
+  assert.equal(pluginModule.wiringTest.settings.get().videoWindow, true)
+  dispose()
+})
+
+await recordAsync('page Pop out opens the OS window and unavailable browsers use the in-app window', async () => {
+  const x = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/one.mp4' })
+  const calls = []
+  let available = true
+  const original = x.ctx.rest
+  x.ctx.rest = async (route, options = {}) => {
+    calls.push(route)
+    if (route === '/window') return { ok: true, available, open: false }
+    if (route === '/window/open') return { ok: true, window: { open: true } }
+    if (route === '/window/close') return { ok: true, closed: true, window: { open: false } }
+    if (route === '/player') return { ok: true, player: {}, window: { open: false } }
+    if (route === '/player/report') return { ok: true }
+    if (route.startsWith('/player/commands?')) return { ok: true, head_seq: 0, commands: [] }
+    return original(route, options)
+  }
+  const dispose = pluginModule.default.register(x.ctx)
+  await sleep(40)
+  const route = x.contributions.find(c => c.area === 'routes')
+  const tree = renderDeep(renderContribution(route))
+  pageAria(tree, 'Pop out').props.onClick()
+  await sleep(40)
+  assert.ok(calls.includes('/window/open'))
+  dispose()
+  const y = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/one.mp4' })
+  const originalY = y.ctx.rest
+  y.ctx.rest = async (route, options = {}) => {
+    if (route === '/window') return { ok: true, available: false, open: false }
+    if (route === '/window/open') throw Error('should not launch')
+    return originalY(route, options)
+  }
+  const disposeY = pluginModule.default.register(y.ctx)
+  await pluginModule.wiringTest.setWindow(true)
+  assert.equal(pluginModule.wiringTest.settings.get().videoWindow, true)
+  disposeY()
+})
+
+record('URL field keeps edits but ignores an unchanged stale draft', () => {
+  const x = makeCtx({ enabled: true, videoUrl: 'https://example.test/a' })
+  const dispose = pluginModule.default.register(x.ctx)
+  const a = pluginModule.wiringTest.urlBinding('https://example.test/a')
+  const node = { value: 'https://example.test/a' }
+  a.onFocus({ currentTarget: node })
+  const b = pluginModule.wiringTest.urlBinding('https://example.test/b')
+  b.ref(node)
+  assert.equal(node.value, 'https://example.test/a')
+  pluginModule.wiringTest.settings.set({ ...pluginModule.wiringTest.settings.get(), videoUrl: 'https://example.test/b' })
+  b.onBlur({ currentTarget: node })
+  assert.equal(node.value, 'https://example.test/b')
+  b.ref(node)
+  assert.equal(node.value, 'https://example.test/b')
+  dispose()
 })
 
 // --------------------------------------------------------------- reporting

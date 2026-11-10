@@ -565,7 +565,7 @@ def _capture_loop(stop_event: threading.Event) -> None:
 # ---------------------------------------------------------------------------
 
 PLAYER_COMMANDS = ("play", "pause", "toggle", "next", "prev", "seek",
-                   "volume", "load")
+                   "volume", "load", "watch_window", "bring_back")
 MAX_QUEUED_COMMANDS = 64
 _PLAYER_TEXT_MAX = 2000
 
@@ -609,6 +609,8 @@ def report_player(data: Any) -> dict:
         player = dict(_STATE.player)
         url = _player_text(data.get("url"))
         if url:
+            if url != player.get("url"):
+                player.pop("videoId", None)
             player["url"] = url
         label = _player_text(data.get("label"), 200)
         if label:
@@ -623,6 +625,8 @@ def report_player(data: Any) -> dict:
             value = _player_number(data.get(key))
             if value is not None:
                 player[key] = max(0.0, value)
+        if isinstance(data.get("videoId"), str):
+            player["videoId"] = _player_text(data["videoId"], 64)
         if isinstance(data.get("kind"), str):
             player["kind"] = _player_text(data.get("kind"), 32)
         if isinstance(data.get("desktop"), bool):
@@ -680,7 +684,7 @@ def pending_commands(after: Any = 0) -> dict:
     with _STATE.lock:
         pending = [dict(c) for c in _STATE.commands if int(c.get("seq", 0)) > cursor]
         seq = _STATE.command_seq
-    return {"ok": True, "seq": seq, "commands": pending}
+    return {"ok": True, "seq": seq, "head_seq": seq, "commands": pending}
 
 
 def window_payload() -> dict:
@@ -699,14 +703,26 @@ def open_window(data: Any) -> dict:
             url = str(_STATE.player.get("url") or "")
     if not url:
         raise ValueError("no film to pop out (send a url or load one first)")
+    with _STATE.lock:
+        reported = dict(_STATE.player)
     position = _player_number(body.get("position"))
+    if position is None and (not body.get("url") or url == reported.get("url")):
+        position = _player_number(reported.get("position"))
+    video_id = _player_text(body.get("videoId"), 64)
+    if not video_id and (not body.get("url") or url == reported.get("url")):
+        video_id = _player_text(reported.get("videoId"), 64)
     port = _STATE.port
     if not port:
         raise RuntimeError("server_not_running")
-    result = desktop_window.open_window(
-        int(port), _STATE.token, url,
-        position=float(position or 0.0), label=_player_text(body.get("label"), 200),
-    )
+    options = {"position": float(position or 0.0), "label": _player_text(body.get("label"), 200)}
+    if video_id:
+        options["video_id"] = video_id
+    playing = body.get("playing")
+    if not isinstance(playing, bool) and (not body.get("url") or url == reported.get("url")):
+        playing = reported.get("playing")
+    if playing is False:
+        options["paused"] = True
+    result = desktop_window.open_window(int(port), _STATE.token, url, **options)
     result["ok"] = True
     result["window"] = desktop_window.status()
     return result
@@ -714,13 +730,6 @@ def open_window(data: Any) -> dict:
 
 def close_window() -> dict:
     closed = desktop_window.close_window()
-    with _STATE.lock:
-        if _STATE.player:
-            player = dict(_STATE.player)
-            player["playing"] = False
-            player["desktop"] = False
-            player["ts"] = time.time()
-            _STATE.player = player
     return {"ok": True, "closed": closed, "window": desktop_window.status()}
 
 
@@ -892,6 +901,18 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._guard():
                 return
             path = urlsplit(self.path).path
+            if path == "/api/window/bootstrap":
+                try:
+                    data = self._body_json()
+                    ticket = data.get("ticket") if isinstance(data, dict) else None
+                    token = desktop_window.redeem_ticket(ticket) if isinstance(ticket, str) else None
+                except (ValueError, UnicodeDecodeError):
+                    token = None
+                if not token or not _STATE.token or not hmac.compare_digest(token, _STATE.token):
+                    self._send_json({"ok": False, "error": "invalid_ticket"}, 401)
+                else:
+                    self._send_json({"ok": True, "token": token})
+                return
             player_write = path in ("/api/player/report", "/api/player/command")
             if not self._bearer_ok():
                 # The desktop window's own page sends its token in the query

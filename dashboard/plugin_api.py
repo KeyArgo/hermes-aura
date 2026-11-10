@@ -252,6 +252,40 @@ def state() -> dict:
     return state_payload()
 
 
+@router.get("/player")
+def player_status() -> dict:
+    return _forward_json("/api/player", timeout=5.0)[1]
+
+
+@router.get("/player/commands")
+def player_commands(after: int = 0) -> dict:
+    return _forward_json(f"/api/player/commands?after={max(0, after)}", timeout=5.0)[1]
+
+
+@router.post("/player/report")
+async def player_report(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "body_must_be_object"}, status_code=400)
+    code, payload = _forward_json("/api/player/report", body, timeout=5.0)
+    return JSONResponse(payload, status_code=code)
+
+
+@router.post("/player/command")
+async def player_command(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "body_must_be_object"}, status_code=400)
+    code, payload = _forward_json("/api/player/command", body, timeout=5.0)
+    return JSONResponse(payload, status_code=code)
+
+
 # -- pop-out window ---------------------------------------------------------
 # The desktop half calls these through ctx.rest('/window'…) — never the server
 # directly (the plugin never guesses a port).

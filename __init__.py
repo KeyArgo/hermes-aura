@@ -485,7 +485,7 @@ def _action_transport(action: str, args: dict, extra: dict | None = None,
     if not isinstance(result, dict) or result.get("ok") is not True:
         return {"ok": False, "error": (result or {}).get("error", "command_rejected"),
                 "command": action}
-    payload = {"ok": True, "command": action, "seq": result.get("seq")}
+    payload = {"ok": True, "command": action, "seq": result.get("seq"), "delivery": "queued"}
     payload.update(_player_snapshot())
     return payload
 
@@ -499,6 +499,20 @@ def _action_popout(args: dict) -> dict:
     raw = args.get("position")
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
         body["position"] = max(0.0, float(raw))
+    window_status = _get("/api/window")
+    if window_status.get("ok") is True and window_status.get("available") is False:
+        fallback = {"cmd": "watch_window"}
+        if body.get("url"):
+            fallback["url"] = body["url"]
+        if "position" in body:
+            fallback["value"] = body["position"]
+        try:
+            queued = _request("POST", "/api/player/command", body=fallback)
+        except Exception:
+            queued = {}
+        if queued.get("ok") is True:
+            return {"ok": True, "delivery": "queued", "seq": queued.get("seq"),
+                    "hint": "No browser found; the in-app watch window was requested."}
     try:
         result = _request("POST", "/api/window/open", body=body, timeout=20.0)
     except Exception as exc:  # noqa: BLE001
@@ -526,6 +540,14 @@ def _action_popin() -> dict:
                 "hint": "Aura's server is not running; call action=status."}
     if not isinstance(result, dict) or result.get("ok") is not True:
         return {"ok": False, "error": (result or {}).get("error", "window_failed")}
+    if not result.get("closed"):
+        try:
+            queued = _request("POST", "/api/player/command", body={"cmd": "bring_back"})
+        except Exception:
+            queued = {}
+        if queued.get("ok") is True:
+            return {"ok": True, "closed": False, "delivery": "queued", "seq": queued.get("seq"),
+                    "window": result.get("window", {})}
     return {"ok": True, "closed": bool(result.get("closed")),
             "window": result.get("window", {})}
 

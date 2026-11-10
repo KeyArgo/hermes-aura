@@ -658,12 +658,13 @@ function backdropSrc(url) {
     if (token) query.append('token', token)
     // A playlist resumes into the exact episode, not just the list: the
     // bookmark carries the video id, and the player starts there.
-    const bookmark = resumeBookmark(videoUrl)
+    const bookmark = handoffPlayback && handoffPlayback.url === videoUrl ? handoffPlayback : resumeBookmark(videoUrl)
+    if (bookmark && bookmark.paused) query.append('paused', '1')
     if (bookmark && bookmark.videoId) query.append('video', bookmark.videoId)
     // Hand the resume point to the page itself: the page keeps asking until the
     // player actually lands there, which is what makes it reliable instead of
     // "works sometimes".
-    if (bookmark && bookmark.position > 5) query.append('resume', String(Math.floor(bookmark.position)))
+    if (bookmark && bookmark.position > 0) query.append('resume', String(Math.floor(bookmark.position)))
     // [listen lane] A muted film must come back muted: the music channel is
     // what the user hears while it is.
     if (settings.videoMuted) query.append('mute', '1')
@@ -1203,6 +1204,123 @@ async function pushControl(patch) {
   }
 }
 
+// The active window owns playback. The server snapshot is authoritative so
+// an agent-triggered open/close follows the same path as the buttons.
+let desktopOwned = false
+let playerCursor = null
+let playerReportAt = 0
+let playerReportKey = ''
+let lastDesktopPlayer = null
+
+async function syncPlayerOwnership() {
+  if (!ctxRef || disposed) return
+  try {
+    const snapshot = await ctxRef.rest('/player', { timeoutMs: 3000 })
+    if (!snapshot || snapshot.ok !== true || !snapshot.window) return
+    const open = snapshot.window.open === true
+    const player = snapshot.player || {}
+    if (open) {
+      if (!desktopOwned) {
+        lastDesktopPlayer = { ...$video.get(), url: $settings.get().videoUrl || '' }
+        videoCommand('pause')
+        desktopOwned = true
+        setVideoWindow(true)
+      }
+      postToBackdrop({ cmd: 'pause' })
+      if (player.desktop === true) {
+        lastDesktopPlayer = player
+        $video.set({ ...$video.get(), ...player, reportedAt: Date.now() })
+      }
+      playerCursor = null
+      return
+    }
+    if (desktopOwned) {
+      desktopOwned = false
+      const handoff = player.desktop === true ? player : lastDesktopPlayer
+      lastDesktopPlayer = null
+      if (handoff && handoff.url) restoreDesktopPlayback(handoff)
+      setVideoWindow(false)
+      playerCursor = null
+    }
+    if (playerCursor !== null && Number.isSafeInteger(snapshot.seq) && snapshot.seq < playerCursor) playerCursor = null
+    const settings = $settings.get()
+    const video = $video.get()
+    const report = {
+      desktop: false, url: settings.videoUrl || '', kind: video.kind || '',
+      title: video.title || '', videoId: video.videoId || '',
+      playing: video.playing === true, position: Number(video.position) || 0,
+      duration: Number(video.duration) || 0, volume: Number(settings.videoVolume) || 0
+    }
+    const key = JSON.stringify([report.url, report.kind, report.title, report.videoId, report.playing, report.volume])
+    if (Date.now() - playerReportAt >= 1000 || key !== playerReportKey) {
+      await ctxRef.rest('/player/report', { method: 'POST', body: report, timeoutMs: 3000 })
+      playerReportAt = Date.now()
+      playerReportKey = key
+    }
+    const payload = await ctxRef.rest('/player/commands?after=' + (playerCursor === null ? 0 : playerCursor), { timeoutMs: 3000 })
+    if (!payload || payload.ok !== true || !Array.isArray(payload.commands)) return
+    if (playerCursor === null) { playerCursor = payload.head_seq; return }
+    for (const command of payload.commands) {
+      if (!command || !Number.isSafeInteger(command.seq) || command.seq <= playerCursor) continue
+      playerCursor = command.seq
+      if (command.cmd === 'load') await playOnPage(command.url, command.label)
+      else if (command.cmd === 'watch_window') {
+        if (command.url) await playOnPage(command.url, command.label)
+        setVideoWindow(true)
+        if (Number.isFinite(command.value)) videoCommand('seekTo', command.value)
+        note('Using the in-app watch window', 5000)
+      } else if (command.cmd === 'bring_back') setVideoWindow(false)
+      else if (command.cmd === 'seek') videoCommand('seekTo', command.value)
+      else videoCommand(command.cmd, command.value)
+    }
+  } catch { /* retain the last owner and retry; never claim delivery */ }
+}
+
+function restoreDesktopPlayback(player) {
+  const url = String(player.url || '')
+  if (!url) return
+  const settings = $settings.get()
+  const positions = { ...(settings.videoPositions || {}) }
+  positions[url] = { position: Math.max(0, Number(player.position) || 0),
+    duration: Math.max(0, Number(player.duration) || 0), at: Date.now(),
+    videoId: String(player.videoId || '') }
+  handoffPlayback = { url, position: positions[url].position, videoId: positions[url].videoId,
+    paused: player.playing !== true }
+  writeSettings({ videoUrl: url, videoPositions: positions, videoClosed: false, backdropMode: 'video' })
+  $video.set({ ...$video.get(), ...player, desktop: false, reportedAt: Date.now() })
+  removeBackdrop()
+  syncBackdrop()
+  void pushControl({ video_url: url, backdrop_mode: 'video' })
+}
+let handoffPlayback = null
+
+async function setDesktopWindow(on) {
+  if (on) {
+    setVideoWindow(true)
+    try {
+      const status = await ctxRef.rest('/window', { timeoutMs: 4000 })
+      if (status && status.ok === true && status.available === false) {
+        note('Using the in-app watch window', 5000)
+        return
+      }
+    } catch { /* try opening; a failed request falls back below */ }
+    const previousPlayer = { ...$video.get(), url: $settings.get().videoUrl || '' }
+    const result = await openDesktopWindow()
+    if (result.open) {
+      if (!desktopOwned) lastDesktopPlayer = previousPlayer
+      desktopOwned = true
+      return
+    }
+    note('Using the in-app watch window', 5000)
+  } else if (desktopOwned) {
+    const result = await closeDesktopWindow()
+    if (!result.error) await syncPlayerOwnership()
+  } else setVideoWindow(false)
+}
+async function toggleDesktopWindow() {
+  await setDesktopWindow(!(desktopOwned || videoWindowOn()))
+}
+
 // ------------------------------------------------- desktop window (pop-out)
 // The film can live in its own OS window (another monitor, full screen) and
 // still be driven by Hermes: aura_core/window.py opens the app window and the
@@ -1221,7 +1339,9 @@ async function openDesktopWindow() {
   const body = {
     url: videoUrl,
     position: Number.isFinite(video.position) ? Math.max(0, video.position) : 0,
-    label: typeof video.title === 'string' ? video.title : ''
+    label: typeof video.title === 'string' ? video.title : '',
+    videoId: typeof video.videoId === 'string' ? video.videoId : '',
+    playing: video.playing === true
   }
   try {
     const result = await ctxRef.rest('/window/open', { method: 'POST', body, timeoutMs: 15000 })
@@ -1229,7 +1349,8 @@ async function openDesktopWindow() {
       // Two players with sound is never right: park the in-app film the
       // moment the window owns it. Closing the window leaves it parked, ready
       // for the pane's own play control (the orchestrator brings it back).
-      videoCommand('pause')
+      postToBackdrop({ cmd: 'pause' })
+      if (!desktopOwned) $video.set({ ...$video.get(), playing: false, reportedAt: Date.now() })
       return { open: true, already: result.already === true, url: result.url || videoUrl }
     }
     const reason = result && typeof result.error === 'string' && result.error
@@ -1342,6 +1463,7 @@ async function poll() {
     // [listen lane] One delivery path for the agent's "play this / mute the
     // film": the server keeps the request, this consumes a new seq only.
     handleAudioRequest(frame)
+    if (ok) await syncPlayerOwnership()
     const key = [ok, port, capture, enabled, url, error, mood].join('|')
     if (key !== liveKey) {
       liveKey = key
@@ -1669,6 +1791,7 @@ async function setVideoUrl(next) {
   if (!ctxRef || disposed) return
   const videoUrl = typeof next === 'string' ? next.trim().slice(0, VIDEO_URL_MAX) : ''
   if ($settings.get().videoUrl === videoUrl) return
+  handoffPlayback = null
   // A deliberate source change keeps its bookmark: switching away and back
   // should carry on, not restart. Save where we are before the switch.
   saveCurrentPosition()
@@ -2021,6 +2144,17 @@ function postToBackdrop(message) {
 
 /** One entry point for every transport control, wherever it is clicked. */
 function videoCommand(cmd, value) {
+  if (desktopOwned && ctxRef) {
+    let name = cmd
+    let number = value
+    if (name === 'toggle') name = $video.get().playing ? 'pause' : 'play'
+    if (name === 'seek') { name = 'seek'; number = Math.max(0, ($video.get().position || 0) + Number(value || 0)) }
+    if (name === 'seekTo') name = 'seek'
+    const body = { cmd: name }
+    if (number != null) body.value = number
+    void ctxRef.rest('/player/command', { method: 'POST', body, timeoutMs: 4000 }).catch(() => setError('Aura could not reach the film window.'))
+    return
+  }
   if (cmd === 'next' || cmd === 'prev') {
     // Inside a playlist the transport means "next episode", not "next saved
     // source". The player owns episode navigation (YouTube nextVideo /
@@ -2361,9 +2495,13 @@ function onBackdropMessage(event) {
     return
   }
   if (!data || typeof data !== 'object' || data.aura !== 'video-state') return
+  if (desktopOwned) return
   if (typeof data.url === 'string' && $settings.get().videoUrl && data.url !== $settings.get().videoUrl) return
   const position = Number.isFinite(data.position) ? Math.max(0, data.position) : 0
   const duration = Number.isFinite(data.duration) ? Math.max(0, data.duration) : 0
+  if (handoffPlayback && data.url === handoffPlayback.url && position > 0) {
+    handoffPlayback = { ...handoffPlayback, position, videoId: data.videoId || handoffPlayback.videoId, paused: data.playing !== true }
+  }
   // Remember where this film is (throttled to 5 s), so any interruption — a
   // source swap, another plugin, closing the app — resumes in the same place.
   if (data.blocked === true && data.url && blockedFor !== data.url) {
@@ -2386,6 +2524,7 @@ function onBackdropMessage(event) {
     duration,
     muted: data.muted !== false,
     title: typeof data.title === 'string' ? data.title.slice(0, 120) : '',
+    videoId: typeof data.videoId === 'string' ? data.videoId : '',
     blocked: data.blocked === true,
     controllable: data.controllable === true,
     reportedAt: Date.now()
@@ -2808,9 +2947,7 @@ function mountVideoBar() {
   // Watch window: the film in its own frame instead of behind the app.
   const windowBtn = videoBarButton('⧉', 'Watch window', 'noop')
   Object.assign(windowBtn.style, { width: 'auto', padding: '0 6px', fontSize: '12px' })
-  windowBtn.addEventListener('click', () => {
-    setVideoWindow(!videoWindowOn())
-  })
+  windowBtn.addEventListener('click', () => { void toggleDesktopWindow() })
 
   // The current film's name, at the head of the top row: the strip is small,
   // so the title earns its place by answering "what am I watching?".
@@ -3437,6 +3574,7 @@ function mountPanelInto(hostNode) {
     setVideoVolume(Number(event && event.target ? event.target.value : 70) / 100)
   })
   foot.appendChild(vol)
+  foot.appendChild(panelButton('⧉', 'Pop out or bring back', () => { void toggleDesktopWindow() }))
 
   for (const node of [stage, scrub, transport, list, foot]) body.appendChild(node)
   panel.appendChild(head)
@@ -4629,7 +4767,7 @@ function AuraQuickMenu() {
                       jsx(Switch, {
                         checked: settings.videoWindow === true,
                         'aria-label': 'Watch window',
-                        onCheckedChange: value => setVideoWindow(value)
+                        onCheckedChange: value => { void setDesktopWindow(value) }
                       }),
                       jsx('select', { className: 'aura-select',
                         value: settings.videoWindowSize,
@@ -5113,6 +5251,35 @@ function PageLibrary() {
   })
 }
 
+function pageUrlInputBinding(url) {
+  return {
+    defaultValue: url,
+    ref: node => {
+      if (node && !node.__auraEditing && node.value !== url) node.value = url || ''
+    },
+    onFocus: event => {
+      const node = event && event.currentTarget
+      if (node) { node.__auraEditing = true; node.__auraOriginal = node.value; node.__auraSubmit = false }
+    },
+    onKeyDown: event => {
+      if (event && event.key === 'Enter' && event.currentTarget) {
+        event.currentTarget.__auraSubmit = true
+        event.currentTarget.blur()
+      }
+    },
+    onBlur: event => {
+      const node = event && event.currentTarget
+      if (!node) return
+      node.__auraEditing = false
+      if ((node.__auraSubmit || node.value !== node.__auraOriginal) && node.value.trim() !== ($settings.get().videoUrl || '')) {
+        void playOnPage(node.value)
+      } else {
+        node.value = $settings.get().videoUrl || ''
+      }
+    }
+  }
+}
+
 /** The full page: film, transport, sources and setup. */
 function AuraPage() {
   const settings = useValue($settings)
@@ -5243,7 +5410,7 @@ function AuraPage() {
         title: settings.videoWindow === true
           ? 'Bring the film back onto this page'
           : 'Pop out — play in a floating window you can drag anywhere',
-        onClick: () => setVideoWindow(settings.videoWindow !== true),
+        onClick: () => { void toggleDesktopWindow() },
         children: settings.videoWindow === true ? 'Bring back' : 'Pop out'
       }),
       jsx(Button, {
@@ -5265,16 +5432,10 @@ function AuraPage() {
         key: 'url',
         type: 'text',
         className: 'aura-input',
-        defaultValue: settings.videoUrl,
+        ...pageUrlInputBinding(settings.videoUrl),
         placeholder: 'https://youtube.com/watch?v=...',
         'aria-label': 'Film URL',
         spellCheck: false,
-        onKeyDown: event => {
-          if (event && event.key === 'Enter' && event.currentTarget) event.currentTarget.blur()
-        },
-        onBlur: event => {
-          void playOnPage(event && event.target ? String(event.target.value) : '')
-        },
         style: {
           flex: 1, minWidth: 0, font: 'inherit', fontSize: 12
         }
@@ -6203,6 +6364,12 @@ function teardown() {
   ctxRef = null
   liveFrame = null
   liveKey = ''
+  desktopOwned = false
+  playerCursor = null
+  playerReportAt = 0
+  playerReportKey = ''
+  lastDesktopPlayer = null
+  handoffPlayback = null
   prevTheme = null
   themeInfo = { name: '', accent: '' }
   knownTheme = ''

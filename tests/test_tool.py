@@ -476,3 +476,39 @@ def test_status_includes_the_film(plugin, monkeypatch):
     assert payload["film"]["player"]["playing"] is True
     assert payload["film"]["window"]["open"] is True
 
+
+
+def test_transport_response_says_command_is_queued(plugin, monkeypatch):
+    p, _ = plugin
+    monkeypatch.setattr(p, '_request', FilmHTTP())
+    result = _call(p, {'action': 'pause'})
+    assert result['delivery'] == 'queued'
+
+
+def test_agent_popout_queues_fallback_when_browser_unavailable(plugin, monkeypatch):
+    p, _ = plugin
+    calls = []
+    def request(method, path, body=None, timeout=2):
+        calls.append((method, path, body))
+        if path == '/api/window':
+            return {'ok': True, 'open': False, 'available': False}
+        if path == '/api/player/command':
+            return {'ok': True, 'seq': 9}
+        return {}
+    monkeypatch.setattr(p, '_request', request)
+    result = _call(p, {'action': 'popout', 'url': 'https://example.test/a.mp4'})
+    assert result['delivery'] == 'queued'
+    assert ('POST', '/api/player/command', {'cmd': 'watch_window', 'url': 'https://example.test/a.mp4'}) in calls
+
+
+def test_agent_popin_queues_fallback_return_when_no_os_window(plugin, monkeypatch):
+    p, _ = plugin
+    def request(method, path, body=None, timeout=2):
+        if path == '/api/window/close':
+            return {'ok': True, 'closed': False, 'window': {'open': False}}
+        if path == '/api/player/command' and body == {'cmd': 'bring_back'}:
+            return {'ok': True, 'seq': 10}
+        return {}
+    monkeypatch.setattr(p, '_request', request)
+    result = _call(p, {'action': 'popin'})
+    assert result['delivery'] == 'queued'

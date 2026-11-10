@@ -796,7 +796,11 @@ await tickPoll(freshE)
 await recordAsync('8. fresh install: pasting a YouTube playlist link on the page saves it to videoPlaylists, and it survives dispose + re-register with the same storage', async () => {
   const input = pageAria(pageTree(freshE), 'Film URL')
   assert.ok(input, 'the page has no Film URL input')
-  input.props.onBlur({ target: { value: PLAYLIST_URL } })
+  // A real paste: focus, type, leave the field (the field ignores a blur it never saw focused).
+  const field = { value: '' }
+  if (typeof input.props.onFocus === 'function') input.props.onFocus({ currentTarget: field, target: field })
+  field.value = PLAYLIST_URL
+  input.props.onBlur({ currentTarget: field, target: field })
   await sleep(70)
 
   const saved = freshE.storage.get('settings')
@@ -818,7 +822,7 @@ await recordAsync('8. fresh install: pasting a YouTube playlist link on the page
   const listChip = (() => {
     let found = null
     walk(pageTree(again), node => {
-      if (!found && node.type === 'button' && node.props && typeof node.props['aria-label'] === 'string' && node.props['aria-label'].includes('playlist')) found = node
+      if (!found && (node.type === 'button' || (node.props && node.props.role === 'button')) && node.props && typeof node.props['aria-label'] === 'string' && node.props['aria-label'].includes('playlist')) found = node
     })
     return found
   })()

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -47,6 +48,26 @@ PROFILE_DIR = "desktop-browser"
 _lock = threading.RLock()
 _proc: Optional[subprocess.Popen] = None
 _closing: Optional[subprocess.Popen] = None  # closed by us; no handoff needed
+_tickets: Dict[str, tuple[str, float]] = {}
+TICKET_TTL = 30.0
+
+def issue_ticket(token: str) -> str:
+    with _lock:
+        now = time.monotonic()
+        for key, (_, expiry) in list(_tickets.items()):
+            if expiry <= now:
+                _tickets.pop(key, None)
+        ticket = secrets.token_urlsafe(32)
+        _tickets[ticket] = (token, now + TICKET_TTL)
+        return ticket
+
+def redeem_ticket(ticket: str) -> Optional[str]:
+    with _lock:
+        item = _tickets.pop(ticket, None)
+    if not item or item[1] <= time.monotonic():
+        return None
+    return item[0]
+
 _film_url = ""  # the video URL (never the player URL: that one carries the token)
 
 
@@ -66,11 +87,16 @@ def find_browser() -> Optional[str]:
     return None
 
 
-def player_url(port: int, token: Optional[str], url: str, position: float = 0.0) -> str:
+def player_url(port: int, token: Optional[str], url: str, position: float = 0.0,
+               video_id: str = "", paused: bool = False) -> str:
     """The exact page the window opens, with the same auth the player already uses."""
     query: Dict[str, str] = {"desktop": "1", "url": str(url or "")}
     if token:
-        query["token"] = str(token)
+        query["ticket"] = str(token)
+    if paused:
+        query["paused"] = "1"
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id or ""):
+        query["video"] = video_id
     try:
         start = float(position or 0.0)
     except (TypeError, ValueError):
@@ -184,7 +210,8 @@ def _watch(proc: subprocess.Popen) -> None:
 
 
 def open_window(port: int, token: Optional[str], url: str,
-                position: float = 0.0, label: str = "") -> Dict[str, Any]:
+                position: float = 0.0, label: str = "", video_id: str = "",
+                paused: bool = False) -> Dict[str, Any]:
     """Open the window (or report the one already open). Raises WindowError."""
     global _proc, _film_url
     with _lock:
@@ -201,7 +228,8 @@ def open_window(port: int, token: Optional[str], url: str,
             profile.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise WindowError(f"could not create the window profile: {exc}") from exc
-        target = player_url(port, token, url, position)
+        ticket = issue_ticket(token) if token else ""
+        target = player_url(port, ticket, url, position, video_id, paused)
         args: List[str] = [
             browser, f"--app={target}", f"--user-data-dir={profile}",
             f"--window-size={WINDOW_SIZE[0]},{WINDOW_SIZE[1]}",

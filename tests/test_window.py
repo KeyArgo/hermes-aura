@@ -105,7 +105,7 @@ def test_player_url_carries_desktop_auth_and_position():
     assert "desktop=1" in url
     assert "t=61" in url
     assert "url=https%3A%2F%2Fyoutu.be%2Fabc" in url
-    assert "token=s3cret" in url
+    assert "ticket=s3cret" in url
 
 
 def test_open_window_builds_an_app_window_on_the_player(popen):
@@ -214,3 +214,23 @@ def test_reap_kills_only_our_profile(tmp_path, monkeypatch):
     assert killed == [987654]
     assert not (tmp_path / "aura" / window.LEASE).exists()
     assert os.getpid() != 987654
+
+
+def test_player_url_preserves_playlist_episode():
+    url = window.player_url(4567, 'token', 'https://youtube.com/playlist?list=abc', 42,
+                            video_id='abcdefghijk')
+    assert 'video=abcdefghijk' in url
+    assert 't=42' in url
+
+
+def test_browser_arguments_never_contain_server_token(popen):
+    window.open_window(4567, 'very-secret-token', 'https://example.test/film.mp4')
+    args = popen[0][0]
+    assert 'very-secret-token' not in ' '.join(args)
+    assert 'ticket=' in ' '.join(args)
+
+
+def test_window_preserves_paused_state(popen):
+    window.open_window(4567, 'token', 'https://example.test/film.mp4', paused=True)
+    app = next(arg for arg in popen[0][0] if arg.startswith('--app='))
+    assert 'paused=1' in app

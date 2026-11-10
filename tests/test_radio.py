@@ -339,3 +339,20 @@ def test_dashboard_favorites_add_and_remove(dashboard, home):
 def test_dashboard_resolve_validates(dashboard):
     assert dashboard.radio_resolve_payload("http://127.0.0.1/x.mp3")["ok"] is False
     assert dashboard.radio_resolve_payload("")["ok"] is False
+
+
+def test_dashboard_player_routes_forward_reports_and_commands(dashboard, monkeypatch):
+    import asyncio
+    calls = []
+    def forward(path, body=None, timeout=5):
+        calls.append((path, body))
+        return 200, {'ok': True, 'head_seq': 3, 'commands': []}
+    monkeypatch.setattr(dashboard, '_forward_json', forward)
+    class Request:
+        async def json(self):
+            return {'url': 'https://example.test/a.mp4', 'videoId': 'abcdefghijk'}
+    assert asyncio.run(dashboard.player_report(Request()))[0] == 200
+    dashboard.player_status()
+    dashboard.player_commands(3)
+    assert calls == [('/api/player/report', {'url': 'https://example.test/a.mp4', 'videoId': 'abcdefghijk'}),
+                     ('/api/player', None), ('/api/player/commands?after=3', None)]

@@ -36,6 +36,11 @@
   'use strict'
 
   var params = new URLSearchParams(window.location.search)
+  var bootstrapTicket = params.get('ticket') || ''
+  if (bootstrapTicket) {
+    params.delete('ticket')
+    history.replaceState(null, '', location.pathname + '?' + params.toString())
+  }
   var raw = (params.get('url') || '').trim()
   // Where the film should start. The page owns this: it keeps asking the
   // player to seek until the position actually sticks, because a freshly
@@ -139,7 +144,7 @@
   }
 
   function addYouTube(id, list) {
-    var query = ['autoplay=1', 'loop=1', 'controls=1', 'rel=0',
+    var query = ['autoplay=' + (params.get('paused') === '1' ? '0' : '1'), 'loop=1', 'controls=1', 'rel=0',
                  'playsinline=1', 'enablejsapi=1',
                  'origin=' + encodeURIComponent(window.location.origin)]
     if (list) {
@@ -190,7 +195,7 @@
   function addVideo(src) {
     var el = document.createElement('video')
     el.src = src
-    el.autoplay = true
+    el.autoplay = params.get("paused") !== "1"
     el.muted = muted
     el.loop = true
     el.playsInline = true
@@ -327,9 +332,17 @@
   // back ~1 Hz, so "pause", "next episode" or "play the octopus documentary"
   // spoken to Hermes still works while the window has focus elsewhere.
   var desktopMode = params.get('desktop') === '1'
-  var authToken = (params.get('token') || '').trim()
-  var commandCursor = 0
+  var authToken = ''
+  try { if (desktopMode) authToken = sessionStorage.getItem('auraDesktopToken') || '' } catch (err) {}
+  var commandCursor = null
+  var commandPolling = false
   var reportAt = 0
+  if (desktopMode && params.get("resumeCommands") === "1") {
+    try {
+      var savedCursor = Number(sessionStorage.getItem("auraCommandCursor"))
+      if (Number.isSafeInteger(savedCursor) && savedCursor >= 0) commandCursor = savedCursor
+    } catch (err) { /* start at the head */ }
+  }
 
   // The window opens at the position the in-app player had reached.
   if (desktopMode) {
@@ -338,8 +351,7 @@
   }
 
   function desktopApi(path) {
-    var join = path.indexOf('?') === -1 ? '?' : '&'
-    return fetch(path + join + 'token=' + encodeURIComponent(authToken), { cache: 'no-store' })
+    return fetch(path, { cache: 'no-store', headers: { Authorization: 'Bearer ' + authToken } })
       .then(function (response) { return response.ok ? response.json() : null })
   }
 
@@ -349,16 +361,17 @@
     if (!force && now - reportAt < 1000) return
     reportAt = now
     try {
-      fetch('/api/player/report?token=' + encodeURIComponent(authToken), {
+      fetch('/api/player/report', {
         method: 'POST',
         cache: 'no-store',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + authToken },
         body: JSON.stringify({
           desktop: true,
           url: raw,
           label: state.title,
           title: state.title,
           kind: kind,
+          videoId: state.videoId,
           playing: state.playing,
           position: state.position,
           duration: state.duration,
@@ -388,7 +401,10 @@
     var next = new URLSearchParams()
     next.set('desktop', '1')
     next.set('url', String(url || ''))
-    if (authToken) next.set('token', authToken)
+    try {
+      sessionStorage.setItem('auraCommandCursor', String(commandCursor))
+      next.set('resumeCommands', '1')
+    } catch (err) { /* a fresh cursor is safer than replay */ }
     window.location.replace('/player.html?' + next.toString())
   }
 
@@ -432,23 +448,43 @@
   }
 
   function pollDesktopCommands() {
-    if (!desktopMode || !authToken) return
-    desktopApi('/api/player/commands?after=' + commandCursor).then(function (payload) {
+    if (!desktopMode || !authToken || commandPolling) return
+    commandPolling = true
+    desktopApi('/api/player/commands?after=' + (commandCursor === null ? 0 : commandCursor)).then(function (payload) {
       if (!payload || !Array.isArray(payload.commands)) return
-      payload.commands.forEach(function (command) {
-        if (!command || typeof command.cmd !== 'string') return
-        if (typeof command.seq === 'number' && command.seq > commandCursor) {
-          commandCursor = command.seq
-        }
+      if (commandCursor === null) {
+        if (typeof payload.head_seq === 'number') commandCursor = payload.head_seq
+        return
+      }
+      for (var i = 0; i < payload.commands.length; i++) {
+        var command = payload.commands[i]
+        if (!command || typeof command.cmd !== 'string' ||
+            typeof command.seq !== 'number' || command.seq <= commandCursor) continue
+        commandCursor = command.seq
         applyDesktopCommand(command)
-      })
-    }).catch(function () { /* offline poll: next tick retries */ })
+        if (command.cmd === 'load') break
+      }
+    }).catch(function () { /* offline poll: next tick retries */ }).then(function () {
+      commandPolling = false
+    })
   }
 
   function startDesktopMode() {
-    reportDesktop(true)
-    setInterval(pollDesktopCommands, 350)
-    setInterval(function () { reportDesktop(false) }, 1000)
+    var ready = bootstrapTicket ? fetch('/api/window/bootstrap', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticket: bootstrapTicket }), cache: 'no-store'
+    }).then(function (response) { return response.ok ? response.json() : null }).then(function (payload) {
+      if (payload && payload.token) {
+        authToken = payload.token
+        try { sessionStorage.setItem('auraDesktopToken', authToken) } catch (err) {}
+      }
+    }).catch(function () {}) : Promise.resolve()
+    ready.then(function () {
+      reportDesktop(true)
+      pollDesktopCommands()
+      setInterval(pollDesktopCommands, 350)
+      setInterval(function () { reportDesktop(false) }, 1000)
+    })
   }
 
   // --- boot --------------------------------------------------------------

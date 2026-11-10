@@ -255,3 +255,89 @@ def test_window_open_needs_the_bearer_token(live):
     status, body = call(live["port"], "POST", "/api/window/open", None,
                         {"url": "https://example.test/film.mp4"})
     assert status == 401
+
+
+def test_queue_exposes_head_for_new_consumers():
+    queued = server.enqueue_command({'cmd': 'pause'})
+    assert server.pending_commands(0)['head_seq'] == queued['seq']
+
+
+def test_window_receives_reported_playlist_episode(monkeypatch):
+    seen = {}
+    def fake_open(port, token, url, **kwargs):
+        seen.update(kwargs)
+        return {'open': True}
+    monkeypatch.setattr(server.desktop_window, 'open_window', fake_open)
+    monkeypatch.setattr(server.desktop_window, 'status', lambda: {'open': True})
+    monkeypatch.setattr(server._STATE, 'port', 4321)
+    server.report_player({'url': 'https://youtube.com/playlist?list=abc',
+                          'videoId': 'abcdefghijk', 'position': 42})
+    server.open_window({})
+    assert seen['video_id'] == 'abcdefghijk'
+    assert seen['position'] == 42
+
+
+def test_desktop_queue_skips_history_and_acknowledges_load():
+    """Exercise the actual page poller with delayed and overlapping responses."""
+    import subprocess
+    from pathlib import Path
+    page = (Path(__file__).resolve().parents[1] / 'web/player.html').read_text()
+    start = page.index('  function pollDesktopCommands() {')
+    end = page.index('\n  function startDesktopMode()', start)
+    script = '''
+let desktopMode = true, authToken = 'x', commandCursor = null, commandPolling = false;
+let calls = [], applied = [], replies = [];
+function desktopApi(path) { calls.push(path); return new Promise(resolve => replies.push(resolve)); }
+function applyDesktopCommand(command) { applied.push(command.seq); }
+''' + page[start:end] + '''
+const tick = () => new Promise(resolve => setImmediate(resolve));
+(async () => {
+  pollDesktopCommands(); pollDesktopCommands();
+  if (calls.length !== 1) throw Error('overlapping polls');
+  replies.shift()({head_seq: 2, commands: [{seq: 1, cmd: 'pause'}, {seq: 2, cmd: 'load'}]});
+  await tick();
+  if (applied.length || commandCursor !== 2) throw Error('replayed history');
+  pollDesktopCommands();
+  replies.shift()({head_seq: 4, commands: [{seq: 2, cmd: 'pause'}, {seq: 3, cmd: 'load'}, {seq: 4, cmd: 'play'}]});
+  await tick();
+  if (String(applied) !== '3' || commandCursor !== 3) throw Error('load not acknowledged before navigation');
+})().catch(e => { console.error(e); process.exitCode = 1; });
+'''
+    result = subprocess.run(['node', '-e', script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_changing_reported_source_clears_old_episode():
+    server.report_player({'url': 'https://example.test/first', 'videoId': 'abcdefghijk'})
+    server.report_player({'url': 'https://example.test/second'})
+    assert not server.player_payload()['player'].get('videoId')
+
+
+def test_bootstrap_ticket_is_single_use(live):
+    ticket = server.desktop_window.issue_ticket(live['token'])
+    status, result = call(live['port'], 'POST', '/api/window/bootstrap', body={'ticket': ticket})
+    assert status == 200 and result['token'] == live['token']
+    status, _ = call(live['port'], 'POST', '/api/window/bootstrap', body={'ticket': ticket})
+    assert status == 401
+
+
+def test_bootstrap_ticket_expires(monkeypatch):
+    monkeypatch.setattr(server.desktop_window, 'TICKET_TTL', 0)
+    ticket = server.desktop_window.issue_ticket('secret')
+    assert server.desktop_window.redeem_ticket(ticket) is None
+
+
+def test_desktop_reload_reuses_session_credential_without_url_token():
+    import subprocess
+    from pathlib import Path
+    page = (Path(__file__).resolve().parents[1] / 'web/player.html').read_text()
+    start = page.index('  var desktopMode =')
+    end = page.index('  var commandCursor =', start)
+    script = '''
+const params = new URLSearchParams('desktop=1');
+const sessionStorage = { getItem: () => 'session-secret' };
+''' + page[start:end] + '''
+if (authToken !== 'session-secret') throw Error('reload lost its credential');
+'''
+    result = subprocess.run(['node', '-e', script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
