@@ -1,83 +1,116 @@
 # Aura
 
-A living, audio-reactive theme for Hermes Desktop. Aura listens to **system audio** —
-whatever this computer is already playing, from any app — analyses it locally, and
-drives a MilkDrop-compatible visualizer plus the app's accent colour from it. It also
-reacts to the agent: thinking, tool runs, approval waits, errors and finishes each have
-a mood.
+**A film behind your work, and an app that breathes with your audio.**
 
-REVamp only reacts to audio REVamp itself plays. Aura needs no account, no music
-integration and no playback of its own: it works with anything the machine is playing.
+Aura turns Hermes Desktop into a room you can live in. Put any film, lecture or playlist in the
+right-hand pane and keep working; switch the film off and the same audio drives a MilkDrop-compatible
+visualiser behind the interface. It listens to what the machine is already playing — system loopback,
+never the microphone — and nothing leaves the computer: no account, no uploads, no recording.
 
-## What it does (0.1)
+> Aura is not a music-service integration. It needs no Spotify, no YouTube Music and no account of any
+> kind. If the speakers are making a sound, Aura can see it.
 
-- **Visual behind the app (opt-in, off by default)** — one click-through, audio-reactive
-  backdrop iframe behind the whole window plus a single `#aura-glass` stylesheet that clears the
-  app's big surfaces so the visual shows through. Switching it on while Aura is off turns Aura on
-  too. The old full-page stage (`/aura` route, sidebar row, palette command, compact pane) was
-  removed: the backdrop and the Settings page are the product.
-- **Accent pulse (opt-in, off by default)** — Hermes's accent colour follows the music (≤ 4 Hz,
-  derived from your *current* theme so it composes with whatever skin you use; restored on disable).
-  Turn it on in Aura settings; Restore my theme turns it off and clears the override.
-- **Agent moods** — thinking / tool / approval / error / streaming / done, with
-  restore-on-clear so nothing latches.
-- **Display controls** — opacity, a behaviour profile (calm / balanced / intense; calm is
-  reduced-motion-safe and never uses strobe presets), a motion source (music or designs /
-  music only / agent activity / agent + music), a **Show** choice (**Always** / **Only while
-  active**) and switches for agent-mood reactions, accent pulse and automatic preset
-  rotation. Settable by you or by the agent. New installs start on Agent + music, Balanced,
-  0.35 opacity and Show: Always; saved settings keep their own values.
-- **Show: Only while active** — the backdrop iframe and `#aura-glass` style exist only while
-  the visual is actually moving. They fade in after 300 ms of sustained activity, stay
-  through short gaps between tool calls (2.5 s hysteresis), then fade out and are removed so
-  your own theme surfaces are restored exactly. The ramp is capped at 1.5 s (200 ms under
-  Gentle motion). The status-bar quick menu and Settings ▸ Plugins both expose it.
-- **Optional Aura Live theme (opt-in, off by default)** — a deep-stage palette. While it is the
-  active theme it also drives the window backdrop. Your previous theme is restored when you turn
-  it off, and **Restore my theme** disables every accent/theme/window-visual effect and cleans up.
-- **Motion that fits the room** — the default follows playback and rests on gentle designs after
-  1.5 s of silence; music-only settles when nothing is playing; agent activity moves only while
-  the agent is working and pauses after 2.5 s idle; agent + music also follows playback and pauses
-  only when the agent is idle and the room is silent. The legacy designs-only value still works.
-- **Optional theme** — an Aura theme whose palette follows the audio. Opt-in; disabling
-  restores the theme you had before.
-- **`aura_control`** — the agent can turn Aura on/off, set reaction strength, opacity,
-  behaviour and motion, pick a preset, set a mood.
+---
+
+## Watch while you work
+
+- **A docked theatre pane** on the right: 16:9 stage, scrubber, transport, volume, and a poster list of
+  your sources. Closing it leaves only the status-bar menu.
+- **YouTube videos, YouTube playlists, direct MP4/WebM.** Any public or unlisted playlist link works.
+- **Per-film resume.** Every film remembers where you stopped, keyed by URL, so switching sources all day
+  never restarts anything. A film that reaches the end is not remembered as being at its last second.
+- **Playlist episodes.** Next/previous move through the episodes of a playlist, and fall back to your saved
+  sources when the current source is a single video.
+- **Auto-skip.** A playlist item that forbids embedding (or has been deleted) would otherwise break the
+  whole list, so Aura resolves the playlist server-side and moves to the next playable episode.
+- **Free placement.** The floating watch window drags anywhere and remembers its spot; 320 / 480 / 640
+  wide; its control strip follows the window and dims when idle instead of vanishing.
+
+## Watch the machine
+
+- A MilkDrop-compatible WebGL visualiser driven by system audio — level, bands, silence gating.
+- Backdrop opacity that follows the room: dim when quiet, brighter with music, with manual presets.
+- An optional accent that follows the audio, and agent moods: thinking, running tools, waiting for
+  approval, erroring, streaming, finished — each restores itself, nothing latches.
+
+## The plugin surface
+
+- Status-bar **A** menu: play/pause, seek, volume, source picker, watch window, Aura panel.
+- A settings page with every control, including dropdown lists that stay readable on dark themes.
+- The **`aura_control`** tool, so the agent itself can set the room.
+- Hooks: session start/end, `pre`/`post_tool_call`, approval request/response, `api_request_error`,
+  stream start/end, subagent start/stop.
+
+---
+
+## Install
+
+```bash
+hermes plugins install aura
+```
+
+Turn it on in **Settings ▸ Plugins ▸ Aura**. The Aura pane appears on the right; closing it leaves only
+the status-bar menu. Nothing is captured until Aura is enabled.
+
+---
+
+## Limits, stated plainly
+
+| Area | Status |
+|---|---|
+| Audio capture | **Linux** (PipeWire / PulseAudio monitor) — tested. Windows (WASAPI) is implemented but unproven on real hardware; macOS needs a virtual audio device. Treat Aura as Linux-first. |
+| YouTube | Embeds play only when the uploader allows it. Aura detects the refusal and skips the episode; it cannot play a video that forbids embedding. |
+| Netflix, Disney+, most streaming services | **Not possible** — their players refuse to be framed (DRM + `X-Frame-Options`). Aura offers "open in browser" instead. |
+| Plex | Not built. A direct stream URL works; the server integration is not written. |
+| Playlists | Resolved by reading the public playlist page — no API key, no OAuth. Public and unlisted lists only; private/account lists need Google sign-in and are unsupported. |
+| Privacy | Audio is analysed in memory and never written or sent. No account, no telemetry. |
+
+---
 
 ## Host safety
 
-The only host DOM Aura touches is gated behind an opt-in: while "Visual behind the app" (or the
-Aura Live theme) is on and Aura is enabled, it mounts one fixed, click-through, negative-z
-backdrop iframe and a single `#aura-glass` stylesheet. With **Show: Only while active** both are
-mounted only while the visual moves and are removed again once the fade-out completes. Switching
-the visual off, turning Aura off, **Restore my theme** and dispose remove both; while nothing is
-opted in nothing is injected at all, and the host `html`/`body`/root styles are never written. The
-accent override is the SDK's sanctioned, opt-in mechanism. Accent pulse and the Aura Live theme
-are off by default. **Restore my theme** turns the window visual, accent pulse and theme off,
-clears the accent override, restores your previous theme, and removes any effect Aura applied.
+The only host DOM Aura touches is opt-in and bounded:
 
-## Privacy and safety
+- The pane is a `PANES_AREA` contribution — **Hermes lays it out**. No fixed positioning, no z-index, no
+  `body` padding. (An earlier floating column did all three, pushed the host sidebar off its own panel and
+  swallowed clicks; it is gone.)
+- The backdrop is one click-through iframe at negative z-index, plus a single `#aura-glass` stylesheet,
+  mounted only while a visual is showing and removed when it stops. With **Show: Only while active** both
+  exist only while the visual moves.
+- Host `html`/`body`/root styles are never written. The accent override is the SDK's sanctioned mechanism.
+- Switching the visual off, turning Aura off, **Restore my theme** and plugin disposal all remove every
+  effect Aura applied and restore the theme that was there before.
 
-- Use Aura settings — the "Visual behind the app" switch, or "Aura enabled" — to stop the visual.
-- Captures **loopback** (what the machine plays), never the microphone.
-- Analysis happens in memory. Nothing is recorded to disk, nothing is sent anywhere.
-- Aura never plays, pauses or ducks audio.
-- Flash limiting, reduced-motion support, an intensity slider, and a scrim so chat text
-  stays readable.
+---
 
-## Platform support (honest)
+## Layout
 
-- **Linux:** PipeWire / PulseAudio monitor capture — tested.
-- **Windows:** WASAPI loopback — implemented, needs a real-machine test before it is claimed.
-- **macOS:** needs a virtual audio device (e.g. BlackHole) or tab audio; no native helper.
+```
+plugin.yaml          manifest (hooks, tools, dashboard)
+__init__.py          Python plugin: hooks, aura_control tool
+aura_core/           capture, analysis, config, HTTP server, sessions
+dashboard/           plugin_api.py — the desktop half's REST door
+desktop/plugin.js    Hermes Desktop half (status menu, pane, window, backdrop)
+web/                 visualiser (aura.js), film stage (player.html), presets
+tests/               Python suite + the desktop DOM contract suite
+```
+
+## Development
+
+```bash
+.venv/bin/python -m pytest tests/ -q          # server, capture, analysis
+node --test tests/test_desktop_plugin.mjs     # desktop half against a fake host DOM
+```
+
+The end-to-end visualiser tests drive a real headless Chrome and measure the canvas. They skip
+themselves when the machine is too loaded to sample reliably rather than reporting a false failure.
 
 ## Status
 
-Pre-release (0.1.0). See `SPIKES.md` for what was actually measured, and `CONTRACT.md` for
-the internal wire contract between the capture server, the page, the desktop half and the
-agent hooks.
+Pre-release. `SPIKES.md` records what was actually measured; `CONTRACT.md` is the wire contract between
+the capture server, the page, the desktop half and the agent hooks.
 
 ## Licences
 
-Butterchurn (MIT) and a curated subset of butterchurn-presets (MIT package; individual
-presets credited in `THIRD_PARTY_NOTICES.md`). "MilkDrop-compatible" — not MilkDrop itself.
+MIT. Butterchurn (MIT) and a curated subset of butterchurn-presets; individual presets are credited in
+`THIRD_PARTY_NOTICES.md`. "MilkDrop-compatible" — not MilkDrop itself.

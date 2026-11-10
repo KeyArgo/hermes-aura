@@ -1,18 +1,16 @@
 name: aura
 label: Aura
 kind: standalone
-version: 0.1.1
+version: "0.2.0"
 author: Argo
 description: >
-  Aura turns Hermes Desktop into a living, audio-reactive space: it listens to what
-  this computer is already playing (system loopback, never the microphone), draws a
-  MilkDrop-compatible visualizer in an Aura stage, pulses the app accent with the
-  music, and shifts mood with what the agent is doing — thinking, running tools,
-  waiting for approval, erroring, finishing. It can also contribute an optional theme
-  whose palette follows the audio, and the agent can set the room with the aura_control
-  tool. Everything is analysed locally in memory: no account, no music integration, no
-  recording, no audio leaves the machine. Aura never plays or ducks sound. Off until the
-  user turns it on, one click to stop. See README.md for platform limits.
+  Aura turns Hermes Desktop into a room you can live in: play a film, lecture or YouTube playlist
+  in a docked theatre pane on the right while you work, then switch the film off and let the same
+  system audio drive a MilkDrop-compatible visualiser behind the interface. Per-film resume, playlist
+  episodes with auto-skip of un-embeddable items, a draggable watch window, and agent moods that
+  follow thinking, tool runs and approvals. Everything is analysed locally in memory from system
+  loopback — never the microphone, no account, no uploads. Linux-first (PipeWire/PulseAudio);
+  Windows unproven, macOS needs a virtual audio device. Off until you turn it on, one click to stop.
 requires_hermes: ">=0.22.5"
 license: MIT
 provides_tools:
