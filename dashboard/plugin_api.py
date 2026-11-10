@@ -16,7 +16,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -205,6 +207,116 @@ def status() -> dict:
 @router.get("/state")
 def state() -> dict:
     return state_payload()
+
+
+# ---------------------------------------------------------------------------
+# Playlist resolution
+#
+# A YouTube playlist embed starts at item #1, and if that item has embedding
+# disabled the whole playlist shows "video unavailable". Listing the episodes
+# lets Aura skip past such items instead of dying on them. Done here (not in the
+# renderer) because the playlist page is cross-origin and sends no CORS headers.
+# No API key: the public playlist page carries ytInitialData.
+# ---------------------------------------------------------------------------
+
+_PLAYLIST_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_PLAYLIST_TTL = 300.0
+_LIST_RE = re.compile(r"[A-Za-z0-9_-]{10,64}")
+_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+       "Chrome/124.0.0.0 Safari/537.36")
+_INITIAL_DATA_RE = re.compile(r"ytInitialData\s*=\s*(\{.*\});</script>", re.S)
+
+
+def _walkPlaylist(node: Any, out: list[dict]) -> None:
+    if isinstance(node, dict):
+        renderer = node.get("playlistVideoRenderer")
+        if isinstance(renderer, dict):
+            vid = renderer.get("videoId")
+            title_obj = renderer.get("title") or {}
+            title = ""
+            runs = title_obj.get("runs") if isinstance(title_obj, dict) else None
+            if isinstance(runs, list):
+                title = "".join(str(part.get("text", "")) for part in runs if isinstance(part, dict))
+            elif isinstance(title_obj, dict) and isinstance(title_obj.get("simpleText"), str):
+                title = title_obj["simpleText"]
+            length = ""
+            length_obj = renderer.get("lengthText")
+            if isinstance(length_obj, dict) and isinstance(length_obj.get("simpleText"), str):
+                length = length_obj["simpleText"]
+            if isinstance(vid, str) and len(vid) == 11:
+                out.append({"videoId": vid, "title": title.strip()[:160], "length": length})
+        # YouTube's newer playlist UI: `lockupViewModel` carries the same facts.
+        lockup = node.get("lockupViewModel")
+        if isinstance(lockup, dict):
+            vid = lockup.get("contentId")
+            title = ""
+            meta = lockup.get("metadata") or {}
+            lockup_meta = meta.get("lockupMetadataViewModel") if isinstance(meta, dict) else None
+            if isinstance(lockup_meta, dict):
+                title_obj = lockup_meta.get("title") or {}
+                if isinstance(title_obj, dict) and isinstance(title_obj.get("content"), str):
+                    title = title_obj["content"]
+            length = ""
+            image = lockup.get("contentImage") or {}
+            thumb = image.get("thumbnailViewModel") if isinstance(image, dict) else None
+            if isinstance(thumb, dict):
+                for overlay in thumb.get("overlays") or []:
+                    bottom = overlay.get("thumbnailBottomOverlayViewModel") if isinstance(overlay, dict) else None
+                    for badge in (bottom or {}).get("badges") or []:
+                        view = badge.get("thumbnailBadgeViewModel") if isinstance(badge, dict) else None
+                        if isinstance(view, dict) and isinstance(view.get("text"), str) and view["text"]:
+                            length = view["text"]
+                            break
+                    if length:
+                        break
+            if isinstance(vid, str) and len(vid) == 11:
+                out.append({"videoId": vid, "title": title.strip()[:160], "length": length})
+        for value in node.values():
+            _walkPlaylist(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _walkPlaylist(value, out)
+
+
+def playlistItems(list_id: str) -> list[dict]:
+    """Episodes of a playlist, newest fetch cached for 5 minutes. Never raises."""
+    if not isinstance(list_id, str) or not _LIST_RE.fullmatch(list_id):
+        return []
+    now = time.time()
+    hit = _PLAYLIST_CACHE.get(list_id)
+    if hit and now - hit[0] < _PLAYLIST_TTL:
+        return hit[1]
+    request = urllib.request.Request(
+        f"https://www.youtube.com/playlist?list={list_id}&hl=en",
+        headers={"User-Agent": _UA, "Accept-Language": "en"}
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        html = response.read().decode("utf-8", "replace")
+    match = _INITIAL_DATA_RE.search(html)
+    if not match:
+        return []
+    data = json.loads(match.group(1))
+    found: list[dict] = []
+    _walkPlaylist(data, found)
+    seen: set[str] = set()
+    items: list[dict] = []
+    for item in found:
+        if item["videoId"] in seen:
+            continue
+        seen.add(item["videoId"])
+        items.append(item)
+    _PLAYLIST_CACHE[list_id] = (now, items)
+    return items
+
+
+@router.get("/playlist")
+def playlist(id: str = "") -> dict:
+    try:
+        items = playlistItems(id)
+    except Exception as exc:  # noqa: BLE001 - the door must always answer
+        logger.info("aura dashboard: playlist failed (%s)", type(exc).__name__)
+        return {"ok": False, "error": type(exc).__name__, "items": []}
+    return {"ok": True, "items": items}
 
 
 @router.post("/control")
