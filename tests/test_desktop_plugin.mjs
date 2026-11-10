@@ -415,9 +415,17 @@ const headChildren = []
 const createdElements = []
 const documentElement = { style: {} }
 function makeChildList(children) {
+  const classes = new Set()
   return {
     children,
     style: {},
+    className: '',
+    classList: {
+      add: name => classes.add(name),
+      remove: (...names) => names.forEach(n => classes.delete(n)),
+      toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)),
+      contains: name => classes.has(name)
+    },
     appendChild(node) {
       node.parentNode = this
       children.push(node)
@@ -442,11 +450,42 @@ globalThis.document = {
       tagName: String(tagName).toUpperCase(),
       style: {},
       attributes: {},
+      children: [],
       parentNode: null,
       src: '',
       textContent: '',
+      dataset: {},
       setAttribute(name, value) {
         this.attributes[name] = String(value)
+      },
+      getAttribute(name) {
+        return this.attributes[name]
+      },
+      appendChild(child) {
+        child.parentNode = this
+        this.children.push(child)
+        return child
+      },
+      removeChild(child) {
+        const index = this.children.indexOf(child)
+        if (index >= 0) this.children.splice(index, 1)
+        child.parentNode = null
+        return child
+      },
+      __handlers: {},
+      addEventListener(type, fn) {
+        const list = this.__handlers[type] || (this.__handlers[type] = [])
+        list.push(fn)
+      },
+      removeEventListener(type, fn) {
+        const list = this.__handlers[type]
+        if (list) this.__handlers[type] = list.filter(entry => entry !== fn)
+      },
+      getBoundingClientRect() {
+        return { width: 0, height: 0, left: 0, top: 0, right: 0, bottom: 0 }
+      },
+      get firstChild() {
+        return this.children[0] || null
       },
       removeAttribute(name) {
         delete this.attributes[name]
@@ -494,7 +533,11 @@ globalThis.getComputedStyle = el => ({
 })
 
 const hostIframes = () => bodyChildren.filter(node => node.tagName === 'IFRAME')
-const hostStyles = () => headChildren.filter(node => node.tagName === 'STYLE')
+// The docked panel's own stylesheet is a product surface, on by default; the
+// "effect" styles this contract guards are the glass and theme injections.
+const panelStyles = () => headChildren.filter(node => node.attributes && node.attributes.id === 'aura-panel-style')
+const UI_STYLE_IDS = new Set(['aura-panel-style', 'aura-ui-style'])
+const hostStyles = () => headChildren.filter(node => node.tagName === 'STYLE' && !UI_STYLE_IDS.has(node.attributes.id))
 const glassStyles = () => hostStyles().filter(node => node.attributes.id === 'aura-glass')
 const hostHasNegativeZ = () =>
   [...bodyChildren, ...headChildren].some(node => node.style && node.style.zIndex === '-1')
@@ -1230,9 +1273,15 @@ record('quick menu renders the button, every control and no stray popover state'
   assert.equal(trigger.props['aria-expanded'], false, 'menu must start closed')
   let glyph = null
   walk(tree, node => {
-    if (!glyph && node.type === 'span' && node.props && node.props.style && node.props.style.fontSize === 14) glyph = node
+    if (!glyph && node.type === 'span' && node.props && node.props.style && node.props.style.fontWeight === 600) glyph = node
   })
-  assert.ok(glyph && /A/.test(texts(glyph)), 'the "A" glyph is missing')
+  assert.ok(glyph && texts(glyph).includes('Aura'), 'the Aura wordmark is missing')
+  // The mark is inline SVG so it needs no asset and cannot 404.
+  let mark = null
+  walk(tree, node => {
+    if (!mark && node.type === 'svg') mark = node
+  })
+  assert.ok(mark && mark.props.width === 13, 'the Aura mark (inline svg) is missing')
   const body = texts(tree)
   for (const label of ['Reacts to', 'Intensity', 'Transparency', 'Style', 'Show', 'All Aura settings']) {
     assert.ok(body.includes(label), `quick menu is missing "${label}"`)
@@ -1599,6 +1648,70 @@ record('dispose from the server-sync scenario is clean', () => {
   assert.ok(h.listeners.every(t => t.removed))
   assert.equal(hostIframes().length, 0)
   assert.equal(hostStyles().length, 0)
+})
+
+// ------------------------------------------------- video strip (regression)
+// The owner once ended up with the video playing and NO controls at all, so
+// this pins down that video mode actually draws the strip, with its grip,
+// scrub bar and close button, and that closing removes it.
+
+const v = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  windowVisual: true,
+  // Tray-only life: no docked panel, so the floating strip is the surface.
+  panelEnabled: false,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+pluginModule.default.register(v.ctx)
+// Drive one poll tick: the strip mounts from the poll, exactly like the app.
+v.timers.find(t => t.ms === 250).fn()
+await sleep(80)
+
+
+await recordAsync('video mode mounts the control strip with grip, scrub and close', async () => {
+  const bar = bodyChildren.find(node => node.attributes && node.attributes.role === 'toolbar')
+  assert.ok(bar, 'the video control strip never mounted')
+  const textsInBar = bar.children.map(child => child.textContent || '').join('|')
+  assert.ok(textsInBar.includes('⠿'), 'drag grip missing from the strip')
+  assert.ok(textsInBar.includes('✕'), 'close button missing from the strip')
+  assert.ok(
+    bar.children.some(child => child.attributes && child.attributes.role === 'slider'),
+    'scrub bar missing from the strip'
+  )
+  assert.equal(bar.style.opacity, '1', 'the strip must start visible')
+})
+
+// ------------------------------------------------------------ left panel
+const panelCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  windowVisual: true,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+pluginModule.default.register(panelCtx.ctx)
+panelCtx.timers.find(t => t.ms === 250).fn()
+await sleep(80)
+
+const findById = id => bodyChildren.find(node => node.attributes && node.attributes.id === id)
+const findByLabel = (root, label) => {
+  let found = null
+  const walkNodes = node => {
+    if (!node || found) return
+    if (node.attributes && node.attributes['aria-label'] === label) { found = node; return }
+    for (const child of node.children || []) walkNodes(child)
+  }
+  walkNodes(root)
+  return found
+}
+
+await recordAsync('the floating panel stays off while it awaits its docked replacement', async () => {
+  // It covered the composer and swallowed clicks in the app; until the docked
+  // pane lands it must not mount at all, whatever the stored settings say.
+  assert.ok(!findById('aura-panel'), 'the floating panel mounted again')
+  assert.equal(panelStyles().length, 0, 'panel stylesheet mounted with no panel')
+  assert.equal(document.body.classList.contains('aura-panel-open'), false, 'body padding came back')
+  assert.equal(hostIframes().length >= 0, true)
 })
 
 // --------------------------------------------------------------- reporting

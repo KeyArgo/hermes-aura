@@ -92,6 +92,47 @@ const ATTENTION_MIN_GAP_MS = 500
 const ACCENT_L_MIN = 0.34
 const ACCENT_L_MAX = 0.78
 
+// ---- video backdrop: its own surface, its own defaults -------------------
+// The backdrop is a movie *behind* your work, so it starts almost invisible:
+// 20% while you are just working with the agent, 30% once audio is actually
+// playing (the beat is the point then), plus a small bump for every extra
+// active chat beyond the first so a busy fleet reads as busier. Everything is
+// clamped, and a manual setting in the controls overrides it completely.
+// Declared above DEFAULT_SETTINGS because that object reads them.
+const VIDEO_OPACITY = 0.2
+const VIDEO_OPACITY_MUSIC = 0.3
+const VIDEO_OPACITY_SESSION_STEP = 0.03
+const VIDEO_OPACITY_MAX = 0.6
+const VIDEO_OPACITY_PRESETS = Object.freeze([25, 50, 75, 100])
+// Movie volume. Persisted, re-sent to the player whenever it (re)loads, and
+// changed by the mouse wheel over the strip.
+const VIDEO_VOLUME = 0.7
+// How solid the floating strip is over the film.
+const VIDEO_BAR_OPACITY = 0.72
+// Backdrop opacity changes are debounced: music must hold >1.2 s to brighten
+// it and silence >4 s to dim it, or level flicker made the window pulse.
+const MUSIC_ON_DELAY_MS = 1200
+const MUSIC_OFF_DELAY_MS = 4000
+// Resume a film only if it stopped this far from the end: a finished film
+// starts over rather than parking on the credits.
+const VIDEO_RESUME_TAIL_S = 12
+// The watch window: a real 16:9 frame above the app instead of the film sitting
+// behind it. Widths in CSS px. Declared before DEFAULT_SETTINGS uses the size.
+const VIDEO_WINDOW_SIZES = Object.freeze({ small: 320, medium: 480, large: 640 })
+/** Where the watch window parks. Top-right by default: the status bar lives
+ *  along the bottom and the composer sits bottom-centre, so a bottom corner
+ *  covers the Aura button it is being controlled from. */
+const VIDEO_WINDOW_CORNERS = Object.freeze(['top-right', 'top-left', 'bottom-right', 'bottom-left'])
+// What the Settings picker offers: the four presets plus the free position a
+// drag sets.
+const VIDEO_WINDOW_CORNER_OPTIONS = Object.freeze([...VIDEO_WINDOW_CORNERS, 'free'])
+const VIDEO_WINDOW_RIGHT_MARGIN = 18
+const VIDEO_WINDOW_TOP = 56
+// Bottom corners keep clear of the status bar (and the Aura wordmark in it).
+const VIDEO_WINDOW_BOTTOM = 110
+const VIDEO_WINDOW_DEFAULT_CORNER = 'top-right'
+const VIDEO_WINDOW_DEFAULT_SIZE = 'medium'
+
 const DEFAULT_SETTINGS = Object.freeze({
   enabled: true,
   intensity: 0.5,
@@ -101,12 +142,38 @@ const DEFAULT_SETTINGS = Object.freeze({
   accentPulse: false,
   autoPreset: true,
   themeOptIn: false,
+  // When Aura is not showing anything, give the user their own theme back
+  // instead of leaving the Aura skin on an idle window.
+  themeIdleRestore: true,
   windowVisual: false,
   motion: 'agent_music',
   reducedMotion: false,
   showWhen: 'always',
   backdropMode: 'aura',
-  videoUrl: ''
+  videoUrl: '',
+  videoOpacity: VIDEO_OPACITY,
+  videoOpacityAuto: true,
+  videoVolume: VIDEO_VOLUME,
+  videoBarOpacity: VIDEO_BAR_OPACITY,
+  videoWindow: false,
+  videoWindowSize: VIDEO_WINDOW_DEFAULT_SIZE,
+  videoWindowCorner: VIDEO_WINDOW_DEFAULT_CORNER,
+  videoWindowX: null,
+  videoWindowY: null,
+  // Closed means "film stopped, nothing on screen" — the bookmark survives, so
+  // reopening returns to the same place.
+  videoClosed: false,
+  // Left panel: on by default so the app is usable without a status bar; the
+  // switch leaves only the tray.
+  panelEnabled: true,
+  panelCollapsed: false,
+  videoSources: [],
+  videoRecent: [],
+  videoPlaylists: [],
+  videoHiddenStarters: [],
+  // Per-film bookmarks: { [url]: { position, duration, at } }. This is what
+  // makes an interrupted movie pick up where it stopped, days later.
+  videoPositions: {}
 })
 
 // The plugin's own entry inside Settings ▸ Plugins (same shape the host's
@@ -139,6 +206,39 @@ const SHOW_WHEN_LABELS = { always: 'Always', active: 'Only while active' }
 // web/player.html through its `?url=` query string.
 const BACKDROP_MODES = ['aura', 'video']
 const BACKDROP_MODE_LABELS = { aura: 'Aura visual', video: 'Video player' }
+
+// ---- video backdrop: sources and framing ---------------------------------
+// Starter catalog: free films and documentaries, every entry verified
+// embeddable in this exact frame (the player reports its duration, which a
+// blocked embed never does). These are a starting point, not furniture — one
+// switch in Settings clears them, and the same switch brings them back.
+const STARTER_SOURCES = Object.freeze([
+  { label: 'Night of the Living Dead (1968) · film', url: 'https://www.youtube.com/watch?v=Qdo3pGnNZl4' },
+  { label: 'Nosferatu (1922) · film', url: 'https://www.youtube.com/watch?v=JK9x0zqldsE' },
+  { label: 'Sintel · Blender film', url: 'https://www.youtube.com/watch?v=eRsGyueVLvQ' },
+  { label: 'Tears of Steel · Blender film', url: 'https://www.youtube.com/watch?v=R6MlUcmOul8' },
+  { label: 'Big Buck Bunny · Blender film', url: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' },
+  { label: 'Ocean with David Attenborough · documentary', url: 'https://www.youtube.com/watch?v=ugJB5haR0SE' },
+  { label: 'Wildlife Takeover: Chernobyl · documentary', url: 'https://www.youtube.com/watch?v=XaUNhqnpiOE' },
+  { label: 'Destination Wild: Wild Islands · documentary', url: 'https://www.youtube.com/watch?v=JMI_jWFLET0' }
+])
+
+// Sites that refuse to be framed: their web apps send X-Frame-Options /
+// frame-ancestors, so a backdrop frame is a blank box. We say so and offer the
+// browser instead of leaving the user staring at nothing. Direct media URLs
+// (mp4/webm/m3u8, which is how Plex hands out a stream) are never blocked.
+const FRAME_BLOCKED_HOSTS = Object.freeze([
+  'netflix.com', 'plex.tv', 'hulu.com', 'disneyplus.com', 'max.com', 'hbomax.com',
+  'primevideo.com', 'tv.apple.com', 'crunchyroll.com', 'paramountplus.com',
+  'peacocktv.com', 'music.apple.com'
+])
+const MEDIA_FILE_RE = /\.(mp4|webm|ogg|ogv|m4v|mov|m3u8)(?:[?#]|$)/i
+
+// Transport state reported up by web/player.html at <= 4 Hz.
+const EMPTY_VIDEO = Object.freeze({
+  kind: '', playing: false, position: 0, duration: 0, muted: true,
+  title: '', controllable: false, reportedAt: 0
+})
 const VIDEO_URL_MAX = 2048
 
 const BEHAVIORS = ['calm', 'balanced', 'intense']
@@ -256,6 +356,10 @@ let liveFrame = null // latest /state frame — hot path, deliberately not an at
 let liveKey = ''
 let backdropEl = null
 let backdropUrl = ''
+// What the backdrop page should be showing, independent of the server's port
+// and token: `videoUrl|reducedMotion|mode`. A key change reloads the frame; a
+// port/token change must not, or the film restarts on every server refresh.
+let backdropKey = ''
 let glassStyleEl = null
 let overrideActive = false
 let lastAccentHex = null
@@ -281,6 +385,9 @@ let showEpoch = 0
 
 const $settings = atom({ ...DEFAULT_SETTINGS })
 const $live = atom({ ...EMPTY_LIVE })
+// Transport state as reported by web/player.html. Kept in an atom so the A
+// popover, the floating bar and the settings page all read one truth.
+const $video = atom({ ...EMPTY_VIDEO })
 const $themeApplied = atom(false)
 // Quick-menu state: which way the host Popover is open (so dispose can close
 // it) and the current pulse-dot opacity (recomputed by the poll ticker).
@@ -289,6 +396,137 @@ const $pulse = atom(0)
 let pulseIndex = 0
 
 // --------------------------------------------------------------- persistence
+
+/** Per-film bookmarks, persisted with the settings. Malformed entries are
+ *  dropped; anything under 5 s is noise from an autoplay that never started. */
+function readPositions(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out = {}
+  const entries = Object.entries(raw)
+    .filter(([, value]) => value && typeof value === 'object')
+    .sort((a, b) => (Number(b[1].at) || 0) - (Number(a[1].at) || 0))
+    .slice(0, 40)
+  for (const [url, value] of entries) {
+    if (typeof url !== 'string' || !url) continue
+    const position = Number(value.position)
+    if (!Number.isFinite(position) || position < 5) continue
+    const duration = Number(value.duration)
+    const at = Number(value.at)
+    out[url.slice(0, VIDEO_URL_MAX)] = {
+      position: Math.max(0, position),
+      duration: Number.isFinite(duration) ? Math.max(0, duration) : 0,
+      at: Number.isFinite(at) ? at : 0
+    }
+  }
+  return out
+}
+
+/** The bookmark for this film, or null. */
+function resumeBookmark(url) {
+  const entry = ($settings.get().videoPositions || {})[String(url || '').trim()]
+  return entry && typeof entry === 'object' ? entry : null
+}
+
+/** Where this film should restart, or 0 for "from the beginning". */
+function resumeTargetFor(url) {
+  const entry = ($settings.get().videoPositions || {})[url]
+  if (!entry) return 0
+  // A film that reached its credits starts over instead of parking there.
+  if (entry.duration && entry.position > entry.duration - VIDEO_RESUME_TAIL_S) return 0
+  return entry.position > 5 ? Math.floor(entry.position) : 0
+}
+
+/** Record where a film is, at most every 5 s, so an interruption (another
+ *  plugin, a face, a source swap, the app closing) resumes in the right place.
+ *  `position` of 0 with `finished` clears the bookmark. */
+function rememberPosition(url, position, duration, finished, videoId, force) {
+  const key = String(url || '').trim()
+  if (!key || !/^https?:\/\//i.test(key)) return
+  const settings = $settings.get()
+  const map = { ...(settings.videoPositions || {}) }
+  const previous = map[key]
+  const keepVideo = typeof videoId === 'string' && videoId ? videoId : (previous && previous.videoId) || ''
+  if (finished) {
+    delete map[key]
+    writeSettings({ videoPositions: map })
+    return
+  }
+  // A freshly loaded player reports 0 for a moment — before our seek lands.
+  // Writing that through used to erase the bookmark and start every film over.
+  // Position 0 is never evidence: only real playback (or "finished") writes.
+  if (!Number.isFinite(position) || position < 5) return
+  const now = Date.now()
+  if (!force && now - resumeSavedAt < 5000) return
+  resumeSavedAt = now
+  map[key] = {
+    position: Math.max(0, Math.floor(position)),
+    duration: Math.max(0, Math.floor(duration || 0)),
+    at: now,
+    // Which episode of a playlist this is, so a list resumes at the right one.
+    videoId: keepVideo
+  }
+  writeSettings({ videoPositions: map })
+}
+
+/** Flush the current position right now — used whenever playback is about to
+ *  be interrupted (closing, disabling, switching source, unloading), because a
+ *  bookmark that depends on the next 5 s tick is a bookmark that sometimes
+ *  never lands. */
+function saveCurrentPosition() {
+  const state = $video.get()
+  const url = $settings.get().videoUrl
+  if (!url || !(state.position >= 5)) return
+  rememberPosition(url, state.position, state.duration, false, state.videoId, true)
+}
+
+/** A saved source: `{ label, url }`, trimmed and length-capped, deduped by URL.
+ *  Anything malformed is dropped rather than thrown away wholesale, because
+ *  this list is persisted user data. */
+function readSourceList(raw) {
+  if (!Array.isArray(raw)) return []
+  const seen = new Set()
+  const out = []
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue
+    const url = typeof entry.url === 'string' ? entry.url.trim().slice(0, VIDEO_URL_MAX) : ''
+    if (!url || seen.has(url)) continue
+    seen.add(url)
+    const label = typeof entry.label === 'string' && entry.label.trim()
+      ? entry.label.trim().slice(0, 120)
+      : ''
+    out.push({ label, url })
+    if (out.length >= 24) break
+  }
+  return out
+}
+
+function urlHost(url) {
+  const match = /^https?:\/\/([^/?#]+)/i.exec(String(url || '').trim())
+  return match ? match[1].toLowerCase() : ''
+}
+
+/** True when the URL is known to refuse framing (Plex/Netflix web apps etc.).
+ *  Direct media files are always framable, so they short-circuit. */
+function isFrameBlocked(url) {
+  const value = String(url || '').trim()
+  if (!value || MEDIA_FILE_RE.test(value)) return false
+  const host = urlHost(value)
+  if (!host) return false
+  return FRAME_BLOCKED_HOSTS.some(blocked => host === blocked || host.endsWith('.' + blocked))
+}
+
+/** Short human label for a URL: YouTube link -> "YouTube · title-ish id". */
+function shortLabel(url) {
+  const value = String(url || '').trim()
+  const list = /[?&]list=([A-Za-z0-9_-]{10,})/.exec(value)
+  if (list) return 'YouTube playlist · ' + list[1].slice(0, 12)
+  const yt = /(?:youtube(?:-nocookie)?\.com\/(?:watch\?(?:[^#]*&)?v=|embed\/|shorts\/|live\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/i.exec(value)
+  if (yt) return 'YouTube · ' + yt[1]
+  const host = urlHost(value)
+  if (!host) return value.slice(0, 60)
+  const file = value.split('?')[0].split('/').filter(Boolean).pop()
+  return file && file !== host ? host + ' / ' + decodeURIComponent(file).slice(0, 40) : host
+}
 
 function readSettings(ctx) {
   const out = { ...DEFAULT_SETTINGS }
@@ -313,12 +551,37 @@ function readSettings(ctx) {
     else if (typeof raw.followAudio === 'boolean') out.accentPulse = raw.followAudio
     if (typeof raw.autoPreset === 'boolean') out.autoPreset = raw.autoPreset
     if (typeof raw.themeOptIn === 'boolean') out.themeOptIn = raw.themeOptIn
+    if (typeof raw.themeIdleRestore === 'boolean') out.themeIdleRestore = raw.themeIdleRestore
     if (typeof raw.windowVisual === 'boolean') out.windowVisual = raw.windowVisual
     if (typeof raw.motion === 'string' && MOTIONS.includes(raw.motion)) out.motion = raw.motion
     if (typeof raw.reducedMotion === 'boolean') out.reducedMotion = raw.reducedMotion
     if (typeof raw.showWhen === 'string' && SHOW_WHEN_OPTIONS.includes(raw.showWhen)) out.showWhen = raw.showWhen
     if (typeof raw.backdropMode === 'string' && BACKDROP_MODES.includes(raw.backdropMode)) out.backdropMode = raw.backdropMode
     if (typeof raw.videoUrl === 'string') out.videoUrl = raw.videoUrl.trim().slice(0, VIDEO_URL_MAX)
+    if (Number.isFinite(raw.videoOpacity)) out.videoOpacity = clamp01(raw.videoOpacity)
+    if (typeof raw.videoOpacityAuto === 'boolean') out.videoOpacityAuto = raw.videoOpacityAuto
+    if (Number.isFinite(raw.videoVolume)) out.videoVolume = clamp01(raw.videoVolume)
+    if (typeof raw.videoBarOpacity === 'number' || Number.isFinite(raw.videoBarOpacity)) out.videoBarOpacity = clamp01(raw.videoBarOpacity)
+    if (typeof raw.videoWindow === 'boolean') out.videoWindow = raw.videoWindow
+    if (typeof raw.videoWindowSize === 'string' && Object.prototype.hasOwnProperty.call(VIDEO_WINDOW_SIZES, raw.videoWindowSize)) {
+      out.videoWindowSize = raw.videoWindowSize
+    }
+    if (typeof raw.videoWindowCorner === 'string' && VIDEO_WINDOW_CORNERS.includes(raw.videoWindowCorner)) {
+      out.videoWindowCorner = raw.videoWindowCorner
+    }
+    if (raw.videoWindowCorner === 'free') out.videoWindowCorner = 'free'
+    if (Number.isFinite(raw.videoWindowX)) out.videoWindowX = Math.round(raw.videoWindowX)
+    if (Number.isFinite(raw.videoWindowY)) out.videoWindowY = Math.round(raw.videoWindowY)
+    if (typeof raw.videoClosed === 'boolean') out.videoClosed = raw.videoClosed
+    if (typeof raw.panelEnabled === 'boolean') out.panelEnabled = raw.panelEnabled
+    if (typeof raw.panelCollapsed === 'boolean') out.panelCollapsed = raw.panelCollapsed
+    out.videoSources = readSourceList(raw.videoSources)
+    out.videoRecent = readSourceList(raw.videoRecent)
+    out.videoPlaylists = readSourceList(raw.videoPlaylists)
+    out.videoHiddenStarters = Array.isArray(raw.videoHiddenStarters)
+      ? raw.videoHiddenStarters.filter(item => typeof item === 'string').slice(0, 40)
+      : []
+    out.videoPositions = readPositions(raw.videoPositions)
     // Legacy `glass` / `overlayOpacity` keys are ignored: the old host-glass
     // visibility slider is gone; windowVisual + the backdrop replace it.
   }
@@ -362,6 +625,14 @@ function backdropSrc(url) {
     const token = urlParams.get('token') || ''
     const query = new URLSearchParams({ url: videoUrl })
     if (token) query.append('token', token)
+    // A playlist resumes into the exact episode, not just the list: the
+    // bookmark carries the video id, and the player starts there.
+    const bookmark = resumeBookmark(videoUrl)
+    if (bookmark && bookmark.videoId) query.append('video', bookmark.videoId)
+    // Hand the resume point to the page itself: the page keeps asking until the
+    // player actually lands there, which is what makes it reliable instead of
+    // "works sometimes".
+    if (bookmark && bookmark.position > 5) query.append('resume', String(Math.floor(bookmark.position)))
     return `${base}/player.html?${query.toString()}`
   }
   const params = ['overlay=1']
@@ -559,6 +830,16 @@ function resetShow() {
   showTarget = 0
 }
 
+/** Identity of what the backdrop page shows, minus server port/token. */
+function pageKey() {
+  const settings = $settings.get()
+  return [
+    settings.backdropMode,
+    settings.videoUrl,
+    settings.reducedMotion ? 'reduced' : 'full'
+  ].join('|')
+}
+
 function mountBackdrop(url, opacity) {
   const src = backdropSrc(url)
   if (!backdropEl) {
@@ -584,20 +865,114 @@ function mountBackdrop(url, opacity) {
     style.zIndex = '-1'
     style.background = 'transparent'
     backdropUrl = src
+    backdropKey = pageKey()
     backdropEl.src = src
-  } else if (backdropUrl !== src) {
+  } else if (backdropKey !== pageKey()) {
+    // Only re-point the frame when what it should SHOW changed (a new source,
+    // a gentle-motion flip). A refresh that swaps the server port or token
+    // leaves the page identity alone, so it must not restart the film.
     backdropUrl = src
+    backdropKey = pageKey()
     backdropEl.src = src
   }
   backdropEl.style.opacity = String(clamp01(opacity))
+  // A stepped opacity is what reads as "weird dimming": ramp it. Only in the
+  // video/"always" case, because the "only while active" fade already owns its
+  // own timing and a CSS transition would fight it.
+  const settings = $settings.get()
+  backdropEl.style.transition = settings.backdropMode === 'video' && settings.showWhen === 'always' && !videoWindowOn()
+    ? 'opacity 900ms ease'
+    : ''
+  applyBackdropLayout()
   if (backdropEl.parentNode !== doc.body) doc.body.appendChild(backdropEl)
   if (!glassStyleEl) applyGlassStyle()
+}
+
+/** Is audio actually playing right now? The server's own reading: level over
+ *  the music threshold and not flagged silent. */
+function musicIsPlayingNow() {
+  const frame = liveFrame
+  if (!frame) return false
+  const level = Number.isFinite(frame.level) ? frame.level : 0
+  return frame.silence !== true && level > PULSE_MUSIC_LEVEL
+}
+
+// Hysteresis state for the automatic level (module-level, reset on dispose).
+let musicHold = false
+let musicSince = 0
+let quietSince = 0
+
+/** The debounced version of "music is playing": on after 1.2 s of audio, off
+ *  only after 4 s of quiet, so a pause between tracks never flashes the whole
+ *  window darker. */
+function musicBoostActive() {
+  const playing = musicIsPlayingNow()
+  const now = Date.now()
+  if (playing) {
+    quietSince = 0
+    if (!musicSince) musicSince = now
+    if (!musicHold && now - musicSince >= MUSIC_ON_DELAY_MS) musicHold = true
+  } else {
+    musicSince = 0
+    if (!quietSince) quietSince = now
+    if (musicHold && now - quietSince >= MUSIC_OFF_DELAY_MS) musicHold = false
+  }
+  return musicHold
+}
+
+/** Chats currently being worked on (server's session count, never below 1). */
+function activeSessions() {
+  const frame = liveFrame
+  const count = frame && Number.isFinite(frame.sessions) ? frame.sessions : 1
+  return Math.max(1, Math.round(count))
+}
+
+/** The automatic level: 20% working, 30% with music, +3% per extra active
+ *  chat, clamped. This is the owner's spec and the default. */
+function autoVideoOpacity() {
+  const base = musicBoostActive() ? VIDEO_OPACITY_MUSIC : VIDEO_OPACITY
+  const extra = (activeSessions() - 1) * VIDEO_OPACITY_SESSION_STEP
+  return clamp01(Math.min(VIDEO_OPACITY_MAX, base + extra))
+}
+
+/** Automatic unless the user pinned a value from the controls. */
+function effectiveVideoOpacity() {
+  const settings = $settings.get()
+  if (settings.videoOpacityAuto === false) return clamp01(settings.videoOpacity)
+  return autoVideoOpacity()
+}
+
+/** Push the effective level onto a mounted backdrop. Cheap, so the poll tick
+ *  can call it every 250 ms and the backdrop follows the music. */
+function applyVideoOpacity() {
+  const settings = $settings.get()
+  if (!backdropEl || settings.backdropMode !== 'video' || settings.showWhen !== 'always') return
+  if (videoWindowOn()) {
+    backdropEl.style.opacity = '1'
+    return
+  }
+  backdropEl.style.opacity = String(effectiveVideoOpacity())
+}
+
+/** The backdrop's opacity for the current mode: the video player is a movie
+ *  behind your work and follows its adaptive transparency; the visualizer
+ *  keeps the full-strength page it was tuned for. */
+function backdropOpacity(settings) {
+  if (settings.backdropMode !== 'video') return 1
+  // A real frame is a window, not a wash: full strength.
+  if (videoWindowOn()) return 1
+  return effectiveVideoOpacity()
 }
 
 /** Keep exactly one backdrop mounted, in sync with the theme, live status and
  *  the "Show" mode. In "active" mode the fade state machine owns mounting. */
 function syncBackdrop() {
   const settings = $settings.get()
+  if (settings.backdropMode === 'video' && settings.videoClosed) {
+    resetShow()
+    removeBackdrop()
+    return
+  }
   if (!showEligible()) {
     resetShow()
     removeBackdrop()
@@ -612,7 +987,7 @@ function syncBackdrop() {
     return
   }
   resetShow()
-  mountBackdrop(liveUrl(), 1)
+  mountBackdrop(liveUrl(), backdropOpacity(settings))
 }
 
 function applyShowOpacity() {
@@ -840,6 +1215,13 @@ async function poll() {
     }
     updateShow()
     syncBackdrop()
+    syncPanel()
+    // Keep the film glued to the panel's stage (and to the window/corner) as
+    // the layout moves under us.
+    applyBackdropLayout()
+    syncVideoBar()
+    applyVideoOpacity()
+    syncThemeForActivity()
     accentStep(Date.now())
     pulseStep()
   } finally {
@@ -982,6 +1364,29 @@ function restoreTheme() {
   if (back) requestTheme(back)
 }
 
+/** Is Aura actually showing anything right now? */
+function auraShowingSomething() {
+  const settings = $settings.get()
+  const live = $live.get()
+  const enabled = live.ok ? live.enabled === true : settings.enabled
+  if (!enabled) return false
+  if (settings.backdropMode === 'video') return Boolean(settings.videoUrl) && !settings.videoClosed
+  return Boolean(settings.windowVisual) || knownTheme === THEME_NAME
+}
+
+/** Keep the installed theme while Aura has nothing to show (owner ask): the
+ *  Aura skin is for a window with a film or a visual in it, not an idle app.
+ *  Re-applies the moment something is showing again. */
+function syncThemeForActivity() {
+  const settings = $settings.get()
+  if (!settings.themeOptIn) return
+  if (settings.themeIdleRestore !== false && !auraShowingSomething()) {
+    restoreTheme()
+    return
+  }
+  if (auraShowingSomething() && !$themeApplied.get()) applyThemeIfOptedIn()
+}
+
 /** The probe reports the active skin. A user skin change drops our retint so
  *  the pulse re-derives from the new accent instead of carrying the old hue. */
 function onThemeName(name) {
@@ -1041,6 +1446,7 @@ async function setEnabled(next) {
   const enabled = Boolean(next)
   writeSettings({ enabled })
   if (!enabled) {
+    saveCurrentPosition()
     resetShow()
     removeBackdrop()
     clearAccent(true)
@@ -1120,6 +1526,10 @@ async function setVideoUrl(next) {
   if (!ctxRef || disposed) return
   const videoUrl = typeof next === 'string' ? next.trim().slice(0, VIDEO_URL_MAX) : ''
   if ($settings.get().videoUrl === videoUrl) return
+  // A deliberate source change keeps its bookmark: switching away and back
+  // should carry on, not restart. Save where we are before the switch.
+  saveCurrentPosition()
+  if (!skippingEpisode) autoSkipCount = 0
   writeSettings({ videoUrl })
   resetShow()
   removeBackdrop()
@@ -1127,6 +1537,1306 @@ async function setVideoUrl(next) {
   else updateShow()
   await pushControl({ video_url: videoUrl })
 }
+
+/** Jump to the next/previous saved source. `dir` is +1 or -1. */
+function stepVideo(dir) {
+  const queue = videoQueue()
+  if (!queue.length) return
+  const current = $settings.get().videoUrl
+  let index = queue.findIndex(item => item.url === current)
+  if (index < 0) index = dir > 0 ? -1 : 0
+  const next = queue[(index + dir + queue.length) % queue.length]
+  if (next) void applyVideoSource(next.url, next.label)
+}
+
+/** Everything playable, in the order prev/next walks it: what the user saved
+ *  first, then the starter pack, then automatic recents. */
+function videoQueue() {
+  const settings = $settings.get()
+  const seen = new Set()
+  const out = []
+  const push = (label, url) => {
+    const clean = typeof url === 'string' ? url.trim().slice(0, VIDEO_URL_MAX) : ''
+    if (!clean || seen.has(clean)) return
+    seen.add(clean)
+    out.push({ label: label || shortLabel(clean), url: clean })
+  }
+  for (const item of Array.isArray(settings.videoSources) ? settings.videoSources : []) push(item.label, item.url)
+  for (const item of Array.isArray(settings.videoPlaylists) ? settings.videoPlaylists : []) push(item.label, item.url)
+  const hidden = new Set(Array.isArray(settings.videoHiddenStarters) ? settings.videoHiddenStarters : [])
+  for (const item of STARTER_SOURCES) {
+    if (!hidden.has(item.url)) push(item.label, item.url)
+  }
+  for (const item of Array.isArray(settings.videoRecent) ? settings.videoRecent : []) push(item.label, item.url)
+  if (settings.videoUrl) push(shortLabel(settings.videoUrl), settings.videoUrl)
+  return out
+}
+
+/** Remember a URL as "recent" so the list builds itself: paste anything and it
+ *  joins the queue after one play. Capped at 8, newest first. */
+function rememberVideoSource(url, label) {
+  const clean = String(url || '').trim().slice(0, VIDEO_URL_MAX)
+  if (!clean) return
+  const settings = $settings.get()
+  const kept = (Array.isArray(settings.videoRecent) ? settings.videoRecent : [])
+    .filter(item => item && item.url !== clean)
+  kept.unshift({ label: label || shortLabel(clean), url: clean })
+  writeSettings({ videoRecent: kept.slice(0, 8) })
+  // A playlist link is a first-class thing: it gets its own saved entry so it
+  // survives the 8-item recents window and can be picked again.
+  if (isPlaylistUrl(clean)) {
+    const lists = (Array.isArray(settings.videoPlaylists) ? settings.videoPlaylists : [])
+      .filter(item => item && item.url !== clean)
+    lists.unshift({ label: label || shortLabel(clean), url: clean })
+    writeSettings({ videoPlaylists: lists.slice(0, 12) })
+  }
+}
+
+/** Apply a source: the backdrop reloads through the existing settings path,
+ *  so there is exactly one way a URL reaches the iframe. */
+async function applyVideoSource(url, label) {
+  if (!ctxRef || disposed) return
+  const videoUrl = typeof url === 'string' ? url.trim().slice(0, VIDEO_URL_MAX) : ''
+  if (!videoUrl) return
+  rememberVideoSource(videoUrl, label)
+  await setVideoUrl(videoUrl)
+}
+
+/** Video transparency pinned by hand: turns the automatic 20/30% follow off. */
+function setVideoOpacity(value) {
+  if (!ctxRef || disposed) return
+  const videoOpacity = clamp01(Number(value))
+  writeSettings({ videoOpacity, videoOpacityAuto: false })
+  applyVideoOpacity()
+  if (backdropEl) backdropEl.style.opacity = String(videoOpacity)
+}
+
+/** Back to the adaptive level (20% working / 30% with music / +3% per extra
+ *  active chat). */
+function setVideoOpacityAuto() {
+  if (!ctxRef || disposed) return
+  writeSettings({ videoOpacityAuto: true })
+  applyVideoOpacity()
+}
+
+/** Movie volume, 0..1. Applied through the same bridge as the transport and
+ *  re-sent whenever the player reloads, so a swap keeps the level. */
+function setVideoVolume(value) {
+  const videoVolume = clamp01(Number(value))
+  writeSettings({ videoVolume })
+  postToBackdrop({ cmd: 'volume', value: videoVolume })
+  const state = $video.get()
+  $video.set({
+    ...state,
+    volume: videoVolume,
+    muted: videoVolume === 0,
+    reportedAt: Date.now()
+  })
+  syncVideoBar(true)
+}
+
+/** Switch between the film behind the app and the film in its own frame. */
+function setVideoWindow(on) {
+  if (!ctxRef || disposed) return
+  writeSettings({ videoWindow: Boolean(on) })
+  applyBackdropLayout()
+  applyVideoOpacity()
+  positionVideoBar()
+  syncVideoBar(true)
+}
+
+/** Which corner the watch window parks in. */
+function setVideoWindowCorner(corner) {
+  if (!ctxRef || disposed) return
+  const next = VIDEO_WINDOW_CORNER_OPTIONS.includes(corner) ? corner : VIDEO_WINDOW_DEFAULT_CORNER
+  writeSettings({ videoWindowCorner: next })
+  applyBackdropLayout()
+  positionVideoBar()
+  syncVideoBar(true)
+}
+
+function setVideoWindowSize(size) {
+  if (!ctxRef || disposed) return
+  const next = Object.prototype.hasOwnProperty.call(VIDEO_WINDOW_SIZES, size)
+    ? size
+    : VIDEO_WINDOW_DEFAULT_SIZE
+  writeSettings({ videoWindowSize: next })
+  applyBackdropLayout()
+  positionVideoBar()
+  syncVideoBar(true)
+}
+
+/** Close the film: pause it, remember the spot, take it off screen. Reopening
+ *  returns to the same place — closing is not "forget". */
+function closeVideo() {
+  if (!ctxRef || disposed) return
+  saveCurrentPosition()
+  postToBackdrop({ cmd: 'pause' })
+  writeSettings({ videoClosed: true })
+  resetShow()
+  removeBackdrop()
+  removeVideoBar()
+  syncThemeForActivity()
+}
+
+/** Put the film back (window or backdrop, wherever it was). */
+function openVideo() {
+  if (!ctxRef || disposed) return
+  writeSettings({ videoClosed: false })
+  syncBackdrop()
+  syncVideoBar(true)
+  syncThemeForActivity()
+}
+
+/** How solid the floating strip is over the film. */
+function setVideoBarOpacity(value) {
+  if (!ctxRef || disposed) return
+  writeSettings({ videoBarOpacity: clamp01(Number(value)) })
+  syncVideoBar(true)
+}
+
+/** Forget where this film stopped (start it from the top next time). */
+function forgetVideoPosition() {
+  if (!ctxRef || disposed) return
+  const url = $settings.get().videoUrl
+  if (!url) return
+  const map = { ...($settings.get().videoPositions || {}) }
+  delete map[url]
+  writeSettings({ videoPositions: map })
+  postToBackdrop({ cmd: 'seekTo', value: 0 })
+  syncVideoBar(true)
+}
+
+/** Forget a saved source (playlist, recent or demo leftover). */
+function removeVideoSource(url) {
+  if (!ctxRef || disposed) return
+  const clean = String(url || '').trim()
+  if (!clean) return
+  const settings = $settings.get()
+  const keep = list => (Array.isArray(list) ? list : []).filter(item => item && item.url !== clean)
+  writeSettings({
+    videoSources: keep(settings.videoSources),
+    videoPlaylists: keep(settings.videoPlaylists),
+    videoRecent: keep(settings.videoRecent)
+  })
+  syncVideoBar(true)
+}
+
+/** Hide or restore the built-in demo videos. Demos are a starting point, not
+ *  furniture: one switch clears them all, and it comes back the same way. */
+function setDemosHidden(hidden) {
+  if (!ctxRef || disposed) return
+  writeSettings({ videoHiddenStarters: hidden ? STARTER_SOURCES.map(item => item.url) : [] })
+  syncVideoBar(true)
+}
+
+/** A YouTube playlist link (public or unlisted): plays in order and is saved
+ *  as a named playlist, because that is the only way to get real "next". */
+function isPlaylistUrl(url) {
+  return /[?&]list=[A-Za-z0-9_-]{10,}/.test(String(url || ''))
+}
+
+function postToBackdrop(message) {
+  try {
+    const win = backdropEl && backdropEl.contentWindow
+    if (!win) return false
+    win.postMessage({ aura: 'transport', ...message }, '*')
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** One entry point for every transport control, wherever it is clicked. */
+function videoCommand(cmd, value) {
+  if (cmd === 'next' || cmd === 'prev') {
+    stepVideo(cmd === 'next' ? 1 : -1)
+    return
+  }
+  if (cmd === 'play' || cmd === 'pause' || cmd === 'toggle') {
+    const state = $video.get()
+    const playing = cmd === 'toggle' ? !state.playing : cmd === 'play'
+    postToBackdrop({ cmd: playing ? 'play' : 'pause' })
+    // Optimistic: the player confirms within a tick, but the glyph should not
+    // lag behind the click.
+    $video.set({ ...state, playing, reportedAt: Date.now() })
+    return
+  }
+  postToBackdrop({ cmd, value })
+}
+
+// --- auto-skip un-embeddable playlist episodes ---------------------------
+// A playlist embed starts at item #1; if that video forbids embedding YouTube
+// reports nothing at all and the whole list looks broken. When the player says
+// "blocked", ask our server for the episode list and move to the next one.
+const playlistItemCache = new Map()
+let autoSkipCount = 0
+let blockedFor = ''
+let skippingEpisode = false
+
+async function fetchPlaylistItems(listId) {
+  if (!ctxRef || disposed) return []
+  if (playlistItemCache.has(listId)) return playlistItemCache.get(listId)
+  try {
+    const payload = await ctxRef.rest(`/playlist?id=${encodeURIComponent(listId)}`, { timeoutMs: 9000 })
+    const items = payload && Array.isArray(payload.items) ? payload.items : []
+    if (items.length) playlistItemCache.set(listId, items)
+    return items
+  } catch {
+    return []
+  }
+}
+
+async function skipBlockedEpisode() {
+  const url = $settings.get().videoUrl
+  const match = /[?&]list=([A-Za-z0-9_-]{10,})/.exec(String(url || ''))
+  if (!match || autoSkipCount >= 5) return
+  const listId = match[1]
+  const items = await fetchPlaylistItems(listId)
+  if (!items.length) return
+  const currentId = $video.get().videoId ||
+    (/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/.exec(String(url)) || [])[1] || ''
+  const index = items.findIndex(item => item.videoId === currentId)
+  const nextItem = items[index + 1]
+  if (!nextItem) return
+  autoSkipCount += 1
+  skippingEpisode = true
+  try {
+    await applyVideoSource(
+      `https://www.youtube.com/watch?v=${nextItem.videoId}&list=${listId}`,
+      nextItem.title || undefined
+    )
+  } finally {
+    skippingEpisode = false
+  }
+}
+
+/** player.html posts its transport state here (<= 4 Hz + on change). */
+function onBackdropMessage(event) {
+  if (disposed || !event || !backdropEl) return
+  if (event.source !== backdropEl.contentWindow) return
+  const data = event.data
+  if (!data || typeof data !== 'object' || data.aura !== 'video-state') return
+  if (typeof data.url === 'string' && $settings.get().videoUrl && data.url !== $settings.get().videoUrl) return
+  const position = Number.isFinite(data.position) ? Math.max(0, data.position) : 0
+  const duration = Number.isFinite(data.duration) ? Math.max(0, data.duration) : 0
+  // Remember where this film is (throttled to 5 s), so any interruption — a
+  // source swap, another plugin, closing the app — resumes in the same place.
+  if (data.blocked === true && data.url && blockedFor !== data.url) {
+    blockedFor = data.url
+    void skipBlockedEpisode()
+  }
+  if (typeof data.url === 'string' && data.url) {
+    if (data.ended === true) rememberPosition(data.url, 0, duration, true, data.videoId)
+    else rememberPosition(data.url, position, duration, false, data.videoId)
+  }
+  $video.set({
+    kind: typeof data.kind === 'string' ? data.kind : '',
+    playing: data.playing === true,
+    position,
+    duration,
+    muted: data.muted !== false,
+    title: typeof data.title === 'string' ? data.title.slice(0, 120) : '',
+    blocked: data.blocked === true,
+    controllable: data.controllable === true,
+    reportedAt: Date.now()
+  })
+}
+
+
+// ------------------------------------------------------ floating video bar
+// A transport pill at the bottom of the window. Plain DOM, like the dev
+// readout: the host offers no "floating anywhere" slot and a status-bar
+// contribution cannot be pointer-interactive over the whole window. It fades
+// out after 3 s without mouse movement and returns on the next move, so it
+// never competes with the work behind it. Hidden entirely unless the video
+// backdrop is actually on screen.
+const VIDEO_BAR_IDLE_MS = 3000
+let videoBarEl = null
+let videoBarParts = null
+let videoBarHideTimer = null
+// Live drag of the watch window (grip on the strip). Timers/listeners are
+// host-owned or removed in removeVideoBar; the position is persisted on drop.
+let windowDrag = null
+
+function onWindowDragMove(event) {
+  if (!windowDrag || !backdropEl || !event) return
+  const width = videoWindowWidth()
+  const height = Math.round(width * 9 / 16)
+  const view = doc && doc.defaultView
+  const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
+  const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
+  const x = Math.min(Math.max(8, windowDrag.startX + (event.clientX - windowDrag.pointerX)), Math.max(8, vw - width - 8))
+  const y = Math.min(Math.max(8, windowDrag.startY + (event.clientY - windowDrag.pointerY)), Math.max(8, vh - height - 8))
+  windowDrag.x = x
+  windowDrag.y = y
+  backdropEl.style.left = `${x}px`
+  backdropEl.style.top = `${y}px`
+  if (videoBarEl) {
+    const barWidth = videoBarEl.getBoundingClientRect
+      ? (videoBarEl.getBoundingClientRect().width || 0)
+      : 0
+    videoBarEl.style.left = `${Math.round(x + (width - barWidth) / 2)}px`
+    videoBarEl.style.top = `${y + height + 8}px`
+  }
+}
+
+function endWindowDrag() {
+  if (!windowDrag) return
+  const { x, y } = windowDrag
+  windowDrag = null
+  if (doc) {
+    doc.removeEventListener('mousemove', onWindowDragMove)
+    doc.removeEventListener('mouseup', endWindowDrag)
+  }
+  // Remember it: this is the whole point of dragging.
+  writeSettings({ videoWindowCorner: 'free', videoWindowX: x, videoWindowY: y })
+  positionVideoBar()
+}
+
+function beginWindowDrag(event) {
+  if (!backdropEl || !event) return
+  try { event.preventDefault() } catch { /* synthetic */ }
+  // Dragging the grip while the film is a full-window backdrop is also how you
+  // "open a frame": grab it and it becomes a window you can drop anywhere.
+  if (!videoWindowOn()) {
+    writeSettings({ videoWindow: true, videoClosed: false })
+    applyBackdropLayout()
+  }
+  const style = backdropEl.style
+  const startX = parseFloat(style.left)
+  const startY = parseFloat(style.top)
+  windowDrag = {
+    pointerX: event.clientX,
+    pointerY: event.clientY,
+    startX: Number.isFinite(startX) ? startX : 24,
+    startY: Number.isFinite(startY) ? startY : 24,
+    x: 0,
+    y: 0
+  }
+  if (doc) {
+    doc.addEventListener('mousemove', onWindowDragMove, { passive: true })
+    doc.addEventListener('mouseup', endWindowDrag)
+  }
+}
+let volumePushedFor = ''
+// Where the movie was when we last saw it. Kept across a plugin remount so
+// switching to another plugin (Omniscience and friends) and back does not drop
+// you to the start of the film: the player is reloaded, then seeked to here.
+let resumeSavedAt = 0
+
+/** The chat composer's box, found by behaviour rather than by class name: the
+ *  lowest wide text-entry field in the window. The strip parks itself just
+ *  above it (owner ask: "just above the chat box"), and falls back to a safe
+ *  bottom-left spot when the app's layout changes under us. */
+function composerRect() {
+  if (!doc || typeof doc.querySelectorAll !== 'function') return null
+  const view = doc.defaultView || globalThis
+  const height = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
+  const nodes = doc.querySelectorAll('textarea, [contenteditable="true"]')
+  let best = null
+  for (const node of nodes) {
+    if (!node || typeof node.getBoundingClientRect !== 'function') continue
+    const rect = node.getBoundingClientRect()
+    if (!rect || !rect.width || !rect.height) continue
+    if (rect.width < 160) continue
+    if (rect.top < height * 0.4) continue
+    if (!best || rect.top < best.top) best = rect
+  }
+  return best
+}
+
+// The watch window: instead of the film sitting behind the whole app at 20%,
+// it can live in its own real frame (PiP-style) so you can actually watch it
+// without the chat text reading through it. Same single player instance — the
+// iframe is re-laid-out, never duplicated, so there is one audio source.
+
+/** Is the film in its own frame rather than behind the app? */
+function videoWindowOn() {
+  const settings = $settings.get()
+  return settings.backdropMode === 'video' && settings.videoWindow === true
+}
+
+function videoWindowWidth() {
+  const settings = $settings.get()
+  return VIDEO_WINDOW_SIZES[settings.videoWindowSize] || VIDEO_WINDOW_SIZES[VIDEO_WINDOW_DEFAULT_SIZE]
+}
+
+/** Lay the player out as the backdrop (full bleed, behind everything) or as a
+ *  real frame above the app. */
+/** Where the watch window sits, in CSS px, clamped to the viewport. A free
+ *  position wins over the corner presets; corners are just the starting point
+ *  the first time you drag it. */
+function videoWindowPoint(width) {
+  const settings = $settings.get()
+  const view = doc && doc.defaultView
+  const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
+  const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
+  const frameHeight = Math.round(width * 9 / 16)
+  const clampX = value => Math.min(Math.max(8, vw - width - 8), Math.max(8, value))
+  const clampY = value => Math.min(Math.max(8, vh - frameHeight - 8), Math.max(8, value))
+  if (settings.videoWindowCorner === 'free' &&
+      Number.isFinite(settings.videoWindowX) && Number.isFinite(settings.videoWindowY)) {
+    return { x: clampX(settings.videoWindowX), y: clampY(settings.videoWindowY) }
+  }
+  const corner = VIDEO_WINDOW_CORNERS.includes(settings.videoWindowCorner)
+    ? settings.videoWindowCorner
+    : VIDEO_WINDOW_DEFAULT_CORNER
+  const right = corner.endsWith('right')
+  const bottom = corner.startsWith('bottom')
+  return {
+    x: right ? clampX(vw - width - VIDEO_WINDOW_RIGHT_MARGIN) : VIDEO_WINDOW_RIGHT_MARGIN,
+    y: bottom ? clampY(vh - frameHeight - VIDEO_WINDOW_BOTTOM) : VIDEO_WINDOW_TOP
+  }
+}
+
+function applyBackdropLayout() {
+  if (!backdropEl) return
+  // Mid-drag the style is the truth; re-applying the saved point would fight it.
+  if (windowDrag) return
+  const style = backdropEl.style
+  const current = $settings.get()
+  // Docked panel: the film lives inside the panel's stage, not behind the app.
+  if (panelVisible() && current.backdropMode === 'video' && !current.videoClosed && !videoWindowOn()) {
+    const slot = panelVideoSlot()
+    if (slot) {
+      style.inset = 'auto'
+      style.left = `${Math.round(slot.left)}px`
+      style.top = `${Math.round(slot.top)}px`
+      style.width = `${Math.round(slot.width)}px`
+      style.height = `${Math.round(slot.height)}px`
+      style.right = 'auto'
+      style.bottom = 'auto'
+      style.borderRadius = '12px'
+      style.border = '0'
+      style.boxShadow = 'none'
+      style.overflow = 'hidden'
+      style.zIndex = '999991'
+      style.background = '#000'
+      return
+    }
+  }
+  if (videoWindowOn()) {
+    const width = videoWindowWidth()
+    const point = videoWindowPoint(width)
+    style.inset = 'auto'
+    style.left = `${point.x}px`
+    style.top = `${point.y}px`
+    style.right = 'auto'
+    style.bottom = 'auto'
+    style.width = `${width}px`
+    style.height = `${Math.round(width * 9 / 16)}px`
+    style.borderRadius = '12px'
+    style.border = '1px solid rgba(255,255,255,0.16)'
+    style.boxShadow = '0 14px 40px rgba(0,0,0,0.5)'
+    style.overflow = 'hidden'
+    // Above the app so the film is not read through by chat text, below the
+    // control strip. Still click-through: the strip is the remote.
+    style.zIndex = '999997'
+    style.background = '#000'
+  } else {
+    style.inset = '0'
+    style.left = '0'
+    style.right = 'auto'
+    style.bottom = 'auto'
+    style.width = '100vw'
+    style.height = '100vh'
+    style.borderRadius = '0'
+    style.border = '0'
+    style.boxShadow = 'none'
+    style.overflow = 'visible'
+    style.zIndex = '-1'
+    style.background = 'transparent'
+  }
+}
+
+function positionVideoBar() {
+  if (!videoBarEl) return
+  // Never reposition mid-drag: the 4 Hz tick would snap the frame back to the
+  // last saved spot while your mouse is still moving it.
+  if (windowDrag) return
+  const view = doc && doc.defaultView
+  const height = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
+  if (videoWindowOn()) {
+    // Centre the strip under the film, the way a player's controls sit centred
+    // under the picture — and keep it inside the viewport if the frame is
+    // dragged to an edge.
+    const width = videoWindowWidth()
+    const point = videoWindowPoint(width)
+    const frameHeight = Math.round(width * 9 / 16)
+    const view = doc && doc.defaultView
+    const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
+    const barWidth = videoBarEl.getBoundingClientRect
+      ? (videoBarEl.getBoundingClientRect().width || 0)
+      : 0
+    const centred = barWidth ? point.x + (width - barWidth) / 2 : point.x
+    const clamped = Math.min(Math.max(8, centred), Math.max(8, vw - barWidth - 8))
+    videoBarEl.style.left = `${Math.round(clamped)}px`
+    videoBarEl.style.right = 'auto'
+    videoBarEl.style.top = `${point.y + frameHeight + 8}px`
+    videoBarEl.style.bottom = 'auto'
+    return
+  }
+  videoBarEl.style.right = 'auto'
+  videoBarEl.style.top = 'auto'
+  const rect = composerRect()
+  if (rect) {
+    videoBarEl.style.left = `${Math.max(12, Math.round(rect.left))}px`
+    videoBarEl.style.bottom = `${Math.max(12, Math.round(height - rect.top + 10))}px`
+  } else {
+    videoBarEl.style.left = '24px'
+    videoBarEl.style.bottom = '150px'
+  }
+}
+
+function fmtClock(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0))
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+}
+
+/** "12:34", "1:02:03" or plain seconds -> seconds, or null when unparseable. */
+function parseClock(value) {
+  const text = String(value || '').trim()
+  if (!text) return null
+  if (/^\d+$/.test(text)) return Number(text)
+  const parts = text.split(':').map(part => Number(part))
+  if (parts.some(part => !Number.isFinite(part) || part < 0)) return null
+  if (parts.length === 2) return parts[0] * 60 + parts[1]
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
+  return null
+}
+
+function videoBarActive() {
+  const settings = $settings.get()
+  const live = $live.get()
+  const enabled = live.ok ? live.enabled === true : settings.enabled
+  if (!doc || !enabled || settings.backdropMode !== 'video' || !settings.videoUrl || settings.videoClosed) return false
+  // When the docked panel is open it owns the controls; the pill is for the
+  // tray-only life.
+  if (panelVisible() && settings.panelCollapsed !== true) return false
+  return true
+}
+
+function videoBarButton(label, aria, cmd, value) {
+  const el = doc.createElement('button')
+  el.type = 'button'
+  el.textContent = label
+  el.setAttribute('aria-label', aria)
+  el.title = aria
+  Object.assign(el.style, {
+    appearance: 'none', border: '0', borderRadius: '999px', cursor: 'pointer',
+    width: '24px', height: '24px', display: 'inline-flex',
+    alignItems: 'center', justifyContent: 'center',
+    background: 'transparent', color: 'inherit', font: 'inherit', fontSize: '12px',
+    lineHeight: '1', padding: '0'
+  })
+  el.addEventListener('mouseenter', () => { el.style.background = 'rgba(255,255,255,0.14)' })
+  el.addEventListener('mouseleave', () => { el.style.background = 'transparent' })
+  el.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    showVideoBar()
+    videoCommand(cmd, value)
+  })
+  return el
+}
+
+function mountVideoBar() {
+  if (videoBarEl || !doc || !doc.body || typeof doc.createElement !== 'function') return
+  const bar = doc.createElement('div')
+  bar.setAttribute('role', 'toolbar')
+  bar.setAttribute('aria-label', 'Aura video controls')
+  const barAlpha = clamp01(Number.isFinite($settings.get().videoBarOpacity)
+    ? $settings.get().videoBarOpacity
+    : VIDEO_BAR_OPACITY)
+  Object.assign(bar.style, {
+    position: 'fixed', left: '24px', bottom: '140px', transform: 'none',
+    display: 'flex', alignItems: 'center', gap: '2px',
+    padding: '4px 8px', borderRadius: '999px',
+    background: `rgba(12, 10, 22, ${barAlpha})`, color: '#fff',
+    border: '1px solid rgba(255,255,255,0.14)',
+    boxShadow: '0 8px 28px rgba(0,0,0,0.38)',
+    backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+    font: '11px/1 system-ui, -apple-system, sans-serif',
+    zIndex: '999998', pointerEvents: 'auto', opacity: '1',
+    WebkitAppRegion: 'no-drag',
+    transition: 'opacity 220ms ease', userSelect: 'none'
+  })
+  // Reveal/hide is attached to the bar's own document here rather than relying
+  // on one registration elsewhere: the strip must never become unfindable.
+  if (doc && typeof doc.addEventListener === 'function') {
+    doc.addEventListener('mousemove', onVideoBarMouseMove, { passive: true })
+    doc.addEventListener('mousedown', onVideoBarMouseMove, { passive: true })
+  }
+
+  const prev = videoBarButton('⏮', 'Previous source', 'prev')
+  const back = videoBarButton('⏪', 'Back 10 seconds', 'seek', -10)
+  const backMin = videoBarButton('-1m', 'Back 1 minute', 'seek', -60)
+  const play = videoBarButton('▶', 'Play', 'toggle')
+  const fwdMin = videoBarButton('+1m', 'Forward 1 minute', 'seek', 60)
+  const fwd = videoBarButton('⏩', 'Forward 10 seconds', 'seek', 10)
+  const next = videoBarButton('⏭', 'Next source', 'next')
+  Object.assign(backMin.style, { width: 'auto', padding: '0 5px', fontSize: '11px' })
+  Object.assign(fwdMin.style, { width: 'auto', padding: '0 5px', fontSize: '11px' })
+
+  // A scrub bar: click anywhere on it to jump. This is the fine control the
+  // ±10s/±1m buttons cannot give — it moves you anywhere in the film in one
+  // click, and it is the fastest way to skip a long way in either direction.
+  const scrub = doc.createElement('div')
+  scrub.setAttribute('role', 'slider')
+  scrub.setAttribute('aria-label', 'Seek')
+  Object.assign(scrub.style, {
+    width: '92px', height: '16px', display: 'flex', alignItems: 'center',
+    cursor: 'pointer', flex: 'none'
+  })
+  const track = doc.createElement('div')
+  Object.assign(track.style, {
+    position: 'relative', width: '100%', height: '3px',
+    borderRadius: '999px', background: 'rgba(255,255,255,0.24)', overflow: 'hidden'
+  })
+  const fill = doc.createElement('div')
+  Object.assign(fill.style, {
+    position: 'absolute', inset: '0 auto 0 0', width: '0%',
+    background: 'rgba(255,255,255,0.9)'
+  })
+  track.appendChild(fill)
+  scrub.appendChild(track)
+  scrub.addEventListener('click', event => {
+    const state = $video.get()
+    if (!state.duration) return
+    const rect = scrub.getBoundingClientRect ? scrub.getBoundingClientRect() : null
+    if (!rect || !rect.width) return
+    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
+    postToBackdrop({ cmd: 'seekTo', value: ratio * state.duration })
+    showVideoBar()
+  })
+
+  const time = doc.createElement('span')
+  Object.assign(time.style, {
+    minWidth: '74px', textAlign: 'center', fontVariantNumeric: 'tabular-nums',
+    color: 'rgba(255,255,255,0.82)', fontSize: '11px'
+  })
+
+  const volume = videoBarButton('🔊', 'Volume — scroll to change', 'volume')
+  Object.assign(volume.style, { width: 'auto', padding: '0 6px', fontSize: '12px' })
+  volume.addEventListener('click', () => {
+    const current = $settings.get().videoVolume
+    setVideoVolume(current > 0 ? 0 : (VIDEO_VOLUME || 0.7))
+  })
+
+  // Watch window: the film in its own frame instead of behind the app.
+  const windowBtn = videoBarButton('⧉', 'Watch window', 'noop')
+  Object.assign(windowBtn.style, { width: 'auto', padding: '0 6px', fontSize: '12px' })
+  windowBtn.addEventListener('click', () => {
+    setVideoWindow(!videoWindowOn())
+  })
+
+  const sep = doc.createElement('span')
+  Object.assign(sep.style, {
+    width: '1px', height: '16px', background: 'rgba(255,255,255,0.16)', margin: '0 3px'
+  })
+
+  // Drag grip: the watch window goes wherever you drop it. Made obvious on
+  // purpose — the first version was a bare glyph nobody could find.
+  const grip = doc.createElement('span')
+  grip.textContent = '⠿'
+  grip.setAttribute('aria-label', 'Drag to move the watch window')
+  grip.title = 'Drag to move the watch window'
+  Object.assign(grip.style, {
+    cursor: 'grab', fontSize: '12px', lineHeight: '1',
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: '20px', height: '22px', flex: 'none',
+    borderRadius: '6px', background: 'rgba(255,255,255,0.16)',
+    border: '1px solid rgba(255,255,255,0.22)', userSelect: 'none',
+    color: 'inherit'
+  })
+  grip.addEventListener('mousedown', event => beginWindowDrag(event))
+
+  // Close: pauses and takes the film off screen; Settings/quick menu can
+  // reopen it, and it resumes where it stopped.
+  const close = doc.createElement('span')
+  close.textContent = '✕'
+  close.setAttribute('role', 'button')
+  close.setAttribute('aria-label', 'Close video')
+  close.title = 'Close video (resumes where it stopped)'
+  Object.assign(close.style, {
+    cursor: 'pointer', fontSize: '12px', lineHeight: '1',
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: '20px', height: '22px', flex: 'none',
+    borderRadius: '6px', background: 'rgba(255,255,255,0.10)',
+    userSelect: 'none'
+  })
+  close.addEventListener('click', () => closeVideo())
+
+  // The strip is deliberately small: a transport bar, not a dashboard. The
+  // source picker and transparency live in the A popover, where there is room.
+  for (const node of [grip, prev, back, play, fwd, next, sep, scrub, time, volume, windowBtn, close]) {
+    bar.appendChild(node)
+  }
+  // Grabbing empty strip (not a button) also drags the window.
+  bar.addEventListener('mousedown', event => {
+    if (!event || event.target !== bar) return
+    beginWindowDrag(event)
+  })
+  // Wheel over the strip = volume, the way every media player behaves. It is
+  // the one gesture that is worth the surprise, and it only fires over the
+  // pill, never over the chat.
+  bar.addEventListener('wheel', event => {
+    if (!event) return
+    try { event.preventDefault() } catch { /* synthetic events */ }
+    const step = event.deltaY < 0 ? 0.05 : -0.05
+    setVideoVolume(clamp01($settings.get().videoVolume + step))
+    showVideoBar()
+  }, { passive: false })
+
+  doc.body.appendChild(bar)
+  videoBarEl = bar
+  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill }
+}
+
+function removeVideoBar() {
+  if (videoBarHideTimer) {
+    clearTimeout(videoBarHideTimer)
+    videoBarHideTimer = null
+  }
+  if (doc && typeof doc.removeEventListener === 'function') {
+    doc.removeEventListener('mousemove', onVideoBarMouseMove)
+    doc.removeEventListener('mousedown', onVideoBarMouseMove)
+  }
+  if (windowDrag && doc) {
+    doc.removeEventListener('mousemove', onWindowDragMove)
+    doc.removeEventListener('mouseup', endWindowDrag)
+  }
+  windowDrag = null
+  if (videoBarEl && videoBarEl.parentNode) videoBarEl.parentNode.removeChild(videoBarEl)
+  videoBarEl = null
+  videoBarParts = null
+}
+
+/** Reveal the bar and restart the idle countdown. Idle fades it to a ghost,
+ *  never to nothing: the owner lost the controls entirely when it hid, and a
+ *  ghost is still findable. */
+function showVideoBar() {
+  if (!videoBarEl) return
+  videoBarEl.style.opacity = '1'
+  videoBarEl.style.pointerEvents = 'auto'
+  if (videoBarHideTimer) clearTimeout(videoBarHideTimer)
+  videoBarHideTimer = setTimeout(() => {
+    videoBarHideTimer = null
+    if (!videoBarEl) return
+    videoBarEl.style.opacity = '0.22'
+  }, VIDEO_BAR_IDLE_MS)
+}
+
+function onVideoBarMouseMove() {
+  if (videoBarEl) showVideoBar()
+}
+
+/** Keep the pill in step with settings/transport state. Called from the poll
+ *  tick (4 Hz), so it costs one comparison per node at most. */
+// ---------------------------------------------------------- the Aura panel
+// A docked, theatre-styled column on the left for people who never touch a
+// status bar: the film in a proper frame at the top, a scrubber under it, a
+// poster list of sources below. It takes layout space (body padding) rather
+// than covering the chat, collapses to a slim rail, and can be switched off
+// entirely, leaving only the status tray.
+const PANEL_WIDTH = 320
+const PANEL_RAIL = 44
+const PANEL_SCORE_MAX = 12
+
+let panelEl = null
+let panelParts = null
+let panelStyleEl = null
+
+// KILL SWITCH: the floating panel is being replaced by a docked pane. Until
+// that lands it stays off no matter what is stored, so it cannot cover the
+// composer or swallow clicks.
+const PANEL_PENDING_DOCK = true
+
+/** Panel is on screen when enabled and not hidden by the user. */
+function panelVisible() {
+  if (PANEL_PENDING_DOCK) return false
+  const settings = $settings.get()
+  const live = $live.get()
+  const enabled = live.ok ? live.enabled === true : settings.enabled
+  return Boolean(doc && enabled && settings.panelEnabled !== false)
+}
+
+function panelCss() {
+  return `
+    /* Deliberately no body padding: shifting the whole app was what pushed the
+       sessions sidebar off its own panel. A docked pane takes real layout space
+       instead. */
+    #aura-panel {
+      /* Below the titlebar: that strip is an OS drag region, so a button drawn
+         under it never receives the click. -webkit-app-region:no-drag keeps
+         our own controls clickable. */
+      position: fixed; left: 0; top: 42px; bottom: 0; width: var(--ap-w, ${PANEL_WIDTH}px);
+      -webkit-app-region: no-drag;
+      z-index: 2147483000; display: flex; flex-direction: column; gap: 10px;
+      padding: 12px 12px 10px; box-sizing: border-box; overflow: hidden;
+      color: #f3ece2; font: 12px/1.35 system-ui, -apple-system, sans-serif;
+      background: linear-gradient(180deg, #14101f 0%, #1b1418 55%, #241a12 100%);
+      border-right: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 18px 0 44px rgba(0,0,0,0.35);
+      transition: width 220ms ease;
+    }
+    #aura-panel::before {
+      content: ''; position: absolute; inset: 0 0 auto 0; height: 220px; pointer-events: none;
+      background: radial-gradient(120% 90% at 50% -10%, rgba(255,150,80,0.20), rgba(255,120,160,0.06) 45%, transparent 70%);
+    }
+    #aura-panel[data-collapsed="true"] { width: ${PANEL_RAIL}px; padding: 12px 6px; }
+    #aura-panel[data-collapsed="true"] .ap-body { display: none; }
+    #aura-panel[data-collapsed="true"] .ap-name,
+    #aura-panel[data-collapsed="true"] .ap-collapse { display: none; }
+    .ap-head { display: flex; align-items: center; gap: 8px; position: relative; z-index: 1; }
+    .ap-name { font-weight: 650; letter-spacing: 0.4px; font-size: 13px; }
+    .ap-head button {
+      appearance: none; border: 0; background: rgba(255,255,255,0.07); color: inherit;
+      width: 22px; height: 22px; border-radius: 7px; cursor: pointer; font-size: 12px;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .ap-head button:hover { background: rgba(255,255,255,0.16); }
+    .ap-spacer { flex: 1; }
+    .ap-body { display: flex; flex-direction: column; gap: 10px; position: relative; z-index: 1; min-height: 0; }
+    .ap-stage {
+      position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden;
+      background: radial-gradient(circle at 50% 40%, #221a2e, #0d0a12 75%);
+      border: 1px solid rgba(255,255,255,0.10);
+      box-shadow: inset 0 0 40px rgba(255,150,80,0.06), 0 10px 30px rgba(0,0,0,0.4);
+    }
+    .ap-hint {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      text-align: center; padding: 12px; color: #cfc4b8; font-size: 11px; pointer-events: none;
+    }
+    .ap-scrub { display: flex; align-items: center; gap: 8px; }
+    .ap-track { position: relative; flex: 1; height: 4px; border-radius: 999px; background: rgba(255,255,255,0.16); cursor: pointer; }
+    .ap-fill { position: absolute; inset: 0 auto 0 0; width: 0%; border-radius: 999px;
+      background: linear-gradient(90deg, rgba(255,190,120,0.95), rgba(255,140,160,0.95)); }
+    .ap-time { font-size: 10px; font-variant-numeric: tabular-nums; color: rgba(243,236,226,0.7); min-width: 68px; text-align: right; }
+    .ap-transport { display: flex; align-items: center; justify-content: center; gap: 4px; }
+    .ap-transport button {
+      appearance: none; border: 0; background: transparent; color: inherit; cursor: pointer;
+      width: 30px; height: 30px; border-radius: 9px; font-size: 14px;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .ap-transport button:hover { background: rgba(255,255,255,0.12); }
+    .ap-transport button[data-primary="true"] {
+      background: rgba(255,190,120,0.16); border: 1px solid rgba(255,190,120,0.35);
+    }
+    .ap-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 0; padding-right: 2px; }
+    .ap-card {
+      display: flex; align-items: center; gap: 9px; padding: 6px; border-radius: 10px; cursor: pointer;
+      background: rgba(255,255,255,0.035); border: 1px solid transparent; text-align: left;
+    }
+    .ap-card:hover { background: rgba(255,255,255,0.08); }
+    .ap-card[data-active="true"] { border-color: rgba(255,190,120,0.45); background: rgba(255,190,120,0.10); }
+    .ap-thumb {
+      width: 64px; height: 36px; border-radius: 6px; flex: none; object-fit: cover;
+      background: linear-gradient(135deg, #2a2136, #40302a); display: block;
+    }
+    .ap-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .ap-title { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ap-kind { font-size: 9px; letter-spacing: 0.6px; text-transform: uppercase; color: rgba(243,236,226,0.45); }
+    .ap-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.08); }
+    .ap-foot input[type="range"] { flex: 1; accent-color: #ffbf78; }
+    .ap-empty { font-size: 11px; color: rgba(243,236,226,0.5); text-align: center; padding: 10px 0; }
+  `
+}
+
+let uiStyleEl = null
+
+/** Aura's own control styling, independent of the host theme.
+ *
+ *  Chromium draws the <select> popup itself and ignores per-option colours: in
+ *  a dark theme the list came out white text on white. `color-scheme: light` is
+ *  the only reliable override, and it has to be applied to every select we own —
+ *  hence one class and one rule rather than per-element styles. */
+function uiCss() {
+  return `
+    select.aura-select { color-scheme: light !important; }
+    select.aura-select option { background: #f1f1f1 !important; color: #111111 !important; }
+  `
+}
+
+function ensureUiStyle() {
+  if (!doc || !doc.head || uiStyleEl) return
+  uiStyleEl = doc.createElement('style')
+  uiStyleEl.setAttribute('id', 'aura-ui-style')
+  doc.head.appendChild(uiStyleEl)
+  uiStyleEl.textContent = uiCss()
+}
+
+function removeUiStyle() {
+  if (uiStyleEl && uiStyleEl.parentNode) uiStyleEl.parentNode.removeChild(uiStyleEl)
+  uiStyleEl = null
+}
+
+function ensurePanelStyle() {
+  if (!doc || !doc.head) return
+  if (panelStyleEl) return
+  panelStyleEl = doc.createElement('style')
+  panelStyleEl.setAttribute('id', 'aura-panel-style')
+  doc.head.appendChild(panelStyleEl)
+  panelStyleEl.textContent = panelCss()
+}
+
+function removePanelStyle() {
+  if (panelStyleEl && panelStyleEl.parentNode) panelStyleEl.parentNode.removeChild(panelStyleEl)
+  panelStyleEl = null
+  if (doc && doc.body && doc.body.classList && typeof doc.body.classList.remove === 'function') {
+    // Host body styles are never written; nothing to undo. */
+  }
+}
+
+/** YouTube artwork for a card; anything else gets a warm gradient block. */
+function thumbFor(url) {
+  const match = /(?:youtube(?:-nocookie)?\.com\/(?:watch\?(?:[^#]*&)?v=|embed\/|shorts\/|live\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/.exec(String(url || ''))
+  return match ? `https://i.ytimg.com/vi/${match[1]}/mqdefault.jpg` : ''
+}
+
+function panelButton(label, aria, onClick, primary) {
+  const el = doc.createElement('button')
+  el.type = 'button'
+  el.textContent = label
+  el.setAttribute('aria-label', aria)
+  el.title = aria
+  if (primary) el.setAttribute('data-primary', 'true')
+  el.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    onClick()
+  })
+  return el
+}
+
+function mountPanel() {
+  if (PANEL_PENDING_DOCK) return
+  if (panelEl || !doc || !doc.body) return
+  ensurePanelStyle()
+  const collapsed = $settings.get().panelCollapsed === true
+
+  const panel = doc.createElement('div')
+  panel.setAttribute('id', 'aura-panel')
+  panel.setAttribute('data-collapsed', collapsed ? 'true' : 'false')
+
+  const head = doc.createElement('div')
+  head.className = 'ap-head'
+
+  const name = doc.createElement('span')
+  name.className = 'ap-name'
+  name.textContent = 'Aura'
+
+  const collapse = panelButton(collapsed ? '›' : '‹', collapsed ? 'Expand panel' : 'Collapse panel', () => {
+    setPanelCollapsed(!collapsed)
+  })
+  collapse.className = 'ap-collapse'
+
+  const hide = panelButton('✕', 'Hide panel (status tray only)', () => setPanelEnabled(false))
+  const spacer = doc.createElement('span')
+  spacer.className = 'ap-spacer'
+
+  head.appendChild(name)
+  head.appendChild(spacer)
+  head.appendChild(collapse)
+  head.appendChild(hide)
+
+  const body = doc.createElement('div')
+  body.className = 'ap-body'
+
+  const stage = doc.createElement('div')
+  stage.className = 'ap-stage'
+  const hint = doc.createElement('div')
+  hint.className = 'ap-hint'
+  hint.textContent = 'No film playing'
+  stage.appendChild(hint)
+
+  const scrub = doc.createElement('div')
+  scrub.className = 'ap-scrub'
+  const track = doc.createElement('div')
+  track.className = 'ap-track'
+  const fill = doc.createElement('div')
+  fill.className = 'ap-fill'
+  track.appendChild(fill)
+  const time = doc.createElement('span')
+  time.className = 'ap-time'
+  time.textContent = '—'
+  scrub.appendChild(track)
+  scrub.appendChild(time)
+  track.addEventListener('click', event => {
+    const state = $video.get()
+    if (!state.duration || !track.getBoundingClientRect) return
+    const rect = track.getBoundingClientRect()
+    if (!rect || !rect.width) return
+    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
+    postToBackdrop({ cmd: 'seekTo', value: ratio * state.duration })
+  })
+
+  const transport = doc.createElement('div')
+  transport.className = 'ap-transport'
+  const prev = panelButton('⏮', 'Previous source', () => videoCommand('prev'))
+  const back = panelButton('⏪', 'Back 10 seconds', () => videoCommand('seek', -10))
+  const play = panelButton('▶', 'Play', () => videoCommand('toggle'), true)
+  const fwd = panelButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10))
+  const next = panelButton('⏭', 'Next source', () => videoCommand('next'))
+  for (const node of [prev, back, play, fwd, next]) transport.appendChild(node)
+
+  const list = doc.createElement('div')
+  list.className = 'ap-list'
+
+  const foot = doc.createElement('div')
+  foot.className = 'ap-foot'
+  const vol = doc.createElement('input')
+  vol.type = 'range'
+  vol.min = '0'
+  vol.max = '100'
+  vol.step = '1'
+  vol.setAttribute('aria-label', 'Volume')
+  vol.addEventListener('input', event => {
+    setVideoVolume(Number(event && event.target ? event.target.value : 70) / 100)
+  })
+  foot.appendChild(vol)
+
+  for (const node of [stage, scrub, transport, list, foot]) body.appendChild(node)
+  panel.appendChild(head)
+  panel.appendChild(body)
+  doc.body.appendChild(panel)
+  if (doc.body.classList && typeof doc.body.classList.add === 'function') {
+    // (no body padding: see the CSS note)
+  }
+
+  panelEl = panel
+  panelParts = { panel, body, stage, hint, track, fill, time, play, list, vol }
+  syncPanel(true)
+}
+
+function removePanel() {
+  if (panelEl && panelEl.parentNode) panelEl.parentNode.removeChild(panelEl)
+  panelEl = null
+  panelParts = null
+  removePanelStyle()
+}
+
+/** The rect the film should occupy inside the panel, or null. */
+function panelVideoSlot() {
+  const parts = panelParts
+  if (!parts || !parts.stage || !parts.stage.getBoundingClientRect) return null
+  const rect = parts.stage.getBoundingClientRect()
+  if (!rect || !rect.width || !rect.height) return null
+  return rect
+}
+
+function syncPanel(force) {
+  if (!panelVisible()) {
+    removePanel()
+    return
+  }
+  if (!panelEl) {
+    try {
+      mountPanel()
+    } catch (cause) {
+      setError(`Aura could not draw the left panel (${String(cause && cause.message || cause).slice(0, 80)}).`)
+      return
+    }
+  }
+  const parts = panelParts
+  if (!parts) return
+  const settings = $settings.get()
+  const state = $video.get()
+  const collapsed = settings.panelCollapsed === true
+  if (parts.panel.getAttribute('data-collapsed') !== (collapsed ? 'true' : 'false')) {
+    parts.panel.setAttribute('data-collapsed', collapsed ? 'true' : 'false')
+    if (doc.body.classList && typeof doc.body.classList.toggle === 'function') {
+      // (no body padding: see the CSS note)
+    }
+  }
+
+  const glyph = state.playing ? '⏸' : '▶'
+  if (parts.play.textContent !== glyph) parts.play.textContent = glyph
+  parts.time.textContent = state.duration
+    ? `${fmtClock(state.position)} / ${fmtClock(state.duration)}`
+    : '—'
+  const progress = state.duration ? Math.min(1, Math.max(0, state.position / state.duration)) : 0
+  parts.fill.style.width = `${(progress * 100).toFixed(2)}%`
+  parts.hint.textContent = settings.videoClosed
+    ? 'Film closed — press Open video in the A menu'
+    : !settings.videoUrl
+      ? 'No source chosen yet'
+      : (state.blocked
+        ? 'This video (or the first one in the playlist) cannot be embedded. Remove it from the playlist, or paste a link to a different episode.'
+        : '')
+  parts.vol.value = String(Math.round(clamp01(settings.videoVolume) * 100))
+
+  const queue = videoQueue().slice(0, PANEL_SCORE_MAX)
+  const signature = queue.map(item => item.url).join('|') + '#' + settings.videoUrl
+  if (force || parts.list.dataset.signature !== signature) {
+    parts.list.dataset.signature = signature
+    while (parts.list.firstChild) parts.list.removeChild(parts.list.firstChild)
+    if (!queue.length) {
+      const empty = doc.createElement('div')
+      empty.className = 'ap-empty'
+      empty.textContent = 'No sources yet — paste a link in the A menu.'
+      parts.list.appendChild(empty)
+    }
+    for (const item of queue) {
+      const card = doc.createElement('div')
+      card.className = 'ap-card'
+      card.setAttribute('data-active', item.url === settings.videoUrl ? 'true' : 'false')
+      const thumbSrc = thumbFor(item.url)
+      if (thumbSrc) {
+        const img = doc.createElement('img')
+        img.className = 'ap-thumb'
+        img.src = thumbSrc
+        img.setAttribute('alt', '')
+        img.setAttribute('loading', 'lazy')
+        card.appendChild(img)
+      } else {
+        const block = doc.createElement('span')
+        block.className = 'ap-thumb'
+        card.appendChild(block)
+      }
+      const meta = doc.createElement('div')
+      meta.className = 'ap-meta'
+      const title = doc.createElement('span')
+      title.className = 'ap-title'
+      title.textContent = item.label
+      const kind = doc.createElement('span')
+      kind.className = 'ap-kind'
+      kind.textContent = isPlaylistUrl(item.url) ? 'playlist' : (thumbSrc ? 'youtube' : 'media')
+      meta.appendChild(title)
+      meta.appendChild(kind)
+      card.appendChild(meta)
+      card.addEventListener('click', () => { void applyVideoSource(item.url, item.label) })
+      parts.list.appendChild(card)
+    }
+  }
+}
+
+/** Show/hide the whole panel; hiding leaves the status tray as the only Aura. */
+function setPanelEnabled(on) {
+  if (!ctxRef || disposed) return
+  writeSettings({ panelEnabled: Boolean(on) })
+  if (on) {
+    syncPanel(true)
+  } else {
+    // Remove first, settings second: the panel disappears on the click even if
+    // something later in the tick throws.
+    removePanel()
+  }
+  syncVideoBar(true)
+}
+
+function setPanelCollapsed(on) {
+  if (!ctxRef || disposed) return
+  writeSettings({ panelCollapsed: Boolean(on) })
+  syncPanel(true)
+}
+
+/** Keep the pill in step with settings/transport state. Called from the poll
+ *  tick (4 Hz), so it costs one comparison per node at most. */
+function syncVideoBar(force) {
+  if (!videoBarActive()) {
+    removeVideoBar()
+    return
+  }
+  if (!videoBarEl) {
+    try {
+      mountVideoBar()
+      if (videoBarEl) showVideoBar()
+    } catch (cause) {
+      // Never fail silently: an exception here used to leave the owner with no
+      // controls at all and nothing on screen to explain it.
+      setError(`Aura could not draw the video controls (${String(cause && cause.message || cause).slice(0, 80)}).`)
+      return
+    }
+  }
+  const parts = videoBarParts
+  if (!parts) return
+  positionVideoBar()
+  const state = $video.get()
+  const settings = $settings.get()
+  const barAlpha = clamp01(Number.isFinite(settings.videoBarOpacity)
+    ? settings.videoBarOpacity
+    : VIDEO_BAR_OPACITY)
+  videoBarEl.style.background = `rgba(12, 10, 22, ${barAlpha})`
+
+  // A new player document starts at its own default volume: re-send ours
+  // shortly after each (re)load so a source swap keeps the level.
+  if (backdropEl && backdropUrl !== volumePushedFor) {
+    volumePushedFor = backdropUrl
+    const forUrl = backdropUrl
+    const resumeAt = resumeTargetFor($settings.get().videoUrl)
+    const poke = () => {
+      if (disposed || !backdropEl || backdropUrl !== forUrl) return
+      postToBackdrop({ cmd: 'volume', value: $settings.get().videoVolume })
+      if (resumeAt > 0) postToBackdrop({ cmd: 'seekTo', value: resumeAt })
+    }
+    setTimeout(poke, 1200)
+    // The player ignores commands until it is ready. If the film is still
+    // near the start a few seconds later, ask again — that is what "resume"
+    // failing looked like from the outside.
+    setTimeout(() => {
+      if (disposed || !backdropEl || backdropUrl !== forUrl || resumeAt <= 0) return
+      if ($video.get().position < Math.max(5, resumeAt * 0.6)) poke()
+    }, 3500)
+  }
+
+  const playGlyph = state.playing ? '⏸' : '▶'
+  if (parts.play.textContent !== playGlyph) {
+    parts.play.textContent = playGlyph
+    parts.play.setAttribute('aria-label', state.playing ? 'Pause' : 'Play')
+  }
+  const clock = state.duration
+    ? `${fmtClock(state.position)} / ${fmtClock(state.duration)}`
+    : state.kind ? 'live' : '—'
+  if (parts.time.textContent !== clock) parts.time.textContent = clock
+  const progress = state.duration ? Math.min(1, Math.max(0, state.position / state.duration)) : 0
+  const percentWidth = `${(progress * 100).toFixed(2)}%`
+  if (parts.fill && parts.fill.style.width !== percentWidth) parts.fill.style.width = percentWidth
+  if (parts.scrub) parts.scrub.setAttribute('aria-valuetext', clock)
+  if (parts.windowBtn) {
+    const wantGlyph = videoWindowOn() ? '⛶' : '⧉'
+    if (parts.windowBtn.textContent !== wantGlyph) parts.windowBtn.textContent = wantGlyph
+    parts.windowBtn.title = videoWindowOn() ? 'Back to full-window backdrop' : 'Watch in its own window'
+  }
+
+  if (parts.opacity) {
+    const percent = Math.round(clamp01(settings.videoOpacity) * 100)
+    const label = settings.videoOpacityAuto === false
+      ? `${percent}%`
+      : `auto ${Math.round(effectiveVideoOpacity() * 100)}%`
+    if (parts.opacity.textContent !== label) parts.opacity.textContent = label
+    parts.opacity.title = settings.videoOpacityAuto === false
+      ? 'Video transparency (click for the next level)'
+      : 'Automatic transparency — 20% working, 30% with music. Click to pin a level.'
+  }
+
+  const volume = Math.round(clamp01(settings.videoVolume) * 100)
+  const volumeLabel = volume === 0 ? '🔇' : `🔊 ${volume}%`
+  if (parts.volume.textContent !== volumeLabel) parts.volume.textContent = volumeLabel
+
+  if (parts.picker) {
+    const queue = videoQueue()
+    const signature = queue.map(item => item.url).join('|') + '#' + settings.videoUrl
+    if (force || parts.picker.dataset.signature !== signature) {
+      parts.picker.dataset.signature = signature
+      while (parts.picker.firstChild) parts.picker.removeChild(parts.picker.firstChild)
+      for (const item of queue) {
+        const option = doc.createElement('option')
+        option.value = item.url
+        option.textContent = item.label
+        option.style.background = '#f1f1f1'
+        option.style.color = '#111111'
+        if (item.url === settings.videoUrl) option.selected = true
+        parts.picker.appendChild(option)
+      }
+    }
+  }
+  const controllable = state.controllable !== false
+  for (const node of [parts.back, parts.play, parts.fwd]) {
+    node.style.opacity = controllable ? '1' : '0.4'
+    node.disabled = !controllable && state.kind === 'frame'
+  }
+}
+
 
 /** Shared by the settings page and the quick menu: apply the intensity
  *  locally (accent at once) and then push it — one door for both surfaces. */
@@ -1387,6 +3097,15 @@ function closeDevStats() {
   devFpsLastAt = 0
 }
 
+/** Ctrl+Shift+H: hide/show the panel. A keyboard escape hatch, because a
+ *  click-swallowing overlay must never be the only way out. */
+function onPanelKeydown(event) {
+  if (disposed || !event || event.defaultPrevented || event.repeat) return
+  if (event.code !== 'KeyH' || !event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey) return
+  try { event.preventDefault() } catch { /* synthetic */ }
+  setPanelEnabled($settings.get().panelEnabled === false)
+}
+
 function onDevStatsKeydown(event) {
   if (disposed || !event || event.defaultPrevented || event.repeat) return
   if (event.code !== 'KeyA' || !event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey) return
@@ -1414,6 +3133,7 @@ function AuraQuickMenu() {
   const settings = useValue($settings)
   const live = useValue($live)
   const pulse = useValue($pulse)
+  const videoState = useValue($video)
   const useHostNav = host && typeof host.navigate === 'function'
   // Server flag wins while it answers, exactly like syncBackdrop does.
   const auraOn = live.ok ? live.enabled === true : settings.enabled
@@ -1451,6 +3171,10 @@ function AuraQuickMenu() {
     padding: '3px 6px'
   }
   const inputStyle = { ...selectStyle, width: 148 }
+  // Transport and transparency buttons are one micro Button apart from each
+  // other; keep them square and quiet so five fit on one row in a popover.
+  const transportStyle = { minWidth: 24, padding: '0 4px', fontSize: 13, lineHeight: 1 }
+  const presetStyle = { minWidth: 0, padding: '0 6px', fontSize: 11, lineHeight: 1.4 }
 
   const glyphColor = auraOn ? 'var(--ui-accent)' : 'var(--ui-text-tertiary)'
 
@@ -1470,9 +3194,36 @@ function AuraQuickMenu() {
           style: { color: glyphColor, lineHeight: 1, fontWeight: 700 },
           children: jsxs('span', {
             'aria-hidden': true,
-            style: { display: 'inline-flex', alignItems: 'center', fontSize: 14, lineHeight: 1, letterSpacing: 0.5 },
+            style: {
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              fontSize: 12, lineHeight: 1, letterSpacing: 0.2, fontWeight: 600
+            },
             children: [
-              'A',
+              // The mark: a lit core with two aura rings falling away from it,
+              // drawn in currentColor so it follows the accent/off state. Inline
+              // SVG means no asset file, no fetch, nothing to 404.
+              jsxs('svg', {
+                key: 'mark',
+                width: 13,
+                height: 13,
+                viewBox: '0 0 16 16',
+                focusable: 'false',
+                style: { display: 'block', overflow: 'visible' },
+                children: [
+                  jsx('circle', { cx: 8, cy: 8, r: 2.1, fill: 'currentColor' }),
+                  jsx('path', {
+                    d: 'M4.6 4.1a5.5 5.5 0 0 0 0 7.8',
+                    stroke: 'currentColor', strokeWidth: 1.25, fill: 'none',
+                    strokeLinecap: 'round', opacity: 0.6
+                  }),
+                  jsx('path', {
+                    d: 'M11.4 4.1a5.5 5.5 0 0 1 0 7.8',
+                    stroke: 'currentColor', strokeWidth: 1.25, fill: 'none',
+                    strokeLinecap: 'round', opacity: 0.6
+                  })
+                ]
+              }),
+              jsx('span', { key: 'word', style: { letterSpacing: 0.3 }, children: 'Aura' }),
               // The breathing dot: opacity comes from the poll ticker, so it
               // moves at most 4 Hz, sits still under reduced motion, and is
               // away entirely while nothing moves or Aura is off. No CSS
@@ -1483,7 +3234,6 @@ function AuraQuickMenu() {
                   display: 'inline-block',
                   width: 5,
                   height: 5,
-                  marginLeft: 3,
                   borderRadius: 999,
                   background: 'var(--ui-accent)',
                   opacity: Number(pulse),
@@ -1522,7 +3272,7 @@ function AuraQuickMenu() {
           ),
           row(
             'Reacts to',
-            jsx('select', {
+            jsx('select', { className: 'aura-select',
               value: settings.motion,
               'aria-label': 'Reacts to',
               style: selectStyle,
@@ -1580,7 +3330,7 @@ function AuraQuickMenu() {
           ),
           row(
             'Style',
-            jsx('select', {
+            jsx('select', { className: 'aura-select',
               value: settings.behavior,
               'aria-label': 'Style',
               style: selectStyle,
@@ -1594,7 +3344,7 @@ function AuraQuickMenu() {
           ),
           row(
             'Show',
-            jsx('select', {
+            jsx('select', { className: 'aura-select',
               value: settings.showWhen,
               'aria-label': 'Show',
               style: selectStyle,
@@ -1608,7 +3358,7 @@ function AuraQuickMenu() {
           ),
           row(
             'Backdrop',
-            jsx('select', {
+            jsx('select', { className: 'aura-select',
               value: settings.backdropMode,
               'aria-label': 'Backdrop mode',
               style: selectStyle,
@@ -1621,24 +3371,267 @@ function AuraQuickMenu() {
             })
           ),
           settings.backdropMode === 'video'
-            ? row(
-              'Video URL',
-              jsx('input', {
-                type: 'text',
-                key: settings.videoUrl,
-                defaultValue: settings.videoUrl,
-                placeholder: 'https://youtube.com/watch?v=...',
-                'aria-label': 'Video URL',
-                spellCheck: false,
-                style: inputStyle,
-                onKeyDown: event => {
-                  if (event && event.key === 'Enter' && event.currentTarget) event.currentTarget.blur()
-                },
-                onBlur: event => {
-                  void setVideoUrl(event && event.target ? String(event.target.value) : '')
-                }
-              })
-            )
+            ? jsxs('div', {
+              key: 'video',
+              style: {
+                display: 'flex', flexDirection: 'column', gap: 2,
+                borderTop: '1px solid var(--ui-stroke-secondary)', marginTop: 2, paddingTop: 3
+              },
+              children: [
+                row(
+                  'Video',
+                  jsxs('div', {
+                    style: { display: 'flex', alignItems: 'center', gap: 2 },
+                    children: [
+                      jsx(Button, {
+                        size: 'micro', variant: 'ghost', 'aria-label': 'Previous source',
+                        title: 'Previous source', style: transportStyle,
+                        onClick: () => videoCommand('prev'), children: '⏮'
+                      }),
+                      jsx(Button, {
+                        size: 'micro', variant: 'ghost', 'aria-label': 'Back 10 seconds',
+                        title: 'Back 10 seconds', style: transportStyle,
+                        onClick: () => videoCommand('seek', -10), children: '⏪'
+                      }),
+                      jsx(Button, {
+                        size: 'micro', variant: 'ghost',
+                        'aria-label': videoState.playing ? 'Pause' : 'Play',
+                        title: videoState.playing ? 'Pause' : 'Play',
+                        style: transportStyle,
+                        onClick: () => videoCommand('toggle'),
+                        children: videoState.playing ? '⏸' : '▶'
+                      }),
+                      jsx(Button, {
+                        size: 'micro', variant: 'ghost', 'aria-label': 'Forward 10 seconds',
+                        title: 'Forward 10 seconds', style: transportStyle,
+                        onClick: () => videoCommand('seek', 10), children: '⏩'
+                      }),
+                      jsx(Button, {
+                        size: 'micro', variant: 'ghost', 'aria-label': 'Next source',
+                        title: 'Next source', style: transportStyle,
+                        onClick: () => videoCommand('next'), children: '⏭'
+                      })
+                    ]
+                  })
+                ),
+                row(
+                  'Source',
+                  jsx('select', { className: 'aura-select',
+                    value: settings.videoUrl,
+                    'aria-label': 'Video source',
+                    style: { ...selectStyle, maxWidth: 150, colorScheme: 'light' },
+                    onChange: event => {
+                      const url = event && event.target ? String(event.target.value) : ''
+                      void applyVideoSource(url)
+                    },
+                    children: videoQueue().map(item =>
+      jsx('option', {
+        key: item.url,
+        value: item.url,
+        style: { background: '#f1f1f1', color: '#111111' },
+        children: item.label
+      })
+    )
+                  })
+                ),
+                row(
+                  'Transparency',
+                  jsxs('div', {
+                    style: { display: 'flex', alignItems: 'center', gap: 2 },
+                    children: [
+                      jsx(Button, {
+                        size: 'micro',
+                        variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
+                        'aria-label': 'Automatic video transparency',
+                        title: 'Automatic: 20% working, 30% with music, +3% per extra chat',
+                        style: presetStyle,
+                        onClick: () => setVideoOpacityAuto(),
+                        children: 'Auto'
+                      }),
+                      ...VIDEO_OPACITY_PRESETS.map(preset =>
+                        jsx(Button, {
+                          key: preset,
+                          size: 'micro',
+                          variant: settings.videoOpacityAuto === false &&
+                            Math.round(clamp01(settings.videoOpacity) * 100) === preset
+                            ? 'default'
+                            : 'ghost',
+                          'aria-label': `${preset}% video transparency`,
+                          style: presetStyle,
+                          onClick: () => setVideoOpacity(preset / 100),
+                          children: `${preset}%`
+                        })
+                      )
+                    ]
+                  })
+                ),
+                row(
+                  'Video URL',
+                  jsxs('div', {
+                    style: { display: 'flex', alignItems: 'center', gap: 4 },
+                    children: [
+                      jsx('input', {
+                        type: 'text',
+                        key: settings.videoUrl,
+                        defaultValue: settings.videoUrl,
+                        placeholder: 'Video or playlist link (.mp4/.m3u8 too)',
+                        'aria-label': 'Video URL',
+                        spellCheck: false,
+                        style: { ...inputStyle, width: 128 },
+                        onKeyDown: event => {
+                          if (event && event.key === 'Enter' && event.currentTarget) {
+                            event.currentTarget.blur()
+                          }
+                        },
+                        onBlur: event => {
+                          void setVideoUrl(event && event.target ? String(event.target.value) : '')
+                        }
+                      }),
+                      jsx(Button, {
+                        size: 'micro', variant: 'ghost', 'aria-label': 'Apply video URL',
+                        title: 'Apply video URL',
+                        onClick: () => {
+                          const field = doc && typeof doc.querySelector === 'function'
+                            ? doc.querySelector('input[aria-label="Video URL"]')
+                            : null
+                          if (field && typeof field.value === 'string') void setVideoUrl(field.value)
+                        },
+                        children: '⟳'
+                      })
+                    ]
+                  })
+                ),
+                isFrameBlocked(settings.videoUrl)
+                  ? jsx('div', {
+                    style: { padding: '2px 12px 6px', fontSize: 11, color: 'var(--ui-text-tertiary)', lineHeight: 1.4 },
+                    children: 'This site refuses to be embedded (Plex/Netflix web apps do). Paste a direct stream URL instead.'
+                  })
+                  : null,
+                row(
+                  'Volume',
+                  jsxs('div', {
+                    style: { display: 'flex', alignItems: 'center', gap: 6 },
+                    children: [
+                      jsx('input', {
+                        type: 'range', min: 0, max: 100, step: 1,
+                        value: Math.round(clamp01(settings.videoVolume) * 100),
+                        'aria-label': 'Movie volume',
+                        style: { width: 96, accentColor: 'var(--ui-accent)' },
+                        onChange: event => {
+                          setVideoVolume(Number(event && event.target ? event.target.value : 0) / 100)
+                        }
+                      }),
+                      jsx('span', {
+                        style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30, textAlign: 'right' },
+                        children: `${Math.round(clamp01(settings.videoVolume) * 100)}%`
+                      })
+                    ]
+                  })
+                ),
+                row(
+                  'Open / close',
+                  jsx(Button, {
+                    size: 'micro',
+                    variant: settings.videoClosed ? 'default' : 'ghost',
+                    'aria-label': settings.videoClosed ? 'Open video' : 'Close video',
+                    onClick: () => {
+                      if (settings.videoClosed) openVideo()
+                      else closeVideo()
+                    },
+                    children: settings.videoClosed ? 'Open video' : 'Close video'
+                  })
+                ),
+                row(
+                  'Position',
+                  jsxs('div', {
+                    style: { display: 'flex', alignItems: 'center', gap: 6 },
+                    children: [
+                      jsx('input', {
+                        type: 'range', min: 0, max: Math.max(1, Math.round(videoState.duration || 0)),
+                        step: 1, value: Math.round(videoState.position || 0),
+                        'aria-label': 'Position in video',
+                        style: { width: 118, accentColor: 'var(--ui-accent)' },
+                        onChange: event => {
+                          const to = Number(event && event.target ? event.target.value : 0)
+                          postToBackdrop({ cmd: 'seekTo', value: to })
+                        }
+                      }),
+                      jsx('span', {
+                        style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 64, textAlign: 'right' },
+                        children: `${fmtClock(videoState.position)} / ${fmtClock(videoState.duration)}`
+                      }),
+                      jsx(Button, {
+                        size: 'micro', variant: 'ghost', 'aria-label': 'Back 1 minute',
+                        onClick: () => videoCommand('seek', -60), children: '−1m'
+                      }),
+                      jsx(Button, {
+                        size: 'micro', variant: 'ghost', 'aria-label': 'Forward 1 minute',
+                        onClick: () => videoCommand('seek', 60), children: '+1m'
+                      })
+                    ]
+                  })
+                ),
+                row(
+                  'Jump to',
+                  jsx('input', {
+                    type: 'text',
+                    placeholder: '12:34',
+                    'aria-label': 'Jump to time',
+                    spellCheck: false,
+                    style: { ...selectStyle, width: 74 },
+                    onKeyDown: event => {
+                      if (!event || event.key !== 'Enter') return
+                      const to = parseClock(event.target ? event.target.value : '')
+                      if (to != null) postToBackdrop({ cmd: 'seekTo', value: to })
+                    }
+                  })
+                ),
+                PANEL_PENDING_DOCK ? null : row(
+                  'Left panel',
+                  jsx(Switch, {
+                    checked: settings.panelEnabled !== false,
+                    'aria-label': 'Left panel (quick menu)',
+                    onCheckedChange: value => setPanelEnabled(value)
+                  })
+                ),
+                row(
+                  'Panel state',
+                  jsx('span', {
+                    style: { fontSize: 10, color: 'var(--ui-text-tertiary)' },
+                    children: `${panelVisible() ? 'on' : 'off'} · ${panelEl ? 'mounted' : 'not mounted'}`
+                  })
+                ),
+                row(
+                  'Watch window',
+                  jsxs('div', {
+                    style: { display: 'flex', alignItems: 'center', gap: 4 },
+                    children: [
+                      jsx(Switch, {
+                        checked: settings.videoWindow === true,
+                        'aria-label': 'Watch window',
+                        onCheckedChange: value => setVideoWindow(value)
+                      }),
+                      jsx('select', { className: 'aura-select',
+                        value: settings.videoWindowSize,
+                        'aria-label': 'Watch window size',
+                        style: { ...selectStyle, colorScheme: 'light' },
+                        onChange: event => {
+                          setVideoWindowSize(String(event && event.target ? event.target.value : 'medium'))
+                        },
+                        children: ['small', 'medium', 'large'].map(size =>
+                          jsx('option', {
+                            key: size,
+                            value: size,
+                            style: { background: '#f1f1f1', color: '#111111' },
+                            children: size
+                          })
+                        )
+                      })
+                    ]
+                  })
+                )
+              ]
+            })
             : null,
           row(
             'Gentle motion',
@@ -1801,7 +3794,7 @@ function AuraSettings() {
         children: row(
           'Motion source',
           'Default (Agent + music) follows playback and agent activity; Music only settles in silence; Agent activity moves only while the agent works and pauses after 2.5 s idle; Music, or gentle designs rests on designs in silence.',
-          jsx('select', {
+          jsx('select', { className: 'aura-select',
             value: settings.motion,
             'aria-label': 'Motion source',
             style: {
@@ -1828,7 +3821,7 @@ function AuraSettings() {
         children: row(
           'Show',
           'Always keeps the backdrop and glass mounted. Only while active shows them just while the visual is moving, fading in after 300 ms of activity and removing the glass entirely after 2.5 s idle.',
-          jsx('select', {
+          jsx('select', { className: 'aura-select',
             value: settings.showWhen,
             'aria-label': 'Show',
             style: {
@@ -1855,7 +3848,7 @@ function AuraSettings() {
         children: row(
           'Backdrop mode',
           'Aura visual shows the audio-reactive visual. Video player shows a video you choose instead — YouTube links are embedded automatically, direct media files play inline, other URLs are framed as-is.',
-          jsx('select', {
+          jsx('select', { className: 'aura-select',
             value: settings.backdropMode,
             'aria-label': 'Backdrop mode',
             style: {
@@ -1878,36 +3871,241 @@ function AuraSettings() {
         )
       }),
       settings.backdropMode === 'video'
-        ? jsx('div', {
+        ? jsxs('div', {
           key: 'videoUrl',
-          children: row(
-            'Video URL',
-            'Paste a YouTube link (https://youtube.com/watch?v=...), a direct video file (.mp4/.webm/.ogg) or any embeddable page. Leave empty for a hint.',
-            jsx('input', {
-              type: 'text',
-              key: settings.videoUrl,
-              defaultValue: settings.videoUrl,
-              placeholder: 'https://youtube.com/watch?v=...',
-              'aria-label': 'Video URL',
-              spellCheck: false,
-              style: {
-                font: 'inherit',
-                fontSize: 11,
-                color: 'var(--ui-text-primary)',
-                background: 'var(--ui-bg)',
-                border: '1px solid var(--ui-stroke-secondary)',
-                borderRadius: 6,
-                padding: '3px 6px',
-                width: 260
-              },
-              onKeyDown: event => {
-                if (event && event.key === 'Enter' && event.currentTarget) event.currentTarget.blur()
-              },
-              onBlur: event => {
-                void setVideoUrl(event && event.target ? String(event.target.value) : '')
-              }
-            })
-          )
+          children: [
+            row(
+              'Video URL',
+              'Paste a YouTube link (https://youtube.com/watch?v=...), a direct video file (.mp4/.webm/.ogg) or any embeddable page. Leave empty for a hint.',
+              jsx('input', {
+                type: 'text',
+                key: settings.videoUrl,
+                defaultValue: settings.videoUrl,
+                placeholder: 'https://youtube.com/watch?v=...',
+                'aria-label': 'Video URL',
+                spellCheck: false,
+                style: {
+                  font: 'inherit',
+                  fontSize: 11,
+                  color: 'var(--ui-text-primary)',
+                  background: 'var(--ui-bg)',
+                  border: '1px solid var(--ui-stroke-secondary)',
+                  borderRadius: 6,
+                  padding: '3px 6px',
+                  width: 260
+                },
+                onKeyDown: event => {
+                  if (event && event.key === 'Enter' && event.currentTarget) event.currentTarget.blur()
+                },
+                onBlur: event => {
+                  void setVideoUrl(event && event.target ? String(event.target.value) : '')
+                }
+              })
+            ),
+            row(
+              'Video transparency',
+              'Automatic by default: 20% while you work, 30% when audio is playing, plus 3% for every extra active chat. Pick a fixed level to override.',
+              jsxs('div', {
+                style: { display: 'flex', alignItems: 'center', gap: 4 },
+                children: [
+                  jsx(Button, {
+                    size: 'micro',
+                    variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
+                    'aria-label': 'Automatic video transparency',
+                    onClick: () => setVideoOpacityAuto(),
+                    children: 'Auto'
+                  }),
+                  ...VIDEO_OPACITY_PRESETS.map(preset =>
+                    jsx(Button, {
+                      key: preset,
+                      size: 'micro',
+                      variant: settings.videoOpacityAuto === false &&
+                        Math.round(clamp01(settings.videoOpacity) * 100) === preset
+                        ? 'default'
+                        : 'ghost',
+                      'aria-label': `${preset}% video transparency`,
+                      onClick: () => setVideoOpacity(preset / 100),
+                      children: `${preset}%`
+                    })
+                  )
+                ]
+              })
+            ),
+            row(
+              'Source',
+              'Saved sources and anything you have played recently. Prev/next in the controls walks this list.',
+              jsx('select', { className: 'aura-select',
+                value: settings.videoUrl,
+                'aria-label': 'Video source',
+                style: {
+                  font: 'inherit',
+                  fontSize: 11,
+                  color: 'var(--ui-text-primary)',
+                  background: 'var(--ui-bg)',
+                  border: '1px solid var(--ui-stroke-secondary)',
+                  borderRadius: 6,
+                  padding: '3px 6px',
+                  maxWidth: 260,
+                  // Chromium draws the dropdown popup itself and ignores the
+                  // per-option colours; `color-scheme: light` is what makes it
+                  // a light list with black text instead of the theme's
+                  // white-on-white.
+                  colorScheme: 'light'
+                },
+                onChange: event => {
+                  const url = event && event.target ? String(event.target.value) : ''
+                  void applyVideoSource(url)
+                },
+                children: videoQueue().map(item =>
+                  jsx('option', {
+                    key: item.url,
+                    value: item.url,
+                    style: { background: '#f1f1f1', color: '#111111' },
+                    children: item.label
+                  })
+                )
+              })
+            ),
+            row(
+              'Volume',
+              'The movie’s own volume. The visualizer reacts to whatever this plays.',
+              jsxs('div', {
+                style: { display: 'flex', alignItems: 'center', gap: 6 },
+                children: [
+                  jsx('input', {
+                    type: 'range', min: 0, max: 100, step: 1,
+                    value: Math.round(clamp01(settings.videoVolume) * 100),
+                    'aria-label': 'Movie volume (settings)',
+                    style: { width: 140, accentColor: 'var(--ui-accent)' },
+                    onChange: event => {
+                      setVideoVolume(Number(event && event.target ? event.target.value : 0) / 100)
+                    }
+                  }),
+                  jsx('span', {
+                    style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30, textAlign: 'right' },
+                    children: `${Math.round(clamp01(settings.videoVolume) * 100)}%`
+                  })
+                ]
+              })
+            ),
+            row(
+              'Controls transparency',
+              'How solid the floating control strip is over the film. The strip still fades out when the mouse rests.',
+              jsxs('div', {
+                style: { display: 'flex', alignItems: 'center', gap: 6 },
+                children: [
+                  jsx('input', {
+                    type: 'range', min: 10, max: 100, step: 5,
+                    value: Math.round(clamp01(settings.videoBarOpacity) * 100),
+                    'aria-label': 'Controls transparency',
+                    style: { width: 140, accentColor: 'var(--ui-accent)' },
+                    onChange: event => {
+                      setVideoBarOpacity(Number(event && event.target ? event.target.value : 72) / 100)
+                    }
+                  }),
+                  jsx('span', {
+                    style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30, textAlign: 'right' },
+                    children: `${Math.round(clamp01(settings.videoBarOpacity) * 100)}%`
+                  })
+                ]
+              })
+            ),
+            row(
+              'Watch window',
+              'Puts the film in its own 16:9 frame above the app instead of behind it, so you can watch it without text reading through.',
+              jsxs('div', {
+                style: { display: 'flex', alignItems: 'center', gap: 6 },
+                children: [
+                  jsx(Switch, {
+                    checked: settings.videoWindow === true,
+                    'aria-label': 'Watch window (settings)',
+                    onCheckedChange: value => setVideoWindow(value)
+                  }),
+                  jsx('select', { className: 'aura-select',
+                    value: settings.videoWindowSize,
+                    'aria-label': 'Watch window size (settings)',
+                    style: {
+                      font: 'inherit', fontSize: 11,
+                      color: 'var(--ui-text-primary)',
+                      background: 'var(--ui-bg)',
+                      border: '1px solid var(--ui-stroke-secondary)',
+                      borderRadius: 6, padding: '3px 6px',
+                      colorScheme: 'light'
+                    },
+                    onChange: event => {
+                      setVideoWindowSize(String(event && event.target ? event.target.value : 'medium'))
+                    },
+                    children: ['small', 'medium', 'large'].map(size =>
+                      jsx('option', {
+                        key: size,
+                        value: size,
+                        style: { background: '#f1f1f1', color: '#111111' },
+                        children: size
+                      })
+                    )
+                  }),
+                  jsx('select', { className: 'aura-select',
+                    value: settings.videoWindowCorner,
+                    'aria-label': 'Watch window corner (settings)',
+                    style: {
+                      font: 'inherit', fontSize: 11,
+                      color: 'var(--ui-text-primary)',
+                      background: 'var(--ui-bg)',
+                      border: '1px solid var(--ui-stroke-secondary)',
+                      borderRadius: 6, padding: '3px 6px',
+                      colorScheme: 'light'
+                    },
+                    onChange: event => {
+                      setVideoWindowCorner(String(event && event.target ? event.target.value : 'top-right'))
+                    },
+                    children: VIDEO_WINDOW_CORNER_OPTIONS.map(corner =>
+                      jsx('option', {
+                        key: corner,
+                        value: corner,
+                        style: { background: '#f1f1f1', color: '#111111' },
+                        children: corner === 'free' ? 'free (drag)' : corner
+                      })
+                    )
+                  })
+                ]
+              })
+            ),
+            row(
+              'Resume',
+              'Remembers where each film stopped and picks up there after an interruption. Counts as finished when it reaches the last seconds.',
+              jsx(Button, {
+                size: 'micro', variant: 'ghost',
+                'aria-label': 'Start this film over',
+                onClick: () => forgetVideoPosition(),
+                children: 'Start over'
+              })
+            ),
+            row(
+              'Demo videos',
+              'The built-in films and documentaries. Turn off once you have your own playlists.',
+              jsx(Switch, {
+                checked: !(Array.isArray(settings.videoHiddenStarters) && settings.videoHiddenStarters.length),
+                'aria-label': 'Show demo videos',
+                onCheckedChange: value => setDemosHidden(!value)
+              })
+            ),
+            (Array.isArray(settings.videoPlaylists) ? settings.videoPlaylists : []).length
+              ? jsx('div', {
+                key: 'playlists',
+                children: settings.videoPlaylists.map(item =>
+                  row(
+                    item.label || shortLabel(item.url),
+                    jsx(Button, {
+                      size: 'micro', variant: 'ghost',
+                      'aria-label': `Remove ${item.label || 'playlist'}`,
+                      onClick: () => removeVideoSource(item.url),
+                      children: 'Remove'
+                    })
+                  )
+                )
+              })
+              : null
+          ]
         })
         : null,
       jsx('div', {
@@ -1929,7 +4127,7 @@ function AuraSettings() {
         children: row(
           'Behaviour profile',
           'calm: lower ceiling, no strobe, no hard pulses. intense: faster pulse, stronger mood shifts.',
-          jsx('select', {
+          jsx('select', { className: 'aura-select',
             value: settings.behavior,
             'aria-label': 'Behaviour profile',
             style: {
@@ -2007,6 +4205,32 @@ function AuraSettings() {
           })
         )
       }),
+      PANEL_PENDING_DOCK ? null : jsx('div', {
+        key: 'panel',
+        children: row(
+          'Left panel',
+          'A docked theatre panel: the film, a scrubber and your sources — the way in without a status bar. Off leaves only the Aura menu in the status tray.',
+          jsx(Switch, {
+            checked: settings.panelEnabled !== false,
+            'aria-label': 'Left panel',
+            onCheckedChange: value => setPanelEnabled(value)
+          })
+        )
+      }),
+      (!PANEL_PENDING_DOCK && settings.panelEnabled !== false)
+        ? jsx('div', {
+          key: 'panelCollapsed',
+          children: row(
+            'Collapse to a rail',
+            'Keeps a slim Aura rail on the left and gives the space back to the chat.',
+            jsx(Switch, {
+              checked: settings.panelCollapsed === true,
+              'aria-label': 'Collapse panel to a rail',
+              onCheckedChange: value => setPanelCollapsed(value)
+            })
+          )
+        })
+        : null,
       jsx('div', {
         key: 'theme',
         children: row(
@@ -2021,6 +4245,23 @@ function AuraSettings() {
           })
         )
       }),
+      settings.themeOptIn
+        ? jsx('div', {
+          key: 'themeIdle',
+          children: row(
+            'Keep my theme when idle',
+            'Aura Live only while a film or visual is showing; an idle Aura gives your installed theme back.',
+            jsx(Switch, {
+              checked: settings.themeIdleRestore !== false,
+              'aria-label': 'Keep my theme when idle',
+              onCheckedChange: value => {
+                writeSettings({ themeIdleRestore: Boolean(value) })
+                syncThemeForActivity()
+              }
+            })
+          )
+        })
+        : null,
       jsx('div', {
         key: 'restore',
         children: row(
@@ -2113,6 +4354,10 @@ function teardown() {
   }
   resetShow()
   removeBackdrop()
+  removeVideoBar()
+  removePanel()
+  removeUiStyle()
+  saveCurrentPosition()
   clearAccent(true)
   restoreTheme()
   while (disposers.length) {
@@ -2175,6 +4420,9 @@ export default {
     const settings = readSettings(ctx)
     $settings.set(settings)
     $live.set({ ...EMPTY_LIVE })
+    $video.set({ ...EMPTY_VIDEO })
+    // Bookmarks live in settings, so a remount (another plugin, another chat)
+    // reads them straight back without any extra storage key.
 
     const track = disposer => {
       if (typeof disposer === 'function') disposers.push(disposer)
@@ -2247,16 +4495,37 @@ export default {
           if (!doc.hidden) void poll()
         })
       )
+      // The floating video bar reveals on pointer movement and hides itself
+      // after 3 s idle (owner ask: "easily control while working"). Passive
+      // and tracked, so it leaves with the plugin.
+      track(ctx.addEventListener(doc, 'mousemove', onVideoBarMouseMove, { passive: true }))
+      // Transport state from web/player.html. `event.source` is checked
+      // against the backdrop frame, so no other window can drive the bar.
+      if (typeof globalThis !== 'undefined' && typeof globalThis.addEventListener === 'function') {
+        track(ctx.addEventListener(globalThis, 'message', onBackdropMessage))
+      }
       // Hidden dev shortcut (Ctrl+Shift+A) for the stats overlay. The SDK
       // disposer removes it on dispose, and the overlay itself is torn down
       // by closeDevStats() in teardown().
       if (doc) {
         doc.addEventListener('keydown', onDevStatsKeydown)
         track(() => doc.removeEventListener('keydown', onDevStatsKeydown))
+        doc.addEventListener('keydown', onPanelKeydown)
+        track(() => doc.removeEventListener('keydown', onPanelKeydown))
       }
     }
 
     if (typeof ctx.onDispose === 'function') ctx.onDispose(dispose)
+
+    ensureUiStyle()
+    // Drop whatever the floating-panel build left behind: node, stylesheet and
+    // any body padding it applied. A previous build pushed the host sidebar off
+    // its own panel this way, so this is cleaned unconditionally.
+    removePanel()
+    // The panel is the primary surface, so it is mounted right here rather than
+    // waiting for the first poll tick: if polling is slow to start (cold
+    // gateway), the app would otherwise look like Aura is missing entirely.
+    syncPanel(true)
 
     void poll()
     if (settings.themeOptIn) applyThemeIfOptedIn()

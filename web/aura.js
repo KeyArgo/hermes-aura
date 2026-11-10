@@ -172,7 +172,9 @@
   // Do not flicker the canvas between tool calls: an idle mood pauses only
   // after this long, and any new active mood cancels the pending pause.
   const AGENT_IDLE_GRACE_MS = 2500;
-  const socket = { ws: null, state: 'boot', attempt: 0, timer: null };
+  // `suspended` means the page is going away (pagehide) or is parked in the
+  // back/forward cache: no reconnects, no new sockets until it comes back.
+  const socket = { ws: null, state: 'boot', attempt: 0, timer: null, suspended: false };
   let viz = null;
   let catalog = { presets: [], byName: Object.create(null), default: null };
   let resizeQueued = false;
@@ -928,7 +930,7 @@
       const ext = gl.getExtension('WEBGL_debug_renderer_info');
       if (ext) return String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || 'unknown');
       return String(gl.getParameter(gl.RENDERER) || 'unknown');
-    } catch (e) {
+    } catch {
       return 'unknown';
     }
   }
@@ -940,7 +942,7 @@
     let gl = null;
     try {
       gl = probe.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false });
-    } catch (e) {
+    } catch {
       gl = null;
     }
     if (!gl) return { ok: false, renderer: 'none', software: true };
@@ -1570,7 +1572,7 @@
   function captureCanvas() {
     if (!dom.canvas) return null;
     let gl = null;
-    try { gl = dom.canvas.getContext('webgl2'); } catch (e) { gl = null; }
+    try { gl = dom.canvas.getContext('webgl2'); } catch { gl = null; }
     if (!gl) return null;
     const w = gl.drawingBufferWidth;
     const h = gl.drawingBufferHeight;
@@ -1776,7 +1778,7 @@
     let ctx;
     try {
       ctx = new AC({ latencyHint: 'interactive', sampleRate: 48000 });
-    } catch (e) {
+    } catch {
       try { ctx = new AC(); } catch (e2) {
         recordError(e2);
         block('audio', 'Web Audio could not start — showing the accent-only fallback.');
@@ -1945,7 +1947,7 @@
 
   function handleText(raw) {
     let ev;
-    try { ev = JSON.parse(raw); } catch (e) { return; }
+    try { ev = JSON.parse(raw); } catch { return; }
     if (!ev || typeof ev !== 'object') return;
     switch (ev.type) {
       case 'features': {
@@ -2031,8 +2033,12 @@
       else handleBinary(event.data);
     };
     ws.onclose = (event) => {
+      // A late close from a socket we already replaced must not touch the new
+      // one, and nothing should reconnect while the page is hidden.
+      if (socket.ws && socket.ws !== ws) return;
       socket.ws = null;
       setMoodIdle();
+      if (socket.suspended) { socket.state = 'boot'; renderStatus(); return; }
       if (event.code === 1008) {
         socket.state = 'refused';
         block('token', 'Aura refused this token (1008) — reopen it from the plugin.');
@@ -2047,6 +2053,7 @@
   }
 
   function scheduleReconnect() {
+    if (socket.suspended) return;
     socket.attempt += 1;
     const delay = Math.min(5000, 400 * Math.pow(1.7, socket.attempt - 1)) + Math.random() * 150;
     if (socket.timer) clearTimeout(socket.timer);
@@ -2061,6 +2068,22 @@
     }
     socket.state = 'boot';
   }
+
+  // The browser never tells the server when a tab goes away, so the socket used
+  // to die by timeout. Tear it down deliberately, and reconnect if the page is
+  // restored from the back/forward cache.
+  window.addEventListener('pagehide', () => { socket.suspended = true; disconnect() })
+  window.addEventListener('pageshow', event => {
+    if (!event.persisted) return;
+    socket.suspended = false;
+    socket.attempt = 0;
+    connect();
+  })
+  // Coming back from bfcache resets UI timers that the browser froze; an
+  // explicit reconnect is the only reliable way to know the stream is live.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !socket.ws && !socket.suspended) connect();
+  })
 
   // ---------------------------------------------------------------------------
   // config + controls
