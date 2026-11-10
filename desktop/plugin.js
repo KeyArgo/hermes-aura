@@ -64,6 +64,7 @@ import {
   atom,
   Button,
   host,
+  PANES_AREA,
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -2347,14 +2348,8 @@ let panelEl = null
 let panelParts = null
 let panelStyleEl = null
 
-// KILL SWITCH: the floating panel is being replaced by a docked pane. Until
-// that lands it stays off no matter what is stored, so it cannot cover the
-// composer or swallow clicks.
-const PANEL_PENDING_DOCK = true
-
 /** Panel is on screen when enabled and not hidden by the user. */
 function panelVisible() {
-  if (PANEL_PENDING_DOCK) return false
   const settings = $settings.get()
   const live = $live.get()
   const enabled = live.ok ? live.enabled === true : settings.enabled
@@ -2366,25 +2361,20 @@ function panelCss() {
     /* Deliberately no body padding: shifting the whole app was what pushed the
        sessions sidebar off its own panel. A docked pane takes real layout space
        instead. */
+    /* A docked pane inside the host's own layout: no fixed positioning, no
+       z-index, no body padding. The host owns the box; we fill it. */
     #aura-panel {
-      /* Below the titlebar: that strip is an OS drag region, so a button drawn
-         under it never receives the click. -webkit-app-region:no-drag keeps
-         our own controls clickable. */
-      position: fixed; left: 0; top: 42px; bottom: 0; width: var(--ap-w, ${PANEL_WIDTH}px);
-      -webkit-app-region: no-drag;
-      z-index: 2147483000; display: flex; flex-direction: column; gap: 10px;
+      position: relative; width: 100%; height: 100%;
+      display: flex; flex-direction: column; gap: 10px;
       padding: 12px 12px 10px; box-sizing: border-box; overflow: hidden;
       color: #f3ece2; font: 12px/1.35 system-ui, -apple-system, sans-serif;
       background: linear-gradient(180deg, #14101f 0%, #1b1418 55%, #241a12 100%);
-      border-right: 1px solid rgba(255,255,255,0.08);
-      box-shadow: 18px 0 44px rgba(0,0,0,0.35);
-      transition: width 220ms ease;
+      border-radius: 10px;
     }
     #aura-panel::before {
       content: ''; position: absolute; inset: 0 0 auto 0; height: 220px; pointer-events: none;
       background: radial-gradient(120% 90% at 50% -10%, rgba(255,150,80,0.20), rgba(255,120,160,0.06) 45%, transparent 70%);
     }
-    #aura-panel[data-collapsed="true"] { width: ${PANEL_RAIL}px; padding: 12px 6px; }
     #aura-panel[data-collapsed="true"] .ap-body { display: none; }
     #aura-panel[data-collapsed="true"] .ap-name,
     #aura-panel[data-collapsed="true"] .ap-collapse { display: none; }
@@ -2508,9 +2498,10 @@ function panelButton(label, aria, onClick, primary) {
   return el
 }
 
-function mountPanel() {
-  if (PANEL_PENDING_DOCK) return
-  if (panelEl || !doc || !doc.body) return
+function mountPanelInto(hostNode) {
+  if (!doc || !hostNode) return
+  if (panelEl) removePanel()
+  if (!doc.body) return
   ensurePanelStyle()
   const collapsed = $settings.get().panelCollapsed === true
 
@@ -2598,10 +2589,7 @@ function mountPanel() {
   for (const node of [stage, scrub, transport, list, foot]) body.appendChild(node)
   panel.appendChild(head)
   panel.appendChild(body)
-  doc.body.appendChild(panel)
-  if (doc.body.classList && typeof doc.body.classList.add === 'function') {
-    // (no body padding: see the CSS note)
-  }
+  hostNode.appendChild(panel)
 
   panelEl = panel
   panelParts = { panel, body, stage, hint, track, fill, time, play, list, vol }
@@ -2629,14 +2617,8 @@ function syncPanel(force) {
     removePanel()
     return
   }
-  if (!panelEl) {
-    try {
-      mountPanel()
-    } catch (cause) {
-      setError(`Aura could not draw the left panel (${String(cause && cause.message || cause).slice(0, 80)}).`)
-      return
-    }
-  }
+  // The pane's ref mounts the DOM; if it has not fired yet there is simply
+  // nothing to update on this tick.
   const parts = panelParts
   if (!parts) return
   const settings = $settings.get()
@@ -2708,6 +2690,27 @@ function syncPanel(force) {
       parts.list.appendChild(card)
     }
   }
+}
+
+/** The host pane's content.
+ *
+ *  A pane is laid out by Hermes, so the theatre lives inside the box the app
+ *  gives us: no fixed positioning, no z-index, nothing painted over the chat.
+ *  React hands us the node through a ref; the panel DOM mounts into it once. */
+function AuraPane() {
+  const settings = useValue($settings)
+  if (settings.panelEnabled === false) return null
+  return jsx('div', {
+    ref: node => {
+      if (!node) { panelEl = null; panelParts = null; return }
+      try {
+        mountPanelInto(node)
+      } catch (cause) {
+        setError(`Aura could not draw its panel (${String(cause && cause.message || cause).slice(0, 80)}).`)
+      }
+    },
+    style: { height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column' }
+  })
 }
 
 /** Show/hide the whole panel; hiding leaves the status tray as the only Aura. */
@@ -3586,7 +3589,7 @@ function AuraQuickMenu() {
                     }
                   })
                 ),
-                PANEL_PENDING_DOCK ? null : row(
+                row(
                   'Left panel',
                   jsx(Switch, {
                     checked: settings.panelEnabled !== false,
@@ -4205,11 +4208,11 @@ function AuraSettings() {
           })
         )
       }),
-      PANEL_PENDING_DOCK ? null : jsx('div', {
+      jsx('div', {
         key: 'panel',
         children: row(
-          'Left panel',
-          'A docked theatre panel: the film, a scrubber and your sources — the way in without a status bar. Off leaves only the Aura menu in the status tray.',
+          'Aura panel',
+          'A docked theatre pane on the right: the film, a scrubber and your sources — the way in without a status bar. Off leaves only the Aura menu in the status tray.',
           jsx(Switch, {
             checked: settings.panelEnabled !== false,
             'aria-label': 'Left panel',
@@ -4217,20 +4220,6 @@ function AuraSettings() {
           })
         )
       }),
-      (!PANEL_PENDING_DOCK && settings.panelEnabled !== false)
-        ? jsx('div', {
-          key: 'panelCollapsed',
-          children: row(
-            'Collapse to a rail',
-            'Keeps a slim Aura rail on the left and gives the space back to the chat.',
-            jsx(Switch, {
-              checked: settings.panelCollapsed === true,
-              'aria-label': 'Collapse panel to a rail',
-              onCheckedChange: value => setPanelCollapsed(value)
-            })
-          )
-        })
-        : null,
       jsx('div', {
         key: 'theme',
         children: row(
@@ -4480,6 +4469,18 @@ export default {
         area: STATUSBAR_AREAS.right,
         order: 127,
         render: () => jsx(AuraQuickMenu, {})
+      })
+    )
+
+    // The theatre pane, docked to the right of the workspace. The host owns the
+    // box and the width; we own nothing but the content.
+    track(
+      ctx.register({
+        id: 'panel',
+        area: PANES_AREA,
+        title: 'Aura',
+        data: { placement: 'right', dock: { pane: 'workspace', pos: 'right' }, width: `${PANEL_WIDTH}px` },
+        render: () => jsx(AuraPane, {})
       })
     )
 

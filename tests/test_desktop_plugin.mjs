@@ -587,14 +587,28 @@ record('register() returns a disposer function', () => {
   assert.equal(typeof disposeA, 'function')
 })
 
-record('does not contribute the stage route, sidebar row, palette command or pane', () => {
-  for (const area of ['routes', 'sidebar.nav', 'palette', 'panes']) {
+record('does not contribute the old stage route, sidebar row or palette command', () => {
+  for (const area of ['routes', 'sidebar.nav', 'palette']) {
     assert.ok(
       !a.contributions.some(c => c.area === area),
       `a ${area} contribution survived the stage clean-up`
     )
   }
 })
+
+record('docks the theatre as a right-hand pane the host lays out', () => {
+  const pane = a.contributions.find(c => c.area === 'panes')
+  assert.ok(pane, 'no panes contribution: the panel has no home')
+  assert.equal(pane.id, 'panel')
+  assert.equal(typeof pane.render, 'function', 'the pane needs a render function')
+  assert.equal(pane.data.placement, 'right', 'owner prefers right-hand panels')
+  assert.deepEqual(pane.data.dock, { pane: 'workspace', pos: 'right' })
+  assert.match(String(pane.data.width), /^\d+px$/, 'the host needs a width')
+  // A pane is laid out by the app; anything we would have to pin ourselves is
+  // exactly what broke the layout before.
+  assert.ok(!('position' in pane.data), 'pane must not set its own position')
+})
+
 
 record('occupies the status bar with exactly one quick-menu contribution', () => {
   const statusBar = a.contributions.filter(c => c.area.startsWith('statusBar.'))
