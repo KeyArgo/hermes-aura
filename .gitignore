@@ -8,3 +8,4 @@ node_modules/
 
 .last-test.log
 .demo/
+BUILD_INFO.json

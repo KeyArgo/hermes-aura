@@ -78,7 +78,7 @@ import {
   useTheme,
   useValue
 } from '@hermes/plugin-sdk'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'aura'
@@ -394,6 +394,9 @@ const $themeApplied = atom(false)
 // it) and the current pulse-dot opacity (recomputed by the poll ticker).
 const $menuOpen = atom(false)
 const $pulse = atom(0)
+// The running build, read once from the backend's /version. An atom (not a constant)
+// because a number typed into this file would drift from the manifest and never say so.
+const $build = atom(null)
 let pulseIndex = 0
 
 // --------------------------------------------------------------- persistence
@@ -2415,6 +2418,12 @@ function panelCss() {
       display: inline-flex; align-items: center; justify-content: center;
     }
     .ap-head button:hover { background: rgba(255,255,255,0.16); }
+    .ap-chip {
+      appearance: none; border: 1px solid rgba(255,255,255,0.14); background: transparent; color: rgba(243,236,226,0.72);
+      font: 9.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 3px 6px; border-radius: 999px;
+      cursor: pointer; white-space: nowrap; max-width: 58%; overflow: hidden; text-overflow: ellipsis;
+    }
+    .ap-chip:hover { color: #f3ece2; border-color: rgba(255,255,255,0.3); }
     .ap-spacer { flex: 1; }
     .ap-body { display: flex; flex-direction: column; gap: 10px; position: relative; z-index: 1; min-height: 0; }
     .ap-stage {
@@ -2555,7 +2564,19 @@ function mountPanelInto(hostNode) {
   const spacer = doc.createElement('span')
   spacer.className = 'ap-spacer'
 
+  const chip = doc.createElement('button')
+  chip.type = 'button'
+  chip.className = 'ap-chip'
+  chip.title = 'Which build is this? Click to copy.'
+  chip.textContent = buildLine($build.get()) || 'build …'
+  chip.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    const line = buildLine($build.get())
+    if (line) void copyText('Aura ' + line)
+  })
+
   head.appendChild(name)
+  head.appendChild(chip)
   head.appendChild(spacer)
   head.appendChild(collapse)
   head.appendChild(hide)
@@ -2622,7 +2643,7 @@ function mountPanelInto(hostNode) {
   hostNode.appendChild(panel)
 
   panelEl = panel
-  panelParts = { panel, body, stage, hint, track, fill, time, play, list, vol }
+  panelParts = { panel, body, stage, hint, track, fill, time, play, list, vol, chip }
   syncPanel(true)
 }
 
@@ -2661,6 +2682,8 @@ function syncPanel(force) {
     }
   }
 
+  const stamp = buildLine($build.get())
+  if (stamp && parts.chip && parts.chip.textContent !== stamp) parts.chip.textContent = stamp
   const glyph = state.playing ? '⏸' : '▶'
   if (parts.play.textContent !== glyph) parts.play.textContent = glyph
   parts.time.textContent = state.duration
@@ -3723,6 +3746,84 @@ function ThemeProbe() {
   return null
 }
 
+// Copy that reports the truth: callers may only say "copied" when this returned true.
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch { /* fall through to the textarea */ }
+  try {
+    const area = document.createElement('textarea')
+    area.value = text
+    area.setAttribute('readonly', '')
+    area.style.position = 'fixed'
+    area.style.opacity = '0'
+    document.body.append(area)
+    area.select()
+    const ok = document.execCommand('copy')
+    area.remove()
+    return ok
+  } catch { return false }
+}
+
+/** `v1.0.0-dev.57 · 2026-11-09 · a4b7a67d` (+ ` · modified` from a dirty tree). */
+function buildLine(build) {
+  if (!build || !build.version) return ''
+  const parts = ['v' + build.version]
+  if (build.commit_date) parts.push(String(build.commit_date).slice(0, 10))
+  const sha = build.commit_short || build.commit
+  if (sha) parts.push(String(sha).slice(0, 8))
+  return parts.join(' · ') + (build.dirty ? ' · modified' : '')
+}
+
+/** The build chip: filled from the backend's /version, never from a number compiled in here. */
+function VersionChip() {
+  const build = useValue($build)
+  const live = useValue($live)
+  const [copyState, setCopyState] = useState('')   // '' | 'copied' | 'failed'
+  // Depends on live.ok so a page that rendered before the server answered tries again.
+  useEffect(() => {
+    if ($build.get() || !ctxRef) return
+    let alive = true
+    ctxRef.rest('/version', { timeoutMs: 4000 })
+      .then(info => { if (alive && info && info.version) $build.set(info) })
+      .catch(() => {})            // no guess beats a wrong number
+    return () => { alive = false }
+  }, [live.ok])
+  const line = buildLine(build)
+  if (!line) return null
+  const label = copyState === 'copied' ? 'copied ✓' : copyState === 'failed' ? 'copy failed' : line
+  return jsx('button', {
+    type: 'button',
+    title: [
+      'Aura ' + (build.version || 'unknown'),
+      build.commit ? 'commit ' + build.commit : 'no commit (installed copy)',
+      build.commit_date ? 'committed ' + build.commit_date : '',
+      build.built_at ? 'installed ' + build.built_at : '',
+      build.channel ? 'channel ' + build.channel : '',
+      'click to copy this line',
+    ].filter(Boolean).join('\n'),
+    onClick: async () => {
+      // Say "copied" only when something was copied: a badge that lies is worse than no badge.
+      const ok = await copyText('Aura ' + line)
+      setCopyState(ok ? 'copied' : 'failed')
+      setTimeout(() => setCopyState(''), 1400)
+    },
+    style: {
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+      fontSize: 10.5, padding: '1px 7px', borderRadius: 999,
+      border: '1px solid var(--ui-stroke-secondary)', background: 'transparent',
+      cursor: 'pointer', whiteSpace: 'nowrap',
+      color: copyState === 'failed' ? '#e05a5a'
+        : copyState === 'copied' ? 'var(--ui-accent)'
+        : build.dirty ? '#e8a33d' : 'var(--ui-text-tertiary)',
+    },
+    children: label,
+  })
+}
+
 function AuraSettings() {
   const settings = useValue($settings)
   const live = useValue($live)
@@ -3753,7 +3854,14 @@ function AuraSettings() {
   return jsxs('div', {
     style: { display: 'flex', flexDirection: 'column', gap: 2, padding: '12px 4px', maxWidth: 640 },
     children: [
-      jsx('h3', { key: 'title', style: { margin: 0, fontSize: 13, color: 'var(--ui-text-primary)' }, children: 'Aura' }),
+      jsxs('div', {
+        key: 'title',
+        style: { display: 'flex', alignItems: 'baseline', gap: 10 },
+        children: [
+          jsx('h3', { key: 'h', style: { margin: 0, fontSize: 13, color: 'var(--ui-text-primary)' }, children: 'Aura' }),
+          jsx(VersionChip, { key: 'build' })
+        ]
+      }),
       jsx('div', {
         key: 'server',
         style: { fontSize: 11, color: 'var(--ui-text-tertiary)', paddingBottom: 6 },
@@ -4516,6 +4624,14 @@ export default {
         render: () => jsx(AuraPane, {})
       })
     )
+
+    // One read of the build stamp: the pane's chip is useless without it, and
+    // the settings page that also shows it may never be opened.
+    if (typeof ctx.rest === 'function') {
+      Promise.resolve(ctx.rest('/version', { timeoutMs: 4000 }))
+        .then(info => { if (info && info.version) $build.set(info) })
+        .catch(() => {})   // no stamp beats a wrong one
+    }
 
     // Polling is the only timer; the host owns it, so it cannot outlive the
     // plugin even if the returned disposer is never called.

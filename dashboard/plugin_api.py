@@ -209,6 +209,45 @@ def state() -> dict:
     return state_payload()
 
 
+def _version_dict() -> dict:
+    """Which exact build is running: version, commit, dates, dirty, channel.
+
+    Read through the vendored ``version_stamp`` (BUILD_INFO.json -> live git -> plugin.yaml),
+    the same module the CLI and any other surface use, so the chip cannot disagree with them.
+    """
+    module = None
+    for loader in (
+        lambda: __import__("aura_core.version_stamp", fromlist=["version_stamp"]),
+        lambda: __import__("aura.version_stamp", fromlist=["version_stamp"]),
+    ):
+        try:
+            module = loader()
+            break
+        except Exception:  # noqa: BLE001 - try the next import shape
+            continue
+    if module is None:
+        try:
+            if str(_PLUGIN_ROOT) not in sys.path:
+                sys.path.insert(0, str(_PLUGIN_ROOT))
+            module = __import__("aura_core.version_stamp", fromlist=["version_stamp"])
+        except Exception:  # noqa: BLE001 - a status line must always answer
+            module = None
+    if module is not None:
+        try:
+            return module.as_dict()
+        except Exception:  # noqa: BLE001
+            logger.info("aura dashboard: version stamp unreadable", exc_info=True)
+    return {"version": "unknown", "commit": "", "commit_short": "", "commit_date": "",
+            "built_at": "", "channel": "release", "dirty": False, "source": "manifest"}
+
+
+@router.get("/version")
+@router.get("/api/v1/version")
+def version_route() -> dict:
+    """The header chip's only source — never a number compiled into the desktop bundle."""
+    return _version_dict()
+
+
 # ---------------------------------------------------------------------------
 # Playlist resolution
 #
