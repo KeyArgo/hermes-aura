@@ -127,8 +127,10 @@ def test_register_registers_tool_and_hooks(plugin):
     p.register(ctx)
     assert [hook for hook, _ in ctx.hooks] == PLUGIN_YAML_HOOKS
     # [listen lane] aura_listen joined aura_control in the aura toolset.
-    assert len(ctx.tools) == 2
-    assert [tool["name"] for tool in ctx.tools] == ["aura_control", "aura_listen"]
+    # [watch lane] aura_watch adds the "find me something to watch" flow.
+    assert len(ctx.tools) == 3
+    assert [tool["name"] for tool in ctx.tools] == [
+        "aura_control", "aura_listen", "aura_watch"]
     assert all(tool["toolset"] == "aura" for tool in ctx.tools)
 
 

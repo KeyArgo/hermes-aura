@@ -16,6 +16,7 @@ license: MIT
 provides_tools:
   - aura_control
   - aura_listen
+  - aura_watch
 provides_hooks:
   - on_session_start
   - on_session_end

@@ -127,7 +127,7 @@ def test_both_tools_register_in_the_aura_toolset(plugin):
     })()
     p.register(ctx)
     names = [tool["name"] for tool in ctx.tools]
-    assert names == ["aura_control", "aura_listen"]
+    assert names == ["aura_control", "aura_listen", "aura_watch"]
     assert all(tool["toolset"] == "aura" for tool in ctx.tools)
 
 

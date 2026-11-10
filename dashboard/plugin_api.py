@@ -429,6 +429,65 @@ def playlist(id: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
+# [watch lane] YouTube search — "Hermes, find me something to watch"
+#
+# Same keyless trick as playlist resolution above, but driven by the shared
+# ``aura_core.search`` module so the dashboard and the ``aura_watch`` tool can
+# never disagree about a result. Runs in the dashboard process, so it calls the
+# module directly — no loopback round trip, no token to carry.
+# ---------------------------------------------------------------------------
+
+def _search_module():
+    """The aura_core.search module, preferring the already-imported instance."""
+    for name, module in list(sys.modules.items()):
+        if module is None:
+            continue
+        if name == "aura_core.search" or name.endswith(".aura_core.search"):
+            return module
+    for loader in (
+        lambda: __import__("aura_core.search", fromlist=["search"]),
+        lambda: __import__("aura.aura_core.search", fromlist=["search"]),
+    ):
+        try:
+            return loader()
+        except Exception:  # noqa: BLE001 - try the other import shape
+            continue
+    try:
+        if str(_PLUGIN_ROOT) not in sys.path:
+            sys.path.insert(0, str(_PLUGIN_ROOT))
+        return __import__("aura_core.search", fromlist=["search"])
+    except Exception as exc:  # noqa: BLE001
+        logger.info("aura dashboard: search module unavailable (%s)", type(exc).__name__)
+        return None
+
+
+def search_payload(q: str = "", limit: int = 6) -> dict:
+    """Numbered YouTube results for ``q``; an outage is an empty list, not a 500."""
+    module = _search_module()
+    if module is None:
+        return {"ok": False, "error": "search_unavailable", "items": []}
+    try:
+        wanted = int(limit)
+    except (TypeError, ValueError):
+        wanted = 6
+    wanted = max(1, min(12, wanted))
+    try:
+        items = module.youtube_search(q, wanted)
+    except Exception as exc:  # noqa: BLE001 - the door must always answer
+        logger.info("aura dashboard: search failed (%s)", type(exc).__name__)
+        return {"ok": False, "error": "search_failed", "items": []}
+    if not items:
+        return {"ok": True, "query": str(q or ""), "count": 0, "items": [],
+                "note": "Nothing came back; YouTube may be unreachable or nothing matched."}
+    return {"ok": True, "query": str(q or ""), "count": len(items), "items": items}
+
+
+@router.get("/search")
+def search_route(q: str = "", limit: int = 6) -> dict:
+    return search_payload(q, limit)
+
+
+# ---------------------------------------------------------------------------
 # [listen lane] Radio: search / popular / presets / favorites / resolve
 #
 # These are dashboard routes (mounted at /api/plugins/aura/radio/...) backed by

@@ -65,6 +65,16 @@ except ImportError:  # loaded as a plain directory, not a package
     except ImportError:
         _radio = None  # type: ignore[assignment]
 
+# [watch lane] Keyless YouTube search + play-URL validation. Optional: without
+# it aura_watch says so instead of raising.
+try:
+    from .aura_core import search as _search
+except ImportError:  # loaded as a plain directory, not a package
+    try:
+        from aura_core import search as _search
+    except ImportError:
+        _search = None  # type: ignore[assignment]
+
 _MOODS = tuple(getattr(_mood, "MOODS", ())) if _mood is not None else ()
 _MACHINE = _mood.MoodMachine() if _mood is not None else None
 
@@ -456,9 +466,12 @@ def _player_snapshot() -> dict:
     return snapshot
 
 
-def _action_transport(action: str, args: dict) -> dict:
+def _action_transport(action: str, args: dict, extra: dict | None = None,
+                      hint: str | None = None) -> dict:
     """Queue one transport command on the server; the active player applies it."""
     body: dict = {"cmd": action}
+    if extra:
+        body.update(extra)
     if action == "seek":
         raw = args.get("position")
         if isinstance(raw, bool) or not isinstance(raw, (int, float)):
@@ -468,7 +481,7 @@ def _action_transport(action: str, args: dict) -> dict:
         result = _request("POST", "/api/player/command", body=body)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
-                "hint": "Aura's server is not running; call action=status."}
+                "hint": hint or "Aura's server is not running; call action=status."}
     if not isinstance(result, dict) or result.get("ok") is not True:
         return {"ok": False, "error": (result or {}).get("error", "command_rejected"),
                 "command": action}
@@ -902,9 +915,219 @@ SCHEMA_AURA_LISTEN = {
 }
 
 
+# ---------------------------------------------------------------------------
+# [watch lane] aura_watch — "find me something to watch" -> numbered options ->
+# the user picks -> it plays in Aura's video player.
+#
+# Search never plays anything. The agent shows the numbered options and stops;
+# only the user's pick reaches action=play, which queues `{cmd:'load'}` on the
+# same player command queue the transport actions use. Playback belongs to
+# whichever surface is active (docked pane or the popped-out window); this tool
+# only tells it what to load.
+# ---------------------------------------------------------------------------
+
+_WATCH_ACTIONS = ("search", "play", "now")
+_WATCH_SEARCH_LIMIT = 10
+
+
+def _watch_error(message: str) -> dict:
+    return {"ok": False, "error": message, "allowed_actions": list(_WATCH_ACTIONS)}
+
+
+def _format_options(items: list[dict]) -> str:
+    """One line per option: ``1. title · channel · length · link``."""
+    lines = []
+    for item in items:
+        title = str(item.get("title") or "(untitled)").strip()
+        bits = [title]
+        for key in ("channel", "length"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                bits.append(value)
+        bits.append(str(item.get("url") or ""))
+        lines.append(f"{item.get('n')}. " + " · ".join(bits))
+    return "\n".join(lines)
+
+
+def _action_watch_search(args: dict) -> dict:
+    if _search is None:
+        return _watch_error("search module unavailable")
+    query = args.get("q") or args.get("query") or ""
+    if not isinstance(query, str):
+        return _watch_error("q must be a string")
+    query = query.strip()
+    if not query:
+        return _watch_error("search needs a query (q), e.g. 'documentary about octopuses'")
+    try:
+        limit = int(args.get("limit", 6) or 6)
+    except (TypeError, ValueError):
+        limit = 6
+    limit = max(1, min(_WATCH_SEARCH_LIMIT, limit))
+    try:
+        rows = _search.youtube_search(query, limit)
+    except Exception as exc:  # noqa: BLE001 - a tool must always answer
+        return _watch_error(f"{type(exc).__name__}: {exc}")
+    options = [dict(row, n=index + 1) for index, row in enumerate(rows[:limit])]
+    if not options:
+        payload = _watch_error("no_results")
+        payload.update({
+            "query": query,
+            "items": [],
+            "text": "",
+            "hint": ("YouTube returned nothing — it may be unreachable from here, or "
+                     "the query is too narrow. Try a broader query, or use your own "
+                     "web search and pass a direct link to action=play."),
+        })
+        return payload
+    return {
+        "ok": True,
+        "query": query,
+        "count": len(options),
+        "items": options,
+        "text": _format_options(options),
+        "next": ("Show the user these numbered options (title, channel, length and "
+                 "link) and WAIT for their pick. Then call action=play with that "
+                 "option's url and title as the label. Do not play anything until "
+                 "the user chooses."),
+    }
+
+
+def _action_watch_play(args: dict) -> dict:
+    if _search is None:
+        return _watch_error("search module unavailable")
+    url = args.get("url")
+    checked = _search.check_play_url(url)
+    if not checked.get("ok"):
+        return _watch_error(str(checked.get("error") or "that url cannot be played"))
+    target = str(checked.get("url") or "")
+    label = args.get("label")
+    if not isinstance(label, str) or not label.strip():
+        label = target
+    label = label.strip()[:200]
+    try:
+        _ensure()  # Aura starts on first use; a stopped server is started here.
+    except Exception:  # noqa: BLE001 - _request below reports honestly
+        pass
+    payload = _action_transport(
+        "load", args, extra={"url": target, "label": label},
+        hint=("Aura's server is not running. Aura starts on first use: turn it on "
+              "with aura_control action=on, then call action=play again."),
+    )
+    if payload.get("ok") is not True:
+        return payload
+    payload.update({
+        "playing": True,
+        "url": target,
+        "label": label,
+        "kind": checked.get("kind"),
+        "note": ("Queued for the active player; Aura picks it up on its next poll "
+                 "(~0.25 s) in the docked pane or the popped-out window, whichever "
+                 "is playing."),
+    })
+    return payload
+
+
+def _action_watch_now() -> dict:
+    snapshot = _player_snapshot()
+    if not snapshot:
+        return {
+            "ok": False,
+            "running": False,
+            "playing": False,
+            "error": "server not running",
+            "hint": ("Aura's server is not running. It starts on first use — turn it "
+                     "on with aura_control action=on, then ask again."),
+        }
+    player_raw = snapshot.get("player")
+    player: dict = player_raw if isinstance(player_raw, dict) else {}
+    payload: dict = {
+        "ok": True,
+        "running": True,
+        "playing": bool(player.get("playing")),
+        "player": player,
+        "window": snapshot.get("window") or {},
+    }
+    if "command_seq" in snapshot:
+        payload["command_seq"] = snapshot["command_seq"]
+    if not player:
+        payload["hint"] = "The player has not reported yet; nothing is loaded."
+    return payload
+
+
+def _tool_aura_watch(args: dict, **kw) -> str:
+    """aura_watch — search YouTube, play the user's pick, report what is playing."""
+    try:
+        if not isinstance(args, dict):
+            return _dump(_watch_error("arguments must be an object"))
+        action = str(args.get("action") or "search").strip().lower()
+        if action not in _WATCH_ACTIONS:
+            return _dump(_watch_error(f"unknown action {action!r}"))
+        if action == "search":
+            payload = _action_watch_search(args)
+        elif action == "play":
+            payload = _action_watch_play(args)
+        else:  # now
+            payload = _action_watch_now()
+        return _dump(payload)
+    except Exception as exc:  # noqa: BLE001 — a tool must always answer
+        return _dump({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+
+
+SCHEMA_AURA_WATCH = {
+    "name": "aura_watch",
+    "description": (
+        "Find something to watch and make it play in Aura's video player (the "
+        "docked theatre pane in Hermes Desktop, or the popped-out Aura window, "
+        "whichever is playing). To find something to watch: call action=search, "
+        "show the user the numbered options with title, channel, length and link, "
+        "then STOP and wait for the user to pick. Only call action=play after the "
+        "user chooses (or when they named an exact link/title to play now). For "
+        "non-YouTube sources you may use your own web search and pass the direct "
+        "link to action=play. action=play accepts YouTube watch/youtu.be/shorts/"
+        "embed/playlist links and direct .mp4/.webm/.m3u8/.mov files. action=now "
+        "reports what is playing. Returns JSON. Nothing is ever autoplayed, and "
+        "if Aura's server is not running it says so plainly."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": list(_WATCH_ACTIONS),
+                "description": "search to offer choices; play to start the chosen "
+                               "one; now to ask what is playing (default search).",
+            },
+            "q": {
+                "type": "string",
+                "description": "for search: what the user wants to watch, in their "
+                               "words, e.g. 'documentary about octopuses'",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": _WATCH_SEARCH_LIMIT,
+                "description": "for search: how many numbered options (default 6)",
+            },
+            "url": {
+                "type": "string",
+                "description": "for play: the chosen option's url (or a direct link "
+                               "the user gave you)",
+            },
+            "label": {
+                "type": "string",
+                "description": "for play: the title to show in Aura",
+            },
+        },
+        "required": ["action"],
+        "additionalProperties": False,
+    },
+}
+
+
 TOOLS = (
     ("aura_control", SCHEMA_AURA_CONTROL, _tool_aura_control),
     ("aura_listen", SCHEMA_AURA_LISTEN, _tool_aura_listen),
+    ("aura_watch", SCHEMA_AURA_WATCH, _tool_aura_watch),
 )
 
 
