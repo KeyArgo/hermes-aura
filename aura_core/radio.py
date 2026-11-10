@@ -4,9 +4,10 @@ and stream-URL safety (SSRF guard + .pls/.m3u resolution).
 Adapted from REVamp's ``revamp_core/radio.py`` (same author, MIT licence —
 see THIRD_PARTY_NOTICES.md). Only the parts Aura needs are kept: presets,
 search, a quality-filtered "popular" list, favorites and the URL safety
-layer. REVamp's endless-scroll browsing, category browsing, ICY now-playing
-and the CORS stream proxy are deliberately not copied — Aura's page plays a
-stream directly in an ``<audio>`` element, so no proxy is needed.
+layer.  REVamp's endless-scroll browsing, category browsing and ICY
+now-playing are deliberately not copied. Aura's page plays through
+``/api/radio/stream`` so the browser never resolves a station hostname or
+follows a redirect that the server did not validate.
 
 All network calls are stdlib ``urllib`` with hard timeouts; failures map to
 ``RadioUnavailable``/``RadioError`` so a route can answer 502 JSON.
@@ -738,3 +739,19 @@ def prepare_stream(url: str) -> str:
     if not safe_stream_url(target):
         raise RadioError("resolved stream url must be public http(s)")
     return target
+
+
+STREAM_TIMEOUT = 15.0
+
+
+def open_stream(url: str, timeout: float = STREAM_TIMEOUT):
+    """Validate, resolve and open a radio stream through the pinned opener.
+
+    The browser never sees the station hostname: the server streams these
+    bytes to ``/api/radio/stream``. Redirect hops are checked by
+    ``_SafeRedirect`` and the socket is pinned to the address that was
+    validated, so a station cannot redirect the page to ``127.0.0.1``.
+    """
+    target = prepare_stream(url)
+    return _open(target, {"User-Agent": UA, "Accept": "*/*", "Icy-MetaData": "0"},
+                 timeout)

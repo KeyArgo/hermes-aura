@@ -125,6 +125,10 @@ def test_schema_is_valid_and_complete(plugin):
     assert props["mood"]["enum"] == list(p._mood.MOODS)
     assert "null" in props["preset"]["type"]
     json.dumps(schema)  # must be JSON-serializable
+    # The review's description text, adjusted to stay true after the fixes.
+    assert "last search's rows" in p.SCHEMA_AURA_LISTEN["description"]
+    assert "stored the request" in p.SCHEMA_AURA_LISTEN["description"]
+    assert "applied:false" in schema["description"]
 
 
 def test_tool_registered_in_aura_toolset(plugin):
@@ -512,3 +516,85 @@ def test_agent_popin_queues_fallback_return_when_no_os_window(plugin, monkeypatc
     monkeypatch.setattr(p, '_request', request)
     result = _call(p, {'action': 'popin'})
     assert result['delivery'] == 'queued'
+
+
+def test_transport_surfaces_an_unapplied_last_command(plugin, monkeypatch):
+    p, _ = plugin
+    http = FilmHTTP()
+    http.player["applied"] = False
+    http.player["last_command"] = "next"
+    monkeypatch.setattr(p, "_request", http)
+    payload = _call(p, {"action": "next"})
+    assert payload["ok"] is True
+    assert payload["applied"] is False
+    assert payload["last_command"] == "next"
+    assert payload["player"]["applied"] is False
+
+
+@pytest.mark.parametrize("url", [
+    "ftp://example.test/film.mp4",
+    "file:///tmp/film.mp4",
+])
+def test_popout_rejects_a_non_http_film(plugin, monkeypatch, url):
+    p, _ = plugin
+    http = FilmHTTP()
+    monkeypatch.setattr(p, "_request", http)
+    payload = _call(p, {"action": "popout", "url": url})
+    assert payload["ok"] is False
+    assert "http(s)" in payload["error"]
+    assert http.calls == [], "the bad URL must be refused before the server"
+
+
+def test_popout_rejects_auras_own_token_url(plugin, monkeypatch):
+    p, _ = plugin
+    http = FilmHTTP()
+    monkeypatch.setattr(p, "_request", http)
+    payload = _call(p, {"action": "popout",
+                        "url": "http://127.0.0.1:4567/?token=s3cr3t"})
+    assert payload["ok"] is False
+    assert "own page" in payload["error"]
+    assert http.calls == [], "the token-bearing player URL is not a film"
+
+
+# ---------------------------------------------------------------------------
+# aura_listen — search/play hand-off
+# ---------------------------------------------------------------------------
+
+def test_play_does_not_claim_playing_when_the_request_failed(plugin, monkeypatch):
+    p, _ = plugin
+    monkeypatch.setattr(p._radio, "prepare_stream", lambda url: url)
+
+    def failed(action, url="", label="", value=None):
+        return {"action": action, "url": url, "label": label,
+                "seq": 0, "at": 1, "error": "RuntimeError"}
+
+    monkeypatch.setattr(p, "_publish_audio", failed)
+    payload = json.loads(p._tool_aura_listen(
+        {"action": "play", "url": "https://ice.example/x.mp3"}))
+    assert payload["ok"] is False
+    assert payload["playing"] is False, "a failed publish is not music playing"
+    assert "not stored" in payload["note"]
+
+
+def test_play_accepts_an_id_from_the_last_search(plugin, monkeypatch):
+    p, _ = plugin
+    row = {"id": "rb-1234", "name": "Jazz FM",
+           "url": "https://ice.example/jazz.mp3", "tags": ["jazz"]}
+    monkeypatch.setattr(p._radio, "search", lambda q, tag, limit: [row])
+    monkeypatch.setattr(p._radio, "favorites", lambda: [])
+    monkeypatch.setattr(p._radio, "presets", lambda: [])
+    monkeypatch.setattr(p._radio, "prepare_stream", lambda url: url)
+    seen = {}
+
+    def fake_publish(action, url="", label="", value=None):
+        seen.update(action=action, url=url, label=label)
+        return {"action": action, "url": url, "label": label, "seq": 7, "at": 1}
+
+    monkeypatch.setattr(p, "_publish_audio", fake_publish)
+    search = json.loads(p._tool_aura_listen(
+        {"action": "search_radio", "q": "jazz"}))
+    assert search["stations"][0]["id"] == "rb-1234"
+    payload = json.loads(p._tool_aura_listen({"action": "play", "id": "rb-1234"}))
+    assert payload["ok"] is True
+    assert payload["url"] == "https://ice.example/jazz.mp3"
+    assert seen["url"] == "https://ice.example/jazz.mp3"

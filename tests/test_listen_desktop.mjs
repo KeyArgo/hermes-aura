@@ -322,6 +322,51 @@ await record('handleAudioRequest: a new play reaches the page and is remembered'
   assert.equal(api.audioState().settings.audioUrl, 'https://ice.example/live.mp3')
 })
 
+await record('handleAudioRequests: every unseen request is applied in order', async () => {
+  const dispose = await remount({ audioRequestSeq: 200 })
+  const outcomes = plugin.handleAudioRequests({
+    audio_requests: [
+      { action: 'play', url: 'https://ice.example/batch.mp3', label: 'Batch', seq: 201, at: Date.now() },
+      { action: 'mute_video', seq: 202, at: Date.now() }
+    ]
+  })
+  assert.deepEqual(outcomes, ['played', 'muted'])
+  assert.equal(plugin.audioState().settings.audioRequestSeq, 202)
+  assert.equal(plugin.audioState().settings.audioUrl, 'https://ice.example/batch.mp3')
+  assert.equal(plugin.audioState().settings.videoMuted, true)
+  assert.ok(sent.some(message => message.aura === 'audio' && message.cmd === 'play' && message.url === 'https://ice.example/batch.mp3'))
+  assert.ok(sent.some(message => message.aura === 'transport' && message.cmd === 'mute'))
+  dispose()
+})
+
+await record('audio-only still mounts the backdrop that hosts audio.js', async () => {
+  const before = new Set(bodyChildren)
+  const dispose = await remount({
+    windowVisual: false,
+    backdropMode: 'aura',
+    audioUrl: 'https://ice.example/audio-only.mp3',
+    audioLabel: 'Audio only'
+  })
+  const frame = bodyChildren.find(node => !before.has(node) && node.tagName === 'IFRAME' && node.src && node.src.includes('overlay=1'))
+  assert.ok(frame, 'no backdrop was mounted for an audio-only session')
+  dispose()
+})
+
+await record('a closed film does not tear down the audio-only backdrop', async () => {
+  const before = new Set(bodyChildren)
+  const dispose = await remount({
+    windowVisual: false,
+    backdropMode: 'video',
+    videoClosed: true,
+    videoUrl: '',
+    audioUrl: 'https://ice.example/audio-only.mp3',
+    audioLabel: 'Audio only'
+  })
+  const frame = bodyChildren.find(node => !before.has(node) && node.tagName === 'IFRAME' && node.src && node.src.includes('player.html'))
+  assert.ok(frame, 'the closed-film branch removed the audio channel page')
+  dispose()
+})
+
 await record('handleAudioRequest: a request older than 60 s is stale on first poll', async () => {
   const dispose = await remount({})  // seq 0: a fresh install
   const outcome = plugin.handleAudioRequest({

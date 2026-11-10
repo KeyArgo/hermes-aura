@@ -244,6 +244,23 @@ def test_resolve_playlist_refuses_a_private_entry(monkeypatch):
     assert radio.resolve_playlist_url("https://ice.example/list.pls") == "https://ice.example/list.pls"
 
 
+def test_open_stream_prepares_then_opens_through_the_checked_opener(monkeypatch):
+    # [finding 9] The proxy streams through the same validated/pinned opener;
+    # it must never call the browser's raw hostname directly.
+    calls = {}
+    sentinel = FakeResponse(b"", url="https://ice.example/prepared.mp3")
+
+    monkeypatch.setattr(radio, "prepare_stream",
+                        lambda url: calls.setdefault("prepared", "https://ice.example/prepared.mp3"))
+    monkeypatch.setattr(radio, "_open", lambda url, headers, timeout:
+                        calls.update(url=url, headers=headers, timeout=timeout) or sentinel)
+
+    assert radio.open_stream("https://ice.example/list.pls") is sentinel
+    assert calls["url"] == "https://ice.example/prepared.mp3"
+    assert calls["headers"]["User-Agent"] == radio.UA
+    assert calls["headers"]["Icy-MetaData"] == "0"
+
+
 # ---------------------------------------------------------------------------
 # dashboard routes (payload builders; fastapi is stubbed, nothing is served)
 # ---------------------------------------------------------------------------

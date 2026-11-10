@@ -88,9 +88,34 @@
     } catch (err) { /* the host may be gone */ }
   }
 
+  function streamUrl(url) {
+    // [finding 9] Never hand the station hostname to the browser: the server
+    // validates, pins and follows only safe redirects, then streams the bytes.
+    var path = '/api/radio/stream?url=' + encodeURIComponent(String(url))
+    var token = ''
+    try {
+      token = new URLSearchParams(window.location.search).get('token') || ''
+    } catch (err) { /* old browser: fall back to no token */ }
+    if (token) path += '&token=' + encodeURIComponent(token)
+    return path
+  }
+
   function play(url, label, volume) {
     if (!url) return
     var node = el()
+    var src = streamUrl(url)
+    // The desktop repeats the last play on its first poll after a reload.
+    // Re-assigning src restarts the stream, so keep a live one playing.
+    if (node.getAttribute('src') === src && !node.paused && !node.ended) {
+      state.url = String(url)
+      state.label = typeof label === 'string' ? label : ''
+      if (typeof volume === 'number' && Number.isFinite(volume)) {
+        state.volume = Math.max(0, Math.min(1, volume))
+        node.volume = state.volume
+      }
+      postState(true)
+      return
+    }
     state.url = String(url)
     state.label = typeof label === 'string' ? label : ''
     state.error = ''
@@ -99,7 +124,7 @@
     if (typeof volume === 'number' && Number.isFinite(volume)) {
       state.volume = Math.max(0, Math.min(1, volume))
     }
-    node.src = state.url
+    node.src = src
     node.volume = state.volume
     node.muted = state.muted
     // Autoplay may be refused before a user gesture; say so instead of

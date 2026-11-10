@@ -375,7 +375,9 @@
           playing: state.playing,
           position: state.position,
           duration: state.duration,
-          volume: state.volume
+          volume: state.volume,
+          last_command: lastCommand,
+          applied: lastApplied
         })
       }).catch(function () { /* the server may be restarting */ })
       if (state.title) document.title = state.title + ' — Aura'
@@ -422,20 +424,35 @@
     reportDesktop(true)
   }
 
+  // [finding 7] What the last queued command did. A single-file film has no
+  // next/prev, so the page reports applied:false instead of silently ignoring
+  // it and letting the agent claim the skip worked.
+  var lastCommand = ''
+  var lastApplied = null
+
+  function markCommand(name, applied) {
+    lastCommand = String(name || '')
+    lastApplied = Boolean(applied)
+  }
+
   function applyDesktopCommand(command) {
     var name = String(command.cmd || '')
     var playing = state.playing
-    if (name === 'load') { desktopLoad(command.url); return }
-    if (name === 'seek') { desktopSeek(command.value); return }
-    if (name === 'volume') { desktopVolume(command.value); return }
+    if (name === 'load') { markCommand(name, true); desktopLoad(command.url); return }
+    if (name === 'seek') { markCommand(name, true); desktopSeek(command.value); return }
+    if (name === 'volume') { markCommand(name, true); desktopVolume(command.value); return }
     if (name === 'next' || name === 'prev') {
-      if ((kind === 'youtube' || kind === 'playlist') && frame) {
+      var canSkip = (kind === 'youtube' || kind === 'playlist') && frame
+      markCommand(name, canSkip)
+      if (canSkip) {
         youtubeCommand(name === 'next' ? 'nextVideo' : 'previousVideo')
       }
+      reportDesktop(true)
       return
     }
     if (name === 'toggle') name = playing ? 'pause' : 'play'
-    if (name !== 'play' && name !== 'pause') return
+    if (name !== 'play' && name !== 'pause') { markCommand(name, false); reportDesktop(true); return }
+    markCommand(name, true)
     if (kind === 'video' && video) {
       if (name === 'play') video.play().catch(function () { })
       else video.pause()

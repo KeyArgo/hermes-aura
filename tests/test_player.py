@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import http.client
 import json
+from pathlib import Path
 
 import pytest
 
@@ -78,11 +79,34 @@ def test_report_is_merged_and_readable(live):
     assert payload["player"]["title"] == "Octopus"
 
 
+def test_report_carries_an_unapplied_transport_command(live):
+    # [finding 7] A single-file film cannot skip; the page says so and the
+    # agent's next status must be able to read it instead of guessing.
+    port, token = live["port"], live["token"]
+    status, _body = call(port, "POST", "/api/player/report", token, {
+        "url": "https://example.test/film.mp4", "kind": "video",
+        "applied": False, "last_command": "next",
+    })
+    assert status == 200
+    _status, payload = call(port, "GET", "/api/player", token)
+    assert payload["player"]["applied"] is False
+    assert payload["player"]["last_command"] == "next"
+
+
 def test_report_rejects_non_object(live):
     port, token = live["port"], live["token"]
     status, body = call(port, "POST", "/api/player/report", token, [1, 2])
     assert status == 400
     assert body["ok"] is False
+
+
+def test_player_page_reports_whether_a_transport_command_applied():
+    # [finding 7] The page itself is what knows a single-file film has no
+    # next/prev; a static check keeps that wire from being dropped silently.
+    html = (Path(__file__).resolve().parents[1] / "web" / "player.html").read_text()
+    assert "markCommand(name, canSkip)" in html
+    assert "applied: lastApplied" in html
+    assert "last_command: lastCommand" in html
 
 
 def test_player_page_may_report_with_the_query_token(live):
@@ -239,6 +263,44 @@ def test_window_open_falls_back_to_the_reported_film(live, monkeypatch):
     status, _body = call(live["port"], "POST", "/api/window/open", live["token"], {})
     assert status == 200
     assert seen["url"] == "https://example.test/reported.mp4"
+
+
+@pytest.mark.parametrize("url,needle", [
+    ("ftp://example.test/film.mp4", "http(s)"),
+    ("file:///tmp/film.mp4", "http(s)"),
+])
+def test_window_open_rejects_a_non_http_film(live, url, needle):
+    # [finding 8] Chrome loads this URL itself, so only http(s) is safe.
+    status, body = call(live["port"], "POST", "/api/window/open", live["token"],
+                        {"url": url})
+    assert status == 400
+    assert needle in body["error"]
+
+
+def test_window_open_rejects_auras_own_token_url(live):
+    # [finding 8] The token-bearing player URL is not a film; it also points
+    # the window back at the server, which is never what popout means.
+    own = f"http://127.0.0.1:{live['port']}/?token={live['token']}"
+    status, body = call(live["port"], "POST", "/api/window/open", live["token"],
+                        {"url": own})
+    assert status == 400
+    assert "own page" in body["error"]
+
+
+def test_window_open_allows_another_lan_film(live, monkeypatch):
+    seen = {}
+
+    def fake_open(port, token, url, position=0.0, label=""):
+        seen["url"] = url
+        return {"open": True, "already": False, "url": url, "pid": 1}
+
+    monkeypatch.setattr(server.desktop_window, "open_window", fake_open)
+    monkeypatch.setattr(server.desktop_window, "status",
+                        lambda: {"open": True, "available": True})
+    status, _body = call(live["port"], "POST", "/api/window/open", live["token"],
+                         {"url": "http://192.168.1.5:8080/nas/film.mp4"})
+    assert status == 200
+    assert seen["url"] == "http://192.168.1.5:8080/nas/film.mp4"
 
 
 def test_window_close_reports_what_happened(live, monkeypatch):

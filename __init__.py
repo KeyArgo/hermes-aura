@@ -28,6 +28,7 @@ import os
 import re
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -487,7 +488,39 @@ def _action_transport(action: str, args: dict, extra: dict | None = None,
                 "command": action}
     payload = {"ok": True, "command": action, "seq": result.get("seq"), "delivery": "queued"}
     payload.update(_player_snapshot())
+    player = payload.get("player")
+    if isinstance(player, dict):
+        # The player reports on its next tick; the status call a moment later
+        # carries this. Surface it here too when it is already known.
+        if isinstance(player.get("applied"), bool):
+            payload["applied"] = player["applied"]
+        if isinstance(player.get("last_command"), str) and player["last_command"]:
+            payload["last_command"] = player["last_command"]
     return payload
+
+
+def _film_url_problem(url: str) -> str:
+    """Why *url* cannot be a film in its own window ('' means it can).
+
+    The window is loaded by Chrome, not by Aura's checked opener, so this is
+    the last cheap place to refuse ``file:``/``ftp:`` and Aura's own page —
+    the token-bearing URL is a player, not a film.
+    """
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "film url is not a valid URL"
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+        return "film url must be http(s)"
+    try:
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    except ValueError:
+        return "film url has an invalid port"
+    aura_port = _port()
+    if (aura_port and port == int(aura_port)
+            and parsed.hostname.lower() in ("127.0.0.1", "localhost", "::1")):
+        return "film url must not be Aura's own page (pass the film, not the token URL)"
+    return ""
 
 
 def _action_popout(args: dict) -> dict:
@@ -496,6 +529,10 @@ def _action_popout(args: dict) -> dict:
     url = args.get("url")
     if isinstance(url, str) and url.strip():
         body["url"] = url.strip()
+        problem = _film_url_problem(body["url"])
+        if problem:
+            return {"ok": False, "error": problem,
+                    "hint": "Pass the film's http(s) URL; the window loads it directly."}
     raw = args.get("position")
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
         body["position"] = max(0.0, float(raw))
@@ -653,7 +690,9 @@ SCHEMA_AURA_CONTROL = {
         "preset (null = server default); mood sets the agent mood (idle, thinking, "
         "tool, approval, error, streaming, done). Transport of the active player "
         "(in-app or its own window): action=pause, resume, next, prev, or seek "
-        "with position in seconds. action=popout moves the film into its own OS "
+        "with position in seconds. A single-file film has no next/prev; the next "
+        "status shows film.player.applied:false and last_command instead of "
+        "pretending the skip worked. action=popout moves the film into its own OS "
         "window (another monitor / full screen) and action=popin closes it; "
         "optional url and position choose what to open. Use these when the user "
         "says 'pause', 'next episode', 'play the octopus documentary' or 'put it "
@@ -733,8 +772,16 @@ def _publish_audio(action: str, url: str = "", label: str = "", value: Any = Non
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
+_LAST_SEARCH_ROWS: list[dict] = []
+
+
 def _station_by_id(sid: str) -> dict | None:
-    """A station the user already has: a favorite, or a curated preset."""
+    """A station the user already has: a favorite, a preset, or the last search.
+
+    Radio Browser result ids (``rb-…``) were returned to the model but not kept
+    anywhere, so ``play`` with that id failed. The last search is remembered
+    here for exactly that hand-off.
+    """
     wanted = str(sid or "").strip()
     if not wanted or _radio is None:
         return None
@@ -744,6 +791,9 @@ def _station_by_id(sid: str) -> dict | None:
                 return row
     except Exception:  # noqa: BLE001 - a broken file must not break the search
         return None
+    for row in _LAST_SEARCH_ROWS:
+        if str(row.get("id")) == wanted:
+            return row
     return None
 
 
@@ -776,6 +826,7 @@ def _action_search_radio(args: dict) -> dict:
         return _radio_error(str(exc))
     else:
         note = ""
+    _LAST_SEARCH_ROWS[:] = [dict(row) for row in rows[:20]]
     options = [
         {"n": index + 1, "id": row.get("id", ""), "name": row.get("name", ""),
          "url": row.get("url", ""), "tags": row.get("tags") or [],
@@ -816,13 +867,20 @@ def _action_play(args: dict) -> dict:
     except _radio.RadioError as exc:
         return _radio_error(str(exc))
     stored = _publish_audio("play", target, label.strip()[:200])
+    # [finding 4] "playing" is the desktop's stored seq, not a promise. If the
+    # request failed (or the server stored an error) the tool says so next to
+    # ok=false instead of claiming music is on.
+    playing = bool(stored.get("seq") or stored.get("forwarded")) and not stored.get("error")
+    note = "Aura's audio channel starts on the desktop within one poll (~0.25 s)."
+    if not playing:
+        note = "The request was not stored; the desktop will not start anything."
     return {
-        "ok": bool(stored.get("seq") or stored.get("forwarded")),
-        "playing": True,
+        "ok": playing,
+        "playing": playing,
         "url": target,
         "label": label.strip()[:200],
         "audio_request": stored,
-        "note": "Aura's audio channel starts on the desktop within one poll (~0.25 s).",
+        "note": note,
     }
 
 
@@ -884,11 +942,16 @@ SCHEMA_AURA_LISTEN = {
         "play while a film runs muted. HOW TO USE IT: first call "
         "action=search_radio with a name or genre tag, show the user the numbered "
         "choices it returns, and WAIT for them to pick one; then call action=play "
-        "with that station's url (or id). action=stop stops the audio; "
-        "action=volume sets 0..1; action=mute_video/unmute_video mutes or unmutes "
-        "the video without touching the music. Never autoplay a station the user "
-        "has not chosen. Returns JSON; a radio outage falls back to Aura's curated "
-        "presets instead of failing."
+        "with that station's url or id — the last search's rows are remembered, "
+        "and id also works for a preset or favorite. Several audio actions in one "
+        "turn are delivered in order (play then mute_video both take effect). "
+        "action=stop stops the audio; action=volume sets 0..1; "
+        "action=mute_video/unmute_video mutes or unmutes the video without "
+        "touching the music. Never autoplay a station the user has not chosen. "
+        "playing:true on a play means the desktop stored the request, not that "
+        "sound is already coming out — confirm before claiming they hear it. "
+        "Returns JSON; a radio outage falls back to Aura's curated presets "
+        "instead of failing."
     ),
     "parameters": {
         "type": "object",
@@ -918,7 +981,7 @@ SCHEMA_AURA_LISTEN = {
             },
             "id": {
                 "type": "string",
-                "description": "for play: a station id from a search result, preset or favorite",
+                "description": "for play: an id from the last search result, preset or favorite",
             },
             "label": {
                 "type": "string",

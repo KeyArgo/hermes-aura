@@ -44,7 +44,7 @@ try:  # POSIX leader election; Windows keeps today's single-process behaviour.
 except ImportError:  # pragma: no cover - exercised only on Windows
     fcntl = None  # type: ignore[assignment]
 
-from . import analysis, behavior, config, redact, sessions
+from . import analysis, behavior, config, radio, redact, sessions
 from . import window as desktop_window
 from .capture import base as capture
 
@@ -104,6 +104,61 @@ _VENDOR_TYPES = {
     ".md": "text/markdown; charset=utf-8",
     ".css": "text/css; charset=utf-8",
 }
+
+# [security] The radio proxy relays a third party's bytes from Aura's own
+# origin. The station's Content-Type is therefore attacker-controlled input:
+# echoing it verbatim let a station answer ``text/html`` and run script in the
+# Aura origin (which holds the bearer token). Only an exact audio type is
+# allowed through, normalised and without parameters; everything else is
+# served as opaque bytes, so a browser cannot render or execute it.
+_AUDIO_TYPES = {
+    "audio/mpeg": "audio/mpeg",
+    "audio/mp3": "audio/mpeg",
+    "audio/x-mp3": "audio/mpeg",
+    "audio/aac": "audio/aac",
+    "audio/aacp": "audio/aacp",
+    "audio/x-aac": "audio/aac",
+    "audio/ogg": "audio/ogg",
+    "application/ogg": "audio/ogg",
+    "audio/opus": "audio/opus",
+    "audio/webm": "audio/webm",
+    "audio/wav": "audio/wav",
+    "audio/wave": "audio/wav",
+    "audio/x-wav": "audio/wav",
+    "audio/flac": "audio/flac",
+    "audio/x-flac": "audio/flac",
+    "audio/mp4": "audio/mp4",
+    "audio/m4a": "audio/mp4",
+    "audio/x-m4a": "audio/mp4",
+    "application/octet-stream": "application/octet-stream",
+}
+#: What any non-audio (or unparsable) upstream type becomes.
+STREAM_FALLBACK_TYPE = "application/octet-stream"
+#: What a station that sends no Content-Type at all gets: ICY servers often
+#: omit it, and audio/mpeg is both the historical answer and not executable.
+STREAM_DEFAULT_TYPE = "audio/mpeg"
+#: Second line of defence: even a browser that renders the body as a document
+#: gets an opaque origin with no script, no loads and no framing.
+STREAM_CSP = "sandbox; default-src 'none'; frame-ancestors 'none'"
+
+
+def _proxy_content_type(raw: Any) -> str:
+    """Map an upstream stream ``Content-Type`` to a type Aura may serve.
+
+    Exact-match whitelist (case-insensitive, parameters dropped); anything
+    else — ``text/html``, ``image/svg+xml``, ``application/javascript``, junk,
+    a non-string — is downgraded to ``application/octet-stream``. A missing or
+    empty header keeps the historical ``audio/mpeg`` default.
+    """
+    if raw is None:
+        return STREAM_DEFAULT_TYPE
+    if not isinstance(raw, str):
+        return STREAM_FALLBACK_TYPE
+    base = raw.split(";", 1)[0].strip().lower()
+    if not base:
+        return STREAM_DEFAULT_TYPE
+    return _AUDIO_TYPES.get(base, STREAM_FALLBACK_TYPE)
+
 
 _PRESETS_CACHE: dict | None = None
 
@@ -175,10 +230,12 @@ class _State:
         self.player_seq = 0
         self.commands: list = []
         self.command_seq = 0
-        # [listen lane] Audio channel request for the desktop half:
+        # [listen lane] Audio channel requests for the desktop half:
         # {"url","label","seq","at"} plus an optional "action"/"value".
-        # The desktop polls /api/state (through the dashboard) and plays a
-        # request whose seq it has not seen yet.
+        # The desktop polls /api/state (through the dashboard) and applies
+        # every request whose seq it has not seen yet, in order. Keeping a
+        # list is what stops a play followed by a mute from losing the play.
+        self.audio_requests: list = []
         self.audio_request: dict | None = None
         self.audio_seq = 0
 
@@ -631,6 +688,14 @@ def report_player(data: Any) -> dict:
             player["kind"] = _player_text(data.get("kind"), 32)
         if isinstance(data.get("desktop"), bool):
             player["desktop"] = bool(data["desktop"])
+        # [finding 7] A transport command that the active player could not
+        # apply (next/prev on a single file) says so; the agent reads it back
+        # on the following status instead of claiming the skip worked.
+        if isinstance(data.get("applied"), bool):
+            player["applied"] = bool(data["applied"])
+        command = _player_text(data.get("last_command"), 32)
+        if command:
+            player["last_command"] = command
         player["ts"] = time.time()
         _STATE.player = player
         _STATE.player_seq += 1
@@ -694,6 +759,30 @@ def window_payload() -> dict:
     return status
 
 
+def _check_film_url(url: str) -> None:
+    """Only an http(s) film, and never Aura's own token-bearing page.
+
+    The window's ``url`` parameter is shown on the user's screen and loaded by
+    Chrome, not by Aura's checked opener, so a page the agent was reading could
+    otherwise pop out ``file:``, ``ftp:`` or Aura's own origin. Other LAN hosts
+    stay allowed: a NAS movie is still a film.
+    """
+    try:
+        parsed = urlsplit(str(url or ""))
+    except ValueError as exc:
+        raise ValueError("film url is not a valid URL") from exc
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+        raise ValueError("film url must be http(s)")
+    try:
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    except ValueError as exc:
+        raise ValueError("film url has an invalid port") from exc
+    aura_port = _STATE.port
+    if (aura_port and port == int(aura_port)
+            and parsed.hostname.lower() in ("127.0.0.1", "localhost", "::1")):
+        raise ValueError("film url must not be Aura's own page (drop the token URL)")
+
+
 def open_window(data: Any) -> dict:
     """``POST /api/window/open`` — hand the film to its own OS window."""
     body = data if isinstance(data, dict) else {}
@@ -703,6 +792,7 @@ def open_window(data: Any) -> dict:
             url = str(_STATE.player.get("url") or "")
     if not url:
         raise ValueError("no film to pop out (send a url or load one first)")
+    _check_film_url(url)
     with _STATE.lock:
         reported = dict(_STATE.player)
     position = _player_number(body.get("position"))
@@ -858,6 +948,15 @@ class _Handler(BaseHTTPRequestHandler):
                 # carry no secrets (our JS + MIT bundles + the preset list); every
                 # data endpoint and the WebSocket stay token-gated.
                 self._serve_static(path)
+                return
+            if path == "/api/radio/stream":
+                # [finding 9] The page's <audio> src points here, not at the
+                # station. The server validates, pins and streams; the browser
+                # never resolves a hostname or follows an unchecked redirect.
+                if not (self._bearer_ok() or self._query_ok()):
+                    self._send_json({"ok": False, "error": "unauthorized"}, 401)
+                    return
+                self._stream_radio()
                 return
             if path == "/api/player/commands":
                 # The desktop window's page polls this from its own document: it
@@ -1038,7 +1137,10 @@ class _Handler(BaseHTTPRequestHandler):
                 "motion": cfg["motion"],
                 "reduced_motion": bool(cfg["reduced_motion"]),
                 # [listen lane] The desktop half polls this; `None` means
-                # "nothing to do". See publish_audio_request().
+                # "nothing to do". The list carries every unapplied request in
+                # order so play-then-mute does not lose the play. See
+                # publish_audio_request().
+                "audio_requests": [dict(r) for r in _STATE.audio_requests],
                 "audio_request": dict(_STATE.audio_request) if _STATE.audio_request else None,
             }
         return payload
@@ -1061,6 +1163,46 @@ class _Handler(BaseHTTPRequestHandler):
             "motion": cfg["motion"],
             "behavior_profile": behavior.profile(cfg["behavior"]),
         }
+
+    def _stream_radio(self) -> None:
+        """Proxy one validated radio stream to the page's <audio> element."""
+        try:
+            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+            url = (query.get("url") or [""])[0]
+        except (TypeError, ValueError):
+            url = ""
+        started = False
+        try:
+            with radio.open_stream(url) as response:
+                ctype = _proxy_content_type(response.headers.get("Content-Type"))
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                # A station is third-party input: never let its bytes execute
+                # in Aura's origin, even if a browser ignores the fixed type.
+                self.send_header("Content-Security-Policy", STREAM_CSP)
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+                started = True
+                while True:
+                    chunk = response.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except radio.RadioError as exc:
+            if not started:
+                self._send_json({"ok": False, "error": str(exc)}, 400)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:  # noqa: BLE001 - the stream is best-effort
+            _log("aura: radio stream failed (%s)", type(exc).__name__)
+            if not started:
+                try:
+                    self._send_json({"ok": False, "error": "stream_failed"}, 502)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
 
     def _serve_static(self, path: str) -> None:
         """Serve one whitelisted asset from web/, refusing anything outside it."""
@@ -1457,6 +1599,8 @@ def _start_server() -> None:
         _STATE.player_seq = 0
         _STATE.commands = []
         _STATE.command_seq = 0
+        _STATE.audio_requests = []
+        _STATE.audio_request = None
 
     thread.start()
     cap_thread = threading.Thread(target=_capture_loop, args=(stop_event,),
@@ -1817,10 +1961,12 @@ def publish_audio_request(url: str = "", label: str = "", action: str = "play",
                           value: Any = None) -> dict:
     """[listen lane] Record what the desktop's audio channel should do next.
 
-    Stored in ``/api/state`` as ``audio_request = {url, label, seq, at,
-    action[, value]}``. The desktop half plays a request whose ``seq`` it has
-    not seen, remembers the seq in its own settings and ignores requests older
-    than 60 s on its first poll. Returns the stored frame.
+    Stored in ``/api/state`` as ``audio_requests = [{url, label, seq, at,
+    action[, value]}]`` (newest last) and mirrored in ``audio_request`` for
+    older desktop builds. The desktop half applies every request whose ``seq``
+    it has not seen, in order, remembers the last seq in its own settings and
+    ignores requests older than 60 s on its first poll. Returns the stored
+    frame.
 
     Never raises: a broken audio request must not break an agent turn.
     """
@@ -1850,6 +1996,9 @@ def publish_audio_request(url: str = "", label: str = "", action: str = "play",
             _STATE.audio_seq = max(_STATE.audio_seq + 1, now_ms)
             stored = {**frame_extra, "seq": _STATE.audio_seq, "at": now_ms}
             _STATE.audio_request = stored
+            _STATE.audio_requests.append(stored)
+            if len(_STATE.audio_requests) > MAX_QUEUED_COMMANDS:
+                _STATE.audio_requests = _STATE.audio_requests[-MAX_QUEUED_COMMANDS:]
         return dict(stored)
     except Exception as exc:  # noqa: BLE001 - a broken audio request must not break a turn
         _log("aura: publish_audio_request failed (%s)", type(exc).__name__)
@@ -1932,6 +2081,8 @@ def _stop_server_locked() -> None:
             _STATE.session_boost = 1.0
             _STATE.player = {}
             _STATE.commands = []
+            _STATE.audio_requests = []
+            _STATE.audio_request = None
         # The pop-out cannot outlive the server it polls (its token just died).
         try:
             desktop_window.close_window()

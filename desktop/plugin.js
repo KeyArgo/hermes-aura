@@ -804,7 +804,11 @@ function showEligible() {
   const paneFilm = panelVisible() && Boolean(settings.videoUrl) && !settings.videoClosed
   // The full page is the same kind of surface, for the same reason.
   const pageFilm = pageVisible() && Boolean(settings.videoUrl) && !settings.videoClosed
-  return Boolean(doc && enabled && (paneFilm || pageFilm || knownTheme === THEME_NAME || settings.windowVisual) && liveUrl())
+  // [finding 4] The audio channel lives inside this same backdrop document.
+  // Without this a default install (window visual off, no theme) mounted no
+  // page, so playAudioSource posted into nothing and "playing" was a lie.
+  const audio = Boolean(settings.audioUrl)
+  return Boolean(doc && enabled && (audio || paneFilm || pageFilm || knownTheme === THEME_NAME || settings.windowVisual) && liveUrl())
 }
 
 // Host-owned timers: cancel through the disposer the SDK returns. A stale
@@ -1018,7 +1022,9 @@ function backdropOpacity(settings) {
  *  the "Show" mode. In "active" mode the fade state machine owns mounting. */
 function syncBackdrop() {
   const settings = $settings.get()
-  if (settings.backdropMode === 'video' && settings.videoClosed) {
+  // A closed film normally means no backdrop, but the audio channel still
+  // needs a document to live in while music is on.
+  if (settings.backdropMode === 'video' && settings.videoClosed && !settings.audioUrl) {
     resetShow()
     removeBackdrop()
     return
@@ -1462,7 +1468,7 @@ async function poll() {
     syncFromServer(frame)
     // [listen lane] One delivery path for the agent's "play this / mute the
     // film": the server keeps the request, this consumes a new seq only.
-    handleAudioRequest(frame)
+    handleAudioRequests(frame)
     if (ok) await syncPlayerOwnership()
     const key = [ok, port, capture, enabled, url, error, mood].join('|')
     if (key !== liveKey) {
@@ -2188,7 +2194,8 @@ function videoCommand(cmd, value) {
 // is what "music on, video muted" means here.
 //
 // Settings persistence is the same door as the video's (writeSettings /
-// readSettings). The agent reaches this through /api/state -> audio_request.
+// readSettings). The agent reaches this through /api/state -> audio_requests
+// (the newest is mirrored as audio_request for older builds).
 // ==========================================================================
 
 const AUDIO_URL_MAX = 2048
@@ -2324,6 +2331,21 @@ function setVideoMuted(muted) {
  * 'played' | 'stopped' | 'volume' | 'muted' | 'unmuted' | 'stale' | 'seen' |
  * 'invalid' | 'ignored' | 'none'.
  */
+function handleAudioRequests(frame) {
+  // [finding 3] The server keeps every request in order. Apply all unseen
+  // seqs instead of only the newest: play then mute_video must do both.
+  const list = frame && typeof frame === 'object' && Array.isArray(frame.audio_requests)
+    ? frame.audio_requests
+    : null
+  if (!list || !list.length) return handleAudioRequest(frame)
+  const outcomes = []
+  for (const request of list) {
+    if (!request || typeof request !== 'object') continue
+    outcomes.push(handleAudioRequest({ audio_request: request }))
+  }
+  return outcomes
+}
+
 function handleAudioRequest(frame) {
   const request = frame && typeof frame === 'object' ? frame.audio_request : null
   if (!request || typeof request !== 'object') return 'none'
@@ -6582,6 +6604,7 @@ export default {
 export {
   audioState,
   handleAudioRequest,
+  handleAudioRequests,
   playAudioSource,
   readAudioSettings,
   REVAMP_PITCH,
