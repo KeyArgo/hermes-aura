@@ -223,7 +223,7 @@ class KickAura:
             def _static(self, path):
                 name = "index.html" if path in ("/", "") else path.lstrip("/")
                 target = os.path.realpath(os.path.join(WEB, name))
-                if not target.startswith(os.path.realpath(WEB)) or not os.path.isfile(target):
+                if not target.startswith(os.path.realpath(WEB) + os.sep) or not os.path.isfile(target):
                     return self._json(404, {"error": "not found"})
                 data = open(target, "rb").read()
                 ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
