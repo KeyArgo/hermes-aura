@@ -256,6 +256,16 @@ function makeCtx(settings) {
         if (options.body && typeof options.body.reduced_motion === 'boolean') serverSettings.reduced_motion = options.body.reduced_motion
         return { ok: true }
       }
+      if (route === '/version') {
+        return {
+          version: '1.2.3',
+          commit: 'abcdef1234567890',
+          commit_short: 'abcdef12',
+          commit_date: '2026-11-09',
+          channel: 'dev',
+          dirty: false
+        }
+      }
       throw new Error(`unexpected route ${route}`)
     }
   }
@@ -291,6 +301,7 @@ record('clears the accent override with setAccentOverride(null)', () =>
   assert.match(source, /setAccentOverride\(null\)/)
 )
 record('polls at most 4 Hz (250 ms)', () => assert.match(source, /POLL_MS\s*=\s*250/))
+record('no user-facing "Left panel" remains', () => assert.doesNotMatch(source, /Left panel/))
 
 // --------------------------------------------------------------- temp module
 
@@ -310,7 +321,7 @@ fs.writeFileSync(pluginCopy, rewritten)
 fs.writeFileSync(
   sdkStub,
   `// Stub of @hermes/plugin-sdk: records the calls the plugin makes.
-export const calls = { accent: [], themes: [], navigations: [], notifications: [] }
+export const calls = { accent: [], themes: [], navigations: [], notifications: [], undismissed: [], revealed: [] }
 
 function makeAtom(initial) {
   let value = initial
@@ -337,7 +348,9 @@ export const requestTheme = name => {
 export const host = {
   state: { focusedStoredSessionId: { get: () => 'chat/123' } },
   navigate: route => { calls.navigations.push(route) },
-  notify: message => { calls.notifications.push(message) }
+  notify: message => { calls.notifications.push(message) },
+  undismissPane: paneId => { calls.undismissed.push(paneId) },
+  revealPane: paneId => { calls.revealed.push(paneId) }
 }
 
 export const useValue = store => store.get()
@@ -596,19 +609,54 @@ record('does not contribute the old stage route, sidebar row or palette command'
   }
 })
 
-record('docks the theatre as a right-hand pane the host lays out', () => {
+record('docks the theatre as an enforced right-hand pane the host lays out', () => {
   const pane = a.contributions.find(c => c.area === 'panes')
   assert.ok(pane, 'no panes contribution: the panel has no home')
   assert.equal(pane.id, 'panel')
   assert.equal(typeof pane.render, 'function', 'the pane needs a render function')
   assert.equal(pane.data.placement, 'right', 'owner prefers right-hand panels')
-  assert.deepEqual(pane.data.dock, { pane: 'workspace', pos: 'right' })
+  assert.deepEqual(
+    pane.data.dock,
+    { pane: 'workspace', pos: 'right', enforce: true },
+    'existing layouts must be moved to the right on boot'
+  )
   assert.match(String(pane.data.width), /^\d+px$/, 'the host needs a width')
   // A pane is laid out by the app; anything we would have to pin ourselves is
   // exactly what broke the layout before.
   assert.ok(!('position' in pane.data), 'pane must not set its own position')
 })
 
+record('the Right panel offers every Aura setting in a collapsible drawer', () => {
+  const pane = a.contributions.find(c => c.area === 'panes')
+  let tree = renderContribution(pane)
+  assert.equal(tree.props.style.overflowY, 'auto', 'the pane must scroll when content is taller than the window')
+  assert.ok(texts(tree).includes('Aura settings'), 'the settings drawer title is missing')
+  assert.equal(texts(tree).includes('Aura enabled'), false, 'the settings drawer must start collapsed')
+  let toggle = null
+  walk(tree, node => {
+    if (!toggle && node.props && node.props['aria-label'] === 'Expand Aura settings') toggle = node
+  })
+  assert.ok(toggle, 'the settings drawer has no expand control')
+  toggle.props.onClick()
+  assert.equal(a.storage.get('settings').panelSettingsOpen, true, 'opening the drawer was not remembered')
+  tree = renderContribution(a.contributions.find(c => c.area === 'panes'))
+  let settingsNode = null
+  walk(tree, node => {
+    if (!settingsNode && node.props && node.props.key === 'controls' && typeof node.type === 'function') settingsNode = node
+  })
+  assert.ok(settingsNode, 'the pane does not render the AuraSettings component')
+  assert.ok(
+    texts(settingsNode.type(settingsNode.props)).includes('Aura enabled'),
+    'the full AuraSettings component is not rendered in the pane'
+  )
+  let collapse = null
+  walk(tree, node => {
+    if (!collapse && node.props && node.props['aria-label'] === 'Collapse Aura settings') collapse = node
+  })
+  assert.ok(collapse, 'the open drawer has no collapse control')
+  collapse.props.onClick()
+  assert.equal(a.storage.get('settings').panelSettingsOpen, false, 'closing the drawer was not remembered')
+})
 
 record('occupies the status bar with exactly one quick-menu contribution', () => {
   const statusBar = a.contributions.filter(c => c.area.startsWith('statusBar.'))
@@ -642,6 +690,12 @@ record('contributes the settings page under settings.plugins', () => {
   const settings = a.contributions.find(c => c.area === 'settings.plugins')
   assert.ok(settings, 'no settings.plugins contribution')
   assert.equal(typeof settings.render, 'function')
+})
+
+record('the settings page calls the pane the Right panel', () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  assert.ok(findSwitch(renderContribution(settings), 'Right panel'), 'the settings page has no Right panel switch')
+  assert.equal(findSwitch(renderContribution(settings), 'Left panel'), null, 'the settings page still says "Left panel"')
 })
 
 record('contributes a permanently mounted theme probe', () => {
@@ -1458,6 +1512,40 @@ await recordAsync('"All Aura settings" navigates to the plugin settings page', a
   assert.equal(sdk.calls.navigations.at(-1), '/settings?tab=plugins&agent=aura', 'wrong settings route')
 })
 
+await recordAsync('the quick menu shows the same version chip as the settings page', async () => {
+  await sleep(30)
+  let chip = null
+  walk(quickTree(), node => {
+    if (!chip && node.props && node.props.key === 'build' && typeof node.type === 'function') chip = node
+  })
+  assert.ok(chip, 'the quick menu has no version chip')
+  const body = texts(chip.type(chip.props))
+  assert.ok(body.includes('v1.2.3'), 'the quick menu chip does not show the shared build line')
+  assert.ok(body.includes('abcdef12'), 'the quick menu chip is not the shared build line')
+})
+
+await recordAsync('switching the Right panel off disposes the pane and on re-registers it', async () => {
+  assert.ok(f.contributions.some(c => c.area === 'panes'), 'the pane was not registered at boot')
+  const undismissedBefore = sdk.calls.undismissed.length
+  const revealedBefore = sdk.calls.revealed.length
+  const page = renderContribution(f.contributions.find(c => c.area === 'settings.plugins'))
+  const off = findByAria(page, 'Right panel')
+  assert.ok(off, 'the Right panel switch is missing')
+  off.props.onCheckedChange(false)
+  await sleep(30)
+  assert.equal(f.contributions.some(c => c.area === 'panes'), false, 'the pane contribution survived switch-off')
+  assert.equal(f.storage.get('settings').panelEnabled, false, 'switch-off was not persisted')
+  const on = findByAria(renderContribution(f.contributions.find(c => c.area === 'settings.plugins')), 'Right panel')
+  on.props.onCheckedChange(true)
+  await sleep(30)
+  assert.ok(f.contributions.some(c => c.area === 'panes'), 'the pane did not re-register when switched back on')
+  assert.equal(f.storage.get('settings').panelEnabled, true, 'switch-on was not persisted')
+  assert.equal(sdk.calls.undismissed.length, undismissedBefore + 1, 'undismissPane was not called')
+  assert.equal(sdk.calls.undismissed.at(-1), 'aura:panel', 'undismissPane got the wrong contribution-scoped id')
+  assert.equal(sdk.calls.revealed.length, revealedBefore + 1, 'revealPane was not called')
+  assert.equal(sdk.calls.revealed.at(-1), 'aura:panel', 'revealPane got the wrong contribution-scoped id')
+})
+
 record('dispose from the quick-menu scenario is clean', () => {
   disposeF()
   assert.equal(f.contributions.length, 0, 'the quick-menu contribution survived dispose')
@@ -1752,6 +1840,15 @@ await recordAsync('the floating panel stays off while it awaits its docked repla
   assert.equal(panelStyles().length, 0, 'panel stylesheet mounted with no panel')
   assert.equal(document.body.classList.contains('aura-panel-open'), false, 'body padding came back')
   assert.equal(hostIframes().length >= 0, true)
+})
+
+record('the video-mode quick menu labels the pane the Right panel', () => {
+  const menu = panelCtx.contributions.find(c => c.id === 'quick-menu')
+  assert.ok(menu, 'the panel scenario has no quick menu')
+  const tree = renderContribution(menu)
+  assert.ok(texts(tree).includes('Right panel'), 'the quick menu does not say "Right panel"')
+  assert.equal(texts(tree).includes('Left panel'), false, 'the quick menu still says "Left panel"')
+  assert.ok(findByAria(tree, 'Right panel (quick menu)'), 'the quick menu has no Right panel switch')
 })
 
 // --------------------------------------------------------------- reporting

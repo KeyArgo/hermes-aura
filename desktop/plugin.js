@@ -164,10 +164,13 @@ const DEFAULT_SETTINGS = Object.freeze({
   // Closed means "film stopped, nothing on screen" — the bookmark survives, so
   // reopening returns to the same place.
   videoClosed: false,
-  // Left panel: on by default so the app is usable without a status bar; the
+  // Right panel: on by default so the app is usable without a status bar; the
   // switch leaves only the tray.
   panelEnabled: true,
   panelCollapsed: false,
+  // The pane's own settings drawer starts closed: the film is the reason the
+  // pane exists, and every control is still one click away.
+  panelSettingsOpen: false,
   videoSources: [],
   videoRecent: [],
   videoPlaylists: [],
@@ -579,6 +582,7 @@ function readSettings(ctx) {
     if (typeof raw.videoClosed === 'boolean') out.videoClosed = raw.videoClosed
     if (typeof raw.panelEnabled === 'boolean') out.panelEnabled = raw.panelEnabled
     if (typeof raw.panelCollapsed === 'boolean') out.panelCollapsed = raw.panelCollapsed
+    if (typeof raw.panelSettingsOpen === 'boolean') out.panelSettingsOpen = raw.panelSettingsOpen
     out.videoSources = readSourceList(raw.videoSources)
     out.videoRecent = readSourceList(raw.videoRecent)
     out.videoPlaylists = readSourceList(raw.videoPlaylists)
@@ -2367,18 +2371,24 @@ function onVideoBarMouseMove() {
 /** Keep the pill in step with settings/transport state. Called from the poll
  *  tick (4 Hz), so it costs one comparison per node at most. */
 // ---------------------------------------------------------- the Aura panel
-// A docked, theatre-styled column on the left for people who never touch a
+// A docked, theatre-styled column on the right for people who never touch a
 // status bar: the film in a proper frame at the top, a scrubber under it, a
-// poster list of sources below. It takes layout space (body padding) rather
-// than covering the chat, collapses to a slim rail, and can be switched off
-// entirely, leaving only the status tray.
+// poster list of sources below, and the full settings page in a collapsible
+// drawer. It takes layout space (body padding) rather than covering the chat,
+// collapses to a slim rail, and can be switched off entirely, leaving only
+// the status tray. The pane contribution itself is registered only while the
+// panel is enabled, so switching it off removes the host's empty frame too.
 const PANEL_WIDTH = 320
 const PANEL_RAIL = 44
 const PANEL_SCORE_MAX = 12
+const PANE_ID = `${ID}:panel`
 
 let panelEl = null
 let panelParts = null
 let panelStyleEl = null
+// The live `panes` registration, if any. Tracked through the disposer below so
+// plugin disposal (and switching the panel off) removes the host pane/tab/strip.
+let paneRegistration = null
 
 /** Panel is on screen when enabled and not hidden by the user. */
 function panelVisible() {
@@ -2763,15 +2773,61 @@ function syncPanel(force) {
   }
 }
 
+/** Register the host pane. Called at boot only when the panel is enabled, and
+ *  again when the user switches it back on. `restore` is the user action:
+ *  a remembered Close must not strand the pane they just asked for. */
+function registerPanelPane(restore) {
+  if (!ctxRef || disposed || paneRegistration) return
+  const off = ctxRef.register({
+    id: 'panel',
+    area: PANES_AREA,
+    title: 'Aura',
+    data: { placement: 'right', dock: { pane: 'workspace', pos: 'right', enforce: true }, width: `${PANEL_WIDTH}px` },
+    render: () => jsx(AuraPane, {})
+  })
+  paneRegistration = typeof off === 'function' ? off : null
+  if (restore) {
+    // The contribution-scoped id is `<pluginId>:<paneId>`.
+    try {
+      if (host && typeof host.undismissPane === 'function') host.undismissPane(PANE_ID)
+    } catch {
+      // older hosts may throw on an unknown pane
+    }
+    try {
+      if (host && typeof host.revealPane === 'function') host.revealPane(PANE_ID)
+    } catch {
+      // older hosts may throw on an unknown pane
+    }
+  }
+}
+
+/** Drop the pane contribution so the host removes its frame/tab/strip. */
+function disposePaneRegistration() {
+  const off = paneRegistration
+  paneRegistration = null
+  if (typeof off === 'function') {
+    try {
+      off()
+    } catch {
+      // one broken disposer must not strand the rest
+    }
+  }
+}
+
 /** The host pane's content.
  *
  *  A pane is laid out by Hermes, so the theatre lives inside the box the app
  *  gives us: no fixed positioning, no z-index, nothing painted over the chat.
- *  React hands us the node through a ref; the panel DOM mounts into it once. */
+ *  React hands us the node through a ref; the panel DOM mounts into it once.
+ *  Below it sits the same AuraSettings component the Settings page uses, in a
+ *  collapsed drawer, so every control is reachable without duplicating it. The
+ *  whole column scrolls when it is taller than the window. */
 function AuraPane() {
   const settings = useValue($settings)
   if (settings.panelEnabled === false) return null
-  return jsx('div', {
+  const open = settings.panelSettingsOpen === true
+  const theatre = jsx('div', {
+    key: 'theatre',
     ref: node => {
       if (!node) { panelEl = null; panelParts = null; return }
       try {
@@ -2780,19 +2836,63 @@ function AuraPane() {
         setError(`Aura could not draw its panel (${String(cause && cause.message || cause).slice(0, 80)}).`)
       }
     },
-    style: { height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column' }
+    // Drawer closed: the theatre shrinks to fit so the "Aura settings" toggle
+    // stays on screen. Open: it keeps its full height and the column scrolls.
+    style: open
+      ? { height: '100%', minHeight: 0, flex: '0 0 auto', display: 'flex', flexDirection: 'column' }
+      : { minHeight: 0, flex: '1 1 auto', display: 'flex', flexDirection: 'column' }
+  })
+  const settingsSection = jsxs('section', {
+    key: 'settings',
+    'aria-label': 'Aura settings',
+    style: {
+      flex: '0 0 auto', marginTop: 8, padding: '8px 2px 4px',
+      borderTop: '1px solid rgba(255,255,255,0.12)'
+    },
+    children: [
+      jsx('button', {
+        key: 'toggle',
+        type: 'button',
+        'aria-label': open ? 'Collapse Aura settings' : 'Expand Aura settings',
+        'aria-expanded': open,
+        onClick: () => {
+          writeSettings({ panelSettingsOpen: !open })
+        },
+        style: {
+          appearance: 'none', border: 0, background: 'transparent', color: 'inherit',
+          cursor: 'pointer', font: 'inherit', fontSize: 12, fontWeight: 600,
+          display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+          padding: '4px 2px', textAlign: 'left'
+        },
+        children: `${open ? '▾' : '▸'} Aura settings`
+      }),
+      open ? jsx(AuraSettings, { key: 'controls' }) : null
+    ]
+  })
+  return jsxs('div', {
+    key: 'pane',
+    style: {
+      height: '100%', minHeight: 0, overflowY: 'auto',
+      display: 'flex', flexDirection: 'column'
+    },
+    children: [theatre, settingsSection]
   })
 }
 
-/** Show/hide the whole panel; hiding leaves the status tray as the only Aura. */
+/** Show/hide the whole panel; hiding leaves the status tray as the only Aura.
+ *  The `panes` contribution is created and disposed with this switch so the
+ *  host does not keep an empty pane/tab/strip behind it. */
 function setPanelEnabled(on) {
   if (!ctxRef || disposed) return
-  writeSettings({ panelEnabled: Boolean(on) })
-  if (on) {
+  const next = Boolean(on)
+  writeSettings({ panelEnabled: next })
+  if (next) {
+    registerPanelPane(true)
     syncPanel(true)
   } else {
-    // Remove first, settings second: the panel disappears on the click even if
-    // something later in the tick throws.
+    // Remove first: the panel disappears on the click even if something later
+    // in the tick throws.
+    disposePaneRegistration()
     removePanel()
   }
   syncVideoBar(true)
@@ -3664,10 +3764,10 @@ function AuraQuickMenu() {
                   })
                 ),
                 row(
-                  'Left panel',
+                  'Right panel',
                   jsx(Switch, {
                     checked: settings.panelEnabled !== false,
-                    'aria-label': 'Left panel (quick menu)',
+                    'aria-label': 'Right panel (quick menu)',
                     onCheckedChange: value => setPanelEnabled(value)
                   })
                 ),
@@ -3713,11 +3813,12 @@ function AuraQuickMenu() {
               }
             })
           ),
-          useHostNav
-            ? jsxs('div', {
-              style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '8px 12px 4px', borderTop: '1px solid var(--ui-stroke-secondary)', marginTop: 2 },
-              children: [
-                jsx(Button, {
+          jsxs('div', {
+            style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '8px 12px 4px', borderTop: '1px solid var(--ui-stroke-secondary)', marginTop: 2 },
+            children: [
+              useHostNav
+                ? jsx(Button, {
+                  key: 'settings',
                   size: 'micro',
                   variant: 'ghost',
                   'aria-label': 'All Aura settings',
@@ -3730,15 +3831,18 @@ function AuraQuickMenu() {
                     }
                   },
                   children: 'All Aura settings'
-                }),
-                jsx('span', {
+                })
+                : jsx('span', {
+                  key: 'word',
                   'aria-hidden': true,
                   style: { fontSize: 10, color: 'var(--ui-text-tertiary)' },
                   children: 'Aura'
-                })
-              ]
-            })
-            : null
+                }),
+              // The same chip the settings page and the pane use — never a
+              // second build line that could disagree with them.
+              jsx(VersionChip, { key: 'build' })
+            ]
+          })
         ]
       })
     ]
@@ -4372,7 +4476,7 @@ function AuraSettings() {
           'A docked theatre pane on the right: the film, a scrubber and your sources — the way in without a status bar. Off leaves only the Aura menu in the status tray.',
           jsx(Switch, {
             checked: settings.panelEnabled !== false,
-            'aria-label': 'Left panel',
+            'aria-label': 'Right panel',
             onCheckedChange: value => setPanelEnabled(value)
           })
         )
@@ -4501,6 +4605,7 @@ function teardown() {
   resetShow()
   removeBackdrop()
   removeVideoBar()
+  disposePaneRegistration()
   removePanel()
   removeUiStyle()
   saveCurrentPosition()
@@ -4556,6 +4661,8 @@ export default {
     prevTheme = null
     themeInfo = { name: '', accent: '' }
     knownTheme = ''
+    // A previous instance (hot reload) may still own a pane registration.
+    disposePaneRegistration()
     disposers.length = 0
     $themeApplied.set(false)
     $menuOpen.set(false)
@@ -4630,16 +4737,11 @@ export default {
     )
 
     // The theatre pane, docked to the right of the workspace. The host owns the
-    // box and the width; we own nothing but the content.
-    track(
-      ctx.register({
-        id: 'panel',
-        area: PANES_AREA,
-        title: 'Aura',
-        data: { placement: 'right', dock: { pane: 'workspace', pos: 'right' }, width: `${PANEL_WIDTH}px` },
-        render: () => jsx(AuraPane, {})
-      })
-    )
+    // box and the width; we own nothing but the content. Registered ONLY while
+    // the user has the panel on: switching it off disposes the contribution so
+    // the host removes the empty frame/tab/strip too.
+    track(disposePaneRegistration)
+    if (settings.panelEnabled !== false) registerPanelPane(false)
 
     // One read of the build stamp: the pane's chip is useless without it, and
     // the settings page that also shows it may never be opened.
