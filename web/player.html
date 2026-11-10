@@ -315,10 +315,143 @@
     }
   })
 
+  // --- desktop window mode ------------------------------------------------
+  // `?desktop=1` means this page IS the player: it was opened by
+  // aura_core/window.py as its own OS window (another monitor, full screen),
+  // and Hermes drives it through the server's command queue instead of the
+  // host's postMessage transport. We poll the queue ~3 Hz and report state
+  // back ~1 Hz, so "pause", "next episode" or "play the octopus documentary"
+  // spoken to Hermes still works while the window has focus elsewhere.
+  var desktopMode = params.get('desktop') === '1'
+  var authToken = (params.get('token') || '').trim()
+  var commandCursor = 0
+  var reportAt = 0
+
+  // The window opens at the position the in-app player had reached.
+  if (desktopMode) {
+    var startAt = Number(params.get('t')) || 0
+    if (startAt > 0 && !(resumeAt > 0)) resumeAt = startAt
+  }
+
+  function desktopApi(path) {
+    var join = path.indexOf('?') === -1 ? '?' : '&'
+    return fetch(path + join + 'token=' + encodeURIComponent(authToken), { cache: 'no-store' })
+      .then(function (response) { return response.ok ? response.json() : null })
+  }
+
+  function reportDesktop(force) {
+    if (!desktopMode || !authToken) return
+    var now = Date.now()
+    if (!force && now - reportAt < 1000) return
+    reportAt = now
+    try {
+      fetch('/api/player/report?token=' + encodeURIComponent(authToken), {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          desktop: true,
+          url: raw,
+          label: state.title,
+          title: state.title,
+          kind: kind,
+          playing: state.playing,
+          position: state.position,
+          duration: state.duration,
+          volume: state.volume
+        })
+      }).catch(function () { /* the server may be restarting */ })
+      if (state.title) document.title = state.title + ' — Aura'
+    } catch (err) { /* same */ }
+  }
+
+  function desktopSeek(target) {
+    var to = Math.max(0, Number(target) || 0)
+    if (kind === 'video' && video) {
+      video.currentTime = to
+      state.position = to
+    } else if ((kind === 'youtube' || kind === 'playlist') && frame) {
+      youtubeCommand('seekTo', [to, true])
+      state.position = to
+    }
+    postState(true)
+    reportDesktop(true)
+  }
+
+  // `load` swaps the film: a fresh page keeps every existing code path (and
+  // the resume bookkeeping) rather than growing a second boot sequence.
+  function desktopLoad(url) {
+    var next = new URLSearchParams()
+    next.set('desktop', '1')
+    next.set('url', String(url || ''))
+    if (authToken) next.set('token', authToken)
+    window.location.replace('/player.html?' + next.toString())
+  }
+
+  function desktopVolume(level) {
+    var value = Math.max(0, Math.min(1, Number(level) || 0))
+    if (kind === 'video' && video) {
+      video.volume = value
+      if (value > 0 && video.muted) video.muted = false
+    } else if ((kind === 'youtube' || kind === 'playlist') && frame) {
+      youtubeCommand('setVolume', [Math.round(value * 100)])
+      if (value > 0) { youtubeCommand('unMute'); state.muted = false }
+    }
+    state.volume = value
+    postState(true)
+    reportDesktop(true)
+  }
+
+  function applyDesktopCommand(command) {
+    var name = String(command.cmd || '')
+    var playing = state.playing
+    if (name === 'load') { desktopLoad(command.url); return }
+    if (name === 'seek') { desktopSeek(command.value); return }
+    if (name === 'volume') { desktopVolume(command.value); return }
+    if (name === 'next' || name === 'prev') {
+      if ((kind === 'youtube' || kind === 'playlist') && frame) {
+        youtubeCommand(name === 'next' ? 'nextVideo' : 'previousVideo')
+      }
+      return
+    }
+    if (name === 'toggle') name = playing ? 'pause' : 'play'
+    if (name !== 'play' && name !== 'pause') return
+    if (kind === 'video' && video) {
+      if (name === 'play') video.play().catch(function () { })
+      else video.pause()
+    } else if ((kind === 'youtube' || kind === 'playlist') && frame) {
+      youtubeCommand(name === 'play' ? 'playVideo' : 'pauseVideo')
+      state.playing = name === 'play'
+    }
+    postState(true)
+    reportDesktop(true)
+  }
+
+  function pollDesktopCommands() {
+    if (!desktopMode || !authToken) return
+    desktopApi('/api/player/commands?after=' + commandCursor).then(function (payload) {
+      if (!payload || !Array.isArray(payload.commands)) return
+      payload.commands.forEach(function (command) {
+        if (!command || typeof command.cmd !== 'string') return
+        if (typeof command.seq === 'number' && command.seq > commandCursor) {
+          commandCursor = command.seq
+        }
+        applyDesktopCommand(command)
+      })
+    }).catch(function () { /* offline poll: next tick retries */ })
+  }
+
+  function startDesktopMode() {
+    reportDesktop(true)
+    setInterval(pollDesktopCommands, 350)
+    setInterval(function () { reportDesktop(false) }, 1000)
+  }
+
   // --- boot --------------------------------------------------------------
   if (!raw || !isHttpUrl(raw)) {
     hint.hidden = false
     postState(true)
+    if (desktopMode) startDesktopMode()
     return
   }
 
@@ -336,6 +469,7 @@
   }
 
   postState(true)
+  if (desktopMode) startDesktopMode()
   setInterval(function () { postState(false) }, 250)
   // The resume nudge: every half second until the film actually sits at the
   // saved point (or 20 s of trying), so an interruption always lands right.

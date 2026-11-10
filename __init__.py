@@ -71,7 +71,8 @@ class _Config:
 
 _CFG = _Config()
 _CTX: Any = None
-_ACTIONS = ("on", "off", "status", "intensity", "preset", "mood")
+_ACTIONS = ("on", "off", "status", "intensity", "preset", "mood",
+            "pause", "resume", "next", "prev", "seek", "popout", "popin")
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +395,8 @@ def _status_payload() -> dict:
         payload["pulse_hz"] = state.pulse_hz
         payload["flash_allowed"] = state.flash_allowed
         payload["ttl_ms"] = state.ttl_ms
+    # The film, so "what is playing?" is one call: last report + window state.
+    payload["film"] = _player_snapshot()
     return payload
 
 
@@ -423,6 +426,85 @@ def _toggle(flag: bool) -> dict:
 
 def _action_status() -> dict:
     return _status_payload()
+
+
+# ---------------------------------------------------------------------------
+# the film: Hermes is the remote (transport, pop-out)
+# ---------------------------------------------------------------------------
+
+def _player_snapshot() -> dict:
+    """What the active player last reported, plus the window's status."""
+    snapshot: dict = {}
+    player = _get("/api/player")
+    if isinstance(player, dict) and player:
+        snapshot["player"] = player.get("player") if isinstance(player.get("player"), dict) else {}
+        if "seq" in player:
+            snapshot["command_seq"] = player.get("seq")
+    window = _get("/api/window")
+    if isinstance(window, dict) and window:
+        snapshot["window"] = window
+    return snapshot
+
+
+def _action_transport(action: str, args: dict) -> dict:
+    """Queue one transport command on the server; the active player applies it."""
+    body: dict = {"cmd": action}
+    if action == "seek":
+        raw = args.get("position")
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return _bad("seek needs position (seconds) as a number")
+        body["value"] = max(0.0, float(raw))
+    try:
+        result = _request("POST", "/api/player/command", body=body)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                "hint": "Aura's server is not running; call action=status."}
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        return {"ok": False, "error": (result or {}).get("error", "command_rejected"),
+                "command": action}
+    payload = {"ok": True, "command": action, "seq": result.get("seq")}
+    payload.update(_player_snapshot())
+    return payload
+
+
+def _action_popout(args: dict) -> dict:
+    """Open the film's own OS window (optionally at a given position)."""
+    body: dict = {}
+    url = args.get("url")
+    if isinstance(url, str) and url.strip():
+        body["url"] = url.strip()
+    raw = args.get("position")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        body["position"] = max(0.0, float(raw))
+    try:
+        result = _request("POST", "/api/window/open", body=body, timeout=20.0)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                "hint": "Aura's server is not running; call action=status."}
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "no_answer"}
+    if result.get("ok") is not True:
+        return {"ok": False, "error": result.get("error", "window_failed"),
+                "window": result.get("window", {})}
+    return {
+        "ok": True,
+        "open": True,
+        "already": bool(result.get("already")),
+        "hint": "The film now plays in its own window; tell me pause, next "
+                "episode or popin to bring it back.",
+    }
+
+
+def _action_popin() -> dict:
+    try:
+        result = _request("POST", "/api/window/close", body={}, timeout=20.0)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                "hint": "Aura's server is not running; call action=status."}
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        return {"ok": False, "error": (result or {}).get("error", "window_failed")}
+    return {"ok": True, "closed": bool(result.get("closed")),
+            "window": result.get("window", {})}
 
 
 def _action_intensity(args: dict) -> dict:
@@ -501,8 +583,14 @@ def _tool_aura_control(args: dict, **kw) -> str:
             payload = _action_intensity(args)
         elif action == "preset":
             payload = _action_preset(args)
-        else:  # mood
+        elif action == "mood":
             payload = _action_mood(args)
+        elif action in ("pause", "resume", "next", "prev", "seek"):
+            payload = _action_transport("play" if action == "resume" else action, args)
+        elif action == "popout":
+            payload = _action_popout(args)
+        else:  # popin
+            payload = _action_popin()
         return _dump(payload)
     except Exception as exc:  # noqa: BLE001 — a tool must always answer
         return _dump({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
@@ -512,12 +600,20 @@ SCHEMA_AURA_CONTROL = {
     "name": "aura_control",
     "description": (
         "Control Aura, the local audio-reactive visualizer and living theme for "
-        "Hermes Desktop. action=status reports whether the server is running, its "
-        "port, capture backend, current mood and intensity, and a redacted URL. "
-        "action=on/off toggles Aura; intensity sets the 0..1 cap; preset picks a "
-        "visualizer preset (null = server default); mood sets the agent mood "
-        "(idle, thinking, tool, approval, error, streaming, done). Returns JSON. "
-        "Never blocks the turn; if the server is not running it says so plainly."
+        "Hermes Desktop — and the film it is playing. action=status reports whether "
+        "the server is running, its port, capture backend, current mood and "
+        "intensity, a redacted URL, and what the film is doing (film.player: url, "
+        "title, playing, position, duration; film.window: open). action=on/off "
+        "toggles Aura; intensity sets the 0..1 cap; preset picks a visualizer "
+        "preset (null = server default); mood sets the agent mood (idle, thinking, "
+        "tool, approval, error, streaming, done). Transport of the active player "
+        "(in-app or its own window): action=pause, resume, next, prev, or seek "
+        "with position in seconds. action=popout moves the film into its own OS "
+        "window (another monitor / full screen) and action=popin closes it; "
+        "optional url and position choose what to open. Use these when the user "
+        "says 'pause', 'next episode', 'play the octopus documentary' or 'put it "
+        "on my other screen'. Returns JSON. Never blocks the turn; if the server "
+        "is not running it says so plainly."
     ),
     "parameters": {
         "type": "object",
@@ -541,6 +637,17 @@ SCHEMA_AURA_CONTROL = {
                 "type": "string",
                 "enum": list(_MOODS),
                 "description": "for mood: the mood to display",
+            },
+            "position": {
+                "type": "number",
+                "minimum": 0.0,
+                "description": "for seek: absolute position in seconds; for "
+                               "popout: where the window should start",
+            },
+            "url": {
+                "type": "string",
+                "description": "for popout: the film to open (defaults to the "
+                               "one already loaded)",
             },
         },
         "required": ["action"],

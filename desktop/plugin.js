@@ -1165,6 +1165,69 @@ async function pushControl(patch) {
   }
 }
 
+// ------------------------------------------------- desktop window (pop-out)
+// The film can live in its own OS window (another monitor, full screen) and
+// still be driven by Hermes: aura_core/window.py opens the app window and the
+// server is the remote. These three functions are the whole desktop-half
+// surface — the pane's buttons are wired to them by the orchestrator. When the
+// window is open the in-app film should be parked (desktopWindowOpen tells the
+// caller); closing the window brings it back.
+
+/** Pop the current film out into its own window, at the current position. */
+async function openDesktopWindow() {
+  if (!ctxRef || disposed) return { open: false, error: 'Aura is not running.' }
+  const settings = $settings.get()
+  const videoUrl = typeof settings.videoUrl === 'string' ? settings.videoUrl.trim() : ''
+  if (!videoUrl) return { open: false, error: 'Choose a film first.' }
+  const video = $video.get()
+  const body = {
+    url: videoUrl,
+    position: Number.isFinite(video.position) ? Math.max(0, video.position) : 0,
+    label: typeof video.title === 'string' ? video.title : ''
+  }
+  try {
+    const result = await ctxRef.rest('/window/open', { method: 'POST', body, timeoutMs: 15000 })
+    if (result && result.ok === true) {
+      // Two players with sound is never right: park the in-app film the
+      // moment the window owns it. Closing the window leaves it parked, ready
+      // for the pane's own play control (the orchestrator brings it back).
+      videoCommand('pause')
+      return { open: true, already: result.already === true, url: result.url || videoUrl }
+    }
+    const reason = result && typeof result.error === 'string' && result.error
+      ? result.error
+      : 'the window could not be opened'
+    setError(`Aura could not open the film window — ${reason}.`)
+    return { open: false, error: reason }
+  } catch {
+    setError('Aura could not open the film window — the local server is not answering.')
+    return { open: false, error: 'server_unreachable' }
+  }
+}
+
+/** Close the popped-out window (the in-app film may resume where it stopped). */
+async function closeDesktopWindow() {
+  if (!ctxRef || disposed) return { open: false }
+  try {
+    const result = await ctxRef.rest('/window/close', { method: 'POST', body: {}, timeoutMs: 15000 })
+    return { open: Boolean(result && result.window && result.window.open), closed: Boolean(result && result.closed) }
+  } catch {
+    setError('Aura could not close the film window — the local server is not answering.')
+    return { open: true, error: 'server_unreachable' }
+  }
+}
+
+/** True while the film is in its own window (read the server, never guess). */
+async function desktopWindowOpen() {
+  if (!ctxRef || disposed) return false
+  try {
+    const status = await ctxRef.rest('/window', { timeoutMs: 4000 })
+    return Boolean(status && status.open === true)
+  } catch {
+    return false
+  }
+}
+
 /**
  * The server is the single source of truth for the display controls. Without
  * this, a quick menu built from stale local storage showed a different motion
@@ -5097,6 +5160,10 @@ export default {
   name: 'Aura',
   description:
     'Audio-reactive window visual, accent pulse and optional theme for what this computer is playing. Local only: no recording, no account, no sound of its own.',
+  // Pop-out surface, also callable by the pane's buttons once wired.
+  openDesktopWindow,
+  closeDesktopWindow,
+  desktopWindowOpen,
   register(ctx) {
     // Reset first: a hot reload must not inherit the previous instance's state.
     const mine = ++instanceSeq

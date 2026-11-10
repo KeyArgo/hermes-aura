@@ -32,6 +32,31 @@ never the microphone — and nothing leaves the computer: no account, no uploads
   is a Winamp-style player for Hermes, and Aura's visuals react to whatever it plays — one card on the page,
   one line in Settings.
 
+## Pop out to its own window
+
+Click **Pop out** and the film leaves the Hermes window: a real OS window (Chrome/Chromium app mode)
+that you can drag to another monitor or full-screen. It opens at the exact second the in-app player had
+reached, and the in-app one pauses so two copies never play with sound. **Pop in** closes it again.
+
+The pop-out needs Chrome or Chromium. If none is installed Aura says so plainly; set
+`AURA_DESKTOP_BROWSER=/path/to/chrome` to point it at one. The window uses its own browser profile, so
+it never touches your normal browsing session. If the Aura server restarts (or the app quits), the
+window is closed with it — a stale window could play audio nothing can control.
+
+## Control it by talking to Hermes
+
+Because the server is the remote, anything in the window can still be driven from the chat — no
+alt-tab, no reaching for the mouse:
+
+- “pause” / “resume” / “next episode” / “go back an episode”
+- “jump to 40 minutes” (seek)
+- “put it on my other screen” / “pop the film out” / “bring it back into Hermes”
+
+The agent calls `aura_control` with `action=pause|resume|next|prev|seek|popout|popin`, and
+`action=status` answers “what is playing?” with the title, position, duration and whether the window is
+open. Commands go through a small server-side queue (`/api/player/command`), which the desktop window
+polls about three times a second and applies to the same player code the in-app transport uses.
+
 ## Watch the machine
 
 - A MilkDrop-compatible WebGL visualiser driven by system audio — level, bands, silence gating.

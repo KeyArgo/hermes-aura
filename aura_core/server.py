@@ -45,6 +45,7 @@ except ImportError:  # pragma: no cover - exercised only on Windows
     fcntl = None  # type: ignore[assignment]
 
 from . import analysis, behavior, config, redact, sessions
+from . import window as desktop_window
 from .capture import base as capture
 
 logger = logging.getLogger("aura.server")
@@ -160,6 +161,12 @@ class _State:
         self.session_count = 0
         self.session_boost = 1.0
         self.session_thread: threading.Thread | None = None
+        # The film: whichever player is active reports here, and Hermes (the
+        # agent tool) writes commands that the desktop window polls for.
+        self.player: dict = {}
+        self.player_seq = 0
+        self.commands: list = []
+        self.command_seq = 0
 
 
 _STATE = _State()
@@ -540,6 +547,170 @@ def _capture_loop(stop_event: threading.Event) -> None:
 
 
 # ---------------------------------------------------------------------------
+# the film: reported state + the command queue (Hermes is the remote)
+# ---------------------------------------------------------------------------
+
+PLAYER_COMMANDS = ("play", "pause", "toggle", "next", "prev", "seek",
+                   "volume", "load")
+MAX_QUEUED_COMMANDS = 64
+_PLAYER_TEXT_MAX = 2000
+
+
+def _player_text(value: Any, limit: int = _PLAYER_TEXT_MAX) -> str:
+    """A string field from a player report: a URL is long, a title is not."""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()[:limit]
+
+
+def _player_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
+
+
+def player_payload() -> dict:
+    """The last report from whichever player is active, plus the queue head."""
+    with _STATE.lock:
+        player = dict(_STATE.player)
+        seq = _STATE.command_seq
+        stale = (time.time() - float(player.get("ts") or 0)) > 15.0
+    if stale and player:
+        # A window that stopped reporting (closed, or the server restarted
+        # under it) is not still playing: never claim otherwise.
+        player["playing"] = False
+        player["stale"] = True
+    return {"ok": True, "player": player, "seq": seq,
+            "window": desktop_window.status()}
+
+
+def report_player(data: Any) -> dict:
+    """Merge one state report from the in-app player or the desktop window."""
+    if not isinstance(data, dict):
+        raise ValueError("report_must_be_object")
+    with _STATE.lock:
+        player = dict(_STATE.player)
+        url = _player_text(data.get("url"))
+        if url:
+            player["url"] = url
+        label = _player_text(data.get("label"), 200)
+        if label:
+            player["label"] = label
+        title = _player_text(data.get("title"), 200)
+        if title:
+            player["title"] = title
+        for key in ("playing",):
+            if isinstance(data.get(key), bool):
+                player[key] = bool(data[key])
+        for key in ("position", "duration", "volume"):
+            value = _player_number(data.get(key))
+            if value is not None:
+                player[key] = max(0.0, value)
+        if isinstance(data.get("kind"), str):
+            player["kind"] = _player_text(data.get("kind"), 32)
+        if isinstance(data.get("desktop"), bool):
+            player["desktop"] = bool(data["desktop"])
+        player["ts"] = time.time()
+        _STATE.player = player
+        _STATE.player_seq += 1
+        seq = _STATE.player_seq
+    return {"ok": True, "seq": seq}
+
+
+def enqueue_command(data: Any) -> dict:
+    """Queue one transport command for the active player; returns its ``seq``."""
+    if not isinstance(data, dict):
+        raise ValueError("command_must_be_object")
+    cmd = str(data.get("cmd") or "").strip().lower()
+    if cmd not in PLAYER_COMMANDS:
+        raise ValueError(f"cmd must be one of {list(PLAYER_COMMANDS)}")
+    command: dict = {"cmd": cmd, "ts": time.time()}
+    for key in ("value", "url", "label", "title"):
+        if key in data and data[key] is not None:
+            if key == "value":
+                number = _player_number(data[key])
+                if cmd in ("seek", "volume") and number is None:
+                    raise ValueError(f"{cmd} needs a numeric value")
+                if number is not None:
+                    command["value"] = number
+            else:
+                text = _player_text(data[key])
+                if text:
+                    command[key] = text
+    if cmd == "seek" and "value" not in command:
+        raise ValueError("seek needs a numeric value")
+    if cmd == "volume":
+        if "value" not in command:
+            raise ValueError("volume needs a numeric value between 0 and 1")
+        command["value"] = max(0.0, min(1.0, command["value"]))
+    if cmd == "load" and not command.get("url"):
+        raise ValueError("load needs a url")
+    with _STATE.lock:
+        _STATE.command_seq += 1
+        command["seq"] = _STATE.command_seq
+        _STATE.commands.append(command)
+        if len(_STATE.commands) > MAX_QUEUED_COMMANDS:
+            _STATE.commands = _STATE.commands[-MAX_QUEUED_COMMANDS:]
+    return {"ok": True, "seq": command["seq"], "command": command}
+
+
+def pending_commands(after: Any = 0) -> dict:
+    """Commands with ``seq > after`` — the desktop window's poll target."""
+    try:
+        cursor = int(after)
+    except (TypeError, ValueError):
+        cursor = 0
+    with _STATE.lock:
+        pending = [dict(c) for c in _STATE.commands if int(c.get("seq", 0)) > cursor]
+        seq = _STATE.command_seq
+    return {"ok": True, "seq": seq, "commands": pending}
+
+
+def window_payload() -> dict:
+    """``GET /api/window`` — the pop-out's status, never the token."""
+    status = desktop_window.status()
+    status["ok"] = True
+    return status
+
+
+def open_window(data: Any) -> dict:
+    """``POST /api/window/open`` — hand the film to its own OS window."""
+    body = data if isinstance(data, dict) else {}
+    url = _player_text(body.get("url"))
+    if not url:
+        with _STATE.lock:
+            url = str(_STATE.player.get("url") or "")
+    if not url:
+        raise ValueError("no film to pop out (send a url or load one first)")
+    position = _player_number(body.get("position"))
+    port = _STATE.port
+    if not port:
+        raise RuntimeError("server_not_running")
+    result = desktop_window.open_window(
+        int(port), _STATE.token, url,
+        position=float(position or 0.0), label=_player_text(body.get("label"), 200),
+    )
+    result["ok"] = True
+    result["window"] = desktop_window.status()
+    return result
+
+
+def close_window() -> dict:
+    closed = desktop_window.close_window()
+    with _STATE.lock:
+        if _STATE.player:
+            player = dict(_STATE.player)
+            player["playing"] = False
+            player["desktop"] = False
+            player["ts"] = time.time()
+            _STATE.player = player
+    return {"ok": True, "closed": closed, "window": desktop_window.status()}
+
+
+# ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
 
@@ -665,6 +836,17 @@ class _Handler(BaseHTTPRequestHandler):
                 # data endpoint and the WebSocket stay token-gated.
                 self._serve_static(path)
                 return
+            if path == "/api/player/commands":
+                # The desktop window's page polls this from its own document: it
+                # can send the token in the query string, not as a header. The
+                # token is already in that page's URL; nothing new is exposed.
+                if not (self._bearer_ok() or self._query_ok()):
+                    self._send_json({"ok": False, "error": "unauthorized"}, 401)
+                    return
+                query = parse_qs(urlsplit(self.path).query)
+                after = (query.get("after") or ["0"])[0]
+                self._send_json(pending_commands(after))
+                return
             if not self._bearer_ok():
                 self._send_json({"ok": False, "error": "unauthorized"}, 401)
                 return
@@ -676,6 +858,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(_presets_payload())
             elif path == "/api/config":
                 self._send_json(self._config())
+            elif path == "/api/window":
+                self._send_json(window_payload())
+            elif path == "/api/player":
+                self._send_json(player_payload())
             else:
                 self._send_json({"ok": False, "error": "not_found"}, 404)
         except (BrokenPipeError, ConnectionResetError):
@@ -692,16 +878,50 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._guard():
                 return
             path = urlsplit(self.path).path
+            player_write = path in ("/api/player/report", "/api/player/command")
             if not self._bearer_ok():
-                self._send_json({"ok": False, "error": "unauthorized"}, 401)
-                return
-            if path not in ("/api/control", "/api/mood", "/api/config/push"):
+                # The desktop window's own page sends its token in the query
+                # string (it cannot attach a header to fetch from a document).
+                if not (player_write and self._query_ok()):
+                    self._send_json({"ok": False, "error": "unauthorized"}, 401)
+                    return
+            if path not in ("/api/control", "/api/mood", "/api/config/push",
+                            "/api/window/open", "/api/window/close",
+                            "/api/player/report", "/api/player/command"):
                 self._send_json({"ok": False, "error": "not_found"}, 404)
                 return
             try:
                 data = self._body_json()
             except (ValueError, UnicodeDecodeError):
                 self._send_json({"ok": False, "error": "bad_json"}, 400)
+                return
+            if path == "/api/player/report":
+                try:
+                    self._send_json(report_player(data))
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, 400)
+                return
+            if path == "/api/player/command":
+                try:
+                    self._send_json(enqueue_command(data))
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, 400)
+                return
+            if path in ("/api/window/open", "/api/window/close"):
+                try:
+                    result = (open_window(data) if path.endswith("/open")
+                              else close_window())
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, 400)
+                    return
+                except desktop_window.WindowError as exc:
+                    self._send_json({"ok": False, "error": str(exc),
+                                     "window": desktop_window.status()}, 503)
+                    return
+                except RuntimeError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, 503)
+                    return
+                self._send_json(result)
                 return
             if path == "/api/mood":
                 try:
@@ -1148,6 +1368,10 @@ def _start_server() -> None:
         _STATE.feature_seq = 0
         _STATE.pcm_seq = 0
         _STATE.capture_lost_reported = False
+        _STATE.player = {}
+        _STATE.player_seq = 0
+        _STATE.commands = []
+        _STATE.command_seq = 0
 
     thread.start()
     cap_thread = threading.Thread(target=_capture_loop, args=(stop_event,),
@@ -1163,6 +1387,12 @@ def _start_server() -> None:
         _STATE.session_thread = session_thread
     session_thread.start()
     _write_lease(token, port)
+    # A window left behind by a previous server holds a dead token: close it,
+    # before it plays audio nobody can control.
+    try:
+        desktop_window.reap_orphan()
+    except Exception as exc:  # noqa: BLE001 - reaping is best-effort
+        _log("aura: window reap failed (%s)", type(exc).__name__)
     _log("aura: listening on 127.0.0.1:%d", port)
 
 
@@ -1572,6 +1802,13 @@ def _stop_server_locked() -> None:
             _STATE.mood_expiry = None
             _STATE.session_count = 0
             _STATE.session_boost = 1.0
+            _STATE.player = {}
+            _STATE.commands = []
+        # The pop-out cannot outlive the server it polls (its token just died).
+        try:
+            desktop_window.close_window()
+        except Exception as exc:  # noqa: BLE001 - shutdown must finish
+            _log("aura: window close failed (%s)", type(exc).__name__)
         _log("aura: server stopped")
     except Exception as exc:  # noqa: BLE001
         _log("aura: stop_server failed (%s)", type(exc).__name__)

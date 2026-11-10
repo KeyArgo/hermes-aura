@@ -115,8 +115,10 @@ def test_schema_is_valid_and_complete(plugin):
     assert params["type"] == "object"
     assert params["required"] == ["action"]
     props = params["properties"]
-    assert props["action"]["enum"] == ["on", "off", "status", "intensity",
-                                       "preset", "mood"]
+    assert props["action"]["enum"] == list(p._ACTIONS)
+    assert {"pause", "resume", "next", "prev", "seek", "popout", "popin"} <= set(props["action"]["enum"])
+    assert props["position"]["type"] == "number"
+    assert props["url"]["type"] == "string"
     assert props["intensity"]["type"] == "number"
     assert props["intensity"]["minimum"] == 0.0
     assert props["intensity"]["maximum"] == 1.0
@@ -343,3 +345,134 @@ def test_tool_never_raises_when_everything_breaks(plugin, monkeypatch):
         payload = _call(p, args)
         assert isinstance(payload, dict)
         assert payload["ok"] is True  # local intent applied; control error reported
+
+
+# ---------------------------------------------------------------------------
+# the film: Hermes as the remote
+# ---------------------------------------------------------------------------
+
+class FilmHTTP:
+    """Records calls and answers the film endpoints like the live server."""
+
+    def __init__(self):
+        self.calls = []
+        self.seq = 0
+        self.player = {"url": "https://example.test/film.mp4", "title": "Octopus",
+                       "playing": True, "position": 30.0, "duration": 600.0}
+
+    def __call__(self, method, path, body=None, timeout=2.0):
+        self.calls.append((method, path, body))
+        if path == "/api/player/command":
+            self.seq += 1
+            return {"ok": True, "seq": self.seq, "command": dict(body or {})}
+        if path == "/api/player":
+            return {"ok": True, "player": dict(self.player), "seq": self.seq,
+                    "window": {"open": True, "available": True}}
+        if path == "/api/window":
+            return {"ok": True, "open": True, "available": True,
+                    "url": self.player["url"], "pid": 99, "browser": "chromium"}
+        if path == "/api/window/open":
+            return {"ok": True, "open": True, "already": False,
+                    "window": {"open": True, "available": True}}
+        if path == "/api/window/close":
+            return {"ok": True, "closed": True,
+                    "window": {"open": False, "available": True}}
+        return {}
+
+
+@pytest.mark.parametrize("action,expected", [
+    ("pause", "pause"), ("resume", "play"), ("next", "next"), ("prev", "prev"),
+])
+def test_transport_actions_queue_the_right_command(plugin, monkeypatch, action, expected):
+    p, _ = plugin
+    http = FilmHTTP()
+    monkeypatch.setattr(p, "_request", http)
+    payload = _call(p, {"action": action})
+    assert payload["ok"] is True
+    assert payload["command"] == expected
+    assert payload["seq"] == 1
+    assert ("POST", "/api/player/command", {"cmd": expected}) in http.calls
+    assert payload["player"]["title"] == "Octopus"
+    assert payload["window"]["open"] is True
+
+
+def test_seek_carries_an_absolute_position(plugin, monkeypatch):
+    p, _ = plugin
+    http = FilmHTTP()
+    monkeypatch.setattr(p, "_request", http)
+    payload = _call(p, {"action": "seek", "position": 125})
+    assert payload["ok"] is True
+    assert ("POST", "/api/player/command", {"cmd": "seek", "value": 125.0}) in http.calls
+
+
+@pytest.mark.parametrize("value", [None, "120", True])
+def test_seek_rejects_a_bad_position(plugin, value):
+    p, _ = plugin
+    payload = _call(p, {"action": "seek", "position": value})
+    assert payload["ok"] is False
+    assert "position" in payload["error"]
+
+
+def test_transport_without_a_server_says_so(plugin):
+    p, fake = plugin
+    fake.port = None
+    payload = _call(p, {"action": "pause"})
+    assert payload["ok"] is False
+    assert "not running" in payload["hint"]
+
+
+def test_popout_opens_the_window(plugin, monkeypatch):
+    p, _ = plugin
+    http = FilmHTTP()
+    monkeypatch.setattr(p, "_request", http)
+    payload = _call(p, {"action": "popout", "url": "https://example.test/film.mp4",
+                        "position": 42})
+    assert payload["ok"] is True
+    assert payload["open"] is True
+    assert ("POST", "/api/window/open",
+            {"url": "https://example.test/film.mp4", "position": 42.0}) in http.calls
+    assert "window" in payload["hint"].lower() or "its own window" in payload["hint"]
+
+
+def test_popout_without_a_url_uses_the_reported_film(plugin, monkeypatch):
+    p, _ = plugin
+    http = FilmHTTP()
+    monkeypatch.setattr(p, "_request", http)
+    payload = _call(p, {"action": "popout"})
+    assert payload["ok"] is True
+    assert ("POST", "/api/window/open", {}) in http.calls
+
+
+def test_popin_closes_the_window(plugin, monkeypatch):
+    p, _ = plugin
+    http = FilmHTTP()
+    monkeypatch.setattr(p, "_request", http)
+    payload = _call(p, {"action": "popin"})
+    assert payload["ok"] is True
+    assert payload["closed"] is True
+    assert ("POST", "/api/window/close", {}) in http.calls
+
+
+def test_popout_reports_a_missing_browser(plugin, monkeypatch):
+    p, _ = plugin
+
+    def no_browser(method, path, body=None, timeout=2.0):
+        if path == "/api/window/open":
+            return {"ok": False, "error": "no Chrome or Chromium found",
+                    "window": {"open": False, "available": False}}
+        return {}
+
+    monkeypatch.setattr(p, "_request", no_browser)
+    payload = _call(p, {"action": "popout"})
+    assert payload["ok"] is False
+    assert "Chrome" in payload["error"]
+
+
+def test_status_includes_the_film(plugin, monkeypatch):
+    p, _ = plugin
+    http = FilmHTTP()
+    monkeypatch.setattr(p, "_request", http)
+    payload = _call(p, {"action": "status"})
+    assert payload["film"]["player"]["playing"] is True
+    assert payload["film"]["window"]["open"] is True
+

@@ -195,6 +195,49 @@ def state_payload() -> dict:
         return {"ok": False, "error": "server_unreachable"}
 
 
+def _forward_json(path: str, body: dict | None = None,
+                  timeout: float = 8.0) -> tuple[int, dict]:
+    """Forward a call to the live server; ``(status, response)``. Never raises."""
+    try:
+        _server, port, token = _live()
+        if port is None:
+            return 503, {"ok": False, "error": "server_not_running"}
+        data = None
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {token}",
+            "Host": f"127.0.0.1:{port}",
+        }
+        if body is not None:
+            data = json.dumps(body, separators=(",", ":")).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+            headers["Content-Length"] = str(len(data))
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=data,
+            method="POST" if body is not None else "GET",
+            headers=headers,
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8") or "{}")
+            return int(resp.status), payload
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            payload = {"ok": False, "error": "http_error"}
+        return int(exc.code), payload
+    except Exception as exc:  # noqa: BLE001
+        logger.info("aura dashboard: %s forward failed (%s)", path, type(exc).__name__)
+        return 502, {"ok": False, "error": "server_unreachable"}
+
+
+def window_payload() -> dict:
+    """``GET /window`` — is the film in its own OS window?"""
+    _code, payload = _forward_json("/api/window", timeout=5.0)
+    return payload
+
+
 # ---------------------------------------------------------------------------
 # FastAPI routes mounted at /api/plugins/aura/
 # ---------------------------------------------------------------------------
@@ -207,6 +250,33 @@ def status() -> dict:
 @router.get("/state")
 def state() -> dict:
     return state_payload()
+
+
+# -- pop-out window ---------------------------------------------------------
+# The desktop half calls these through ctx.rest('/window'…) — never the server
+# directly (the plugin never guesses a port).
+
+@router.get("/window")
+def window_status() -> dict:
+    return window_payload()
+
+
+@router.post("/window/open")
+async def window_open(request: Request) -> JSONResponse:
+    try:
+        body: Any = await request.json()
+    except Exception:  # noqa: BLE001 - empty or malformed body
+        body = {}
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "body_must_be_object"}, status_code=400)
+    code, payload = _forward_json("/api/window/open", body, timeout=15.0)
+    return JSONResponse(payload, status_code=code)
+
+
+@router.post("/window/close")
+async def window_close() -> JSONResponse:
+    code, payload = _forward_json("/api/window/close", {}, timeout=15.0)
+    return JSONResponse(payload, status_code=code)
 
 
 def _version_dict() -> dict:
