@@ -69,8 +69,10 @@ import {
   PopoverContent,
   PopoverTrigger,
   requestTheme,
+  ROUTES_AREA,
   setAccentOverride,
   SETTINGS_PLUGINS_AREA,
+  SIDEBAR_NAV_AREA,
   STATUSBAR_AREAS,
   Switch,
   THEMES_AREA,
@@ -775,7 +777,9 @@ function showEligible() {
   // the default settings (window visual off, not on the Aura theme) sees a pane
   // whose stage plays nothing, because nothing ever mounts.
   const paneFilm = panelVisible() && Boolean(settings.videoUrl) && !settings.videoClosed
-  return Boolean(doc && enabled && (paneFilm || knownTheme === THEME_NAME || settings.windowVisual) && liveUrl())
+  // The full page is the same kind of surface, for the same reason.
+  const pageFilm = pageVisible() && Boolean(settings.videoUrl) && !settings.videoClosed
+  return Boolean(doc && enabled && (paneFilm || pageFilm || knownTheme === THEME_NAME || settings.windowVisual) && liveUrl())
 }
 
 // Host-owned timers: cancel through the disposer the SDK returns. A stale
@@ -892,7 +896,7 @@ function mountBackdrop(url, opacity) {
   // video/"always" case, because the "only while active" fade already owns its
   // own timing and a CSS transition would fight it.
   const settings = $settings.get()
-  backdropEl.style.transition = settings.backdropMode === 'video' && settings.showWhen === 'always' && !videoWindowOn()
+  backdropEl.style.transition = settings.backdropMode === 'video' && settings.showWhen === 'always' && !videoWindowOn() && !pageVisible()
     ? 'opacity 900ms ease'
     : ''
   applyBackdropLayout()
@@ -959,6 +963,11 @@ function effectiveVideoOpacity() {
 function applyVideoOpacity() {
   const settings = $settings.get()
   if (!backdropEl || settings.backdropMode !== 'video' || settings.showWhen !== 'always') return
+  // The page is a window, not a wash: the film is watched, not read through.
+  if (pageVisible()) {
+    backdropEl.style.opacity = '1'
+    return
+  }
   if (videoWindowOn()) {
     backdropEl.style.opacity = '1'
     return
@@ -973,6 +982,8 @@ function backdropOpacity(settings) {
   if (settings.backdropMode !== 'video') return 1
   // A real frame is a window, not a wash: full strength.
   if (videoWindowOn()) return 1
+  // So is the full page.
+  if (pageVisible()) return 1
   // The pane is a window too — a film at 20% inside its own box is a stain.
   if (panelVisible()) return 1
   return effectiveVideoOpacity()
@@ -985,6 +996,14 @@ function syncBackdrop() {
   if (settings.backdropMode === 'video' && settings.videoClosed) {
     resetShow()
     removeBackdrop()
+    return
+  }
+  // The page is an explicit watch surface: while it is open the film stays
+  // mounted at full strength, whatever the fade state machine says, and goes
+  // back to the "only while active" rules when it closes.
+  if (pageFilmWanted()) {
+    resetShow()
+    mountBackdrop(liveUrl(), 1)
     return
   }
   if (!showEligible()) {
@@ -1078,6 +1097,12 @@ function beginFadeOut() {
  *  Short gaps between tool calls stay inside the hysteresis window. */
 function updateShow() {
   if (disposed) return
+  // A page that is open is a watch surface: the film stays at full strength and
+  // the "only while active" fade machine must not dim or remove it.
+  if (pageFilmWanted()) {
+    resetShow()
+    return
+  }
   const settings = $settings.get()
   if (!showEligible()) {
     resetShow()
@@ -2030,6 +2055,29 @@ function applyBackdropLayout() {
   if (windowDrag) return
   const style = backdropEl.style
   const current = $settings.get()
+  // The full page's stage outranks everything: it is the one place the film is
+  // meant to be watched, and the page is only open while the user is there.
+  if (pageVisible() && current.backdropMode === 'video' && !current.videoClosed) {
+    const slot = pageVideoSlot()
+    if (slot) {
+      style.inset = 'auto'
+      style.left = `${Math.round(slot.left)}px`
+      style.top = `${Math.round(slot.top)}px`
+      style.width = `${Math.round(slot.width)}px`
+      style.height = `${Math.round(slot.height)}px`
+      style.right = 'auto'
+      style.bottom = 'auto'
+      style.borderRadius = '12px'
+      style.border = '0'
+      style.boxShadow = 'none'
+      style.overflow = 'hidden'
+      // Above the page's own content, below host popovers: a page frame, not an
+      // app-wide overlay. Still click-through; the page's controls are the remote.
+      style.zIndex = '1'
+      style.background = '#000'
+      return
+    }
+  }
   // Docked panel: the film lives inside the panel's stage, not behind the app.
   if (panelVisible() && current.backdropMode === 'video' && !current.videoClosed && !videoWindowOn()) {
     const slot = panelVideoSlot()
@@ -3849,6 +3897,407 @@ function AuraQuickMenu() {
   })
 }
 
+// --------------------------------------------------------------- Aura page
+// A full page reached from the sidebar: the film in a big frame, the whole
+// Aura setup in one place, and a hand-off to REVamp. The page never creates a
+// player of its own — it publishes its stage rect and the ONE backdrop iframe
+// is laid out over it, so there is still exactly one audio source. Priority
+// while it is open: page > pane > watch window > backdrop.
+
+let pageStageEl = null
+
+/** Is the Aura page on screen with a stage to put the film in? A popped-out
+ *  film (the watch window) wins: Pop out on the page must pop it out now. */
+function pageVisible() {
+  return Boolean(doc && pageStageEl && !videoWindowOn())
+}
+
+/** The rect the film should occupy on the page, or null. */
+function pageVideoSlot() {
+  if (!pageStageEl || typeof pageStageEl.getBoundingClientRect !== 'function') return null
+  const rect = pageStageEl.getBoundingClientRect()
+  if (!rect || !rect.width || !rect.height) return null
+  return rect
+}
+
+/** The page alone wants the film: like the pane, it is a watch surface. Gated
+ *  exactly like showEligible, so Aura off (or no server) still draws nothing. */
+function pageFilmWanted() {
+  const settings = $settings.get()
+  const live = $live.get()
+  const enabled = live.ok ? live.enabled === true : settings.enabled
+  return Boolean(doc && enabled && liveUrl() && pageVisible() &&
+    settings.backdropMode === 'video' && !settings.videoClosed && settings.videoUrl)
+}
+
+/** React ref for the stage. Module-level identity on purpose: a re-render must
+ *  not detach and re-attach the stage, which would blink the film out and back. */
+function pageStageRef(node) {
+  if (node === pageStageEl) return
+  pageStageEl = node || null
+  if (!doc || disposed) return
+  // Entering the page is a reason to mount the film; leaving it hands the film
+  // back to the pane, the watch window or the backdrop.
+  syncBackdrop()
+  applyBackdropLayout()
+  applyVideoOpacity()
+  syncVideoBar(true)
+}
+
+// REVamp is the owner's Winamp-style audio player for Hermes. Aura hears
+// whatever it plays, so the two belong together; one tasteful line, no prizes.
+const REVAMP_REPO = 'https://github.com/KeyArgo/hermes-revamp'
+const REVAMP_PITCH = "Want a music player? REVamp is a Winamp-style player for Hermes — Aura's visuals react to whatever it plays."
+
+function openRevamp() {
+  try {
+    host.navigate('/revamp')
+  } catch {
+    // A host without a router simply does not move; never throw from a click.
+  }
+}
+
+/** The card on the Aura page. */
+function RevampCard() {
+  return jsxs('div', {
+    style: {
+      display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+      padding: '10px 12px', borderRadius: 10,
+      border: '1px solid var(--ui-stroke-secondary)',
+      background: 'linear-gradient(180deg, rgba(139,124,255,0.10), rgba(255,150,80,0.05))'
+    },
+    children: [
+      jsxs('div', {
+        key: 'copy',
+        style: { flex: '1 1 260px', minWidth: 0 },
+        children: [
+          jsx('div', {
+            key: 'title',
+            style: { fontSize: 12, color: 'var(--ui-text-primary)', marginBottom: 2 },
+            children: 'REVamp'
+          }),
+          jsx('div', {
+            key: 'pitch',
+            style: { fontSize: 11, lineHeight: 1.4, color: 'var(--ui-text-tertiary)' },
+            children: REVAMP_PITCH
+          })
+        ]
+      }),
+      jsxs('div', {
+        key: 'actions',
+        style: { display: 'flex', alignItems: 'center', gap: 10, flex: 'none' },
+        children: [
+          jsx(Button, {
+            key: 'open', size: 'sm', variant: 'outline', 'aria-label': 'Open REVamp',
+            onClick: () => openRevamp(),
+            children: 'Open REVamp'
+          }),
+          jsx('a', {
+            key: 'get', href: REVAMP_REPO, target: '_blank', rel: 'noreferrer',
+            'aria-label': 'Get REVamp',
+            style: { fontSize: 11, color: 'var(--ui-accent)', textDecoration: 'none' },
+            children: 'Get REVamp'
+          })
+        ]
+      })
+    ]
+  })
+}
+
+/** The one-line version, at the bottom of the Music section in Settings. */
+function RevampLine() {
+  return jsxs('div', {
+    style: {
+      display: 'flex', alignItems: 'center', gap: 10,
+      padding: '8px 0 0', marginTop: 4,
+      borderTop: '1px solid var(--ui-stroke-secondary)'
+    },
+    children: [
+      jsx('div', {
+        key: 'copy',
+        style: { flex: 1, minWidth: 0, fontSize: 11, lineHeight: 1.4, color: 'var(--ui-text-tertiary)' },
+        children: REVAMP_PITCH
+      }),
+      jsx(Button, {
+        key: 'open', size: 'micro', variant: 'ghost', 'aria-label': 'Open REVamp',
+        onClick: () => openRevamp(),
+        children: 'Open REVamp'
+      })
+    ]
+  })
+}
+
+/** One transport button. The page's controls are the remote: the player frame
+ *  is click-through, exactly like the backdrop and the pane's stage. */
+function pageButton(label, aria, onClick, primary) {
+  return jsx('button', {
+    type: 'button',
+    title: aria,
+    'aria-label': aria,
+    onClick: event => {
+      if (event && event.preventDefault) event.preventDefault()
+      onClick()
+    },
+    style: {
+      appearance: 'none',
+      border: primary ? '1px solid rgba(255,190,120,0.35)' : '0',
+      background: primary ? 'rgba(255,190,120,0.16)' : 'transparent',
+      color: 'var(--ui-text-primary)',
+      cursor: 'pointer',
+      minWidth: 34, height: 30, borderRadius: 9, fontSize: 14,
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center'
+    },
+    children: label
+  })
+}
+
+/** Play a source from the page. The page is a player, so a deliberate play
+ *  turns the video mode on rather than sending you to find the switch. */
+async function playOnPage(url, label) {
+  const clean = typeof url === 'string' ? url.trim() : ''
+  if (!clean) return
+  if ($settings.get().backdropMode !== 'video') await setBackdropMode('video')
+  await applyVideoSource(clean, label)
+}
+
+/** The full page: film, transport, sources and setup. */
+function AuraPage() {
+  const settings = useValue($settings)
+  const live = useValue($live)
+  const state = useValue($video)
+  const auraOn = live.ok ? live.enabled === true : settings.enabled
+  const playing = state.playing === true
+  // The film is a fixed-position frame glued to this stage's rect, so the rect
+  // has to follow a scrolling page between poll ticks (4 Hz is a visible lag).
+  // React owns this listener: it goes away with the page.
+  useEffect(() => {
+    const view = doc && doc.defaultView
+    if (!view || typeof view.addEventListener !== 'function') return undefined
+    const onMove = () => applyBackdropLayout()
+    view.addEventListener('scroll', onMove, true)
+    view.addEventListener('resize', onMove)
+    return () => {
+      view.removeEventListener('scroll', onMove, true)
+      view.removeEventListener('resize', onMove)
+    }
+  }, [])
+  const duration = Number(state.duration) || 0
+  const progress = duration ? clamp01((Number(state.position) || 0) / duration) : 0
+  const queue = videoQueue().slice(0, PANEL_SCORE_MAX)
+  const hint = !auraOn
+    ? 'Aura is off. Turn it on in the setup below to watch here.'
+    : settings.videoClosed
+      ? 'Film closed — press Open video below.'
+      : !settings.videoUrl
+        ? 'No film yet. Paste a link below, or pick one of the sources.'
+        : settings.backdropMode !== 'video'
+          ? 'Backdrop mode is set to the Aura visual. Choose "Video player" in the setup below to watch here.'
+          : videoWindowOn()
+            ? 'Playing in the pop-out window. Press Bring back to watch it here.'
+            : state.blocked
+              ? 'This video cannot be embedded. Paste a different link, or pick another source.'
+              : ''
+
+  const filmStage = jsxs('div', {
+    ref: pageStageRef,
+    style: {
+      position: 'relative',
+      width: '100%',
+      maxWidth: 960,
+      aspectRatio: '16 / 9',
+      borderRadius: 12,
+      overflow: 'hidden',
+      background: 'radial-gradient(circle at 50% 40%, #221a2e, #0d0a12 75%)',
+      border: '1px solid var(--ui-stroke-secondary)',
+      boxShadow: 'inset 0 0 40px rgba(255,150,80,0.06), 0 10px 30px rgba(0,0,0,0.35)'
+    },
+    children: hint
+      ? jsx('div', {
+        key: 'hint',
+        style: {
+          position: 'absolute', inset: 0, display: 'flex',
+          alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+          padding: 16, fontSize: 12, color: 'var(--ui-text-tertiary)'
+        },
+        children: hint
+      })
+      : null
+  })
+
+  const scrub = jsxs('div', {
+    style: { display: 'flex', alignItems: 'center', gap: 10, width: '100%', maxWidth: 960 },
+    children: [
+      jsx('div', {
+        key: 'track',
+        role: 'slider',
+        'aria-label': 'Seek',
+        'aria-valuemin': 0,
+        'aria-valuemax': Math.round(duration),
+        'aria-valuenow': Math.round(Number(state.position) || 0),
+        onClick: event => {
+          if (!duration || !event || !event.currentTarget) return
+          const rect = event.currentTarget.getBoundingClientRect()
+          if (!rect || !rect.width) return
+          const ratio = clamp01((event.clientX - rect.left) / rect.width)
+          postToBackdrop({ cmd: 'seekTo', value: ratio * duration })
+        },
+        style: {
+          position: 'relative', flex: 1, height: 4, borderRadius: 999,
+          background: 'var(--ui-stroke-secondary)', cursor: 'pointer'
+        },
+        children: jsx('div', {
+          style: {
+            position: 'absolute', inset: '0 auto 0 0',
+            width: `${(progress * 100).toFixed(2)}%`, borderRadius: 999,
+            background: 'linear-gradient(90deg, rgba(255,190,120,0.95), rgba(255,140,160,0.95))'
+          }
+        })
+      }),
+      jsx('span', {
+        key: 'time',
+        style: { fontSize: 11, fontVariantNumeric: 'tabular-nums', color: 'var(--ui-text-tertiary)', minWidth: 92, textAlign: 'right' },
+        children: duration ? `${fmtClock(state.position)} / ${fmtClock(duration)}` : '—'
+      })
+    ]
+  })
+
+  const transport = jsxs('div', {
+    style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, maxWidth: 960, width: '100%' },
+    children: [
+      jsx('span', { key: 'p', style: { display: 'inline-flex' }, children: pageButton('⏮', 'Previous (episode in a playlist, else previous source)', () => videoCommand('prev')) }),
+      jsx('span', { key: 'b', style: { display: 'inline-flex' }, children: pageButton('⏪', 'Back 10 seconds', () => videoCommand('seek', -10)) }),
+      jsx('span', { key: 't', style: { display: 'inline-flex' }, children: pageButton(playing ? '⏸' : '▶', playing ? 'Pause' : 'Play', () => videoCommand('toggle'), true) }),
+      jsx('span', { key: 'f', style: { display: 'inline-flex' }, children: pageButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10)) }),
+      jsx('span', { key: 'n', style: { display: 'inline-flex' }, children: pageButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next')) }),
+      jsx('span', { key: 'gap', style: { flex: 1 } }),
+      jsx(Button, {
+        key: 'pop',
+        size: 'micro',
+        variant: settings.videoWindow === true ? 'default' : 'ghost',
+        'aria-label': settings.videoWindow === true ? 'Bring back' : 'Pop out',
+        title: settings.videoWindow === true
+          ? 'Bring the film back onto this page'
+          : 'Pop out — play in a floating window you can drag anywhere',
+        onClick: () => setVideoWindow(settings.videoWindow !== true),
+        children: settings.videoWindow === true ? 'Bring back' : 'Pop out'
+      }),
+      jsx(Button, {
+        key: 'open',
+        size: 'micro',
+        variant: 'ghost',
+        'aria-label': settings.videoClosed ? 'Open video' : 'Close video',
+        onClick: () => (settings.videoClosed ? openVideo() : closeVideo()),
+        children: settings.videoClosed ? 'Open video' : 'Close video'
+      })
+    ]
+  })
+
+  const urlBox = jsxs('div', {
+    style: { display: 'flex', alignItems: 'center', gap: 8, width: '100%', maxWidth: 960 },
+    children: [
+      jsx('input', {
+        key: 'url',
+        type: 'text',
+        defaultValue: settings.videoUrl,
+        placeholder: 'https://youtube.com/watch?v=...',
+        'aria-label': 'Film URL',
+        spellCheck: false,
+        onKeyDown: event => {
+          if (event && event.key === 'Enter' && event.currentTarget) event.currentTarget.blur()
+        },
+        onBlur: event => {
+          void playOnPage(event && event.target ? String(event.target.value) : '')
+        },
+        style: {
+          flex: 1, minWidth: 0, font: 'inherit', fontSize: 12,
+          color: 'var(--ui-text-primary)', background: 'var(--ui-bg)',
+          border: '1px solid var(--ui-stroke-secondary)', borderRadius: 6, padding: '5px 8px'
+        }
+      }),
+      jsx(Button, {
+        key: 'vol-label', size: 'micro', variant: 'ghost', 'aria-label': 'Mute or unmute',
+        onClick: () => setVideoVolume(settings.videoVolume > 0 ? 0 : VIDEO_VOLUME),
+        children: settings.videoVolume > 0 ? 'Mute' : 'Unmute'
+      }),
+      jsx('input', {
+        key: 'vol',
+        type: 'range', min: 0, max: 100, step: 1,
+        value: Math.round(clamp01(settings.videoVolume) * 100),
+        'aria-label': 'Film volume',
+        onChange: event => setVideoVolume(Number(event && event.target ? event.target.value : 70) / 100),
+        style: { width: 120, accentColor: 'var(--ui-accent)' }
+      })
+    ]
+  })
+
+  const sources = jsxs('div', {
+    style: { display: 'flex', flexWrap: 'wrap', gap: 6, width: '100%', maxWidth: 960 },
+    children: queue.length
+      ? queue.map(item => jsx('button', {
+        key: item.url,
+        type: 'button',
+        title: item.label,
+        'aria-label': `Play ${item.label}`,
+        onClick: () => { void playOnPage(item.url, item.label) },
+        style: {
+          appearance: 'none', cursor: 'pointer', maxWidth: 260,
+          padding: '4px 9px', borderRadius: 999, fontSize: 11,
+          border: item.url === settings.videoUrl
+            ? '1px solid rgba(255,190,120,0.45)'
+            : '1px solid var(--ui-stroke-secondary)',
+          background: item.url === settings.videoUrl ? 'rgba(255,190,120,0.10)' : 'transparent',
+          color: 'var(--ui-text-primary)',
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
+        },
+        children: item.label
+      }))
+      : jsx('div', {
+        style: { fontSize: 11, color: 'var(--ui-text-tertiary)' },
+        children: 'No sources yet — paste a link above.'
+      })
+  })
+
+  return jsxs('div', {
+    style: {
+      display: 'flex', flexDirection: 'column', gap: 12,
+      padding: '16px 18px 28px', boxSizing: 'border-box', width: '100%',
+      height: '100%', overflowY: 'auto'
+    },
+    children: [
+      jsxs('div', {
+        key: 'head',
+        style: { display: 'flex', alignItems: 'baseline', gap: 10 },
+        children: [
+          jsx('h2', {
+            key: 'h',
+            style: { margin: 0, fontSize: 16, color: 'var(--ui-text-primary)' },
+            children: 'Aura'
+          }),
+          jsx(VersionChip, { key: 'build' })
+        ]
+      }),
+      jsx('div', { key: 'stage', style: { display: 'flex', justifyContent: 'center' }, children: filmStage }),
+      jsx('div', { key: 'scrub', children: scrub }),
+      jsx('div', { key: 'transport', children: transport }),
+      jsx('div', { key: 'url', children: urlBox }),
+      jsx('div', { key: 'sources', children: sources }),
+      jsx(RevampCard, { key: 'revamp' }),
+      jsxs('div', {
+        key: 'setup',
+        style: { display: 'flex', flexDirection: 'column', gap: 2 },
+        children: [
+          jsx('h3', {
+            key: 'h',
+            style: { margin: '6px 0 0', fontSize: 13, color: 'var(--ui-text-primary)' },
+            children: 'Aura setup'
+          }),
+          jsx(AuraSettings, { key: 'settings' })
+        ]
+      })
+    ]
+  })
+}
+
 function ThemeProbe() {
   const active = useTheme()
   const name = active && typeof active.themeName === 'string' ? active.themeName : ''
@@ -4372,6 +4821,12 @@ function AuraSettings() {
           ]
         })
         : null,
+      // The Music section's last line: Aura has no library of its own, and
+      // REVamp does — one click away, no prizes, no nagging.
+      jsx('div', {
+        key: 'revamp',
+        children: RevampLine()
+      }),
       jsx('div', {
         key: 'gentle',
         children: row(
@@ -4604,6 +5059,7 @@ function teardown() {
   }
   resetShow()
   removeBackdrop()
+  pageStageEl = null
   removeVideoBar()
   disposePaneRegistration()
   removePanel()
@@ -4733,6 +5189,27 @@ export default {
         area: STATUSBAR_AREAS.right,
         order: 127,
         render: () => jsx(AuraQuickMenu, {})
+      })
+    )
+
+    // The full page: a sidebar row that opens the film, the whole setup and the
+    // REVamp hand-off in one place. Both contributions are plain registrations,
+    // tracked like every other one, so dispose takes the row and the route with
+    // it.
+    track(
+      ctx.register({
+        id: 'aura-page',
+        area: ROUTES_AREA,
+        title: 'Aura',
+        data: { path: '/aura' },
+        render: () => jsx(AuraPage, {})
+      })
+    )
+    track(
+      ctx.register({
+        id: 'aura-nav',
+        area: SIDEBAR_NAV_AREA,
+        data: { path: '/aura', label: 'Aura', codicon: 'play-circle' }
       })
     )
 

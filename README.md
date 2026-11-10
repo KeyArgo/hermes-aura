@@ -25,6 +25,12 @@ never the microphone — and nothing leaves the computer: no account, no uploads
   whole list, so Aura resolves the playlist server-side and moves to the next playable episode.
 - **Free placement.** The floating watch window drags anywhere and remembers its spot; 320 / 480 / 640
   wide; its control strip follows the window and dims when idle instead of vanishing.
+- **An Aura page in the sidebar.** One row opens a full page: the same film in a big 16:9 frame with the
+  transport, volume and source picker, then the whole setup underneath. It is the *same* player — the film
+  moves into the page while it is open (page beats pane beats watch window) and goes back when you leave.
+- **REVamp, next door.** Aura has no music library of its own. [REVamp](https://github.com/KeyArgo/hermes-revamp)
+  is a Winamp-style player for Hermes, and Aura's visuals react to whatever it plays — one card on the page,
+  one line in Settings.
 
 ## Watch the machine
 
@@ -36,6 +42,7 @@ never the microphone — and nothing leaves the computer: no account, no uploads
 ## The plugin surface
 
 - Status-bar **A** menu: play/pause, seek, volume, source picker, watch window, Aura panel.
+- A sidebar **Aura** page: the film, the transport and the full setup in one place.
 - A settings page with every control, including dropdown lists that stay readable on dark themes.
 - The **`aura_control`** tool, so the agent itself can set the room.
 - Hooks: session start/end, `pre`/`post_tool_call`, approval request/response, `api_request_error`,

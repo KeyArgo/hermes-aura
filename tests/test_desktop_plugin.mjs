@@ -11,7 +11,8 @@
  *      accent override and restores the theme it replaced,
  *   4. the stage era is gone: no /aura route, sidebar row, palette command
  *      or pane — the backdrop and Settings are the product, plus the
- *      deliberate status-bar quick menu (see 9),
+ *      deliberate status-bar quick menu (see 9), and (since the page work)
+ *      one sidebar row that opens the full Aura page (see scenario P),
  *   5. the polling interval is never faster than 4 Hz,
  *   6. the static SDK rules hold: no eval / new Function / JSX / dynamic
  *      import, no imports outside the three allowed specifiers, no
@@ -600,13 +601,18 @@ record('register() returns a disposer function', () => {
   assert.equal(typeof disposeA, 'function')
 })
 
-record('does not contribute the old stage route, sidebar row or palette command', () => {
-  for (const area of ['routes', 'sidebar.nav', 'palette']) {
-    assert.ok(
-      !a.contributions.some(c => c.area === area),
-      `a ${area} contribution survived the stage clean-up`
-    )
-  }
+record('contributes the Aura page route and its sidebar row', () => {
+  const route = a.contributions.find(c => c.area === 'routes')
+  assert.ok(route, 'no routes contribution: the Aura page has no route')
+  assert.equal(route.data.path, '/aura', 'the page must live at /aura')
+  assert.equal(typeof route.render, 'function', 'the route needs a render function')
+  const nav = a.contributions.find(c => c.area === 'sidebar.nav')
+  assert.ok(nav, 'no sidebar.nav contribution: the page has no sidebar row')
+  assert.equal(nav.data.path, '/aura', 'the row must open the page')
+  assert.equal(nav.data.label, 'Aura', 'the row must read "Aura"')
+  assert.equal(typeof nav.data.codicon, 'string')
+  assert.ok(nav.data.codicon.length > 0, 'the row needs a codicon')
+  assert.equal(a.contributions.some(c => c.area === 'palette'), false, 'no palette command is wanted')
 })
 
 record('docks the theatre as an enforced right-hand pane the host lays out', () => {
@@ -1849,6 +1855,198 @@ record('the video-mode quick menu labels the pane the Right panel', () => {
   assert.ok(texts(tree).includes('Right panel'), 'the quick menu does not say "Right panel"')
   assert.equal(texts(tree).includes('Left panel'), false, 'the quick menu still says "Left panel"')
   assert.ok(findByAria(tree, 'Right panel (quick menu)'), 'the quick menu has no Right panel switch')
+})
+
+// ------------------------------------------------------------- scenario P
+// The Aura page (owner ask: an "Aura" row in the left sidebar opening a full
+// page). The page must show the film in a big frame, the whole setup and the
+// REVamp hand-off — and it must NOT create a second player: the one backdrop
+// iframe is re-laid-out over the page's stage instead.
+
+sdk.themeState.name = 'nous'
+const p = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  windowVisual: false,
+  themeOptIn: false,
+  panelEnabled: false,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+const disposeP = pluginModule.default.register(p.ctx)
+await sleep(60)
+
+// The page nests components (AuraSettings, VersionChip, RevampCard); the SDK
+// stubs must stay as descriptors so their aria-labels can still be found.
+const SDK_COMPONENTS = new Set([
+  sdk.Button, sdk.Switch, sdk.StatusDot, sdk.Popover, sdk.PopoverTrigger, sdk.PopoverContent
+])
+const renderDeep = node => {
+  if (node === null || node === undefined) return node
+  if (Array.isArray(node)) return node.map(renderDeep)
+  if (typeof node !== 'object' || !('type' in node) || !('props' in node)) return node
+  if (typeof node.type === 'function' && !SDK_COMPONENTS.has(node.type)) {
+    return renderDeep(node.type(node.props))
+  }
+  return { ...node, props: { ...node.props, children: renderDeep(node.props.children) } }
+}
+const pageTree = () => {
+  const route = p.contributions.find(c => c.area === 'routes')
+  assert.ok(route, 'the Aura page route vanished')
+  return renderDeep(renderContribution(route))
+}
+const pageAria = (tree, label) => {
+  let found = null
+  walk(tree, node => {
+    if (!found && node.props && node.props['aria-label'] === label) found = node
+  })
+  return found
+}
+
+record('the page renders the player, the setup and the REVamp card', () => {
+  const tree = pageTree()
+  const body = texts(tree)
+  for (const label of [
+    'Play',
+    'Back 10 seconds',
+    'Forward 10 seconds',
+    'Previous (episode in a playlist, else previous source)',
+    'Next (episode in a playlist, else next source)',
+    'Seek',
+    'Film volume',
+    'Film URL',
+    'Pop out'
+  ]) {
+    assert.ok(pageAria(tree, label), `the page is missing "${label}"`)
+  }
+  assert.ok(pageAria(tree, 'Aura enabled'), 'the page does not render AuraSettings')
+  assert.ok(pageAria(tree, 'Visual behind the app'), 'the page does not render the full setup')
+  assert.match(body, /Aura setup/, 'the page has no setup section')
+  assert.match(body, /Big Buck Bunny/, 'the page does not offer the starter sources')
+  assert.match(body, /Winamp-style player for Hermes/, 'the REVamp card is missing')
+  const link = pageAria(tree, 'Get REVamp')
+  assert.ok(link, 'the Get REVamp link is missing')
+  assert.equal(link.type, 'a', 'Get REVamp must be a link to the repo')
+  assert.equal(link.props.href, 'https://github.com/KeyArgo/hermes-revamp')
+  // The settings page carries the one-line version too.
+  const settingsTree = renderDeep(renderContribution(p.contributions.find(c => c.area === 'settings.plugins')))
+  assert.match(texts(settingsTree), /Winamp-style player for Hermes/, 'AuraSettings has no REVamp line')
+  const line = pageAria(settingsTree, 'Open REVamp')
+  assert.ok(line, 'the settings REVamp line has no Open REVamp action')
+})
+
+record('the REVamp button opens /revamp', () => {
+  const button = pageAria(pageTree(), 'Open REVamp')
+  assert.ok(button, 'no Open REVamp button on the page')
+  const before = sdk.calls.navigations.length
+  button.props.onClick()
+  assert.equal(sdk.calls.navigations.length, before + 1, 'the button did not navigate')
+  assert.equal(sdk.calls.navigations.at(-1), '/revamp', 'the button did not open REVamp')
+})
+
+await recordAsync('the page stage takes the one player, and gives it back on leave', async () => {
+  const before = hostIframes().length
+  const tree = pageTree()
+  let stageRef = null
+  walk(tree, node => {
+    if (!stageRef && node.props && typeof node.props.ref === 'function') stageRef = node.props.ref
+  })
+  assert.equal(typeof stageRef, 'function', 'the page has no stage ref')
+  const stageNode = { getBoundingClientRect: () => ({ left: 40, top: 60, width: 800, height: 450 }) }
+  stageRef(stageNode)
+  const placed = hostIframes().filter(frame => frame.style.width === '800px')
+  assert.equal(placed.length, 1, 'the film did not move into the page stage')
+  assert.equal(placed[0].style.left, '40px')
+  assert.equal(placed[0].style.top, '60px')
+  assert.equal(placed[0].style.height, '450px')
+  assert.equal(placed[0].style.zIndex, '1', 'the page film must sit above the page, not behind the app')
+  assert.ok(hostIframes().length <= before + 1, 'the page created a second player')
+  // Pop out on the page pops the film out now (owner ask), Bring back returns it.
+  const pop = pageAria(pageTree(), 'Pop out')
+  assert.ok(pop, 'the page has no Pop out button')
+  pop.props.onClick()
+  assert.equal(
+    hostIframes().some(frame => frame.style.width === '800px'),
+    false,
+    'Pop out left the film on the page'
+  )
+  const back = pageAria(pageTree(), 'Bring back')
+  assert.ok(back, 'a popped-out film offers no Bring back')
+  back.props.onClick()
+  assert.equal(
+    hostIframes().filter(frame => frame.style.width === '800px').length,
+    1,
+    'Bring back did not return the film to the page'
+  )
+  stageRef(null)
+  assert.equal(
+    hostIframes().some(frame => frame.style.width === '800px'),
+    false,
+    'the film stayed glued to a page that is no longer open'
+  )
+})
+
+record('dispose removes the page contributions and leaves no player behind', () => {
+  disposeP()
+  assert.equal(p.contributions.length, 0, 'the page route or sidebar row survived dispose')
+  assert.ok(p.timers.filter(t => t.kind === 'interval').every(t => t.cleared), 'a timer survived dispose')
+  assert.ok(p.listeners.every(t => t.removed), 'a listener survived dispose')
+  assert.equal(
+    hostIframes().some(frame => frame.style.width === '800px'),
+    false,
+    'the film pointed at a disposed page'
+  )
+})
+
+// ------------------------------------------------------------- scenario Q
+// Aura off must mean nothing draws, page open or not.
+
+const q = makeCtx({
+  enabled: false,
+  backdropMode: 'video',
+  windowVisual: true,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+const disposeQ = pluginModule.default.register(q.ctx)
+await sleep(60)
+
+record('an open page with Aura off draws no film', () => {
+  const tree = renderDeep(renderContribution(q.contributions.find(c => c.area === 'routes')))
+  let stageRef = null
+  walk(tree, node => {
+    if (!stageRef && node.props && typeof node.props.ref === 'function') stageRef = node.props.ref
+  })
+  assert.equal(typeof stageRef, 'function', 'the page has no stage ref')
+  stageRef({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 450 }) })
+  assert.equal(hostIframes().length, 0, 'Aura is off but the page still mounted a player')
+  assert.match(texts(tree), /Aura is off/, 'the page does not say why it is empty')
+  stageRef(null)
+  disposeQ()
+  assert.equal(q.contributions.length, 0)
+})
+
+// ------------------------------------------------------------- scenario R
+// Picking a source on the page is a play: it turns the video mode on instead of
+// making the user hunt for the switch.
+
+const r = makeCtx({ enabled: true, backdropMode: 'aura', videoUrl: '' })
+const disposeR = pluginModule.default.register(r.ctx)
+await sleep(60)
+
+await recordAsync('a source picked on the page switches to video mode and plays', async () => {
+  const tree = renderDeep(renderContribution(r.contributions.find(c => c.area === 'routes')))
+  const card = pageAria(tree, 'Play Sintel · Blender film')
+  assert.ok(card, 'the page does not offer the starter sources')
+  card.props.onClick()
+  await sleep(60)
+  const saved = r.storage.get('settings')
+  assert.equal(saved.backdropMode, 'video', 'the page did not turn the video mode on')
+  assert.equal(saved.videoUrl, 'https://www.youtube.com/watch?v=eRsGyueVLvQ', 'the chosen source was not applied')
+  assert.ok(
+    r.controls.some(patch => patch && patch.backdrop_mode === 'video'),
+    'the mode change never reached /control'
+  )
+  disposeR()
+  assert.equal(r.contributions.length, 0)
 })
 
 // --------------------------------------------------------------- reporting
