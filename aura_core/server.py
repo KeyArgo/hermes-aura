@@ -44,12 +44,16 @@ try:  # POSIX leader election; Windows keeps today's single-process behaviour.
 except ImportError:  # pragma: no cover - exercised only on Windows
     fcntl = None  # type: ignore[assignment]
 
-from . import analysis, behavior, config, redact, sessions
+from . import analysis, behavior, config, redact, sessions, version_stamp
 from .capture import base as capture
 
 logger = logging.getLogger("aura.server")
 
-VERSION = "0.1.0"
+# One source for the number in the header, /healthz and /api/version: the build stamp
+# reads BUILD_INFO.json when installed and live git in a checkout, so the page and the
+# process answering it cannot disagree.
+_BUILD = version_stamp.as_dict()
+VERSION = _BUILD["version"]
 SAMPLE_RATE = 48000
 FRAME_SAMPLES = 1024
 FEATURE_INTERVAL_S = 0.1  # ≤10 Hz (§2)
@@ -676,6 +680,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(_presets_payload())
             elif path == "/api/config":
                 self._send_json(self._config())
+            elif path == "/api/version":
+                self._send_json(dict(_BUILD))
             else:
                 self._send_json({"ok": False, "error": "not_found"}, 404)
         except (BrokenPipeError, ConnectionResetError):

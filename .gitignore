@@ -6,5 +6,8 @@ __pycache__/
 node_modules/
 .pytest_cache/
 
+# Written at build/install time; the checkout answers from live git.
+BUILD_INFO.json
+
 .last-test.log
 .demo/

@@ -166,6 +166,26 @@
   #aura-conn[data-state="connected"] .dot { background: var(--aura-accent); opacity: 1; }
   #aura-conn[data-state="reconnecting"] .dot { background: var(--aura-danger); opacity: 1; }
 
+  /* The build chip: which code is answering this page. Click copies the line. */
+  #app-version {
+    pointer-events: auto;
+    font: 600 10px/1.2 var(--ui-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    letter-spacing: 0.02em;
+    color: var(--aura-text);
+    opacity: 0.72;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--aura-text) 26%, transparent);
+    background: color-mix(in srgb, var(--aura-bg) 55%, transparent);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #app-version:hover { opacity: 1; border-color: var(--aura-accent); color: var(--aura-accent); }
+  #app-version.dirty { border-style: dashed; }
+  #app-version[hidden] { display: none; }
+  #app-version[data-copied="1"] { opacity: 1; color: var(--aura-accent); border-color: var(--aura-accent); }
+  #app-version[data-copied="failed"] { opacity: 1; color: var(--aura-danger); border-color: var(--aura-danger); }
+
   #aura-message {
     position: absolute;
     left: 50%;
@@ -307,6 +327,7 @@
     <span id="aura-brand">Aura</span>
     <span id="aura-mood" role="status" aria-live="polite" data-mood="idle">idle</span>
     <span id="aura-conn" data-state="boot"><span class="dot" aria-hidden="true"></span><span id="aura-conn-label">starting</span></span>
+    <button id="app-version" type="button" hidden title="Which build is answering this page">v…</button>
   </div>
 
   <div id="aura-message" role="status" aria-live="polite" hidden></div>

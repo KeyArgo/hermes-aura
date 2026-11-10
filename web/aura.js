@@ -2557,6 +2557,71 @@
     _viz: function () { return viz; }
   };
 
+  // ---------------------------------------------------------------------------
+  // build chip
+  // ---------------------------------------------------------------------------
+  // The number on screen comes from the process answering the request: BUILD_INFO.json
+  // when installed, live git in a checkout. A version written here would drift from the
+  // code serving the page, which is the one thing the line exists to disprove.
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_) { /* fall through to the textarea */ }
+    try {
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '');
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.append(area);
+      area.select();
+      const ok = document.execCommand('copy');
+      area.remove();
+      return ok;
+    } catch (_) { return false; }
+  }
+
+  async function showVersion() {
+    const chip = document.getElementById('app-version');
+    if (!chip) return;
+    const answer = await getJson('/api/version');
+    const build = answer.ok && answer.json ? answer.json : null;
+    if (!build || !build.version) {
+      chip.hidden = true;            // no guess beats a wrong number
+      return;
+    }
+    const parts = ['v' + build.version];
+    if (build.commit_date) parts.push(String(build.commit_date).slice(0, 10));
+    if (build.commit_short || build.commit) parts.push(String(build.commit_short || build.commit).slice(0, 8));
+    chip.textContent = parts.join(' · ') + (build.dirty ? ' · modified' : '');
+    chip.classList.toggle('dirty', !!build.dirty);
+    chip.title = [
+      'Aura ' + build.version,
+      build.commit ? 'commit ' + build.commit : 'no commit (installed copy)',
+      build.commit_date ? 'committed ' + build.commit_date : '',
+      build.built_at ? 'installed ' + build.built_at : '',
+      build.channel ? 'channel ' + build.channel : '',
+      build.source ? 'read from ' + build.source : '',
+      'click to copy this line'
+    ].filter(Boolean).join('\n');
+    chip.hidden = false;
+    chip.onclick = async () => {
+      // Say "copied" only when something was copied: a badge that lies is worse than none.
+      const copied = await copyText(chip.textContent.trim());
+      chip.dataset.copied = copied ? '1' : 'failed';
+      setTimeout(() => { delete chip.dataset.copied; }, 1400);
+    };
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => { showVersion().catch(recordError); }, { once: true });
+  } else {
+    showVersion().catch(recordError);
+  }
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => { boot().catch(recordError); }, { once: true });
   } else {

@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from aura_core import config, redact
+from aura_core import config, redact, version_stamp
 from aura_core import server
 
 
@@ -240,7 +240,7 @@ def test_good_token_healthz(live):
     assert status == 200
     body = json_body(payload)
     assert body["ok"] is True
-    assert body["version"] == "0.1.0"
+    assert body["version"] == version_stamp.version()
     assert body["capture"] == "none"
     assert body["rate"] == 48000
     assert isinstance(body["clients"], int)
