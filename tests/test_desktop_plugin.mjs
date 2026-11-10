@@ -1777,16 +1777,35 @@ v.timers.find(t => t.ms === 250).fn()
 await sleep(80)
 
 
-await recordAsync('video mode mounts the control strip with grip, scrub and close', async () => {
+await recordAsync('video mode mounts the two-row control strip with grip, scrub and close', async () => {
   const bar = bodyChildren.find(node => node.attributes && node.attributes.role === 'toolbar')
   assert.ok(bar, 'the video control strip never mounted')
-  const textsInBar = bar.children.map(child => child.textContent || '').join('|')
-  assert.ok(textsInBar.includes('⠿'), 'drag grip missing from the strip')
-  assert.ok(textsInBar.includes('✕'), 'close button missing from the strip')
+  const nodes = []
+  const collect = node => {
+    for (const child of node.children || []) {
+      nodes.push(child)
+      collect(child)
+    }
+  }
+  collect(bar)
+  const barText = nodes.map(node => node.textContent || '').join('|')
+  assert.ok(barText.includes('⠿'), 'drag grip missing from the strip')
+  assert.ok(barText.includes('✕'), 'close button missing from the strip')
+  assert.ok(barText.includes('Big Buck Bunny · Blender film'), 'the current film title is missing from the strip')
   assert.ok(
-    bar.children.some(child => child.attributes && child.attributes.role === 'slider'),
+    nodes.some(node => node.attributes && node.attributes.role === 'slider'),
     'scrub bar missing from the strip'
   )
+  // Two rows: the film line over a centred transport row.
+  assert.equal(bar.children.length, 2, 'the strip is not drawn as two rows')
+  const transport = bar.children[1]
+  const transportText = (transport.children || []).map(child => child.textContent || '').join('')
+  for (const glyph of ['⏮', '⏪', '▶', '⏩', '⏭']) {
+    assert.ok(transportText.includes(glyph), `transport row is missing ${glyph}`)
+  }
+  assert.equal(transport.style.justifyContent, 'center', 'the transport row is not centred')
+  assert.equal(bar.style.flexDirection, 'column', 'the strip is not stacked')
+  assert.equal(bar.style.width, '340px', 'the strip lost its half-width shape')
   assert.equal(bar.style.opacity, '1', 'the strip must start visible')
 })
 
@@ -2047,6 +2066,266 @@ await recordAsync('a source picked on the page switches to video mode and plays'
   )
   disposeR()
   assert.equal(r.contributions.length, 0)
+})
+
+// ------------------------------------------------------------- scenario S
+// Video mode locks the Aura-visual controls (owner ask 1 and 3) and greys Show
+// out (ask 2), in the quick menu and in Settings. Stored values are untouched.
+
+const s = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  showWhen: 'active',
+  behavior: 'balanced',
+  intensity: 0.5,
+  opacity: 0.4,
+  reducedMotion: false,
+  panelEnabled: false,
+  windowVisual: true,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+const disposeS = pluginModule.default.register(s.ctx)
+await sleep(60)
+
+const sMenu = () => renderContribution(s.contributions.find(c => c.id === 'quick-menu'))
+const sSettings = () => renderDeep(renderContribution(s.contributions.find(c => c.area === 'settings.plugins')))
+
+record('video mode greys Style, Intensity, Aura Transparency and Gentle motion (quick menu)', () => {
+  const tree = sMenu()
+  for (const label of ['Style', 'Intensity', 'Transparency', 'Gentle motion (motion-sensitive)']) {
+    const control = findByAria(tree, label)
+    assert.ok(control, `quick menu is missing ${label}`)
+    assert.equal(control.props.disabled, true, `${label} is not disabled in video mode`)
+  }
+  for (const label of ['Style', 'Intensity', 'Transparency', 'Gentle motion (motion-sensitive)']) {
+    assert.equal(findByAria(tree, label).props.title,
+      'Applies to the Aura visual — switch Backdrop to Aura visual to change',
+      `${label} has no explanatory tooltip`)
+  }
+  const show = findByAria(tree, 'Show')
+  assert.equal(show.props.disabled, true, 'Show is not disabled in video mode')
+  assert.equal(show.props.title, 'A playing film always shows', 'Show has no film tooltip')
+  assert.equal(show.props.value, 'active', 'the stored Show value must not be rewritten')
+  // The video's own transparency stays usable.
+  const preset = findByAria(tree, '50% video transparency')
+  assert.ok(preset, 'the video transparency presets vanished')
+  assert.ok(!preset.props.disabled, 'video transparency must stay active in video mode')
+  assert.equal(s.storage.get('settings').showWhen, 'active', 'showWhen was rewritten by the lock')
+})
+
+record('Settings greys the same Aura-visual controls and Show in video mode', () => {
+  const tree = sSettings()
+  for (const label of ['Behaviour profile', 'Reaction strength', 'Visual opacity', 'Gentle motion (motion-sensitive)']) {
+    const control = findByAria(tree, label)
+    assert.ok(control, `Settings is missing ${label}`)
+    assert.equal(control.props.disabled, true, `${label} is not disabled in video mode`)
+    assert.equal(control.props.title,
+      'Applies to the Aura visual — switch Backdrop to Aura visual to change',
+      `${label} has no explanatory tooltip`)
+  }
+  const show = findByAria(tree, 'Show')
+  assert.equal(show.props.disabled, true, 'Settings leaves Show active in video mode')
+  assert.equal(show.props.title, 'A playing film always shows', 'Settings Show has no film tooltip')
+  assert.equal(show.props.value, 'active', 'the stored Show value must not be rewritten')
+  // Video transparency presets are still live.
+  assert.ok(!findByAria(tree, '25% video transparency').props.disabled,
+    'video transparency was locked with the Aura controls')
+  assert.equal(s.storage.get('settings').showWhen, 'active', 'Settings rewrote showWhen')
+})
+
+await recordAsync('a playing film is never faded out by "Only while active"', async () => {
+  s.timers.find(t => t.ms === 250).fn()
+  await sleep(60)
+  const frames = hostIframes()
+  assert.equal(frames.length, 1, 'the film is not mounted in video mode with Show=active')
+  assert.notEqual(frames[0].style.opacity, '0', 'the film was faded to nothing by the active mode')
+  // Idle audio/mood: the active state machine must not schedule a fade-out.
+  s.serverFrame.mood = 'idle'
+  s.serverFrame.silence = true
+  s.serverFrame.level = 0
+  s.timers.find(t => t.ms === 250).fn()
+  await sleep(60)
+  assert.equal(
+    s.timers.some(t => t.kind === 'timeout' && t.ms === 2500 && !t.cleared && !t.fired),
+    false,
+    'a fade-out timer was scheduled for a playing film'
+  )
+  assert.equal(hostIframes().length, 1, 'the playing film was removed while idle')
+  assert.equal(s.storage.get('settings').showWhen, 'active', 'the stored Show value changed')
+})
+
+record('dispose from the video-lock scenario is clean', () => {
+  disposeS()
+  assert.equal(s.contributions.length, 0)
+  assert.equal(hostIframes().length, 0)
+})
+
+// ------------------------------------------------------------- scenario T
+// The source picker lists every group behind <optgroup>, and "Edit sources…"
+// goes to the page.
+
+const t = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: false,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ',
+  videoPlaylists: [{ label: 'Lectures', url: 'https://www.youtube.com/playlist?list=PLabcdefghij' }],
+  videoSources: [{ label: 'My own film', url: 'https://example.com/film.mp4' }],
+  videoRecent: [{ label: 'Last night', url: 'https://example.com/recent.mp4' }]
+})
+const disposeT = pluginModule.default.register(t.ctx)
+await sleep(60)
+
+const optgroupsOf = select => {
+  const groups = []
+  walk(select, node => {
+    if (node.type === 'optgroup') {
+      const options = []
+      walk(node, child => {
+        if (child.type === 'option') options.push(child.props.value)
+      })
+      groups.push({ label: node.props.label, options })
+    }
+  })
+  return groups
+}
+
+record('the quick-menu source picker groups every source', () => {
+  const select = findByAria(renderContribution(t.contributions.find(c => c.id === 'quick-menu')), 'Video source')
+  assert.ok(select, 'the quick menu has no video source picker')
+  const groups = optgroupsOf(select)
+  assert.deepEqual(groups.map(group => group.label), ['Playlists', 'Your films', 'Starters', 'Recent'],
+    'the source groups drifted or lost their order')
+  assert.ok(groups[0].options.includes('https://www.youtube.com/playlist?list=PLabcdefghij'), 'the saved playlist is missing')
+  assert.ok(groups[1].options.includes('https://example.com/film.mp4'), 'the saved film is missing')
+  assert.ok(groups[2].options.includes('https://www.youtube.com/watch?v=Qdo3pGnNZl4'), 'the starters are missing')
+  assert.ok(groups[3].options.includes('https://example.com/recent.mp4'), 'recents are missing')
+})
+
+record('the Settings source picker groups the same sources', () => {
+  const select = findByAria(
+    renderDeep(renderContribution(t.contributions.find(c => c.area === 'settings.plugins'))),
+    'Video source'
+  )
+  assert.ok(select, 'Settings has no video source picker')
+  assert.deepEqual(optgroupsOf(select).map(group => group.label), ['Playlists', 'Your films', 'Starters', 'Recent'])
+})
+
+record('"Edit sources…" opens the Aura page from both menus', () => {
+  const before = sdk.calls.navigations.length
+  const menuLink = (() => {
+    let found = null
+    walk(renderContribution(t.contributions.find(c => c.id === 'quick-menu')), node => {
+      if (!found && node.props && node.props['aria-label'] === 'Edit sources') found = node
+    })
+    return found
+  })()
+  assert.ok(menuLink, 'the quick menu has no Edit sources link')
+  menuLink.props.onClick()
+  assert.equal(sdk.calls.navigations.at(-1), '/aura', 'the quick-menu link did not open /aura')
+  const settingsLink = findByAria(
+    renderDeep(renderContribution(t.contributions.find(c => c.area === 'settings.plugins'))),
+    'Edit sources (settings)'
+  )
+  assert.ok(settingsLink, 'Settings has no Edit sources link')
+  settingsLink.props.onClick()
+  assert.equal(sdk.calls.navigations.at(-1), '/aura', 'the Settings link did not open /aura')
+  assert.equal(sdk.calls.navigations.length, before + 2)
+  disposeT()
+})
+
+// ------------------------------------------------------------- scenario U
+// The Aura page's Library: add, rename, remove, hide starters, clear recents.
+
+const u = makeCtx({
+  enabled: true,
+  backdropMode: 'aura',
+  videoUrl: '',
+  videoRecent: [{ label: 'Newsreel', url: 'https://example.com/news.mp4' }]
+})
+const disposeU = pluginModule.default.register(u.ctx)
+await sleep(60)
+
+const uPage = () => renderDeep(renderContribution(u.contributions.find(c => c.area === 'routes')))
+const uAria = label => findByAria(uPage(), label)
+const uSaved = () => u.storage.get('settings', {})
+
+record('the Aura page is the styled library, with the playlist help', () => {
+  const tree = uPage()
+  let root = null
+  walk(tree, node => {
+    if (!root && node.props && node.props.id === 'aura-page') root = node
+  })
+  assert.ok(root, 'the page root is not #aura-page')
+  const body = texts(tree)
+  assert.match(body, /How to add a YouTube playlist/, 'the playlist help is missing')
+  assert.match(body, /youtube\.com\/playlist\?list=PL/, 'the help does not show the link shape')
+  assert.match(body, /Public and unlisted playlists play here/, 'the help does not say private ones fail')
+  assert.ok(uAria('Add a source'), 'the add-source form is missing')
+  assert.ok(uAria('Hide starter films'), 'the hide-starters control is missing')
+  // Poster cards use YouTube artwork.
+  let thumb = null
+  walk(tree, node => {
+    if (!thumb && node.props && node.props.style && typeof node.props.style.backgroundImage === 'string' &&
+      node.props.style.backgroundImage.includes('i.ytimg.com/vi/')) thumb = node
+  })
+  assert.ok(thumb, 'no poster card carries a YouTube thumbnail')
+})
+
+await recordAsync('a playlist added on the page lands in videoPlaylists', async () => {
+  const url = 'https://www.youtube.com/playlist?list=PLnewplaylist123'
+  uAria('New source URL').props.onChange({ target: { value: url } })
+  uAria('New source name').props.onChange({ target: { value: 'Lectures' } })
+  uAria('Add source').props.onClick()
+  await sleep(30)
+  const saved = uSaved()
+  assert.equal(saved.videoPlaylists[0].url, url, 'the playlist was not saved')
+  assert.equal(saved.videoPlaylists[0].label, 'Lectures', 'the playlist name was not kept')
+  assert.ok(saved.videoRecent.some(item => item.url === url), 'the new playlist is missing from recents')
+  assert.equal((saved.videoSources || []).some(item => item.url === url), false,
+    'a playlist was saved as a film')
+})
+
+await recordAsync('a direct film added on the page lands in videoSources', async () => {
+  const url = 'https://example.com/movie.mp4'
+  uAria('New source URL').props.onChange({ target: { value: url } })
+  uAria('New source name').props.onChange({ target: { value: 'Own cut' } })
+  uAria('Add source').props.onClick()
+  await sleep(30)
+  const saved = uSaved()
+  assert.equal(saved.videoSources[0].url, url, 'the film was not saved')
+  assert.equal(saved.videoSources[0].label, 'Own cut', 'the film name was not kept')
+  assert.equal(saved.videoPlaylists.some(item => item.url === url), false, 'a film was saved as a playlist')
+})
+
+await recordAsync('a saved source can be renamed and removed', async () => {
+  const rename = uAria('Rename Lectures')
+  assert.ok(rename, 'the playlist card has no rename field')
+  rename.props.onBlur({ target: { value: 'Course' } })
+  await sleep(30)
+  assert.equal(uSaved().videoPlaylists[0].label, 'Course', 'rename did not persist')
+  assert.ok(uSaved().videoRecent.some(item => item.label === 'Course'),
+    'rename did not reach recents')
+  const remove = uAria('Remove Course')
+  assert.ok(remove, 'the renamed playlist card has no remove action')
+  remove.props.onClick()
+  await sleep(30)
+  assert.equal(uSaved().videoPlaylists.length, 0, 'remove did not persist')
+})
+
+await recordAsync('starter films can be hidden and shown, recents cleared', async () => {
+  uAria('Hide starter films').props.onClick()
+  await sleep(30)
+  assert.equal(uSaved().videoHiddenStarters.length, 8, 'hide starters did not persist')
+  assert.ok(uAria('Show starter films'), 'the page does not offer Show starters after hiding')
+  uAria('Clear recents').props.onClick()
+  await sleep(30)
+  assert.equal(uSaved().videoRecent.length, 0, 'clear recents did not persist')
+  uAria('Show starter films').props.onClick()
+  await sleep(30)
+  assert.equal(uSaved().videoHiddenStarters.length, 0, 'show starters did not persist')
+  disposeU()
+  assert.equal(u.contributions.length, 0)
 })
 
 // --------------------------------------------------------------- reporting

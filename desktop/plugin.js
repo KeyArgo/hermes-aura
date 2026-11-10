@@ -1025,6 +1025,13 @@ function syncBackdrop() {
     removeBackdrop()
     return
   }
+  // A playing film is always on screen (owner ask): "Only while active"
+  // belongs to the Aura visual, never to a movie.
+  if (playingFilmAlwaysShows(settings)) {
+    resetShow()
+    mountBackdrop(liveUrl(), backdropOpacity(settings))
+    return
+  }
   if (settings.showWhen === 'active') {
     if (!showVisible) {
       removeBackdrop()
@@ -1121,6 +1128,13 @@ function updateShow() {
   if (!showEligible()) {
     resetShow()
     removeBackdrop()
+    return
+  }
+  // A playing film never fades: Show is forced to Always in effect while
+  // backdropMode is video. The stored showWhen is not rewritten, so the Aura
+  // visual gets the owner's own choice back when the film is done.
+  if (playingFilmAlwaysShows(settings)) {
+    resetShow()
     return
   }
   if (settings.showWhen !== 'active') {
@@ -1855,6 +1869,123 @@ function isPlaylistUrl(url) {
   return /[?&]list=[A-Za-z0-9_-]{10,}/.test(String(url || ''))
 }
 
+/** True while a film is the backdrop. Style, Intensity, the Aura
+ *  transparency and Gentle motion describe the Aura visual only, so the two
+ *  menus grey them out while this holds. */
+function filmBackdrop(settings) {
+  return Boolean(settings && settings.backdropMode === 'video')
+}
+
+/** A playing film is always on screen: "Only while active" must never fade it
+ *  out (owner ask). The stored showWhen is deliberately left alone, so
+ *  switching Backdrop back to the Aura visual restores the owner's choice. */
+function playingFilmAlwaysShows(settings) {
+  return Boolean(settings && settings.backdropMode === 'video' &&
+    settings.videoUrl && !settings.videoClosed)
+}
+
+const AURA_LOCK_TITLE = 'Applies to the Aura visual — switch Backdrop to Aura visual to change'
+const SHOW_LOCK_TITLE = 'A playing film always shows'
+
+/** The playable sources, grouped for the pickers: saved playlists, saved
+ *  films, the starter pack (unless hidden) and recents. A URL is listed once,
+ *  in the first group that owns it, and the current film is always present so
+ *  the dropdown cannot show a different title as if it were selected. */
+function videoSourceGroups(settings) {
+  const source = settings || $settings.get()
+  const seen = new Set()
+  const take = (id, label, list) => {
+    const items = []
+    for (const entry of Array.isArray(list) ? list : []) {
+      const url = entry && typeof entry.url === 'string' ? entry.url.trim().slice(0, VIDEO_URL_MAX) : ''
+      if (!url || seen.has(url)) continue
+      seen.add(url)
+      items.push({ url, label: (entry && entry.label) || shortLabel(url) })
+    }
+    return { id, label, items }
+  }
+  const hidden = new Set(Array.isArray(source.videoHiddenStarters) ? source.videoHiddenStarters : [])
+  const groups = [
+    take('playlists', 'Playlists', source.videoPlaylists),
+    take('films', 'Your films', source.videoSources),
+    take('starters', 'Starters', STARTER_SOURCES.filter(item => !hidden.has(item.url))),
+    take('recent', 'Recent', source.videoRecent)
+  ]
+  const current = typeof source.videoUrl === 'string' ? source.videoUrl.trim() : ''
+  if (current && !seen.has(current)) {
+    const group = groups[isPlaylistUrl(current) ? 0 : 1]
+    group.items.push({ url: current, label: shortLabel(current) })
+  }
+  return groups
+}
+
+/** <optgroup> children for a source <select>. One builder, so the quick menu
+ *  and Settings cannot drift apart. */
+function videoSourceOptions(settings) {
+  return videoSourceGroups(settings)
+    .filter(group => group.items.length)
+    .map(group => jsxs('optgroup', {
+      key: `group-${group.id}`,
+      label: group.label,
+      children: group.items.map(item => jsx('option', {
+        key: item.url,
+        value: item.url,
+        style: { background: '#f1f1f1', color: '#111111' },
+        children: item.label
+      }))
+    }))
+}
+
+/** Save a source by hand from the Aura page. Playlists get their own list and
+ *  survive the 8-item recents window; anything else is a saved film. */
+function addVideoSource(url, name) {
+  if (!ctxRef || disposed) return false
+  const clean = String(url || '').trim().slice(0, VIDEO_URL_MAX)
+  if (!clean) return false
+  const settings = $settings.get()
+  const label = String(name || '').trim().slice(0, 120) || shortLabel(clean)
+  const entry = { label, url: clean }
+  if (isPlaylistUrl(clean)) {
+    const lists = (Array.isArray(settings.videoPlaylists) ? settings.videoPlaylists : [])
+      .filter(item => item && item.url !== clean)
+    writeSettings({ videoPlaylists: [entry, ...lists].slice(0, 40) })
+  } else {
+    const films = (Array.isArray(settings.videoSources) ? settings.videoSources : [])
+      .filter(item => item && item.url !== clean)
+    writeSettings({ videoSources: [entry, ...films].slice(0, 60) })
+  }
+  // Also a recent, so the tray and prev/next see it the moment it is saved.
+  rememberVideoSource(clean, label)
+  syncVideoBar(true)
+  return true
+}
+
+/** Rename a saved source everywhere it is remembered (playlists, films,
+ *  recents) so no list keeps calling it by the old name. */
+function renameVideoSource(url, name) {
+  if (!ctxRef || disposed) return false
+  const clean = String(url || '').trim()
+  if (!clean) return false
+  const label = String(name || '').trim().slice(0, 120) || shortLabel(clean)
+  const relabel = list => (Array.isArray(list) ? list : []).map(item =>
+    item && item.url === clean ? { ...item, label } : item)
+  const settings = $settings.get()
+  writeSettings({
+    videoSources: relabel(settings.videoSources),
+    videoPlaylists: relabel(settings.videoPlaylists),
+    videoRecent: relabel(settings.videoRecent)
+  })
+  syncVideoBar(true)
+  return true
+}
+
+/** Empty the Recent group; saved playlists and films are untouched. */
+function clearVideoRecents() {
+  if (!ctxRef || disposed) return
+  writeSettings({ videoRecent: [] })
+  syncVideoBar(true)
+}
+
 function postToBackdrop(message) {
   try {
     const win = backdropEl && backdropEl.contentWindow
@@ -2487,7 +2618,16 @@ function positionVideoBar() {
     const clamped = Math.min(Math.max(8, centred), Math.max(8, vw - barWidth - 8))
     videoBarEl.style.left = `${Math.round(clamped)}px`
     videoBarEl.style.right = 'auto'
-    videoBarEl.style.top = `${point.y + frameHeight + 8}px`
+    // The two-row strip is taller than the old pill: keep its whole box inside
+    // the viewport instead of letting the bottom row fall off a short screen.
+    const barHeight = videoBarEl.getBoundingClientRect
+      ? (videoBarEl.getBoundingClientRect().height || 0)
+      : 0
+    let top = point.y + frameHeight + 8
+    if (barHeight && top + barHeight > height - 8) {
+      top = Math.max(8, height - barHeight - 8)
+    }
+    videoBarEl.style.top = `${Math.round(top)}px`
     videoBarEl.style.bottom = 'auto'
     return
   }
@@ -2564,8 +2704,9 @@ function mountVideoBar() {
     : VIDEO_BAR_OPACITY)
   Object.assign(bar.style, {
     position: 'fixed', left: '24px', bottom: '140px', transform: 'none',
-    display: 'flex', alignItems: 'center', gap: '2px',
-    padding: '4px 8px', borderRadius: '999px',
+    display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '2px',
+    width: '340px', maxWidth: 'calc(100vw - 16px)', boxSizing: 'border-box',
+    padding: '5px 9px 6px', borderRadius: '14px',
     background: `rgba(12, 10, 22, ${barAlpha})`, color: '#fff',
     border: '1px solid rgba(255,255,255,0.14)',
     boxShadow: '0 8px 28px rgba(0,0,0,0.38)',
@@ -2599,8 +2740,8 @@ function mountVideoBar() {
   scrub.setAttribute('role', 'slider')
   scrub.setAttribute('aria-label', 'Seek')
   Object.assign(scrub.style, {
-    width: '92px', height: '16px', display: 'flex', alignItems: 'center',
-    cursor: 'pointer', flex: 'none'
+    flex: '1 1 60px', minWidth: '46px', height: '16px', display: 'flex', alignItems: 'center',
+    cursor: 'pointer'
   })
   const track = doc.createElement('div')
   Object.assign(track.style, {
@@ -2644,6 +2785,16 @@ function mountVideoBar() {
     setVideoWindow(!videoWindowOn())
   })
 
+  // The current film's name, at the head of the top row: the strip is small,
+  // so the title earns its place by answering "what am I watching?".
+  const title = doc.createElement('span')
+  title.textContent = shortLabel($settings.get().videoUrl) || 'Aura film'
+  Object.assign(title.style, {
+    flex: '1 1 auto', minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap', fontSize: '10.5px', lineHeight: '1.2',
+    color: 'rgba(255,255,255,0.88)'
+  })
+
   const sep = doc.createElement('span')
   Object.assign(sep.style, {
     width: '1px', height: '16px', background: 'rgba(255,255,255,0.16)', margin: '0 3px'
@@ -2681,11 +2832,26 @@ function mountVideoBar() {
   })
   close.addEventListener('click', () => closeVideo())
 
-  // The strip is deliberately small: a transport bar, not a dashboard. The
-  // source picker and transparency live in the A popover, where there is room.
-  for (const node of [grip, prev, back, play, fwd, next, sep, scrub, time, volume, windowBtn, close]) {
-    bar.appendChild(node)
+  // Two rows: the film's own line (grip, title, scrubber, clock, volume,
+  // window, close) above a centred transport row. The strip ends up about
+  // twice as tall and about half as wide as the single-line pill was.
+  const topRow = doc.createElement('div')
+  Object.assign(topRow.style, {
+    display: 'flex', alignItems: 'center', gap: '4px', minWidth: '0'
+  })
+  for (const node of [grip, title, scrub, time, sep, volume, windowBtn, close]) {
+    topRow.appendChild(node)
   }
+  const transportRow = doc.createElement('div')
+  Object.assign(transportRow.style, {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '2px',
+    paddingTop: '3px', borderTop: '1px solid rgba(255,255,255,0.08)'
+  })
+  for (const node of [prev, backMin, back, play, fwd, fwdMin, next]) {
+    transportRow.appendChild(node)
+  }
+  bar.appendChild(topRow)
+  bar.appendChild(transportRow)
   // Grabbing empty strip (not a button) also drags the window.
   bar.addEventListener('mousedown', event => {
     if (!event || event.target !== bar) return
@@ -2704,7 +2870,7 @@ function mountVideoBar() {
 
   doc.body.appendChild(bar)
   videoBarEl = bar
-  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill }
+  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill, title }
 }
 
 function removeVideoBar() {
@@ -2874,6 +3040,194 @@ function uiCss() {
   return `
     select.aura-select { color-scheme: light !important; }
     select.aura-select option { background: #f1f1f1 !important; color: #111111 !important; }
+
+    /* ---- the Aura page: dark glass over a violet → ember gradient ----
+       Everything is scoped to #aura-page, uses system fonts only, and keeps
+       text on the deep panels at >= 7:1 contrast (WCAG AA with room to spare). */
+    #aura-page {
+      position: relative;
+      padding: 30px 28px 52px;
+      color: #f3ece2;
+      background:
+        radial-gradient(1200px 560px at 10% -10%, rgba(255,150,80,0.18), transparent 62%),
+        radial-gradient(980px 560px at 92% 2%, rgba(255,120,160,0.15), transparent 64%),
+        linear-gradient(158deg, #14101f 0%, #1b1418 54%, #241a12 100%);
+      font: 13px/1.55 system-ui, -apple-system, 'Segoe UI', sans-serif;
+    }
+    #aura-page *, #aura-page *::before, #aura-page *::after { box-sizing: border-box; }
+    #aura-page .aura-shell {
+      display: flex; flex-direction: column; gap: 18px;
+      width: 100%; max-width: 1180px; margin: 0 auto;
+    }
+    #aura-page .aura-eyebrow {
+      font-size: 10px; font-weight: 600; letter-spacing: 0.3em; text-transform: uppercase;
+      color: #ffc79c;
+    }
+    #aura-page .aura-title {
+      margin: 0; font-size: 27px; line-height: 1.15; font-weight: 640; letter-spacing: -0.015em;
+      color: #fdf7ef; text-shadow: 0 0 28px rgba(255,150,80,0.22);
+    }
+    #aura-page .aura-sub { margin: 0; max-width: 68ch; font-size: 12.5px; line-height: 1.6; color: #d8cec2; }
+    #aura-page .aura-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 11px; border-radius: 999px; font-size: 10.5px; letter-spacing: 0.14em;
+      text-transform: uppercase; color: #d8cec2; border: 1px solid rgba(255,255,255,0.16);
+      background: rgba(255,255,255,0.04);
+    }
+    #aura-page .aura-pill.is-on {
+      color: #ffe2c6; border-color: rgba(255,180,120,0.55);
+      background: rgba(255,150,80,0.14); box-shadow: 0 0 18px rgba(255,150,80,0.22);
+    }
+    #aura-page .aura-panel {
+      position: relative; display: flex; flex-direction: column; gap: 12px;
+      padding: 16px 18px 18px; border-radius: 16px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.018));
+      border: 1px solid rgba(255,190,140,0.16);
+      box-shadow: 0 18px 50px rgba(0,0,0,0.34), inset 0 1px 0 rgba(255,255,255,0.05);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+    #aura-page .aura-panel::before {
+      content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+      background: radial-gradient(600px 140px at 8% 0%, rgba(255,150,80,0.10), transparent 70%);
+      opacity: 0.9;
+    }
+    #aura-page .aura-sec-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    #aura-page .aura-sec-label {
+      font-size: 10.5px; font-weight: 650; letter-spacing: 0.26em; text-transform: uppercase;
+      color: #ffc79c; white-space: nowrap;
+    }
+    #aura-page .aura-count {
+      font-size: 10.5px; letter-spacing: 0.02em; color: #bfb4a8; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    #aura-page .aura-watch { gap: 10px; }
+    #aura-page .aura-stage-wrap { display: flex; justify-content: center; width: 100%; }
+    #aura-page .aura-stage {
+      border: 1px solid rgba(255,190,140,0.24);
+      box-shadow: inset 0 0 60px rgba(255,150,80,0.08), 0 22px 60px rgba(0,0,0,0.45),
+        0 0 0 1px rgba(255,255,255,0.02);
+    }
+    #aura-page .aura-scrub { max-width: 100%; }
+    #aura-page .aura-time { font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
+    #aura-page .aura-url-row { flex-wrap: wrap; }
+    #aura-page .aura-input {
+      font: inherit; font-size: 12px; color: #f6efe6;
+      background: rgba(10,8,16,0.55); border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 9px; padding: 6px 10px; min-width: 0;
+      transition: border-color 140ms ease, box-shadow 140ms ease;
+    }
+    #aura-page .aura-input::placeholder { color: #a99d92; }
+    #aura-page .aura-input:hover { border-color: rgba(255,190,140,0.34); }
+    #aura-page .aura-input:focus-visible {
+      outline: none; border-color: rgba(255,190,120,0.75);
+      box-shadow: 0 0 0 3px rgba(255,150,80,0.18);
+    }
+    #aura-page .aura-btn, #aura-page .aura-chip {
+      appearance: none; cursor: pointer; font: inherit; font-size: 11.5px;
+      color: #f6efe6; border-radius: 9px; padding: 6px 13px;
+      border: 1px solid rgba(255,255,255,0.18); background: rgba(255,255,255,0.05);
+      transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+    }
+    #aura-page .aura-btn:hover, #aura-page .aura-chip:hover {
+      background: rgba(255,255,255,0.11); border-color: rgba(255,190,140,0.42);
+    }
+    #aura-page .aura-btn.is-primary {
+      color: #1b1410; font-weight: 650;
+      border-color: rgba(255,190,120,0.6);
+      background: linear-gradient(180deg, #ffd2a4, #ffab6f);
+      box-shadow: 0 6px 20px rgba(255,150,80,0.28);
+    }
+    #aura-page .aura-btn.is-primary:hover { background: linear-gradient(180deg, #ffdcb6, #ffb47c); }
+    #aura-page .aura-chip { padding: 3px 9px; font-size: 10.5px; border-radius: 999px; }
+    #aura-page :focus-visible { outline: 2px solid #ffbf8f; outline-offset: 2px; }
+    #aura-page .aura-add {
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      padding: 10px; border-radius: 12px; background: rgba(10,8,16,0.32);
+      border: 1px dashed rgba(255,190,140,0.24);
+    }
+    #aura-page .aura-add .aura-input:first-child { flex: 2 1 260px; }
+    #aura-page .aura-input-name { flex: 1 1 150px; }
+    #aura-page .aura-help {
+      display: flex; flex-direction: column; gap: 5px;
+      padding: 11px 14px; border-radius: 12px;
+      background: rgba(255,150,80,0.055); border: 1px solid rgba(255,150,80,0.16);
+    }
+    #aura-page .aura-help-steps { display: flex; flex-direction: column; gap: 3px; }
+    #aura-page .aura-help-step { font-size: 11.5px; line-height: 1.55; color: #ded4c8; }
+    #aura-page .aura-help-note { font-size: 11px; color: #bfb4a8; }
+    #aura-page .aura-group { display: flex; flex-direction: column; gap: 9px; }
+    #aura-page .aura-grid {
+      display: grid; gap: 12px;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    }
+    #aura-page .aura-card {
+      position: relative; overflow: hidden; border-radius: 13px;
+      background: linear-gradient(180deg, rgba(24,19,28,0.92), rgba(18,14,24,0.92));
+      border: 1px solid rgba(255,255,255,0.09);
+      transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+    }
+    #aura-page .aura-card:hover { transform: translateY(-2px); border-color: rgba(255,190,140,0.4); }
+    #aura-page .aura-card.is-active {
+      border-color: rgba(255,170,120,0.6);
+      box-shadow: 0 0 0 1px rgba(255,170,120,0.22), 0 12px 36px rgba(255,120,60,0.24);
+      animation: aura-page-glow 3.8s ease-in-out infinite;
+    }
+    @keyframes aura-page-glow {
+      0%, 100% { box-shadow: 0 0 0 1px rgba(255,170,120,0.22), 0 12px 36px rgba(255,120,60,0.20); }
+      50% { box-shadow: 0 0 0 1px rgba(255,190,140,0.45), 0 14px 42px rgba(255,120,60,0.32); }
+    }
+    /* Gentle motion (the setting) and the OS preference both stop the glow. */
+    #aura-page.is-reduced .aura-card.is-active { animation: none; }
+    @media (prefers-reduced-motion: reduce) {
+      #aura-page .aura-card.is-active { animation: none; }
+      #aura-page .aura-card, #aura-page .aura-btn, #aura-page .aura-chip,
+      #aura-page .aura-input { transition: none; }
+    }
+    #aura-page .aura-card-main {
+      display: flex; flex-direction: column; gap: 0; cursor: pointer;
+      border-radius: inherit; outline-offset: -2px;
+    }
+    #aura-page .aura-thumb {
+      width: 100%; aspect-ratio: 16 / 9; background-size: cover; background-position: center;
+      background-color: #241a12; border-bottom: 1px solid rgba(255,255,255,0.07);
+    }
+    #aura-page .aura-thumb.is-empty {
+      background-image: linear-gradient(135deg, #2a2136, #40302a 55%, #2c2230);
+    }
+    #aura-page .aura-card-meta { display: flex; flex-direction: column; gap: 3px; padding: 9px 11px 10px; }
+    #aura-page .aura-card-title {
+      font-size: 11.5px; line-height: 1.4; color: #f6efe6;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    #aura-page .aura-card-kind {
+      font-size: 9.5px; letter-spacing: 0.18em; text-transform: uppercase; color: #bfb4a8;
+    }
+    #aura-page .aura-card-actions {
+      display: flex; gap: 6px; align-items: center; padding: 0 10px 10px;
+    }
+    #aura-page .aura-rename { flex: 1; font-size: 10.5px; padding: 4px 7px; }
+    #aura-page .aura-empty { font-size: 11.5px; color: #bfb4a8; padding: 4px 2px; }
+    /* The Settings component reads host theme tokens; remap them inside the
+       page's dark glass so a light host theme cannot put dark text on it. */
+    #aura-page .aura-setup, #aura-page .aura-revamp {
+      --ui-text-primary: #f3ece2;
+      --ui-text-secondary: #ded4c8;
+      --ui-text-tertiary: #cfc4b8;
+      --ui-bg: rgba(10,8,16,0.55);
+      --ui-bg-elevated: rgba(20,16,31,0.92);
+      --ui-stroke-secondary: rgba(255,255,255,0.16);
+      --ui-accent: #ffbf8f;
+    }
+    #aura-page .aura-setup, #aura-page .aura-revamp { gap: 6px; }
+    #aura-page .aura-setup > div:last-child { color: #f3ece2; }
+    @media (max-width: 760px) {
+      #aura-page { padding: 20px 16px 40px; }
+      #aura-page .aura-title { font-size: 22px; }
+      #aura-page .aura-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+      #aura-page .aura-panel { padding: 13px 13px 15px; border-radius: 14px; }
+    }
   `
 }
 
@@ -3354,6 +3708,12 @@ function syncVideoBar(force) {
     if (parts.windowBtn.textContent !== wantGlyph) parts.windowBtn.textContent = wantGlyph
     parts.windowBtn.title = videoWindowOn() ? 'Back to full-window backdrop' : 'Watch in its own window'
   }
+  if (parts.title) {
+    const current = videoQueue().find(item => item.url === settings.videoUrl)
+    const label = (current && current.label) || shortLabel(settings.videoUrl) || 'Aura film'
+    if (parts.title.textContent !== label) parts.title.textContent = label
+    parts.title.title = label
+  }
 
   if (parts.opacity) {
     const percent = Math.round(clamp01(settings.videoOpacity) * 100)
@@ -3695,6 +4055,11 @@ function AuraQuickMenu() {
   // Server flag wins while it answers, exactly like syncBackdrop does.
   const auraOn = live.ok ? live.enabled === true : settings.enabled
   const open = useValue($menuOpen)
+  // A film backdrop owns the screen: the Aura-visual controls are greyed out
+  // rather than silently doing nothing (owner ask).
+  const locked = filmBackdrop(settings)
+  const auraTitle = locked ? AURA_LOCK_TITLE : undefined
+  const showTitle = locked ? SHOW_LOCK_TITLE : undefined
 
   const setOpen = value => {
     if ($menuOpen.get() !== Boolean(value)) $menuOpen.set(Boolean(value))
@@ -3854,6 +4219,8 @@ function AuraQuickMenu() {
                   step: 1,
                   value: Math.round(settings.intensity * 100),
                   'aria-label': 'Intensity',
+                  disabled: locked,
+                  title: auraTitle,
                   style: sliderStyle,
                   onChange: event => {
                     applyIntensity(Number(event && event.target ? event.target.value : 0) / 100)
@@ -3876,6 +4243,8 @@ function AuraQuickMenu() {
                   step: 1,
                   value: Math.round(settings.opacity * 100),
                   'aria-label': 'Transparency',
+                  disabled: locked,
+                  title: auraTitle,
                   style: sliderStyle,
                   onChange: event => {
                     void setOpacity(clamp01(Number(event && event.target ? event.target.value : 0) / 100))
@@ -3890,6 +4259,8 @@ function AuraQuickMenu() {
             jsx('select', { className: 'aura-select',
               value: settings.behavior,
               'aria-label': 'Style',
+              disabled: locked,
+              title: auraTitle,
               style: selectStyle,
               onChange: event => {
                 void setBehavior(event && event.target ? String(event.target.value) : 'balanced')
@@ -3899,11 +4270,27 @@ function AuraQuickMenu() {
               )
             })
           ),
+          // Gentle motion is an Aura-visual setting, so it sits with Style and
+          // Intensity and locks with them while a film is playing.
+          row(
+            'Gentle motion',
+            jsx(Switch, {
+              checked: settings.reducedMotion,
+              disabled: locked,
+              title: auraTitle,
+              'aria-label': 'Gentle motion (motion-sensitive)',
+              onCheckedChange: value => {
+                void setReducedMotion(value)
+              }
+            })
+          ),
           row(
             'Show',
             jsx('select', { className: 'aura-select',
               value: settings.showWhen,
               'aria-label': 'Show',
+              disabled: locked,
+              title: showTitle,
               style: selectStyle,
               onChange: event => {
                 void setShowWhen(event && event.target ? String(event.target.value) : 'always')
@@ -3981,16 +4368,32 @@ function AuraQuickMenu() {
                       const url = event && event.target ? String(event.target.value) : ''
                       void applyVideoSource(url)
                     },
-                    children: videoQueue().map(item =>
-      jsx('option', {
-        key: item.url,
-        value: item.url,
-        style: { background: '#f1f1f1', color: '#111111' },
-        children: item.label
-      })
-    )
+                    children: videoSourceOptions(settings)
                   })
                 ),
+                // The picker lists everything; editing lives on the page where
+                // there is room for names, removal and playlists.
+                useHostNav
+                  ? jsx('div', {
+                    key: 'edit-sources',
+                    style: { display: 'flex', justifyContent: 'flex-end', padding: '0 12px 2px' },
+                    children: jsx(Button, {
+                      size: 'micro',
+                      variant: 'ghost',
+                      'aria-label': 'Edit sources',
+                      title: 'Add, rename or remove sources on the Aura page',
+                      onClick: () => {
+                        setOpen(false)
+                        try {
+                          host.navigate('/aura')
+                        } catch {
+                          // older hosts without navigate
+                        }
+                      },
+                      children: 'Edit sources…'
+                    })
+                  })
+                  : null,
                 row(
                   'Transparency',
                   jsxs('div', {
@@ -4183,16 +4586,6 @@ function AuraQuickMenu() {
               ]
             })
             : null,
-          row(
-            'Gentle motion',
-            jsx(Switch, {
-              checked: settings.reducedMotion,
-              'aria-label': 'Gentle motion (motion-sensitive)',
-              onCheckedChange: value => {
-                void setReducedMotion(value)
-              }
-            })
-          ),
           jsxs('div', {
             style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '8px 12px 4px', borderTop: '1px solid var(--ui-stroke-secondary)', marginTop: 2 },
             children: [
@@ -4390,6 +4783,269 @@ async function playOnPage(url, label) {
   await applyVideoSource(clean, label)
 }
 
+// A small draft mirror for the "add a source" fields: the inputs are
+// controlled, but the commit path reads this so an Enter press always adds
+// exactly what is on screen even before a re-render lands.
+let pageSourceDraft = { url: '', name: '' }
+
+/** Commit the add-source form. Returns true when something was saved. */
+function pageAddSource() {
+  const saved = addVideoSource(pageSourceDraft.url, pageSourceDraft.name)
+  if (saved) pageSourceDraft = { url: '', name: '' }
+  return saved
+}
+
+/** One poster card: the card itself plays the source; saved entries also get
+ *  an inline rename field and a Remove chip. */
+function PageSourceCard(props) {
+  const item = props.item
+  const active = props.active === true
+  const saved = props.saved === true
+  const thumb = thumbFor(item.url)
+  const play = () => {
+    void playOnPage(item.url, item.label)
+  }
+  return jsxs('div', {
+    className: active ? 'aura-card is-active' : 'aura-card',
+    children: [
+      jsxs('div', {
+        key: 'main',
+        role: 'button',
+        tabIndex: 0,
+        className: 'aura-card-main',
+        'aria-label': `Play ${item.label}`,
+        title: item.label,
+        onClick: play,
+        onKeyDown: event => {
+          if (!event || (event.key !== 'Enter' && event.key !== ' ')) return
+          if (event.preventDefault) event.preventDefault()
+          play()
+        },
+        children: [
+          jsx('div', {
+            key: 'thumb',
+            className: thumb ? 'aura-thumb' : 'aura-thumb is-empty',
+            style: thumb ? { backgroundImage: `url("${thumb}")` } : undefined
+          }),
+          jsxs('div', {
+            key: 'meta',
+            className: 'aura-card-meta',
+            children: [
+              jsx('div', { key: 'title', className: 'aura-card-title', children: item.label }),
+              jsx('div', { key: 'kind', className: 'aura-card-kind', children: props.kind })
+            ]
+          })
+        ]
+      }),
+      saved
+        ? jsxs('div', {
+          key: 'actions',
+          className: 'aura-card-actions',
+          children: [
+            jsx('input', {
+              key: 'name',
+              type: 'text',
+              className: 'aura-input aura-rename',
+              defaultValue: item.label,
+              'aria-label': `Rename ${item.label}`,
+              spellCheck: false,
+              onKeyDown: event => {
+                if (event && event.key === 'Enter' && event.currentTarget) event.currentTarget.blur()
+              },
+              onBlur: event => {
+                renameVideoSource(item.url, event && event.target ? String(event.target.value) : '')
+              }
+            }),
+            jsx('button', {
+              key: 'remove',
+              type: 'button',
+              className: 'aura-chip',
+              'aria-label': `Remove ${item.label}`,
+              title: 'Remove from your library',
+              onClick: event => {
+                if (event && event.preventDefault) event.preventDefault()
+                removeVideoSource(item.url)
+              },
+              children: 'Remove'
+            })
+          ]
+        })
+        : null
+    ]
+  })
+}
+
+/** The Library: add a source, then every group as poster cards — saved
+ *  playlists and films (rename/remove), the starter pack (hide/show) and
+ *  recents (clear). All of it writes through the existing settings helpers. */
+function PageLibrary() {
+  const settings = useValue($settings)
+  const [draftUrl, setDraftUrl] = useState('')
+  const [draftName, setDraftName] = useState('')
+  const groups = videoSourceGroups(settings)
+  const startersHidden = Array.isArray(settings.videoHiddenStarters) &&
+    settings.videoHiddenStarters.length > 0
+  const submit = () => {
+    if (!pageAddSource()) return
+    setDraftUrl('')
+    setDraftName('')
+  }
+  const change = (key, setter) => event => {
+    const value = event && event.target ? String(event.target.value) : ''
+    pageSourceDraft[key] = value
+    setter(value)
+  }
+  const groupLabel = group => (group.id === 'playlists'
+    ? 'playlist'
+    : group.id === 'films' ? 'film' : group.id === 'starters' ? 'starter' : 'recent')
+
+  return jsxs('section', {
+    className: 'aura-panel aura-library',
+    'aria-label': 'Library',
+    children: [
+      jsxs('div', {
+        key: 'head',
+        className: 'aura-sec-head',
+        children: [
+          jsx('span', { key: 'label', className: 'aura-sec-label', children: 'Library' }),
+          jsx('span', {
+            key: 'meta',
+            className: 'aura-count',
+            children: 'add · rename · remove · hide starters · clear recents'
+          })
+        ]
+      }),
+      jsxs('div', {
+        key: 'add',
+        className: 'aura-add',
+        role: 'group',
+        'aria-label': 'Add a source',
+        children: [
+          jsx('input', {
+            key: 'url',
+            type: 'text',
+            className: 'aura-input',
+            value: draftUrl,
+            placeholder: 'Paste a link — YouTube video or playlist, .mp4, .webm, .m3u8',
+            'aria-label': 'New source URL',
+            spellCheck: false,
+            onChange: change('url', setDraftUrl),
+            onKeyDown: event => {
+              if (event && event.key === 'Enter') submit()
+            }
+          }),
+          jsx('input', {
+            key: 'name',
+            type: 'text',
+            className: 'aura-input aura-input-name',
+            value: draftName,
+            placeholder: 'Name (optional)',
+            'aria-label': 'New source name',
+            spellCheck: false,
+            onChange: change('name', setDraftName),
+            onKeyDown: event => {
+              if (event && event.key === 'Enter') submit()
+            }
+          }),
+          jsx('button', {
+            key: 'add',
+            type: 'button',
+            className: 'aura-btn is-primary',
+            'aria-label': 'Add source',
+            onClick: submit,
+            children: 'Add'
+          })
+        ]
+      }),
+      jsxs('div', {
+        key: 'help',
+        className: 'aura-help',
+        children: [
+          jsx('div', { key: 'title', className: 'aura-sec-label', children: 'How to add a YouTube playlist' }),
+          jsx('div', {
+            key: 'steps',
+            className: 'aura-help-steps',
+            children: [
+              jsx('span', { key: 's1', className: 'aura-help-step', children: '1 · Open the playlist on YouTube.' }),
+              jsx('span', {
+                key: 's2',
+                className: 'aura-help-step',
+                children: '2 · Press Share, then Copy link — it looks like https://youtube.com/playlist?list=PL…'
+              }),
+              jsx('span', {
+                key: 's3',
+                className: 'aura-help-step',
+                children: '3 · Paste it above and press Add.'
+              })
+            ]
+          }),
+          jsx('div', {
+            key: 'note',
+            className: 'aura-help-note',
+            children: 'Public and unlisted playlists play here. Private playlists cannot be embedded.'
+          })
+        ]
+      }),
+      groups.map(group => {
+        const emptyStarters = group.id === 'starters' && group.items.length === 0
+        if (!group.items.length && !emptyStarters) return null
+        return jsxs('div', {
+          key: `group-${group.id}`,
+          className: 'aura-group',
+          children: [
+            jsxs('div', {
+              key: 'head',
+              className: 'aura-sec-head',
+              children: [
+                jsx('span', { key: 'label', className: 'aura-sec-label', children: group.label }),
+                jsx('span', { key: 'count', className: 'aura-count', children: String(group.items.length) }),
+                jsx('span', { key: 'space', style: { flex: 1 } }),
+                group.id === 'starters'
+                  ? jsx('button', {
+                    key: 'starters-toggle',
+                    type: 'button',
+                    className: 'aura-chip',
+                    'aria-label': startersHidden ? 'Show starter films' : 'Hide starter films',
+                    onClick: () => setDemosHidden(!startersHidden),
+                    children: startersHidden ? 'Show starters' : 'Hide starters'
+                  })
+                  : null,
+                group.id === 'recent'
+                  ? jsx('button', {
+                    key: 'clear',
+                    type: 'button',
+                    className: 'aura-chip',
+                    'aria-label': 'Clear recents',
+                    onClick: () => clearVideoRecents(),
+                    children: 'Clear recents'
+                  })
+                  : null
+              ]
+            }),
+            emptyStarters
+              ? jsx('div', {
+                key: 'empty',
+                className: 'aura-empty',
+                children: 'The starter films are hidden. Show them again with the button above.'
+              })
+              : jsx('div', {
+                key: 'grid',
+                className: 'aura-grid',
+                children: group.items.map(item => jsx(PageSourceCard, {
+                  key: item.url,
+                  item,
+                  kind: groupLabel(group),
+                  active: item.url === settings.videoUrl,
+                  saved: group.id === 'playlists' || group.id === 'films'
+                }))
+              })
+          ]
+        })
+      })
+    ]
+  })
+}
+
 /** The full page: film, transport, sources and setup. */
 function AuraPage() {
   const settings = useValue($settings)
@@ -4400,6 +5056,13 @@ function AuraPage() {
   // The film is a fixed-position frame glued to this stage's rect, so the rect
   // has to follow a scrolling page between poll ticks (4 Hz is a visible lag).
   // React owns this listener: it goes away with the page.
+  useEffect(() => {
+    // Leaving the page throws away a half-typed add-source draft, so it can
+    // never be added by accident from a later visit.
+    return () => {
+      pageSourceDraft = { url: '', name: '' }
+    }
+  }, [])
   useEffect(() => {
     const view = doc && doc.defaultView
     if (!view || typeof view.addEventListener !== 'function') return undefined
@@ -4413,7 +5076,6 @@ function AuraPage() {
   }, [])
   const duration = Number(state.duration) || 0
   const progress = duration ? clamp01((Number(state.position) || 0) / duration) : 0
-  const queue = videoQueue().slice(0, PANEL_SCORE_MAX)
   const hint = !auraOn
     ? 'Aura is off. Turn it on in the setup below to watch here.'
     : settings.videoClosed
@@ -4430,24 +5092,25 @@ function AuraPage() {
 
   const filmStage = jsxs('div', {
     ref: pageStageRef,
+    className: 'aura-stage',
     style: {
       position: 'relative',
       width: '100%',
       maxWidth: 960,
       aspectRatio: '16 / 9',
-      borderRadius: 12,
+      borderRadius: 14,
       overflow: 'hidden',
       background: 'radial-gradient(circle at 50% 40%, #221a2e, #0d0a12 75%)',
-      border: '1px solid var(--ui-stroke-secondary)',
       boxShadow: 'inset 0 0 40px rgba(255,150,80,0.06), 0 10px 30px rgba(0,0,0,0.35)'
     },
     children: hint
       ? jsx('div', {
         key: 'hint',
+        className: 'aura-hint',
         style: {
           position: 'absolute', inset: 0, display: 'flex',
           alignItems: 'center', justifyContent: 'center', textAlign: 'center',
-          padding: 16, fontSize: 12, color: 'var(--ui-text-tertiary)'
+          padding: 16, fontSize: 12, color: '#cfc4b8'
         },
         children: hint
       })
@@ -4455,7 +5118,8 @@ function AuraPage() {
   })
 
   const scrub = jsxs('div', {
-    style: { display: 'flex', alignItems: 'center', gap: 10, width: '100%', maxWidth: 960 },
+    className: 'aura-scrub',
+    style: { display: 'flex', alignItems: 'center', gap: 10, width: '100%' },
     children: [
       jsx('div', {
         key: 'track',
@@ -4471,11 +5135,13 @@ function AuraPage() {
           const ratio = clamp01((event.clientX - rect.left) / rect.width)
           postToBackdrop({ cmd: 'seekTo', value: ratio * duration })
         },
+        className: 'aura-track',
         style: {
           position: 'relative', flex: 1, height: 4, borderRadius: 999,
-          background: 'var(--ui-stroke-secondary)', cursor: 'pointer'
+          background: 'rgba(255,255,255,0.16)', cursor: 'pointer'
         },
         children: jsx('div', {
+          className: 'aura-fill',
           style: {
             position: 'absolute', inset: '0 auto 0 0',
             width: `${(progress * 100).toFixed(2)}%`, borderRadius: 999,
@@ -4485,14 +5151,16 @@ function AuraPage() {
       }),
       jsx('span', {
         key: 'time',
-        style: { fontSize: 11, fontVariantNumeric: 'tabular-nums', color: 'var(--ui-text-tertiary)', minWidth: 92, textAlign: 'right' },
+        className: 'aura-time',
+        style: { fontSize: 11, fontVariantNumeric: 'tabular-nums', color: '#cfc4b8', minWidth: 92, textAlign: 'right' },
         children: duration ? `${fmtClock(state.position)} / ${fmtClock(duration)}` : '—'
       })
     ]
   })
 
   const transport = jsxs('div', {
-    style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, maxWidth: 960, width: '100%' },
+    className: 'aura-transport',
+    style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, width: '100%', flexWrap: 'wrap' },
     children: [
       jsx('span', { key: 'p', style: { display: 'inline-flex' }, children: pageButton('⏮', 'Previous (episode in a playlist, else previous source)', () => videoCommand('prev')) }),
       jsx('span', { key: 'b', style: { display: 'inline-flex' }, children: pageButton('⏪', 'Back 10 seconds', () => videoCommand('seek', -10)) }),
@@ -4523,11 +5191,13 @@ function AuraPage() {
   })
 
   const urlBox = jsxs('div', {
-    style: { display: 'flex', alignItems: 'center', gap: 8, width: '100%', maxWidth: 960 },
+    className: 'aura-url-row',
+    style: { display: 'flex', alignItems: 'center', gap: 8, width: '100%' },
     children: [
       jsx('input', {
         key: 'url',
         type: 'text',
+        className: 'aura-input',
         defaultValue: settings.videoUrl,
         placeholder: 'https://youtube.com/watch?v=...',
         'aria-label': 'Film URL',
@@ -4539,9 +5209,7 @@ function AuraPage() {
           void playOnPage(event && event.target ? String(event.target.value) : '')
         },
         style: {
-          flex: 1, minWidth: 0, font: 'inherit', fontSize: 12,
-          color: 'var(--ui-text-primary)', background: 'var(--ui-bg)',
-          border: '1px solid var(--ui-stroke-secondary)', borderRadius: 6, padding: '5px 8px'
+          flex: 1, minWidth: 0, font: 'inherit', fontSize: 12
         }
       }),
       jsx(Button, {
@@ -4560,69 +5228,98 @@ function AuraPage() {
     ]
   })
 
-  const sources = jsxs('div', {
-    style: { display: 'flex', flexWrap: 'wrap', gap: 6, width: '100%', maxWidth: 960 },
-    children: queue.length
-      ? queue.map(item => jsx('button', {
-        key: item.url,
-        type: 'button',
-        title: item.label,
-        'aria-label': `Play ${item.label}`,
-        onClick: () => { void playOnPage(item.url, item.label) },
-        style: {
-          appearance: 'none', cursor: 'pointer', maxWidth: 260,
-          padding: '4px 9px', borderRadius: 999, fontSize: 11,
-          border: item.url === settings.videoUrl
-            ? '1px solid rgba(255,190,120,0.45)'
-            : '1px solid var(--ui-stroke-secondary)',
-          background: item.url === settings.videoUrl ? 'rgba(255,190,120,0.10)' : 'transparent',
-          color: 'var(--ui-text-primary)',
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
-        },
-        children: item.label
-      }))
-      : jsx('div', {
-        style: { fontSize: 11, color: 'var(--ui-text-tertiary)' },
-        children: 'No sources yet — paste a link above.'
-      })
-  })
-
-  return jsxs('div', {
-    style: {
-      display: 'flex', flexDirection: 'column', gap: 12,
-      padding: '16px 18px 28px', boxSizing: 'border-box', width: '100%',
-      height: '100%', overflowY: 'auto'
-    },
+  const hero = jsxs('header', {
+    key: 'hero',
+    className: 'aura-hero',
+    style: { display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' },
     children: [
       jsxs('div', {
-        key: 'head',
-        style: { display: 'flex', alignItems: 'baseline', gap: 10 },
+        key: 'copy',
+        style: { display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 },
         children: [
-          jsx('h2', {
-            key: 'h',
-            style: { margin: 0, fontSize: 16, color: 'var(--ui-text-primary)' },
-            children: 'Aura'
+          jsx('div', { key: 'eyebrow', className: 'aura-eyebrow', children: 'Aura · living backdrop' }),
+          jsx('h1', { key: 'title', className: 'aura-title', children: 'Everything Aura can be' }),
+          jsx('p', {
+            key: 'sub',
+            className: 'aura-sub',
+            children: 'The film, the visual, the palette and your library — one page, every switch.'
+          })
+        ]
+      }),
+      jsxs('div', {
+        key: 'status',
+        className: 'aura-hero-status',
+        style: { display: 'flex', alignItems: 'center', gap: 10, flex: 'none' },
+        children: [
+          jsx('span', {
+            key: 'flag',
+            className: auraOn ? 'aura-pill is-on' : 'aura-pill',
+            children: auraOn ? 'Aura on' : 'Aura off'
           }),
           jsx(VersionChip, { key: 'build' })
         ]
-      }),
-      jsx('div', { key: 'stage', style: { display: 'flex', justifyContent: 'center' }, children: filmStage }),
+      })
+    ]
+  })
+
+  const watch = jsxs('section', {
+    key: 'watch',
+    className: 'aura-panel aura-watch',
+    'aria-label': 'Now playing',
+    children: [
+      jsx('div', { key: 'stage', className: 'aura-stage-wrap', children: filmStage }),
       jsx('div', { key: 'scrub', children: scrub }),
       jsx('div', { key: 'transport', children: transport }),
-      jsx('div', { key: 'url', children: urlBox }),
-      jsx('div', { key: 'sources', children: sources }),
-      jsx(RevampCard, { key: 'revamp' }),
-      jsxs('div', {
-        key: 'setup',
-        style: { display: 'flex', flexDirection: 'column', gap: 2 },
+      jsx('div', { key: 'url', children: urlBox })
+    ]
+  })
+
+  const setup = jsxs('section', {
+    key: 'setup',
+    className: 'aura-panel aura-setup',
+    'aria-label': 'Aura setup',
+    children: [
+      jsx('div', {
+        key: 'head',
+        className: 'aura-sec-head',
         children: [
-          jsx('h3', {
-            key: 'h',
-            style: { margin: '6px 0 0', fontSize: 13, color: 'var(--ui-text-primary)' },
-            children: 'Aura setup'
-          }),
-          jsx(AuraSettings, { key: 'settings' })
+          jsx('span', { key: 'label', className: 'aura-sec-label', children: 'Aura setup' }),
+          jsx('span', { key: 'meta', className: 'aura-count', children: 'every switch Aura has' })
         ]
+      }),
+      jsx(AuraSettings, { key: 'settings' })
+    ]
+  })
+
+  const revamp = jsxs('section', {
+    key: 'revamp',
+    className: 'aura-panel aura-revamp',
+    'aria-label': 'Music',
+    children: [
+      jsx('div', {
+        key: 'head',
+        className: 'aura-sec-head',
+        children: [
+          jsx('span', { key: 'label', className: 'aura-sec-label', children: 'Music' }),
+          jsx('span', { key: 'meta', className: 'aura-count', children: 'Aura reacts to whatever plays' })
+        ]
+      }),
+      jsx(RevampCard, { key: 'card' })
+    ]
+  })
+
+  return jsxs('div', {
+    id: 'aura-page',
+    className: settings.reducedMotion ? 'is-reduced' : '',
+    style: {
+      display: 'flex', flexDirection: 'column',
+      boxSizing: 'border-box', width: '100%', height: '100%', overflowY: 'auto'
+    },
+    children: [
+      jsxs('div', {
+        key: 'shell',
+        className: 'aura-shell',
+        children: [hero, watch, jsx(PageLibrary, { key: 'library' }), setup, revamp]
       })
     ]
   })
@@ -4733,6 +5430,11 @@ function AuraSettings() {
     : live.error || 'Server not reachable.'
   // Same truth rule as syncBackdrop: the server flag wins while it answers.
   const auraOn = live.ok ? live.enabled === true : settings.enabled
+  // A film backdrop greys the Aura-visual controls out (owner ask). The video
+  // transparency and the Show control have their own rules.
+  const locked = filmBackdrop(settings)
+  const auraTitle = locked ? AURA_LOCK_TITLE : undefined
+  const showTitle = locked ? SHOW_LOCK_TITLE : undefined
 
   const row = (label, hint, control) =>
     jsxs('div', {
@@ -4791,11 +5493,30 @@ function AuraSettings() {
             max: 1,
             step: 0.05,
             value: settings.intensity,
-            disabled: settings.motion === 'designs',
+            disabled: settings.motion === 'designs' || locked,
+            title: auraTitle,
             'aria-label': 'Reaction strength',
             style: { width: 160, accentColor: 'var(--ui-accent)' },
             onChange: event => {
               applyIntensity(event && event.target ? event.target.value : 0)
+            }
+          })
+        )
+      }),
+      // Gentle motion is an Aura-visual setting: next to Intensity, and locked
+      // with it while a film is the backdrop.
+      jsx('div', {
+        key: 'gentle',
+        children: row(
+          'Gentle motion (motion-sensitive)',
+          'The motion-sickness-friendly mode: calmer reaction, no strobe, no pulsing, and the reduced-motion visual profile in the window backdrop.',
+          jsx(Switch, {
+            checked: settings.reducedMotion,
+            disabled: locked,
+            title: auraTitle,
+            'aria-label': 'Gentle motion (motion-sensitive)',
+            onCheckedChange: value => {
+              void setReducedMotion(value)
             }
           })
         )
@@ -4816,6 +5537,8 @@ function AuraSettings() {
                 step: 1,
                 value: Math.round(settings.opacity * 100),
                 'aria-label': 'Visual opacity',
+                disabled: locked,
+                title: auraTitle,
                 style: { width: 140, accentColor: 'var(--ui-accent)' },
                 onChange: event => {
                   const raw = Number(event && event.target ? event.target.value : 75)
@@ -4867,6 +5590,8 @@ function AuraSettings() {
           jsx('select', { className: 'aura-select',
             value: settings.showWhen,
             'aria-label': 'Show',
+            disabled: locked,
+            title: showTitle,
             style: {
               font: 'inherit',
               fontSize: 11,
@@ -4999,14 +5724,24 @@ function AuraSettings() {
                   const url = event && event.target ? String(event.target.value) : ''
                   void applyVideoSource(url)
                 },
-                children: videoQueue().map(item =>
-                  jsx('option', {
-                    key: item.url,
-                    value: item.url,
-                    style: { background: '#f1f1f1', color: '#111111' },
-                    children: item.label
-                  })
-                )
+                children: videoSourceOptions(settings)
+              })
+            ),
+            row(
+              'Edit sources',
+              'Add, rename or remove sources, playlists and starter films on the Aura page.',
+              jsx(Button, {
+                size: 'micro',
+                variant: 'ghost',
+                'aria-label': 'Edit sources (settings)',
+                onClick: () => {
+                  try {
+                    host.navigate('/aura')
+                  } catch {
+                    // older hosts without navigate
+                  }
+                },
+                children: 'Edit sources…'
               })
             ),
             row(
@@ -5158,20 +5893,6 @@ function AuraSettings() {
         children: RevampLine()
       }),
       jsx('div', {
-        key: 'gentle',
-        children: row(
-          'Gentle motion (motion-sensitive)',
-          'The motion-sickness-friendly mode: calmer reaction, no strobe, no pulsing, and the reduced-motion visual profile in the window backdrop.',
-          jsx(Switch, {
-            checked: settings.reducedMotion,
-            'aria-label': 'Gentle motion (motion-sensitive)',
-            onCheckedChange: value => {
-              void setReducedMotion(value)
-            }
-          })
-        )
-      }),
-      jsx('div', {
         key: 'behavior',
         children: row(
           'Behaviour profile',
@@ -5179,6 +5900,8 @@ function AuraSettings() {
           jsx('select', { className: 'aura-select',
             value: settings.behavior,
             'aria-label': 'Behaviour profile',
+            disabled: locked,
+            title: auraTitle,
             style: {
               font: 'inherit',
               fontSize: 11,

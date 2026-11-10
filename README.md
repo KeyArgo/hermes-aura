@@ -2,6 +2,8 @@
 
 **A film behind your work, and an app that breathes with your audio.**
 
+_Applies to v1.0.0 · revised 2026-11-10._
+
 Aura turns Hermes Desktop into a room you can live in. Put any film, lecture or playlist in the
 right-hand pane and keep working; switch the film off and the same audio drives a MilkDrop-compatible
 visualiser behind the interface. It listens to what the machine is already playing — system loopback,
@@ -24,13 +26,33 @@ never the microphone — and nothing leaves the computer: no account, no uploads
 - **Auto-skip.** A playlist item that forbids embedding (or has been deleted) would otherwise break the
   whole list, so Aura resolves the playlist server-side and moves to the next playable episode.
 - **Free placement.** The floating watch window drags anywhere and remembers its spot; 320 / 480 / 640
-  wide; its control strip follows the window and dims when idle instead of vanishing.
-- **An Aura page in the sidebar.** One row opens a full page: the same film in a big 16:9 frame with the
-  transport, volume and source picker, then the whole setup underneath. It is the *same* player — the film
-  moves into the page while it is open (page beats pane beats watch window) and goes back when you leave.
+  wide. Its control strip is two rows — the film's title, scrubber, clock, volume and window buttons
+  above a centred transport row — stays inside the viewport, and dims when idle instead of vanishing.
+- **An Aura page in the sidebar — the whole product in one place.** One row opens a full page: the same
+  film in a big 16:9 frame with the transport, volume and source picker, a **Library** of poster cards
+  (add, rename, remove, hide starters, clear recents), the playlist how-to, and every setting Aura has
+  underneath. Dark glass over a violet-to-ember gradient, scoped to `#aura-page`. It is the *same*
+  player — the film moves into the page while it is open and goes back when you leave. **Pop out** on the
+  page floats it in a watch window you can drag anywhere; **Bring back** returns it to the page.
+- **One library, two pickers.** The source dropdowns in the A menu and in Settings list everything —
+  saved playlists, your films, the starter pack and recents — grouped under `Playlists`, `Your films`,
+  `Starters` and `Recent`. A small **Edit sources…** link opens the Aura page, where editing lives.
+- **A film owns the screen.** While Backdrop is **Video player**, Style, Intensity, the Aura
+  transparency and Gentle motion are greyed out (they only describe the Aura visual), and Show is
+  forced to Always in effect: a playing film is never faded out by "Only while active". The video's own
+  transparency stays live. Your stored Show choice is not overwritten — switch back to the Aura visual
+  and it returns.
 - **REVamp, next door.** Aura has no music library of its own. [REVamp](https://github.com/KeyArgo/hermes-revamp)
   is a Winamp-style player for Hermes, and Aura's visuals react to whatever it plays — one card on the page,
   one line in Settings.
+
+## Adding a YouTube playlist (plain instructions)
+
+1. Open the playlist on YouTube.
+2. Press **Share**, then **Copy link** — it looks like `https://youtube.com/playlist?list=PL…`.
+3. On the Aura page, paste it into the Library box, give it a name if you like, and press **Add**.
+
+Public and unlisted playlists play here. Private playlists cannot be embedded and are not supported.
 
 ## Pop out to its own window
 
@@ -56,6 +78,30 @@ The agent calls `aura_control` with `action=pause|resume|next|prev|seek|popout|p
 `action=status` answers “what is playing?” with the title, position, duration and whether the window is
 open. Commands go through a small server-side queue (`/api/player/command`), which the desktop window
 polls about three times a second and applies to the same player code the in-app transport uses.
+
+## Ask Hermes for something to watch
+
+You do not need a link. Say what you are in the mood for:
+
+> **You:** I want to watch a documentary about octopuses.
+> **Hermes:** Here are a few — say the number:
+> 1. Secrets of the Octopus: the Ocean's Masterminds · Nat Geo Animals · 2:03:39 · youtube.com/watch?v=3GB-7qwwIp0
+> 2. Full octopus documentaries · Timely Documentaries · 8 videos · youtube.com/playlist?list=PL…
+> 3. Masterminds: Secrets of the Octopus (Full Episode) · National Geographic · 42:32 · youtube.com/watch?v=ah8U0-fV6k8
+> **You:** 2
+> **Hermes:** Playing “Full octopus documentaries” in Aura.
+
+The agent calls **`aura_watch`** with `action=search`, shows the numbered options (title, channel,
+length and link) and stops. Nothing plays until you pick; then it calls `action=play`, which puts the
+choice on the same player queue the transport buttons use — so it starts in the docked pane, the Aura
+page or the popped-out window, whichever is showing the film. `action=now` answers “what is playing?”
+without opening anything.
+
+Search is keyless: it reads YouTube's public results page, caches the answer for five minutes, and
+returns nothing rather than an error when YouTube is unreachable (the agent then says so, and can fall
+back to its own web search with a direct link). `action=play` accepts YouTube watch / `youtu.be` /
+shorts / embed / playlist links and direct `.mp4`, `.webm`, `.m3u8` and `.mov` files. The dashboard
+also exposes the same search as `GET /api/plugins/aura/search?q=…&limit=…`.
 
 ## Watch the machine
 
@@ -94,7 +140,8 @@ other plugin, and Aura's visuals react to whatever it plays.
 - A sidebar **Aura** page: the film, the transport and the full setup in one place.
 - A settings page with every control, including dropdown lists that stay readable on dark themes.
 - The **`aura_control`** tool, so the agent itself can set the room; the **`aura_listen`** tool
-  for radio search and the audio channel.
+  for radio search and the audio channel; the **`aura_watch`** tool to find something to watch
+  and start the choice you pick.
 - Hooks: session start/end, `pre`/`post_tool_call`, approval request/response, `api_request_error`,
   stream start/end, subagent start/stop.
 
