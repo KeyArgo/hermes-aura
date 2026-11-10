@@ -1751,6 +1751,13 @@ function postToBackdrop(message) {
 /** One entry point for every transport control, wherever it is clicked. */
 function videoCommand(cmd, value) {
   if (cmd === 'next' || cmd === 'prev') {
+    // Inside a playlist the transport means "next episode", not "next saved
+    // source". The player owns episode navigation (YouTube nextVideo /
+    // previousVideo); only fall back to the source queue when the current
+    // source is a single video. Before this, the arrows silently skipped
+    // through saved sources while a playlist played.
+    const current = $settings.get().videoUrl || ''
+    if (isPlaylistUrl(current) && postToBackdrop({ cmd })) return
     stepVideo(cmd === 'next' ? 1 : -1)
     return
   }
@@ -2563,11 +2570,11 @@ function mountPanelInto(hostNode) {
 
   const transport = doc.createElement('div')
   transport.className = 'ap-transport'
-  const prev = panelButton('⏮', 'Previous source', () => videoCommand('prev'))
+  const prev = panelButton('⏮', 'Previous (episode in a playlist, else previous source)', () => videoCommand('prev'))
   const back = panelButton('⏪', 'Back 10 seconds', () => videoCommand('seek', -10))
   const play = panelButton('▶', 'Play', () => videoCommand('toggle'), true)
   const fwd = panelButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10))
-  const next = panelButton('⏭', 'Next source', () => videoCommand('next'))
+  const next = panelButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next'))
   for (const node of [prev, back, play, fwd, next]) transport.appendChild(node)
 
   const list = doc.createElement('div')
