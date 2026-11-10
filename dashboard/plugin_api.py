@@ -428,6 +428,199 @@ def playlist(id: str = "") -> dict:
     return {"ok": True, "items": items}
 
 
+# ---------------------------------------------------------------------------
+# [listen lane] Radio: search / popular / presets / favorites / resolve
+#
+# These are dashboard routes (mounted at /api/plugins/aura/radio/...) backed by
+# aura_core.radio. They run in the dashboard process, so they can call the
+# radio module directly — no loopback round trip, no token to carry.
+# Every payload builder is callable without FastAPI (tests do exactly that),
+# and none of them raise: an unreachable Radio Browser answers with the
+# curated presets and a plain error string.
+# ---------------------------------------------------------------------------
+
+def _radio_module():
+    """The aura_core.radio module, preferring the already-imported instance."""
+    for name, module in list(sys.modules.items()):
+        if module is None:
+            continue
+        if name == "aura_core.radio" or name.endswith(".aura_core.radio"):
+            return module
+    for loader in (
+        lambda: __import__("aura_core.radio", fromlist=["radio"]),
+        lambda: __import__("aura.aura_core.radio", fromlist=["radio"]),
+    ):
+        try:
+            return loader()
+        except Exception:  # noqa: BLE001 - try the other import shape
+            continue
+    try:
+        if str(_PLUGIN_ROOT) not in sys.path:
+            sys.path.insert(0, str(_PLUGIN_ROOT))
+        return __import__("aura_core.radio", fromlist=["radio"])
+    except Exception as exc:  # noqa: BLE001
+        logger.info("aura dashboard: radio module unavailable (%s)", type(exc).__name__)
+        return None
+
+
+def _preset_fallback(q: str = "", tag: str = "") -> list[dict]:
+    """Curated presets, optionally narrowed by a substring match."""
+    module = _radio_module()
+    try:
+        rows = module.presets() if module is not None else []
+    except Exception:  # noqa: BLE001
+        rows = []
+    needle = (q or "").strip().lower()
+    want = (tag or "").strip().lower()
+    out = []
+    for row in rows:
+        name = str(row.get("name", "")).lower()
+        tags = [str(t).lower() for t in row.get("tags") or []]
+        if needle and needle not in name and not any(needle in t for t in tags):
+            continue
+        if want and not any(want in t for t in tags):
+            continue
+        out.append(row)
+    return out
+
+
+def radio_search_payload(q: str = "", tag: str = "", limit: int = 30) -> dict:
+    """Stations matching ``q``/``tag``; presets are the outage fallback."""
+    module = _radio_module()
+    if module is None:
+        return {"ok": False, "error": "radio_unavailable", "stations": [], "fallback": True}
+    try:
+        stations = module.search(q, tag, limit)
+        return {"ok": True, "stations": stations, "source": "radiobrowser"}
+    except module.RadioUnavailable as exc:
+        logger.info("aura dashboard: radio search offline (%s)", type(exc).__name__)
+        return {"ok": False, "error": "radio_unreachable", "stations": _preset_fallback(q, tag),
+                "fallback": True}
+    except module.RadioError as exc:
+        return {"ok": False, "error": str(exc), "stations": [], "fallback": False}
+    except Exception as exc:  # noqa: BLE001 - the door must always answer
+        logger.info("aura dashboard: radio search failed (%s)", type(exc).__name__)
+        return {"ok": False, "error": "radio_failed", "stations": _preset_fallback(q, tag),
+                "fallback": True}
+
+
+def radio_popular_payload(limit: int = 24) -> dict:
+    module = _radio_module()
+    if module is None:
+        return {"ok": False, "error": "radio_unavailable", "stations": _preset_fallback()}
+    try:
+        return {"ok": True, "stations": module.popular(limit)}
+    except Exception as exc:  # noqa: BLE001
+        logger.info("aura dashboard: radio popular failed (%s)", type(exc).__name__)
+        return {"ok": False, "error": "radio_failed", "stations": _preset_fallback()}
+
+
+def radio_presets_payload() -> dict:
+    return {"ok": True, "stations": _preset_fallback()}
+
+
+def radio_favorites_payload() -> dict:
+    module = _radio_module()
+    if module is None:
+        return {"ok": False, "error": "radio_unavailable", "stations": []}
+    try:
+        return {"ok": True, "stations": module.favorites()}
+    except module.RadioError as exc:
+        return {"ok": False, "error": str(exc), "stations": []}
+    except Exception as exc:  # noqa: BLE001
+        logger.info("aura dashboard: radio favorites failed (%s)", type(exc).__name__)
+        return {"ok": False, "error": "radio_failed", "stations": []}
+
+
+def radio_favorite_add(body: Any) -> tuple[int, dict]:
+    """POST /radio/favorites — add (or replace) one station. ``(status, body)``."""
+    module = _radio_module()
+    if module is None:
+        return 503, {"ok": False, "error": "radio_unavailable"}
+    if not isinstance(body, dict):
+        return 400, {"ok": False, "error": "body_must_be_object"}
+    try:
+        station = module.add_favorite(body)
+    except module.RadioError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        logger.info("aura dashboard: favorite add failed (%s)", type(exc).__name__)
+        return 500, {"ok": False, "error": "radio_failed"}
+    return 200, {"ok": True, "station": station, "stations": radio_favorites_payload()["stations"]}
+
+
+def radio_favorite_remove(sid: str) -> tuple[int, dict]:
+    module = _radio_module()
+    if module is None:
+        return 503, {"ok": False, "error": "radio_unavailable"}
+    if not isinstance(sid, str) or not sid.strip():
+        return 400, {"ok": False, "error": "id_required"}
+    try:
+        removed = module.remove_favorite(sid.strip())
+    except module.RadioError as exc:
+        return 400, {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        logger.info("aura dashboard: favorite remove failed (%s)", type(exc).__name__)
+        return 500, {"ok": False, "error": "radio_failed"}
+    return (200 if removed else 404), {"ok": removed,
+                                       "stations": radio_favorites_payload()["stations"]}
+
+
+def radio_resolve_payload(url: str) -> dict:
+    """.pls/.m3u -> the first public stream URL (validated, never a private host)."""
+    module = _radio_module()
+    if module is None:
+        return {"ok": False, "error": "radio_unavailable", "url": ""}
+    try:
+        return {"ok": True, "url": module.prepare_stream(url)}
+    except module.RadioError as exc:
+        return {"ok": False, "error": str(exc), "url": ""}
+    except Exception as exc:  # noqa: BLE001
+        logger.info("aura dashboard: radio resolve failed (%s)", type(exc).__name__)
+        return {"ok": False, "error": "radio_failed", "url": ""}
+
+
+@router.get("/radio/search")
+def radio_search(q: str = "", tag: str = "", limit: int = 30) -> dict:
+    return radio_search_payload(q, tag, limit)
+
+
+@router.get("/radio/popular")
+def radio_popular(limit: int = 24) -> dict:
+    return radio_popular_payload(limit)
+
+
+@router.get("/radio/presets")
+def radio_presets() -> dict:
+    return radio_presets_payload()
+
+
+@router.get("/radio/favorites")
+def radio_favorites() -> dict:
+    return radio_favorites_payload()
+
+
+@router.post("/radio/favorites")
+async def radio_favorite_create(request: Request) -> JSONResponse:
+    try:
+        body: Any = await request.json()
+    except Exception:  # noqa: BLE001 - empty or malformed body
+        body = {}
+    code, payload = radio_favorite_add(body)
+    return JSONResponse(payload, status_code=code)
+
+
+@router.delete("/radio/favorites")
+def radio_favorite_delete(id: str = "") -> JSONResponse:
+    code, payload = radio_favorite_remove(id)
+    return JSONResponse(payload, status_code=code)
+
+
+@router.get("/radio/resolve")
+def radio_resolve(url: str = "") -> dict:
+    return radio_resolve_payload(url)
+
+
 @router.post("/control")
 async def control(request: Request) -> JSONResponse:
     try:

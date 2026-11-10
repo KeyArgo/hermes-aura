@@ -157,6 +157,15 @@ const DEFAULT_SETTINGS = Object.freeze({
   videoOpacity: VIDEO_OPACITY,
   videoOpacityAuto: true,
   videoVolume: VIDEO_VOLUME,
+  // [listen lane] The audio channel (radio / music) is its own little mixer:
+  // independent of the film, so the film can be muted while this plays.
+  audioUrl: '',
+  audioLabel: '',
+  audioVolume: 0.7,
+  videoMuted: false,
+  // Highest audio_request seq this install has consumed. A new seq plays;
+  // anything at or below it is history.
+  audioRequestSeq: 0,
   videoBarOpacity: VIDEO_BAR_OPACITY,
   videoWindow: false,
   videoWindowSize: VIDEO_WINDOW_DEFAULT_SIZE,
@@ -592,6 +601,8 @@ function readSettings(ctx) {
       ? raw.videoHiddenStarters.filter(item => typeof item === 'string').slice(0, 40)
       : []
     out.videoPositions = readPositions(raw.videoPositions)
+    // [listen lane] Audio channel settings, validated on their own.
+    Object.assign(out, readAudioSettings(raw))
     // Legacy `glass` / `overlayOpacity` keys are ignored: the old host-glass
     // visibility slider is gone; windowVisual + the backdrop replace it.
   }
@@ -643,6 +654,9 @@ function backdropSrc(url) {
     // player actually lands there, which is what makes it reliable instead of
     // "works sometimes".
     if (bookmark && bookmark.position > 5) query.append('resume', String(Math.floor(bookmark.position)))
+    // [listen lane] A muted film must come back muted: the music channel is
+    // what the user hears while it is.
+    if (settings.videoMuted) query.append('mute', '1')
     return `${base}/player.html?${query.toString()}`
   }
   const params = ['overlay=1']
@@ -1301,6 +1315,9 @@ async function poll() {
 
     liveFrame = frame
     syncFromServer(frame)
+    // [listen lane] One delivery path for the agent's "play this / mute the
+    // film": the server keeps the request, this consumes a new seq only.
+    handleAudioRequest(frame)
     const key = [ok, port, capture, enabled, url, error, mood].join('|')
     if (key !== liveKey) {
       liveKey = key
@@ -1874,6 +1891,239 @@ function videoCommand(cmd, value) {
   postToBackdrop({ cmd, value })
 }
 
+// ==========================================================================
+// [listen lane] Audio channel: music and radio beside the film
+//
+// Aura listens to anything. The audio channel is a second, independent
+// element inside the same backdrop document (web/audio.js): direct audio
+// URLs and radio streams, its own volume and mute. The video keeps its own
+// volume and mute, so a film can run muted while music plays — that pairing
+// is what "music on, video muted" means here.
+//
+// Settings persistence is the same door as the video's (writeSettings /
+// readSettings). The agent reaches this through /api/state -> audio_request.
+// ==========================================================================
+
+const AUDIO_URL_MAX = 2048
+// A request older than this is not played on the first poll after a restart:
+// music must not start on its own because a tool call happened an hour ago.
+const AUDIO_STALE_MS = 60000
+// Not a Winamp clone — that is REVamp's job. Say so, and point at it.
+const REVAMP_PITCH =
+  'Want a Winamp-style player for Hermes with your local library, audiobooks, radio and skins? ' +
+  'REVamp plays it — Aura’s visuals react to it, and both can run at once.'
+const REVAMP_URL = 'https://github.com/KeyArgo/hermes-revamp'
+
+const EMPTY_AUDIO = Object.freeze({
+  url: '', label: '', playing: false, volume: 0.7, muted: false, error: '', reportedAt: 0
+})
+const $audio = atom({ ...EMPTY_AUDIO })
+// The last command actually handed to the page. Kept for the pane/settings to
+// show and for the headless contract test to read.
+let lastAudioCommand = null
+
+/** Pure validation of the audio-related settings keys. Kept separate from
+ *  readSettings so the rules are testable on their own (and so a bad stored
+ *  value can never take the video settings with it). */
+function readAudioSettings(raw) {
+  const out = {
+    audioUrl: '',
+    audioLabel: '',
+    audioVolume: DEFAULT_SETTINGS.audioVolume,
+    videoMuted: false,
+    audioRequestSeq: 0
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  if (typeof raw.audioUrl === 'string') out.audioUrl = raw.audioUrl.trim().slice(0, AUDIO_URL_MAX)
+  if (typeof raw.audioLabel === 'string') out.audioLabel = raw.audioLabel.trim().slice(0, 120)
+  if (Number.isFinite(raw.audioVolume)) out.audioVolume = clamp01(raw.audioVolume)
+  if (typeof raw.videoMuted === 'boolean') out.videoMuted = raw.videoMuted
+  const seq = Number(raw.audioRequestSeq)
+  if (Number.isFinite(seq) && seq > 0) out.audioRequestSeq = Math.floor(seq)
+  // An empty URL means "no channel source", so a stale label must not survive.
+  if (!out.audioUrl) out.audioLabel = ''
+  return out
+}
+
+/** Send one command to the audio channel in the backdrop document. */
+function audioCommand(message) {
+  try {
+    const win = backdropEl && backdropEl.contentWindow
+    if (!win) return false
+    win.postMessage({ aura: 'audio', ...message }, '*')
+    lastAudioCommand = { ...message, at: Date.now() }
+    return true
+  } catch {
+    return false
+  }
+}
+
+function audioUnavailable() {
+  setError('Music needs Aura’s visual or film on screen — turn on the window visual or open the film.')
+}
+
+/** Play a direct audio URL or radio stream on the audio channel.
+ *  `.pls`/`.m3u` are resolved by the server first, because the page cannot
+ *  follow a playlist file and must never be handed a private address. */
+async function playAudioSource(url, label) {
+  if (!ctxRef || disposed) return false
+  let target = typeof url === 'string' ? url.trim().slice(0, AUDIO_URL_MAX) : ''
+  if (!target) return false
+  const audioLabel = typeof label === 'string' && label.trim()
+    ? label.trim().slice(0, 120)
+    : shortLabel(target)
+  if (/\.(?:m3u|pls)(?:[?#]|$)/i.test(target)) {
+    try {
+      const resolved = await ctxRef.rest(`/radio/resolve?url=${encodeURIComponent(target)}`, { timeoutMs: 8000 })
+      if (resolved && resolved.ok && typeof resolved.url === 'string' && resolved.url) target = resolved.url
+    } catch {
+      // Keep the original URL: a playlist the server could not read may still
+      // be a direct stream, and the page will say so if it is not.
+    }
+  }
+  writeSettings({ audioUrl: target, audioLabel })
+  // A closed/absent backdrop is a common trap: make sure the current surface
+  // is mounted before speaking to it, or the command would go nowhere.
+  // The channel page may have just loaded: carry the user's volume with the
+  // play so music never starts at the page's own default.
+  const volume = $settings.get().audioVolume
+  if (!audioCommand({ cmd: 'play', url: target, label: audioLabel, volume })) {
+    syncBackdrop()
+    if (!audioCommand({ cmd: 'play', url: target, label: audioLabel, volume })) {
+      audioUnavailable()
+    } else {
+      // A frame that was mounted a millisecond ago has no document yet, so a
+      // message posted into it is dropped, not queued. Send the play once more
+      // after the page has had a moment to boot.
+      setTimeout(() => {
+        if (!disposed) audioCommand({ cmd: 'play', url: target, label: audioLabel, volume })
+      }, 900)
+    }
+  }
+  return true
+}
+
+/** Stop the audio channel. The film (if any) keeps playing. */
+function stopAudio() {
+  audioCommand({ cmd: 'stop' })
+  writeSettings({ audioUrl: '', audioLabel: '' })
+  $audio.set({ ...EMPTY_AUDIO, reportedAt: Date.now() })
+}
+
+/** Audio volume 0..1 — independent of the film's volume. */
+function setAudioVolume(value) {
+  const raw = Number(value)
+  // clamp01() would turn a non-number into 0, i.e. silently mute the music.
+  if (!Number.isFinite(raw)) return
+  const audioVolume = clamp01(raw)
+  writeSettings({ audioVolume })
+  audioCommand({ cmd: 'volume', value: audioVolume })
+  $audio.set({ ...$audio.get(), volume: audioVolume, muted: audioVolume === 0, reportedAt: Date.now() })
+}
+
+/** Mute or unmute the *video* only. The audio channel is untouched: this is
+ *  the "watch on mute, listen to music" switch. */
+function setVideoMuted(muted) {
+  const videoMuted = Boolean(muted)
+  writeSettings({ videoMuted })
+  postToBackdrop({ cmd: videoMuted ? 'mute' : 'unmute' })
+  $video.set({ ...$video.get(), muted: videoMuted, reportedAt: Date.now() })
+  syncVideoBar(true)
+}
+
+/**
+ * Consume one `audio_request` from /api/state. Returns what it did, so the
+ * contract test (and a future UI) can read the decision instead of guessing:
+ * 'played' | 'stopped' | 'volume' | 'muted' | 'unmuted' | 'stale' | 'seen' |
+ * 'invalid' | 'ignored' | 'none'.
+ */
+function handleAudioRequest(frame) {
+  const request = frame && typeof frame === 'object' ? frame.audio_request : null
+  if (!request || typeof request !== 'object') return 'none'
+  const seq = Number(request.seq)
+  if (!Number.isFinite(seq) || seq <= 0) return 'invalid'
+  const settings = $settings.get()
+  const seen = Number(settings.audioRequestSeq) || 0
+  // Already handled. Seq only ever grows, so an old frame is never replayed.
+  if (seq <= seen) return 'seen'
+  const at = Number(request.at)
+  if (!seen && Number.isFinite(at) && at > 0 && Date.now() - at > AUDIO_STALE_MS) {
+    // First poll of this install/session: do not start music on an old ask.
+    writeSettings({ audioRequestSeq: seq })
+    return 'stale'
+  }
+  writeSettings({ audioRequestSeq: seq })
+  const action = typeof request.action === 'string' ? request.action : 'play'
+  if (action === 'stop') {
+    stopAudio()
+    return 'stopped'
+  }
+  if (action === 'volume') {
+    setAudioVolume(request.value)
+    return 'volume'
+  }
+  if (action === 'mute_video' || action === 'unmute_video') {
+    setVideoMuted(action === 'mute_video')
+    return action === 'mute_video' ? 'muted' : 'unmuted'
+  }
+  const url = typeof request.url === 'string' ? request.url.trim() : ''
+  if (!url) return 'ignored'
+  void playAudioSource(url, request.label)
+  return 'played'
+}
+
+/** The REVamp cross-promotion card: DOM, like the rest of the pane. The
+ *  orchestrator decides where it goes; this builds it and wires the two
+ *  actions. Returns null when there is no document (headless import). */
+function revampCard() {
+  if (!doc || typeof doc.createElement !== 'function') return null
+  const card = doc.createElement('div')
+  card.className = 'aura-revamp-card'
+  card.setAttribute('data-aura-revamp', '1')
+  const text = doc.createElement('p')
+  text.className = 'aura-revamp-text'
+  text.textContent = REVAMP_PITCH
+  const row = doc.createElement('div')
+  row.className = 'aura-revamp-actions'
+  const open = doc.createElement('button')
+  open.type = 'button'
+  open.className = 'aura-revamp-open'
+  open.textContent = 'Open REVamp'
+  open.addEventListener('click', () => {
+    try {
+      host.navigate('/revamp')
+    } catch {
+      // navigation is the host's business; a failure must not throw here
+    }
+  })
+  const get = doc.createElement('button')
+  get.type = 'button'
+  get.className = 'aura-revamp-get'
+  get.textContent = 'Get REVamp'
+  get.addEventListener('click', () => {
+    try {
+      const opened = ctxRef && ctxRef.os && typeof ctxRef.os.openExternal === 'function'
+        ? ctxRef.os.openExternal(REVAMP_URL)
+        : null
+      if (opened) return
+      const view = doc.defaultView
+      if (view && typeof view.open === 'function') view.open(REVAMP_URL, '_blank', 'noopener')
+    } catch {
+      // a missing opener is not worth an error banner
+    }
+  })
+  row.appendChild(open)
+  row.appendChild(get)
+  card.appendChild(text)
+  card.appendChild(row)
+  return card
+}
+
+/** What the audio channel is doing, for a UI (and for the contract test). */
+function audioState() {
+  return { ...$audio.get(), settings: $settings.get(), lastCommand: lastAudioCommand }
+}
+
 // --- auto-skip un-embeddable playlist episodes ---------------------------
 // A playlist embed starts at item #1; if that video forbids embedding YouTube
 // reports nothing at all and the whole list looks broken. When the player says
@@ -1938,6 +2188,20 @@ function onBackdropMessage(event) {
   if (disposed || !event || !backdropEl) return
   if (event.source !== backdropEl.contentWindow) return
   const data = event.data
+  // [listen lane] The audio channel reports through the same bridge. Its own
+  // mute/volume are never folded into the video's.
+  if (data && typeof data === 'object' && data.aura === 'audio-state') {
+    $audio.set({
+      url: typeof data.url === 'string' ? data.url : '',
+      label: typeof data.label === 'string' ? data.label.slice(0, 120) : '',
+      playing: data.playing === true,
+      volume: Number.isFinite(data.volume) ? clamp01(data.volume) : $audio.get().volume,
+      muted: data.muted === true,
+      error: typeof data.error === 'string' ? data.error : '',
+      reportedAt: Date.now()
+    })
+    return
+  }
   if (!data || typeof data !== 'object' || data.aura !== 'video-state') return
   if (typeof data.url === 'string' && $settings.get().videoUrl && data.url !== $settings.get().videoUrl) return
   const position = Number.isFinite(data.position) ? Math.max(0, data.position) : 0
@@ -1951,6 +2215,11 @@ function onBackdropMessage(event) {
   if (typeof data.url === 'string' && data.url) {
     if (data.ended === true) rememberPosition(data.url, 0, duration, true, data.videoId)
     else rememberPosition(data.url, position, duration, false, data.videoId)
+  }
+  // [listen lane] The film's mute is a setting the agent can set and the
+  // player can change; keep the stored value honest across reloads.
+  if (typeof data.muted === 'boolean' && data.muted !== $settings.get().videoMuted) {
+    writeSettings({ videoMuted: data.muted })
   }
   $video.set({
     kind: typeof data.kind === 'string' ? data.kind : '',
@@ -4009,8 +4278,6 @@ function pageStageRef(node) {
 
 // REVamp is the owner's Winamp-style audio player for Hermes. Aura hears
 // whatever it plays, so the two belong together; one tasteful line, no prizes.
-const REVAMP_REPO = 'https://github.com/KeyArgo/hermes-revamp'
-const REVAMP_PITCH = "Want a music player? REVamp is a Winamp-style player for Hermes — Aura's visuals react to whatever it plays."
 
 function openRevamp() {
   try {
@@ -4056,7 +4323,7 @@ function RevampCard() {
             children: 'Open REVamp'
           }),
           jsx('a', {
-            key: 'get', href: REVAMP_REPO, target: '_blank', rel: 'noreferrer',
+            key: 'get', href: REVAMP_URL, target: '_blank', rel: 'noreferrer',
             'aria-label': 'Get REVamp',
             style: { fontSize: 11, color: 'var(--ui-accent)', textDecoration: 'none' },
             children: 'Get REVamp'
@@ -5121,6 +5388,9 @@ function teardown() {
     pollDisposer = null
   }
   resetShow()
+  // [listen lane] Stop the audio channel before its document goes away, so a
+  // disable or hot reload never leaves music playing with no Aura on screen.
+  audioCommand({ cmd: 'stop' })
   removeBackdrop()
   pageStageEl = null
   removeVideoBar()
@@ -5146,6 +5416,9 @@ function teardown() {
   themeInfo = { name: '', accent: '' }
   knownTheme = ''
   $settings.set({ ...DEFAULT_SETTINGS })
+  // [listen lane] The audio channel's own state resets with the plugin.
+  $audio.set({ ...EMPTY_AUDIO })
+  lastAudioCommand = null
   $live.set({ ...EMPTY_LIVE })
   $themeApplied.set(false)
   $menuOpen.set(false)
@@ -5344,4 +5617,18 @@ export default {
 
     return dispose
   }
+}
+
+// [listen lane] Exposed for the orchestrator (which wires the UI) and for the
+// headless contract test. The default export above is unchanged.
+export {
+  audioState,
+  handleAudioRequest,
+  playAudioSource,
+  readAudioSettings,
+  REVAMP_PITCH,
+  revampCard,
+  setAudioVolume,
+  setVideoMuted,
+  stopAudio
 }

@@ -55,6 +55,16 @@ except ImportError:
     except ImportError:
         _redact_url = None  # type: ignore[assignment]
 
+# [listen lane] Internet radio + stream safety. Optional: without it the
+# aura_listen tool still answers, it just cannot search.
+try:
+    from .aura_core import radio as _radio
+except ImportError:  # loaded as a plain directory, not a package
+    try:
+        from aura_core import radio as _radio
+    except ImportError:
+        _radio = None  # type: ignore[assignment]
+
 _MOODS = tuple(getattr(_mood, "MOODS", ())) if _mood is not None else ()
 _MACHINE = _mood.MoodMachine() if _mood is not None else None
 
@@ -655,8 +665,246 @@ SCHEMA_AURA_CONTROL = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# [listen lane] aura_listen — radio search and the audio channel
+#
+# Aura can play internet radio and direct audio URLs, independently of the
+# video pane, so a film can play muted while music plays. The desktop half
+# polls /api/state for `audio_request = {url, label, seq, at, action}`; this
+# tool is what puts one there.
+# ---------------------------------------------------------------------------
+
+_LISTEN_ACTIONS = ("search_radio", "play", "stop", "volume", "mute_video", "unmute_video")
+
+
+def _radio_error(message: str) -> dict:
+    return {"ok": False, "error": message, "allowed_actions": list(_LISTEN_ACTIONS)}
+
+
+def _publish_audio(action: str, url: str = "", label: str = "", value: Any = None) -> dict:
+    """Hand one audio request to the server (in-process first, HTTP second)."""
+    body: dict[str, Any] = {"action": action, "url": url, "label": label}
+    if value is not None:
+        body["value"] = value
+    publish = getattr(_server, "publish_audio_request", None) if _server is not None else None
+    if callable(publish):
+        return publish(url=url, label=label, action=action, value=value)
+    # Core too old (or imported without the new function): the HTTP door still
+    # works, and a follower forwards it to the leader as before.
+    try:
+        _ensure()
+        return _request("POST", "/api/audio", body) or {"ok": False, "error": "no_answer"}
+    except Exception as exc:  # noqa: BLE001 - a tool must always answer
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _station_by_id(sid: str) -> dict | None:
+    """A station the user already has: a favorite, or a curated preset."""
+    wanted = str(sid or "").strip()
+    if not wanted or _radio is None:
+        return None
+    try:
+        for row in _radio.favorites() + _radio.presets():
+            if str(row.get("id")) == wanted:
+                return row
+    except Exception:  # noqa: BLE001 - a broken file must not break the search
+        return None
+    return None
+
+
+def _action_search_radio(args: dict) -> dict:
+    if _radio is None:
+        return _radio_error("radio module unavailable")
+    q = args.get("q") or args.get("query") or ""
+    tag = args.get("tag") or ""
+    if not isinstance(q, str) or not isinstance(tag, str):
+        return _radio_error("q and tag must be strings")
+    try:
+        limit = int(args.get("limit", 8) or 8)
+    except (TypeError, ValueError):
+        limit = 8
+    limit = max(1, min(20, limit))
+    try:
+        rows = _radio.search(q, tag, limit)
+    except _radio.RadioUnavailable:
+        rows = []
+        for row in _radio.presets():
+            name = str(row.get("name", "")).lower()
+            tags = [str(t).lower() for t in row.get("tags") or []]
+            if q and q.lower() not in name and not any(q.lower() in t for t in tags):
+                continue
+            if tag and not any(tag.lower() in t for t in tags):
+                continue
+            rows.append(row)
+        note = "Radio Browser is unreachable; these are Aura's curated presets."
+    except _radio.RadioError as exc:
+        return _radio_error(str(exc))
+    else:
+        note = ""
+    options = [
+        {"n": index + 1, "id": row.get("id", ""), "name": row.get("name", ""),
+         "url": row.get("url", ""), "tags": row.get("tags") or [],
+         "bitrate": row.get("bitrate") or 0, "country": row.get("country", "")}
+        for index, row in enumerate(rows[:limit])
+    ]
+    payload: dict[str, Any] = {
+        "ok": True,
+        "count": len(options),
+        "stations": options,
+        "next": ("Show the user these numbered choices and WAIT for their pick. "
+                 "Then call aura_listen with action=play and that station's url "
+                 "(or id). Do not play anything until the user chooses."),
+    }
+    if note:
+        payload["note"] = note
+    if not options:
+        payload["hint"] = "Nothing matched. Try a broader name or a genre tag."
+    return payload
+
+
+def _action_play(args: dict) -> dict:
+    if _radio is None:
+        return _radio_error("radio module unavailable")
+    url = args.get("url") or ""
+    station = None
+    if not url:
+        station = _station_by_id(str(args.get("id") or ""))
+        if station:
+            url = station.get("url", "")
+    if not isinstance(url, str) or not url.strip():
+        return _radio_error("play needs a station url (or an id from a search result)")
+    label = args.get("label")
+    if not isinstance(label, str) or not label.strip():
+        label = str((station or {}).get("name") or "")[:200] or url.strip()[:120]
+    try:
+        target = _radio.prepare_stream(url)
+    except _radio.RadioError as exc:
+        return _radio_error(str(exc))
+    stored = _publish_audio("play", target, label.strip()[:200])
+    return {
+        "ok": bool(stored.get("seq") or stored.get("forwarded")),
+        "playing": True,
+        "url": target,
+        "label": label.strip()[:200],
+        "audio_request": stored,
+        "note": "Aura's audio channel starts on the desktop within one poll (~0.25 s).",
+    }
+
+
+def _action_stop() -> dict:
+    stored = _publish_audio("stop")
+    return {"ok": bool(stored.get("seq") or stored.get("forwarded")), "playing": False,
+            "audio_request": stored}
+
+
+def _action_volume(args: dict) -> dict:
+    raw = args.get("volume", args.get("value"))
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return _radio_error("volume must be a number between 0 and 1")
+    value = float(raw)
+    if not 0.0 <= value <= 1.0:
+        return _radio_error("volume must be between 0 and 1")
+    stored = _publish_audio("volume", value=value)
+    return {"ok": bool(stored.get("seq") or stored.get("forwarded")), "volume": value,
+            "audio_request": stored}
+
+
+def _action_video_muted(muted: bool) -> dict:
+    stored = _publish_audio("mute_video" if muted else "unmute_video")
+    return {"ok": bool(stored.get("seq") or stored.get("forwarded")), "video_muted": muted,
+            "audio_request": stored,
+            "note": "The audio channel keeps playing; only the video's sound changes."}
+
+
+def _tool_aura_listen(args: dict, **kw) -> str:
+    """aura_listen — search internet radio, play/stop audio, mute the film."""
+    try:
+        if not isinstance(args, dict):
+            return _dump(_radio_error("arguments must be an object"))
+        action = str(args.get("action") or "search_radio").strip().lower()
+        if action not in _LISTEN_ACTIONS:
+            return _dump(_radio_error(f"unknown action {action!r}"))
+        if action == "search_radio":
+            payload = _action_search_radio(args)
+        elif action == "play":
+            payload = _action_play(args)
+        elif action == "stop":
+            payload = _action_stop()
+        elif action == "volume":
+            payload = _action_volume(args)
+        elif action == "mute_video":
+            payload = _action_video_muted(True)
+        else:  # unmute_video
+            payload = _action_video_muted(False)
+        return _dump(payload)
+    except Exception as exc:  # noqa: BLE001 — a tool must always answer
+        return _dump({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+
+
+SCHEMA_AURA_LISTEN = {
+    "name": "aura_listen",
+    "description": (
+        "Listen to anything in Aura: internet radio and direct audio URLs play on "
+        "Aura's own audio channel, independently of the video pane, so music can "
+        "play while a film runs muted. HOW TO USE IT: first call "
+        "action=search_radio with a name or genre tag, show the user the numbered "
+        "choices it returns, and WAIT for them to pick one; then call action=play "
+        "with that station's url (or id). action=stop stops the audio; "
+        "action=volume sets 0..1; action=mute_video/unmute_video mutes or unmutes "
+        "the video without touching the music. Never autoplay a station the user "
+        "has not chosen. Returns JSON; a radio outage falls back to Aura's curated "
+        "presets instead of failing."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": list(_LISTEN_ACTIONS),
+                "description": "What to do (default search_radio).",
+            },
+            "q": {
+                "type": "string",
+                "description": "for search_radio: station name or keyword",
+            },
+            "tag": {
+                "type": "string",
+                "description": "for search_radio: genre tag, e.g. jazz, ambient, news",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "description": "for search_radio: how many choices to return (default 8)",
+            },
+            "url": {
+                "type": "string",
+                "description": "for play: a public http(s) stream URL (mp3/aac/ogg/opus/flac, or .pls/.m3u)",
+            },
+            "id": {
+                "type": "string",
+                "description": "for play: a station id from a search result, preset or favorite",
+            },
+            "label": {
+                "type": "string",
+                "description": "for play: what to show the user, e.g. 'NTS Radio 1'",
+            },
+            "volume": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0,
+                "description": "for volume: 0..1",
+            },
+        },
+        "required": ["action"],
+        "additionalProperties": False,
+    },
+}
+
+
 TOOLS = (
     ("aura_control", SCHEMA_AURA_CONTROL, _tool_aura_control),
+    ("aura_listen", SCHEMA_AURA_LISTEN, _tool_aura_listen),
 )
 
 

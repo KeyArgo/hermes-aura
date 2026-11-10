@@ -27,6 +27,10 @@
 <body>
 <div id="stage"></div>
 <div id="hint" hidden>No video URL provided. Set one in Aura settings.</div>
+<!-- [listen lane] The audio channel (music/radio) lives beside the film, not
+     inside it: one <audio> element with its own volume, so the video can be
+     muted while the music keeps playing. -->
+<script src="audio.js"></script>
 <script>
 (function () {
   'use strict'

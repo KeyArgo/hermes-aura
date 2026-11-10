@@ -64,12 +64,37 @@ polls about three times a second and applies to the same player code the in-app 
 - An optional accent that follows the audio, and agent moods: thinking, running tools, waiting for
   approval, erroring, streaming, finished — each restores itself, nothing latches.
 
+## Listen to anything
+
+Aura listens to more than a film's soundtrack: internet radio, direct audio files and
+streams play on their own channel, beside the video and independent of it.
+
+- **Radio.** A curated starter list (SomaFM, NTS, KEXP, FIP, Radio Paradise, BBC World
+  Service and more), a search across the [Radio Browser](https://www.radio-browser.info/)
+  directory by name or genre tag, and favourites that persist between sessions. `.pls` and
+  `.m3u` playlists are resolved server-side, so a playlist link behaves like a station.
+- **Direct audio.** Any public `http(s)` URL to mp3, ogg/opus, aac/m4a, flac or wav.
+- **Music on, video muted.** The audio channel has its own volume and mute, so a film can run
+  silently while music plays — watch the lecture, listen to the radio. The muted state is
+  remembered with the film.
+- **Ask the agent.** The **`aura_listen`** tool searches radio, shows numbered choices, waits
+  for your pick, then plays it: *"find me some jazz radio"* → a numbered list → *"the second
+  one"*. It can also stop the audio, set its volume, or mute/unmute the video without touching
+  the music.
+- **Visuals follow it.** Nothing new feeds the visualiser: Aura already reacts to system audio,
+  so music from Aura's own channel (or any other app) drives the same visuals.
+
+**Aura is a media player, not a Winamp.** If you want a Winamp-style player with your local
+library, audiobooks, skins and a 90s attitude, install **REVamp** — it is the same author's
+other plugin, and Aura's visuals react to whatever it plays.
+
 ## The plugin surface
 
 - Status-bar **A** menu: play/pause, seek, volume, source picker, watch window, Aura panel.
 - A sidebar **Aura** page: the film, the transport and the full setup in one place.
 - A settings page with every control, including dropdown lists that stay readable on dark themes.
-- The **`aura_control`** tool, so the agent itself can set the room.
+- The **`aura_control`** tool, so the agent itself can set the room; the **`aura_listen`** tool
+  for radio search and the audio channel.
 - Hooks: session start/end, `pre`/`post_tool_call`, approval request/response, `api_request_error`,
   stream start/end, subagent start/stop.
 
@@ -120,10 +145,10 @@ The only host DOM Aura touches is opt-in and bounded:
 ```
 plugin.yaml          manifest (hooks, tools, dashboard)
 __init__.py          Python plugin: hooks, aura_control tool
-aura_core/           capture, analysis, config, HTTP server, sessions
-dashboard/           plugin_api.py — the desktop half's REST door
-desktop/plugin.js    Hermes Desktop half (status menu, pane, window, backdrop)
-web/                 visualiser (aura.js), film stage (player.html), presets
+aura_core/           capture, analysis, config, HTTP server, sessions, radio
+dashboard/           plugin_api.py — the desktop half's REST door (incl. /radio/*)
+desktop/plugin.js    Hermes Desktop half (status menu, pane, window, backdrop, audio)
+web/                 visualiser (aura.js), audio channel (audio.js), film stage (player.html), presets
 tests/               Python suite + the desktop DOM contract suite
 ```
 
@@ -141,6 +166,9 @@ themselves when the machine is too loaded to sample reliably rather than reporti
 
 Pre-release. `SPIKES.md` records what was actually measured; `CONTRACT.md` is the wire contract between
 the capture server, the page, the desktop half and the agent hooks.
+
+_This README applies to plugin version 1.0.0; revised 2026-11-10 (listen lane: audio channel,
+radio, `aura_listen`, REVamp card)._
 
 ## Licences
 

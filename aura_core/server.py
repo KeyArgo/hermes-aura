@@ -62,6 +62,11 @@ MAX_WS_QUEUE_EVENT = 64
 
 MOODS = ("idle", "thinking", "tool", "approval", "error", "streaming", "done")
 
+# [listen lane] What the agent may ask the desktop's audio channel to do. The
+# four video/audio transport actions travel in the same audio_request frame so
+# there is one delivery path for "play this" and "mute the film".
+AUDIO_ACTIONS = ("play", "stop", "volume", "mute_video", "unmute_video")
+
 PRESETS = [
     {"name": "aura-drift", "family": "spectral", "strobe": False},
     {"name": "aura-bloom", "family": "particles", "strobe": False},
@@ -88,6 +93,9 @@ _STATIC_TYPES = {
     "/pcm-worklet.js": "text/javascript; charset=utf-8",
     "/presets.json": "application/json; charset=utf-8",
     "/player.html": "text/html; charset=utf-8",
+    # [listen lane] The audio channel (radio / direct audio URLs) loaded by
+    # both the visualiser page and the video backdrop page.
+    "/audio.js": "text/javascript; charset=utf-8",
 }
 _VENDOR_TYPES = {
     ".js": "text/javascript; charset=utf-8",
@@ -167,6 +175,12 @@ class _State:
         self.player_seq = 0
         self.commands: list = []
         self.command_seq = 0
+        # [listen lane] Audio channel request for the desktop half:
+        # {"url","label","seq","at"} plus an optional "action"/"value".
+        # The desktop polls /api/state (through the dashboard) and plays a
+        # request whose seq it has not seen yet.
+        self.audio_request: dict | None = None
+        self.audio_seq = 0
 
 
 _STATE = _State()
@@ -887,7 +901,8 @@ class _Handler(BaseHTTPRequestHandler):
                     return
             if path not in ("/api/control", "/api/mood", "/api/config/push",
                             "/api/window/open", "/api/window/close",
-                            "/api/player/report", "/api/player/command"):
+                            "/api/player/report", "/api/player/command",
+                            "/api/audio"):
                 self._send_json({"ok": False, "error": "not_found"}, 404)
                 return
             try:
@@ -922,6 +937,17 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json({"ok": False, "error": str(exc)}, 503)
                     return
                 self._send_json(result)
+                return
+            # [listen lane] A follower forwards this to the leader; the leader
+            # records it and the desktop picks it up from /api/state.
+            if path == "/api/audio":
+                try:
+                    request = _validate_audio_request(data)
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, 400)
+                    return
+                stored = publish_audio_request(**request)
+                self._send_json({"ok": True, "audio_request": stored})
                 return
             if path == "/api/mood":
                 try:
@@ -990,6 +1016,9 @@ class _Handler(BaseHTTPRequestHandler):
                 "auto_preset": bool(cfg["auto_preset"]),
                 "motion": cfg["motion"],
                 "reduced_motion": bool(cfg["reduced_motion"]),
+                # [listen lane] The desktop half polls this; `None` means
+                # "nothing to do". See publish_audio_request().
+                "audio_request": dict(_STATE.audio_request) if _STATE.audio_request else None,
             }
         return payload
 
@@ -1229,6 +1258,41 @@ def _validate_mood(data) -> tuple[str, float, int]:
         raise ValueError("ttl_ms_must_be_number")
     ttl_ms = max(0, int(ttl_ms))
     return mood, intensity, ttl_ms
+
+
+def _validate_audio_request(data) -> dict:
+    """Validate an /api/audio body; raise ValueError with a machine code.
+
+    Kept separate from ``_validate_control`` so a bad audio action can never
+    take the display controls down with it.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("body_must_be_object")
+    action = data.get("action", "play")
+    if not isinstance(action, str) or action not in AUDIO_ACTIONS:
+        raise ValueError("bad_audio_action")
+    url = data.get("url", "")
+    label = data.get("label", "")
+    if url is None:
+        url = ""
+    if label is None:
+        label = ""
+    if not isinstance(url, str):
+        raise ValueError("url_must_be_string")
+    if not isinstance(label, str):
+        raise ValueError("label_must_be_string")
+    request: dict[str, Any] = {"action": action, "url": url.strip()[:2048], "label": label.strip()[:200]}
+    if action == "play" and not request["url"]:
+        raise ValueError("url_required_for_play")
+    if action == "volume":
+        value = data.get("value")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("volume_must_be_number")
+        value = float(value)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("volume_out_of_range")
+        request["value"] = value
+    return request
 
 
 def _validate_control(data) -> dict:
@@ -1726,6 +1790,49 @@ def publish_mood(mood: str, intensity: float = 1.0, ttl_ms: int = 0) -> None:
             _broadcast_event(_mood_event(mood, intensity, ttl_ms))
     except Exception as exc:  # noqa: BLE001 - a broken mood must not break a turn
         _log("aura: publish_mood failed (%s)", type(exc).__name__)
+
+
+def publish_audio_request(url: str = "", label: str = "", action: str = "play",
+                          value: Any = None) -> dict:
+    """[listen lane] Record what the desktop's audio channel should do next.
+
+    Stored in ``/api/state`` as ``audio_request = {url, label, seq, at,
+    action[, value]}``. The desktop half plays a request whose ``seq`` it has
+    not seen, remembers the seq in its own settings and ignores requests older
+    than 60 s on its first poll. Returns the stored frame.
+
+    Never raises: a broken audio request must not break an agent turn.
+    """
+    if action not in AUDIO_ACTIONS:
+        action = "play"
+    try:
+        if value is not None:
+            value = max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        value = None
+    frame_extra: dict[str, Any] = {"action": action, "url": str(url or "")[:2048], "label": str(label or "")[:200]}
+    if value is not None:
+        frame_extra["value"] = value
+    try:
+        lease = _forward_target()
+        if lease is not None:
+            _forward("/api/audio", frame_extra, lease)
+            # The follower cannot know the leader's seq; it reports what it sent.
+            return {**frame_extra, "seq": 0, "at": int(time.time() * 1000), "forwarded": True}
+        with _STATE.lock:
+            # Seq must keep growing across a server restart: the desktop
+            # remembers "the last seq I played" in its settings, and a fresh
+            # process that restarted numbering at 1 would have every new
+            # request look like history. Milliseconds are monotonic here, and
+            # +1 keeps two requests in the same millisecond distinct.
+            now_ms = int(time.time() * 1000)
+            _STATE.audio_seq = max(_STATE.audio_seq + 1, now_ms)
+            stored = {**frame_extra, "seq": _STATE.audio_seq, "at": now_ms}
+            _STATE.audio_request = stored
+        return dict(stored)
+    except Exception as exc:  # noqa: BLE001 - a broken audio request must not break a turn
+        _log("aura: publish_audio_request failed (%s)", type(exc).__name__)
+        return {**frame_extra, "seq": 0, "at": int(time.time() * 1000), "error": type(exc).__name__}
 
 
 def publish_config() -> None:

@@ -126,9 +126,10 @@ def test_register_registers_tool_and_hooks(plugin):
     ctx = FakeCtx()
     p.register(ctx)
     assert [hook for hook, _ in ctx.hooks] == PLUGIN_YAML_HOOKS
-    assert len(ctx.tools) == 1
-    assert ctx.tools[0]["name"] == "aura_control"
-    assert ctx.tools[0]["toolset"] == "aura"
+    # [listen lane] aura_listen joined aura_control in the aura toolset.
+    assert len(ctx.tools) == 2
+    assert [tool["name"] for tool in ctx.tools] == ["aura_control", "aura_listen"]
+    assert all(tool["toolset"] == "aura" for tool in ctx.tools)
 
 
 def test_register_honours_disabled_config(plugin):
