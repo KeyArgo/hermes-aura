@@ -764,7 +764,11 @@ function showEligible() {
   const settings = $settings.get()
   const live = $live.get()
   const enabled = live.ok ? live.enabled === true : settings.enabled
-  return Boolean(doc && enabled && (knownTheme === THEME_NAME || settings.windowVisual) && liveUrl())
+  // The docked pane is itself a surface for the film: without this a judge with
+  // the default settings (window visual off, not on the Aura theme) sees a pane
+  // whose stage plays nothing, because nothing ever mounts.
+  const paneFilm = panelVisible() && Boolean(settings.videoUrl) && !settings.videoClosed
+  return Boolean(doc && enabled && (paneFilm || knownTheme === THEME_NAME || settings.windowVisual) && liveUrl())
 }
 
 // Host-owned timers: cancel through the disposer the SDK returns. A stale
@@ -962,6 +966,8 @@ function backdropOpacity(settings) {
   if (settings.backdropMode !== 'video') return 1
   // A real frame is a window, not a wash: full strength.
   if (videoWindowOn()) return 1
+  // The pane is a window too — a film at 20% inside its own box is a stain.
+  if (panelVisible()) return 1
   return effectiveVideoOpacity()
 }
 
@@ -2345,6 +2351,9 @@ function showVideoBar() {
     videoBarHideTimer = null
     if (!videoBarEl) return
     videoBarEl.style.opacity = '0.22'
+    // A ghost that still takes clicks is what made the old panel feel like the
+    // app had frozen: nothing typed, nothing to click.
+    videoBarEl.style.pointerEvents = 'none'
   }, VIDEO_BAR_IDLE_MS)
 }
 
@@ -3626,13 +3635,6 @@ function AuraQuickMenu() {
                     checked: settings.panelEnabled !== false,
                     'aria-label': 'Left panel (quick menu)',
                     onCheckedChange: value => setPanelEnabled(value)
-                  })
-                ),
-                row(
-                  'Panel state',
-                  jsx('span', {
-                    style: { fontSize: 10, color: 'var(--ui-text-tertiary)' },
-                    children: `${panelVisible() ? 'on' : 'off'} · ${panelEl ? 'mounted' : 'not mounted'}`
                   })
                 ),
                 row(

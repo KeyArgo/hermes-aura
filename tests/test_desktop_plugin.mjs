@@ -1696,6 +1696,32 @@ await recordAsync('video mode mounts the control strip with grip, scrub and clos
   assert.equal(bar.style.opacity, '1', 'the strip must start visible')
 })
 
+// ------------------------------------------------- pane-only film (regression)
+// Grok's review caught the demo-killer: with the defaults (window visual off,
+// not on the Aura theme) nothing mounted, so the docked pane showed a stage
+// that played nothing. The pane itself must be a reason to mount the film, at
+// full opacity — a 20% film inside its own box reads as a stain on camera.
+
+const paneOnly = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  windowVisual: false,
+  themeOptIn: false,
+  panelEnabled: true,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+pluginModule.default.register(paneOnly.ctx)
+paneOnly.timers.find(t => t.ms === 250).fn()
+await sleep(80)
+
+await recordAsync('the docked pane alone mounts the film', () => {
+  assert.ok(hostIframes().length >= 1, 'nothing mounted with the default settings: the pane would be empty')
+  // Opacity is not asserted here: the pane's placement depends on a real
+  // getBoundingClientRect, which the fake DOM does not provide, so the frame
+  // falls back to the backdrop branch in this harness. `backdropOpacity()`
+  // returns 1 whenever the pane is showing — verified in the app, not here.
+})
+
 // ------------------------------------------------------------ left panel
 const panelCtx = makeCtx({
   enabled: true,
