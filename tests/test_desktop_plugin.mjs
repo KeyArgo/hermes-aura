@@ -2328,6 +2328,252 @@ await recordAsync('starter films can be hidden and shown, recents cleared', asyn
   assert.equal(u.contributions.length, 0)
 })
 
+// ------------------------------------------- regression fixes (lane fixes1)
+// Each of these pins one review finding and failed on the pre-fix plugin.
+
+const tx = pluginModule.__test
+const findRowByTitle = (tree, title) => {
+  let found = null
+  walk(tree, node => {
+    if (found || !node.props || !Array.isArray(node.props.children) || node.props.children.length !== 2) return
+    const labelCell = node.props.children[0]
+    // A settings row's first cell is the label <div> (not, say, an <optgroup>
+    // in the grouped source picker that happens to list the same title).
+    if (!labelCell || labelCell.type !== 'div' || !labelCell.props || !Array.isArray(labelCell.props.children)) return
+    const titleNode = labelCell.props.children[0]
+    if (titleNode && texts(titleNode) === title) found = node
+  })
+  return found
+}
+
+record('readPositions preserves a playlist episode videoId for resume', () => {
+  const listUrl = 'https://www.youtube.com/watch?v=ep4abcdefgh&list=PL0123456789'
+  const out = tx.readPositions({
+    [listUrl]: { position: 123, duration: 600, at: 50, videoId: 'ep4abcdefgh' },
+    'https://example.com/film.mp4': { position: 10, duration: 100, at: 10, videoId: 42 }
+  })
+  assert.equal(out[listUrl].videoId, 'ep4abcdefgh', 'the playlist episode id was dropped')
+  assert.equal(out['https://example.com/film.mp4'].videoId, '', 'a non-string videoId was not discarded')
+})
+
+record('shortLabel survives a malformed percent escape', () => {
+  const label = tx.shortLabel('https://example.com/%ZZ.mp4')
+  assert.match(label, /%ZZ\.mp4/, 'the undecoded filename should still label the source')
+})
+
+record('a persisted malformed URL does not break the source queue', () => {
+  const malformed = 'https://example.com/%ZZ.mp4'
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: malformed })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    assert.doesNotThrow(() => renderContribution(ctx.contributions.find(c => c.area === 'settings.plugins')))
+    assert.doesNotThrow(() => tx.videoQueue())
+    assert.ok(tx.videoQueue().some(item => item.url === malformed), 'the malformed source vanished from the queue')
+  } finally {
+    dispose()
+  }
+})
+
+record('saved playlist Remove sits in the control column, not the hint', () => {
+  const listUrl = 'https://www.youtube.com/watch?v=ep1&list=PL0123456789'
+  const ctx = makeCtx({
+    enabled: true,
+    backdropMode: 'video',
+    videoPlaylists: [{ label: 'Watch list', url: listUrl }]
+  })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const tree = renderContribution(ctx.contributions.find(c => c.area === 'settings.plugins'))
+    const row = findRowByTitle(tree, 'Watch list')
+    assert.ok(row, 'the saved playlist row did not render')
+    const hint = row.props.children[0].props.children[1]
+    const control = row.props.children[1]
+    assert.equal(texts(hint), '', 'the button was nested in the hint')
+    assert.ok(control && control.props.children, 'the control column is empty')
+    assert.equal(
+      control.props.children.props['aria-label'],
+      'Remove Watch list',
+      'the Remove button is not the control'
+    )
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('applyVideoSource turns video mode on and reopens a closed film', async () => {
+  const ctx = makeCtx({ enabled: true, backdropMode: 'aura', videoUrl: '', videoClosed: true })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await sleep(20)
+    await tx.applyVideoSource('https://example.com/film.mp4', 'Film')
+    const saved = ctx.storage.get('settings')
+    assert.equal(saved.backdropMode, 'video', 'an explicit play did not switch to video mode')
+    assert.equal(saved.videoClosed, false, 'an explicit play did not reopen the film')
+    assert.equal(saved.videoUrl, 'https://example.com/film.mp4')
+    assert.ok(
+      ctx.controls.some(patch => patch && patch.backdrop_mode === 'video'),
+      'the mode change never reached /control'
+    )
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('the Settings URL box saves a playlist through applyVideoSource', async () => {
+  const listUrl = 'https://www.youtube.com/watch?v=ep1&list=PL0123456789'
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: '', videoClosed: true })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const tree = renderContribution(ctx.contributions.find(c => c.area === 'settings.plugins'))
+    const input = findByAria(tree, 'Video URL')
+    assert.ok(input, 'the Settings Video URL box is missing')
+    input.props.onBlur({ target: { value: listUrl } })
+    await sleep(40)
+    const saved = ctx.storage.get('settings')
+    assert.equal(saved.videoUrl, listUrl)
+    assert.equal(saved.videoClosed, false, 'a URL entered in Settings did not reopen the film')
+    assert.ok(
+      saved.videoPlaylists.some(item => item.url === listUrl),
+      'the playlist pasted in Settings was not saved as a playlist'
+    )
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('the quick-menu URL box reopens a closed film', async () => {
+  const source = 'https://example.com/film.mp4'
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: '', videoClosed: true })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const menu = ctx.contributions.find(c => c.id === 'quick-menu')
+    const input = findByAria(renderContribution(menu), 'Video URL')
+    assert.ok(input, 'the quick-menu Video URL box is missing')
+    input.props.onBlur({ target: { value: source } })
+    await sleep(40)
+    const saved = ctx.storage.get('settings')
+    assert.equal(saved.backdropMode, 'video')
+    assert.equal(saved.videoClosed, false, 'the quick-menu URL box did not reopen the film')
+    assert.equal(saved.videoUrl, source)
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('a pending blocked-playlist lookup does not override a new selection', async () => {
+  const playlist = 'https://www.youtube.com/watch?v=firstaaaaaa&list=PL0123456789'
+  const other = 'https://example.com/other.mp4'
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: playlist })
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const originalRest = ctx.ctx.rest
+  ctx.ctx.rest = async (route, options = {}) => {
+    if (String(route).startsWith('/playlist')) {
+      await gate
+      return { items: [{ videoId: 'firstaaaaaa', title: 'One' }, { videoId: 'secondbbbbb', title: 'Two' }] }
+    }
+    return originalRest(route, options)
+  }
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const pending = tx.skipBlockedEpisode()
+    await sleep(10)
+    await tx.applyVideoSource(other)
+    release()
+    await pending
+    await sleep(20)
+    assert.equal(ctx.storage.get('settings').videoUrl, other, 'the stale lookup stole playback back to the playlist')
+  } finally {
+    ctx.ctx.rest = originalRest
+    dispose()
+  }
+})
+
+record('the pane ref is stable and does not accumulate duplicate theatre DOM', () => {
+  const ctx = makeCtx({ enabled: true })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const pane = ctx.contributions.find(c => c.area === 'panes')
+    const refOf = tree => {
+      let ref = null
+      walk(tree, node => {
+        if (!ref && node.props && node.props.key === 'theatre') ref = node.props.ref
+      })
+      return ref
+    }
+    const hostNode = document.createElement('div')
+    const ref1 = refOf(renderContribution(pane))
+    assert.equal(typeof ref1, 'function', 'the pane has no theatre ref')
+    ref1(hostNode)
+    const ref2 = refOf(renderContribution(pane))
+    assert.equal(ref1, ref2, 'a fresh ref callback is created on every render')
+    // React detaches the old ref with null, then attaches the new one to the
+    // same node. The panel must not accumulate a second copy.
+    ref1(null)
+    ref2(hostNode)
+    const panels = hostNode.children.filter(node => node.attributes && node.attributes.id === 'aura-panel')
+    assert.equal(panels.length, 1, 'duplicate #aura-panel nodes accumulated in the host node')
+  } finally {
+    dispose()
+  }
+})
+
+record('the panel collapse control can expand again and stays visible', () => {
+  const ctx = makeCtx({ enabled: true })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const pane = ctx.contributions.find(c => c.area === 'panes')
+    let ref = null
+    walk(renderContribution(pane), node => {
+      if (!ref && node.props && node.props.key === 'theatre') ref = node.props.ref
+    })
+    const hostNode = document.createElement('div')
+    ref(hostNode)
+    const panel = hostNode.children.find(node => node.attributes && node.attributes.id === 'aura-panel')
+    assert.ok(panel, 'the panel did not mount')
+    const findClass = (node, name) => {
+      if (!node) return null
+      if (node.className === name) return node
+      for (const child of node.children || []) {
+        const found = findClass(child, name)
+        if (found) return found
+      }
+      return null
+    }
+    const collapse = findClass(panel, 'ap-collapse')
+    assert.ok(collapse, 'the collapse control is missing')
+    const click = () => collapse.__handlers.click[0]()
+    click()
+    assert.equal(ctx.storage.get('settings').panelCollapsed, true, 'the first click did not collapse')
+    assert.equal(collapse.textContent, '›', 'the glyph did not follow the collapsed state')
+    assert.equal(collapse.getAttribute('aria-label'), 'Expand panel', 'the label did not follow the collapsed state')
+    click()
+    assert.equal(ctx.storage.get('settings').panelCollapsed, false, 'the second click did not expand')
+    assert.equal(collapse.textContent, '‹', 'the glyph did not return')
+    assert.equal(collapse.getAttribute('aria-label'), 'Collapse panel', 'the label did not return')
+    const css = panelStyles()[0] && panelStyles()[0].textContent || ''
+    assert.doesNotMatch(css, /ap-collapse\s*\{\s*display:\s*none/, 'collapsed CSS still hides the expand control')
+  } finally {
+    dispose()
+  }
+})
+
+record('panelVisible respects the host pane visibility atom', () => {
+  const previous = sdk.host.paneVisibility
+  const ctx = makeCtx({ enabled: true })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    sdk.host.paneVisibility = () => ({ get: () => false })
+    assert.equal(tx.panelVisible(), false, 'a hidden host pane is still treated as visible')
+    sdk.host.paneVisibility = () => ({ get: () => true })
+    assert.equal(tx.panelVisible(), true, 'a visible host pane was hidden')
+  } finally {
+    if (previous === undefined) delete sdk.host.paneVisibility
+    else sdk.host.paneVisibility = previous
+    dispose()
+  }
+})
+
 // --------------------------------------------------------------- reporting
 
 console.log(results.join('\n'))

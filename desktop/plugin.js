@@ -430,10 +430,14 @@ function readPositions(raw) {
     if (!Number.isFinite(position) || position < 5) continue
     const duration = Number(value.duration)
     const at = Number(value.at)
+    const videoId = typeof value.videoId === 'string' ? value.videoId.trim().slice(0, 64) : ''
     out[url.slice(0, VIDEO_URL_MAX)] = {
       position: Math.max(0, position),
       duration: Number.isFinite(duration) ? Math.max(0, duration) : 0,
-      at: Number.isFinite(at) ? at : 0
+      at: Number.isFinite(at) ? at : 0,
+      // Which episode of a playlist this is; the player needs it to resume
+      // the right episode rather than the list's first one.
+      videoId
     }
   }
   return out
@@ -543,7 +547,13 @@ function shortLabel(url) {
   const host = urlHost(value)
   if (!host) return value.slice(0, 60)
   const file = value.split('?')[0].split('/').filter(Boolean).pop()
-  return file && file !== host ? host + ' / ' + decodeURIComponent(file).slice(0, 40) : host
+  let decoded = file || ''
+  try {
+    decoded = decodeURIComponent(decoded)
+  } catch {
+    // A malformed percent escape (e.g. `%ZZ.mp4`) is still a usable label.
+  }
+  return file && file !== host ? host + ' / ' + decoded.slice(0, 40) : host
 }
 
 function readSettings(ctx) {
@@ -1726,13 +1736,25 @@ function rememberVideoSource(url, label) {
 }
 
 /** Apply a source: the backdrop reloads through the existing settings path,
- *  so there is exactly one way a URL reaches the iframe. */
+ *  so there is exactly one way a URL reaches the iframe. An explicit play is
+ *  a request to watch: it switches the video mode on and reopens a closed
+ *  film, whether it came from a panel card, a URL box or the page. */
 async function applyVideoSource(url, label) {
   if (!ctxRef || disposed) return
   const videoUrl = typeof url === 'string' ? url.trim().slice(0, VIDEO_URL_MAX) : ''
   if (!videoUrl) return
+  if ($settings.get().backdropMode !== 'video') await setBackdropMode('video')
+  if ($settings.get().videoClosed) openVideo()
   rememberVideoSource(videoUrl, label)
   await setVideoUrl(videoUrl)
+}
+
+/** A URL box: a nonempty value is a play, so it takes the same path as every
+ *  other source picker. Empty still means "clear it", without forcing video
+ *  mode on. */
+function applyUrlBox(value) {
+  const clean = typeof value === 'string' ? value.trim() : ''
+  return clean ? applyVideoSource(clean) : setVideoUrl('')
 }
 
 /** Video transparency pinned by hand: turns the automatic 20/30% follow off. */
@@ -2291,10 +2313,15 @@ async function fetchPlaylistItems(listId) {
 
 async function skipBlockedEpisode() {
   const url = $settings.get().videoUrl
+  const mine = instanceSeq
   const match = /[?&]list=([A-Za-z0-9_-]{10,})/.exec(String(url || ''))
   if (!match || autoSkipCount >= 5) return
   const listId = match[1]
   const items = await fetchPlaylistItems(listId)
+  // The lookup is async: if the instance was replaced or the user picked a
+  // different film while it was pending, this result is stale and must not
+  // steal playback back to the playlist.
+  if (disposed || mine !== instanceSeq || $settings.get().videoUrl !== url) return
   if (!items.length) return
   const currentId = $video.get().videoId ||
     (/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/.exec(String(url)) || [])[1] || ''
@@ -2936,11 +2963,29 @@ let panelStyleEl = null
 // plugin disposal (and switching the panel off) removes the host pane/tab/strip.
 let paneRegistration = null
 
-/** Panel is on screen when enabled and not hidden by the user. */
+/** The host's own answer about whether the pane is actually on screen (open
+ *  tab, zone un-minimised, not dismissed). Feature-detected: older hosts do
+ *  not have paneVisibility and fall back to our settings alone. */
+function hostPaneVisible() {
+  if (!host || typeof host.paneVisibility !== 'function') return null
+  try {
+    const state = host.paneVisibility(PANE_ID)
+    if (state && typeof state.get === 'function') return state.get() === true
+    if (typeof state === 'boolean') return state
+  } catch {
+    // A host that throws here is treated as "no opinion".
+  }
+  return null
+}
+
+/** Panel is on screen when enabled, not hidden by the user, and the host has
+ *  not closed or switched away from the pane. The last part matters because a
+ *  hidden pane must not suppress the floating transport bar. */
 function panelVisible() {
   const settings = $settings.get()
   const live = $live.get()
   const enabled = live.ok ? live.enabled === true : settings.enabled
+  if (hostPaneVisible() === false) return false
   return Boolean(doc && enabled && settings.panelEnabled !== false)
 }
 
@@ -2964,8 +3009,9 @@ function panelCss() {
       background: radial-gradient(120% 90% at 50% -10%, rgba(255,150,80,0.20), rgba(255,120,160,0.06) 45%, transparent 70%);
     }
     #aura-panel[data-collapsed="true"] .ap-body { display: none; }
-    #aura-panel[data-collapsed="true"] .ap-name,
-    #aura-panel[data-collapsed="true"] .ap-collapse { display: none; }
+    /* The collapse button must stay visible while collapsed: it is the only
+       way back out from inside the panel. */
+    #aura-panel[data-collapsed="true"] .ap-name { display: none; }
     .ap-head { display: flex; align-items: center; gap: 8px; position: relative; z-index: 1; }
     .ap-name { font-weight: 650; letter-spacing: 0.4px; font-size: 13px; }
     .ap-head button {
@@ -3300,7 +3346,9 @@ function mountPanelInto(hostNode) {
   name.textContent = 'Aura'
 
   const collapse = panelButton(collapsed ? '›' : '‹', collapsed ? 'Expand panel' : 'Collapse panel', () => {
-    setPanelCollapsed(!collapsed)
+    // Read the current value: the handler outlives this render, and a captured
+    // `collapsed` made the button only ever collapse.
+    setPanelCollapsed($settings.get().panelCollapsed !== true)
   })
   collapse.className = 'ap-collapse'
 
@@ -3396,7 +3444,7 @@ function mountPanelInto(hostNode) {
   hostNode.appendChild(panel)
 
   panelEl = panel
-  panelParts = { panel, body, stage, hint, track, fill, time, play, list, vol, chip }
+  panelParts = { panel, body, stage, hint, track, fill, time, play, list, vol, chip, collapse }
   syncPanel(true)
 }
 
@@ -3417,10 +3465,11 @@ function panelVideoSlot() {
 }
 
 function syncPanel(force) {
-  if (!panelVisible()) {
-    removePanel()
-    return
-  }
+  // The pane's ref owns mounting/removal. A hidden host pane (or a collapsed
+  // zone) does not mean the DOM should be torn down: React will not re-fire
+  // the ref when it becomes visible again, so removing here would strand an
+  // empty panel.
+  if (!panelVisible()) return
   // The pane's ref mounts the DOM; if it has not fired yet there is simply
   // nothing to update on this tick.
   const parts = panelParts
@@ -3432,6 +3481,15 @@ function syncPanel(force) {
     parts.panel.setAttribute('data-collapsed', collapsed ? 'true' : 'false')
     if (doc.body.classList && typeof doc.body.classList.toggle === 'function') {
       // (no body padding: see the CSS note)
+    }
+  }
+  if (parts.collapse) {
+    const glyph = collapsed ? '›' : '‹'
+    const label = collapsed ? 'Expand panel' : 'Collapse panel'
+    if (parts.collapse.textContent !== glyph) parts.collapse.textContent = glyph
+    if (parts.collapse.getAttribute('aria-label') !== label) {
+      parts.collapse.setAttribute('aria-label', label)
+      parts.collapse.title = label
     }
   }
 
@@ -3548,6 +3606,22 @@ function disposePaneRegistration() {
   }
 }
 
+/** Stable ref callback for the host pane's theatre node. A fresh callback on
+ *  every render made React detach the old one (null) and reattach the new one
+ *  to the same node; the null cleared our pointer without removing the DOM,
+ *  so each settings change appended another #aura-panel. */
+function panelHostRef(node) {
+  if (!node) {
+    removePanel()
+    return
+  }
+  try {
+    mountPanelInto(node)
+  } catch (cause) {
+    setError(`Aura could not draw its panel (${String(cause && cause.message || cause).slice(0, 80)}).`)
+  }
+}
+
 /** The host pane's content.
  *
  *  A pane is laid out by Hermes, so the theatre lives inside the box the app
@@ -3562,14 +3636,7 @@ function AuraPane() {
   const open = settings.panelSettingsOpen === true
   const theatre = jsx('div', {
     key: 'theatre',
-    ref: node => {
-      if (!node) { panelEl = null; panelParts = null; return }
-      try {
-        mountPanelInto(node)
-      } catch (cause) {
-        setError(`Aura could not draw its panel (${String(cause && cause.message || cause).slice(0, 80)}).`)
-      }
-    },
+    ref: panelHostRef,
     // Drawer closed: the theatre shrinks to fit so the "Aura settings" toggle
     // stays on screen. Open: it keeps its full height and the column scrolls.
     style: open
@@ -4444,7 +4511,7 @@ function AuraQuickMenu() {
                           }
                         },
                         onBlur: event => {
-                          void setVideoUrl(event && event.target ? String(event.target.value) : '')
+                          void applyUrlBox(event && event.target ? String(event.target.value) : '')
                         }
                       }),
                       jsx(Button, {
@@ -4454,7 +4521,7 @@ function AuraQuickMenu() {
                           const field = doc && typeof doc.querySelector === 'function'
                             ? doc.querySelector('input[aria-label="Video URL"]')
                             : null
-                          if (field && typeof field.value === 'string') void setVideoUrl(field.value)
+                          if (field && typeof field.value === 'string') void applyUrlBox(field.value)
                         },
                         children: '⟳'
                       })
@@ -4775,11 +4842,11 @@ function pageButton(label, aria, onClick, primary) {
 }
 
 /** Play a source from the page. The page is a player, so a deliberate play
- *  turns the video mode on rather than sending you to find the switch. */
+ *  turns the video mode on rather than sending you to find the switch; that
+ *  shared rule lives in applyVideoSource. */
 async function playOnPage(url, label) {
   const clean = typeof url === 'string' ? url.trim() : ''
   if (!clean) return
-  if ($settings.get().backdropMode !== 'video') await setBackdropMode('video')
   await applyVideoSource(clean, label)
 }
 
@@ -5666,7 +5733,7 @@ function AuraSettings() {
                   if (event && event.key === 'Enter' && event.currentTarget) event.currentTarget.blur()
                 },
                 onBlur: event => {
-                  void setVideoUrl(event && event.target ? String(event.target.value) : '')
+                  void applyUrlBox(event && event.target ? String(event.target.value) : '')
                 }
               })
             ),
@@ -5873,6 +5940,7 @@ function AuraSettings() {
                 children: settings.videoPlaylists.map(item =>
                   row(
                     item.label || shortLabel(item.url),
+                    '',
                     jsx(Button, {
                       size: 'micro', variant: 'ghost',
                       'aria-label': `Remove ${item.label || 'playlist'}`,
@@ -6354,4 +6422,16 @@ export {
   setAudioVolume,
   setVideoMuted,
   stopAudio
+}
+
+// Named export for the headless contract tests: these functions are pure or
+// driven through register()'s context, and are not part of the host contract.
+export const __test = {
+  readPositions,
+  shortLabel,
+  videoQueue,
+  applyVideoSource,
+  applyUrlBox,
+  skipBlockedEpisode,
+  panelVisible
 }
