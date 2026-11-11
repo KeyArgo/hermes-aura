@@ -25,6 +25,9 @@ CONFIG_VERSION = 1
 
 DEFAULTS = {
     "enabled": False,
+    # Keep analysing system audio with nobody watching. Off by default: capture
+    # and FFT cost ~4% of a core, which should buy something.
+    "listen_background": False,
     "intensity": 0.5,
     "preset": None,
     "reduced_motion": False,
@@ -201,6 +204,7 @@ def normalise(raw) -> dict:
     if not isinstance(raw, dict):
         return cfg
     cfg["enabled"] = _as_bool(raw.get("enabled"), DEFAULTS["enabled"])
+    cfg["listen_background"] = _as_bool(raw.get("listen_background"), DEFAULTS["listen_background"])
     cfg["intensity"] = _as_intensity(raw.get("intensity"), DEFAULTS["intensity"])
     cfg["preset"] = _as_preset(raw.get("preset"), DEFAULTS["preset"])
     cfg["reduced_motion"] = _as_bool(raw.get("reduced_motion"), DEFAULTS["reduced_motion"])

@@ -55,6 +55,7 @@ SAMPLE_RATE = 48000
 FRAME_SAMPLES = 1024
 FEATURE_INTERVAL_S = 0.1  # ≤10 Hz (§2)
 CAPTURE_RETRY_S = 10.0  # while on silence, look for a real backend this often
+IDLE_STOP_S = 30.0  # no listeners this long -> stop capture
 CAPTURE_GATE_S = 0.5  # how often the capture loop re-reads enabled/motion
 # Motion values whose visuals are driven by real audio. Anything else (designs,
 # agent) means no recorder may stay open.
@@ -569,12 +570,38 @@ def _capture_loop(stop_event: threading.Event) -> None:
     last_probe = last_data
     last_gate = last_data
     wanted = cap.name != "none" or _audio_wanted()
+    # Idle lifecycle: capture + FFT cost ~4% of a core with nobody watching
+    # (measured: aura-capture 3.4%, feeder 0.33%, parec 0.25% at clients=0).
+    # After IDLE_STOP_S with no connected page we drop to silence and reopen the
+    # moment a page appears again — unless the user asked for background listening.
+    idle_since = None
+    idle_holding = False
     try:
         while not stop_event.is_set():
             now = time.monotonic()
             if now - last_gate >= CAPTURE_GATE_S:
                 last_gate = now
                 was_wanted, wanted = wanted, _audio_wanted()
+                try:
+                    listening = bool(config.read_config().get("listen_background"))
+                except Exception:  # noqa: BLE001 - a config read must not stop audio
+                    listening = False
+                if _STATE.clients:
+                    idle_since = None
+                elif idle_since is None:
+                    idle_since = now
+                idle_long = idle_since is not None and (now - idle_since) >= IDLE_STOP_S
+                if idle_long and not listening and cap.name != "none":
+                    idle_holding = True
+                    cap = _swap_capture(cap, capture.NullCapture())
+                    frame_silence.reset()
+                    _log("aura: capture paused (no listeners for %ds)", int(IDLE_STOP_S))
+                    publish_config()
+                elif listening or _STATE.clients:
+                    if idle_holding:
+                        idle_holding = False
+                        last_probe = now - CAPTURE_RETRY_S  # reopen right away
+                        _log("aura: capture resumed (a listener is back)")
                 if not wanted and cap.name != "none":
                     # Off, or a motion that ignores audio: no recorder may stay
                     # open (privacy). Back off to silence without a respawn.
@@ -584,7 +611,7 @@ def _capture_loop(stop_event: threading.Event) -> None:
                     publish_config()
                 elif wanted and not was_wanted:
                     last_probe = now - CAPTURE_RETRY_S  # reopen right away
-            if (wanted and cap.name == "none" and preferred != "none"
+            if (wanted and not idle_holding and cap.name == "none" and preferred != "none"
                     and now - last_probe >= CAPTURE_RETRY_S):
                 # The first probe can miss audio (busy host at startup, sound
                 # server or device not ready yet); never lock in silence.
