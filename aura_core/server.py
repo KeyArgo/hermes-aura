@@ -583,7 +583,7 @@ def _capture_loop(stop_event: threading.Event) -> None:
                 last_gate = now
                 was_wanted, wanted = wanted, _audio_wanted()
                 try:
-                    listening = bool(config.read_config().get("listen_background"))
+                    listening = bool(config.load_config().get("listen_background"))
                 except Exception:  # noqa: BLE001 - a config read must not stop audio
                     listening = False
                 if _STATE.clients:

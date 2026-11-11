@@ -72,6 +72,48 @@ def test_switching_off_closes_the_recorder_and_on_reopens_it(monkeypatch):
     assert len(opened) == 2
 
 
+def test_idle_stops_listening_and_the_next_viewer_reopens_it(monkeypatch):
+    """No page attached means no audience: after IDLE_STOP_S, stop paying for audio."""
+    monkeypatch.setattr(server, "IDLE_STOP_S", 0.05)
+    monkeypatch.setattr(server.config, "load_config",
+                        lambda: {"enabled": True, "motion": "both", "listen_background": False})
+    opened, stop, worker = _run(monkeypatch, [True])
+    assert _wait_for("pulse")
+    assert _wait_for("none", timeout=2.5), "capture kept running with no listeners"
+    assert len(opened) == 1 and opened[0].closed
+
+    # A page appears: reopen without waiting for CAPTURE_RETRY_S.
+    class FakeClient:
+        # The loop pushes PCM and events to every connected page; a stand-in only
+        # needs to absorb whatever it is handed.
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+    sentinel = FakeClient()
+    with server._STATE.lock:
+        server._STATE.clients.add(sentinel)
+    try:
+        assert _wait_for("pulse", timeout=2.0), "capture did not resume for a returning viewer"
+    finally:
+        with server._STATE.lock:
+            server._STATE.clients.discard(sentinel)
+    _stop(stop, worker)
+    assert len(opened) == 2
+
+
+def test_background_listening_keeps_capture_alive_with_no_listeners(monkeypatch):
+    monkeypatch.setattr(server, "IDLE_STOP_S", 0.05)
+    monkeypatch.setattr(server.config, "load_config",
+                        lambda: {"enabled": True, "motion": "both", "listen_background": True})
+    opened, stop, worker = _run(monkeypatch, [True])
+    assert _wait_for("pulse")
+    time.sleep(0.4)
+    with server._STATE.lock:
+        assert server._STATE.capture_name == "pulse", "listen_background should not idle out"
+    _stop(stop, worker)
+    assert len(opened) == 1
+
+
 def test_audio_wanted_follows_enabled_and_motion(monkeypatch):
     # Only motions that drive the visuals from real audio may open a recorder.
     for cfg, want in [({"enabled": False, "motion": "both"}, False),
