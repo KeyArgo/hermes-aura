@@ -1611,6 +1611,17 @@ def _start_server() -> None:
 
     The caller must hold the leader lock (``_try_become_leader``).
     """
+    # A restart (the previous http thread died) must not leak the old listener:
+    # _try_become_leader calls this again the moment _server_running() goes false.
+    with _STATE.lock:
+        stale = _STATE.httpd
+        _STATE.httpd = None
+    if stale is not None:
+        try:
+            stale.server_close()
+        except Exception:  # noqa: BLE001 - the old socket may already be gone
+            pass
+
     token = secrets.token_urlsafe(32)
     try:
         config.write_token(token)

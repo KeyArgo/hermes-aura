@@ -697,6 +697,40 @@ def test_ensure_server_is_idempotent(live):
     assert server.get_port() == port
 
 
+def test_restart_closes_the_previous_listener(live):
+    # If the http thread dies, ensure_server starts a new server; the old
+    # socket must be closed, not leaked bound forever.
+    old_port = live["port"]
+
+    class Dead:
+        def is_alive(self):
+            return False
+
+        def join(self, timeout=None):
+            pass
+
+    with server._STATE.lock:
+        server._STATE.thread = Dead()
+    server.ensure_server()
+    new_port = server.get_port()
+    assert new_port and new_port != old_port
+    server.stop_server()
+
+    def bound(port):
+        try:
+            sock = socket.create_connection(("127.0.0.1", port), timeout=0.5)
+            sock.close()
+            return True
+        except OSError:
+            return False
+
+    deadline = time.time() + 2
+    while bound(new_port) and time.time() < deadline:
+        time.sleep(0.05)
+    assert not bound(new_port), "the new listener survives stop_server"
+    assert not bound(old_port), "the replaced listener socket was leaked"
+
+
 # ---------------------------------------------------------------------------
 # redaction (used on every URL that reaches the model)
 # ---------------------------------------------------------------------------
