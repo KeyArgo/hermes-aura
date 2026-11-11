@@ -1140,6 +1140,45 @@ record('dispose after Restore my theme is clean and does not re-request a theme'
   assert.equal(sdk.calls.themes.length, themeCallsBefore, 'dispose requested a theme after restore')
 })
 
+// ------------------------------------------------------------- scenario D
+// The probe reports the theme the host is actually showing. A disable hands the
+// user's theme back; the host then reports it, and that report must not be read
+// as a fresh opt-in that drags the user onto aura-live again.
+
+sdk.themeState.name = 'nous'
+const th = makeCtx({ enabled: true, intensity: 0.5, themeOptIn: true })
+const disposeTh = pluginModule.default.register(th.ctx)
+const probeTh = th.contributions.find(c => c.area === 'titleBar.center')
+
+await recordAsync('disabling Aura keeps the restored theme when the probe reports it back', async () => {
+  renderContribution(probeTh)
+  await sleep(20)
+  sdk.themeState.name = 'aura-live'
+  renderContribution(probeTh)
+  await sleep(20)
+
+  const switches = findSettingsSwitches(renderContribution(th.contributions.find(c => c.area === 'settings.plugins')))
+  assert.ok(switches.enabled, 'no Aura enabled switch rendered')
+  switches.enabled.props.onCheckedChange(false)
+  await sleep(30)
+  assert.equal(sdk.calls.themes.at(-1), 'nous', 'disabling did not restore the previous theme')
+  const afterRestore = sdk.calls.themes.length
+
+  // The host now reports the theme it restored for the user. That is the user's
+  // own skin, not an opt-in request, so aura-live must not come back.
+  sdk.themeState.name = 'nous'
+  renderContribution(probeTh)
+  await sleep(30)
+  assert.equal(sdk.calls.themes.length, afterRestore, 'the restored theme was immediately re-applied over')
+  assert.equal(sdk.calls.themes.at(-1), 'nous', 'Aura pulled the user back onto the aura-live theme')
+  assert.equal(hostIframes().length, 0, 'the backdrop survived the restore')
+})
+
+record('dispose of the disabled instance is clean', () => {
+  disposeTh()
+  assert.equal(th.contributions.length, 0)
+})
+
 // ------------------------------------------------------------- scenario C
 // Legacy glass keys are accepted but ignored; host glass is gone. The active
 // theme is deliberately NOT aura-live, so any mounted glass would prove the

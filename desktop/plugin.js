@@ -1672,7 +1672,12 @@ function onThemeName(name) {
     resetShow()
     removeBackdrop()
   }
-  if ($settings.get().themeOptIn && !$themeApplied.get()) applyThemeIfOptedIn()
+  // Only the probe's FIRST report retries an opt-in that register() could not
+  // make yet. Re-applying on every report undid the restore: the theme we had
+  // just handed back to the user came straight back as an opt-in request.
+  if (first && $settings.get().enabled && $settings.get().themeOptIn && !$themeApplied.get()) {
+    applyThemeIfOptedIn()
+  }
   updateShow()
 }
 
