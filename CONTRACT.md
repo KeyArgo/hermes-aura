@@ -155,6 +155,7 @@ Additive to §1/§2/§4. No existing field changed meaning. New config keys are 
 | `auto_preset` | bool | `true` | non-bool -> `auto_preset_must_be_bool` |
 | `reduced_motion` | bool | `false` | non-bool -> `reduced_motion_must_be_bool` |
 | `motion` | `"designs"` \| `"both"` \| `"music"` \| `"agent"` \| `"agent_music"` | `"agent_music"` | non-string -> `motion_must_be_string`; unknown -> `bad_motion`; `designs` stays accepted (legacy) but is no longer offered in the desktop select |
+| `idle_motion` | `"stop"` \| `"ember"` \| `"always"` | `"always"` | non-string -> `idle_motion_must_be_string`; unknown -> `bad_idle_motion`; accepted case-insensitively (§9.7) |
 
 All defaults above are first-run only: a saved `config.json` keeps its own values and a
 corrupt/missing key alone falls back to the default.
@@ -244,6 +245,23 @@ intensity.
   `mood_reactive`/`enabled` behaviour is unchanged: disabled Aura renders at zero base, and mood
   gains apply on top of the boosted base exactly as before.
 
+### 9.7 Idle motion (additive, 2026-11-10, plugin 1.0.0)
+
+What the visual does between agent turns, when the mood is `idle` or `done`:
+
+| `idle_motion` | render gain while idle/done | desktop label |
+|---|---|---|
+| `always` | unchanged (pre-1.0.0 behaviour, the default) | Keep moving |
+| `ember` | `IDLE_EMBER_GAIN` = 0.06 — a low ember glow, never dark | Ember — a low glow |
+| `stop` | 0 — the visual rests | Stop — go dark |
+
+- Precedence: an attention mood (`approval`, `error`) always renders at full gain, whatever
+  `idle_motion` says; the gate beats the `motion` source choice (`real` vs `ambient`).
+- The gate multiplies the existing `realGain`/`ambientGain` crossfade (`MOTION_FADE_S`), so
+  there is no second render path and no new audio node. A mood change re-eases the gate in the
+  same tick; `snapshot()` exposes `idleMotion` and the live `idleGate()`.
+- Default `always` means an existing install behaves exactly as before the key existed.
+
 ## 10. Silence gate (additive, 2026-11-05)
 
 Butterchurn presets advance on their own internal clock as well as the audio, so a bright preset
@@ -287,3 +305,16 @@ contributes only the settings page, the theme, the backdrop, the accent pulse, t
 probe and polling. If "Visual behind the app" is switched on while Aura is off, the desktop half
 enables Aura through the same door as the "Aura enabled" switch (writeSettings + `POST /control
 {enabled:true}`), so the visual never silently draws nothing.
+
+## 12. Capture gate (additive, 2026-11-10, plugin 1.0.0)
+
+No recorder is opened unless the visual actually needs audio:
+
+- A capture backend opens only while `enabled` is true **and** `motion` is one of `both`,
+  `music`, `agent_music` (`server._audio_wanted()`). `designs` and `agent` never open one.
+- The capture loop re-reads the config every `CAPTURE_GATE_S` = 0.5 s. Turning Aura off (or
+  switching to an audio-free motion) closes the recorder within half a second and pushes a
+  `config` event, because the open page still shows "no system audio"; switching back reopens
+  it at once instead of waiting out `CAPTURE_RETRY_S` (10 s).
+- A replaced recorder is always closed (`_swap_capture()`), so neither the gate nor the silent
+  retry path can leak a device handle.
