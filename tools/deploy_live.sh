@@ -19,6 +19,9 @@ cp desktop/plugin.js "$APP/plugin.js"
 [ -f web/aura.js ] && cp web/aura.js "$PLUGIN/web/aura.js"
 [ -f dashboard/plugin_api.py ] && cp dashboard/plugin_api.py "$PLUGIN/dashboard/plugin_api.py"
 [ -f plugin.yaml ] && cp plugin.yaml "$PLUGIN/plugin.yaml"
+# Python half: needs a gateway restart to take effect, but the files must land.
+[ -d aura_core ] && cp -r aura_core/*.py "$PLUGIN/aura_core/"
+[ -d aura_core/capture ] && cp -r aura_core/capture/*.py "$PLUGIN/aura_core/capture/"
 cp BUILD_INFO.json "$PLUGIN/BUILD_INFO.json"
 cp BUILD_INFO.json "$APP/BUILD_INFO.json"
 
