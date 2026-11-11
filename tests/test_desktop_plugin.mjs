@@ -2314,7 +2314,7 @@ record('the quick-menu source picker groups every source', () => {
   const select = findByAria(renderContribution(t.contributions.find(c => c.id === 'quick-menu')), 'Video source')
   assert.ok(select, 'the quick menu has no video source picker')
   const groups = optgroupsOf(select)
-  assert.deepEqual(groups.map(group => group.label), ['Playlists', 'Your films', 'Starters', 'Recent'],
+  assert.deepEqual(groups.map(group => group.label), ['Playlists', 'Your films', 'Picks', 'Recent'],
     'the source groups drifted or lost their order')
   assert.ok(groups[0].options.includes('https://www.youtube.com/playlist?list=PLabcdefghij'), 'the saved playlist is missing')
   assert.ok(groups[1].options.includes('https://example.com/film.mp4'), 'the saved film is missing')
@@ -2328,7 +2328,7 @@ record('the Settings source picker groups the same sources', () => {
     'Video source'
   )
   assert.ok(select, 'Settings has no video source picker')
-  assert.deepEqual(optgroupsOf(select).map(group => group.label), ['Playlists', 'Your films', 'Starters', 'Recent'])
+  assert.deepEqual(optgroupsOf(select).map(group => group.label), ['Playlists', 'Your films', 'Picks', 'Recent'])
 })
 
 record('"Edit sources…" opens the Aura page from both menus', () => {

@@ -2109,7 +2109,7 @@ function videoSourceGroups(settings) {
   const groups = [
     take('playlists', 'Playlists', source.videoPlaylists),
     take('films', 'Your films', source.videoSources),
-    take('starters', 'Starters', STARTER_SOURCES.filter(item => !hidden.has(item.url))),
+    take('starters', 'Picks', STARTER_SOURCES.filter(item => !hidden.has(item.url))),
     take('recent', 'Recent', source.videoRecent)
   ]
   const current = typeof source.videoUrl === 'string' ? source.videoUrl.trim() : ''
@@ -6426,7 +6426,7 @@ function AuraSettings() {
               })
             ),
             row(
-              'Demo videos',
+              'Picks',
               'The built-in films and documentaries. Turn off once you have your own playlists.',
               jsx(Switch, {
                 checked: !(Array.isArray(settings.videoHiddenStarters) && settings.videoHiddenStarters.length),
