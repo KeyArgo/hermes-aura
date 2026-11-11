@@ -932,6 +932,19 @@ function describeFocusable(node) {
   return `${tag}${role ? `[${role}]` : ''}${label ? ` ${String(label).slice(0, 18)}` : ''}`
 }
 
+// Keystrokes that reached the document while a text field had focus. Purely a
+// measurement: Aura never consumes or alters them (capture phase, no
+// preventDefault, no stopPropagation).
+let keysSeen = 0
+
+function countKey(event) {
+  if (!event || event.key === 'Shift' || event.key === 'Control' || event.key === 'Alt' || event.key === 'Meta') return
+  const active = doc && doc.activeElement
+  const field = active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT' ||
+    (active.getAttribute && active.getAttribute('contenteditable') === 'true'))
+  if (field) keysSeen += 1
+}
+
 function rememberCaret(event) {
   const target = event && event.target
   if (!target) return
@@ -4436,7 +4449,10 @@ const DEV_STATS_ROWS = Object.freeze([
   ['preset', 'preset'],
   // What last took focus: the composer going dead for no visible reason is
   // otherwise unprovable after the fact.
-  ['focus', 'last focus']
+  ['focus', 'last focus'],
+  // Did the keyboard reach the app at all? A dead composer with this counting
+  // up is the host dropping keys; stuck at 0 is something above us holding them.
+  ['keys', 'keys seen']
 ])
 
 let devStatsEl = null
@@ -4556,7 +4572,7 @@ function devStatsTick() {
   const preset = typeof frame.preset === 'string' && frame.preset ? frame.preset : '—'
   const focus = focusTrace.length ? focusTrace[focusTrace.length - 1] : '—'
 
-  const values = { sessions, boost, intensity: `${Math.round(intensity * 100)}%`, mood, level, silence, fps, preset, focus }
+  const values = { sessions, boost, intensity: `${Math.round(intensity * 100)}%`, mood, level, silence, fps, preset, focus, keys: String(keysSeen) }
   for (const [key] of DEV_STATS_ROWS) {
     const el = devStatsValueEls[key]
     const value = values[key]
@@ -7116,6 +7132,8 @@ export default {
         doc.addEventListener('keydown', onPanelKeydown)
         track(() => doc.removeEventListener('keydown', onPanelKeydown))
         // The backdrop frame must never keep the keyboard (see releaseBackdropFocus).
+        doc.addEventListener('keydown', countKey, true)
+        track(() => doc.removeEventListener('keydown', countKey, true))
         doc.addEventListener('focusin', rememberCaret, true)
         track(() => doc.removeEventListener('focusin', rememberCaret, true))
         doc.addEventListener('focusin', releaseBackdropFocus, true)
@@ -7180,5 +7198,6 @@ export const __test = {
   setVideoWindow,
   popoutSurface,
   hiddenVideoIds,
-  hideCurrentEpisode
+  hideCurrentEpisode,
+  keysSeenForTest: () => keysSeen
 }
