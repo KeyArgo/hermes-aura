@@ -2635,7 +2635,7 @@ record('the pane ref is stable and does not accumulate duplicate theatre DOM', (
   }
 })
 
-record('the panel collapse control can expand again and stays visible', () => {
+record('the pane header carries the mode switch and the power control', () => {
   const ctx = makeCtx({ enabled: true })
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
@@ -2648,33 +2648,23 @@ record('the panel collapse control can expand again and stays visible', () => {
     ref(hostNode)
     const panel = hostNode.children.find(node => node.attributes && node.attributes.id === 'aura-panel')
     assert.ok(panel, 'the panel did not mount')
-    const findClass = (node, name) => {
-      if (!node) return null
-      if (node.className === name) return node
-      for (const child of node.children || []) {
-        const found = findClass(child, name)
-        if (found) return found
-      }
-      return null
+    const findAll = (node, predicate, out = []) => {
+      if (!node) return out
+      if (predicate(node)) out.push(node)
+      if (node.children) node.children.forEach(child => findAll(child, predicate, out))
+      return out
     }
-    const collapse = findClass(panel, 'ap-collapse')
-    assert.ok(collapse, 'the collapse control is missing')
-    const click = () => collapse.__handlers.click[0]()
-    click()
-    assert.equal(ctx.storage.get('settings').panelCollapsed, true, 'the first click did not collapse')
-    assert.equal(collapse.textContent, '›', 'the glyph did not follow the collapsed state')
-    assert.equal(collapse.getAttribute('aria-label'), 'Expand panel', 'the label did not follow the collapsed state')
-    click()
-    assert.equal(ctx.storage.get('settings').panelCollapsed, false, 'the second click did not expand')
-    assert.equal(collapse.textContent, '‹', 'the glyph did not return')
-    assert.equal(collapse.getAttribute('aria-label'), 'Collapse panel', 'the label did not return')
-    const css = panelStyles()[0] && panelStyles()[0].textContent || ''
-    assert.doesNotMatch(css, /ap-collapse\s*\{\s*display:\s*none/, 'collapsed CSS still hides the expand control')
+    const head = findAll(panel, node => node.className === 'ap-head')[0]
+    assert.ok(head, 'the pane has no header')
+    const modes = findAll(head, node => node.getAttribute && node.getAttribute('data-mode'))
+    assert.equal(modes.length, 2, 'the header needs both mode buttons')
+    assert.deepEqual(modes.map(node => node.textContent), ['Visualizer', 'Movie'])
+    const power = findAll(head, node => node.className === 'ap-power')[0]
+    assert.ok(power, 'the header has no on/off control')
   } finally {
     dispose()
   }
 })
-
 record('panelVisible respects the host pane visibility atom', () => {
   const previous = sdk.host.paneVisibility
   const ctx = makeCtx({ enabled: true })

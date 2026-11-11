@@ -3182,80 +3182,146 @@ function panelVisible() {
 
 function panelCss() {
   return `
-    /* Deliberately no body padding: shifting the whole app was what pushed the
-       sessions sidebar off its own panel. A docked pane takes real layout space
-       instead. */
-    /* A docked pane inside the host's own layout: no fixed positioning, no
-       z-index, no body padding. The host owns the box; we fill it. */
+    /* A docked pane inside the host's layout: no fixed positioning, no z-index,
+       no body padding. The host owns the box; we fill it. */
     #aura-panel {
       position: relative; width: 100%; height: 100%;
-      display: flex; flex-direction: column; gap: 10px;
-      padding: 12px 12px 10px; box-sizing: border-box; overflow: hidden;
-      color: #f3ece2; font: 12px/1.35 system-ui, -apple-system, sans-serif;
-      background: linear-gradient(180deg, #14101f 0%, #1b1418 55%, #241a12 100%);
-      border-radius: 10px;
+      display: flex; flex-direction: column; gap: 12px;
+      padding: 14px 14px 12px; box-sizing: border-box; overflow: hidden;
+      color: #f3ece2; font: 12px/1.4 system-ui, -apple-system, sans-serif;
+      background: linear-gradient(180deg, #16111f 0%, #1b1418 52%, #241a12 100%);
+      border-radius: 12px;
     }
-    #aura-panel::before {
-      content: ''; position: absolute; inset: 0 0 auto 0; height: 220px; pointer-events: none;
-      background: radial-gradient(120% 90% at 50% -10%, rgba(255,150,80,0.20), rgba(255,120,160,0.06) 45%, transparent 70%);
-    }
-    #aura-panel[data-collapsed="true"] .ap-body { display: none; }
-    /* The collapse button must stay visible while collapsed: it is the only
-       way back out from inside the panel. */
-    #aura-panel[data-collapsed="true"] .ap-name { display: none; }
+    /* header ------------------------------------------------------------- */
     .ap-head { display: flex; align-items: center; gap: 8px; position: relative; z-index: 1; }
-    .ap-name { font-weight: 650; letter-spacing: 0.4px; font-size: 13px; }
-    .ap-head button {
-      appearance: none; border: 0; background: rgba(255,255,255,0.07); color: inherit;
-      width: 22px; height: 22px; border-radius: 7px; cursor: pointer; font-size: 12px;
-      display: inline-flex; align-items: center; justify-content: center;
-    }
-    .ap-head button:hover { background: rgba(255,255,255,0.16); }
+    .ap-name { font-weight: 650; letter-spacing: 0.3px; font-size: 15px; }
     .ap-spacer { flex: 1; }
-    .ap-body { display: flex; flex-direction: column; gap: 10px; position: relative; z-index: 1; min-height: 0; }
-    .ap-stage {
-      position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden;
-      background: radial-gradient(circle at 50% 40%, #221a2e, #0d0a12 75%);
-      border: 1px solid rgba(255,255,255,0.10);
-      box-shadow: inset 0 0 40px rgba(255,150,80,0.06), 0 10px 30px rgba(0,0,0,0.4);
+    .ap-mode {
+      display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px;
+      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
     }
-    .ap-hint[data-note="true"] { color: #ffd9a8; letter-spacing: 0.2px; }
+    .ap-mode-button {
+      appearance: none; border: 0; background: transparent; color: rgba(243,236,226,0.62);
+      font: inherit; font-size: 10.5px; font-weight: 500; padding: 4px 9px; border-radius: 999px;
+      cursor: pointer; white-space: nowrap;
+    }
+    .ap-mode-button:hover { color: #f3ece2; }
+    .ap-mode-button[data-active="true"] {
+      background: rgba(255,190,120,0.92); color: #241a12; font-weight: 650;
+    }
+    .ap-power {
+      appearance: none; border: 1px solid rgba(255,255,255,0.14); background: transparent;
+      color: rgba(243,236,226,0.72); font: inherit; font-size: 10.5px; font-weight: 600;
+      padding: 4px 9px; border-radius: 999px; cursor: pointer; min-width: 34px;
+    }
+    .ap-power[data-on="true"] {
+      border-color: rgba(255,190,120,0.5); color: #ffd9a8; background: rgba(255,190,120,0.12);
+    }
+    .ap-power:hover { border-color: rgba(255,255,255,0.32); }
+
+    /* stage -------------------------------------------------------------- */
+    .ap-stage {
+      position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 14px; overflow: hidden;
+      background: radial-gradient(circle at 50% 40%, #221a2e, #0d0a12 78%);
+      border: 1px solid rgba(255,255,255,0.10);
+      box-shadow: inset 0 0 60px rgba(255,150,80,0.07), 0 14px 34px rgba(0,0,0,0.45);
+      flex: none;
+    }
     .ap-hint {
       position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-      text-align: center; padding: 12px; color: #cfc4b8; font-size: 11px; pointer-events: none;
+      text-align: center; padding: 16px; color: #cfc4b8; font-size: 12px; pointer-events: none;
     }
-    .ap-scrub { display: flex; align-items: center; gap: 8px; }
-    .ap-track { position: relative; flex: 1; height: 4px; border-radius: 999px; background: rgba(255,255,255,0.16); cursor: pointer; }
-    .ap-fill { position: absolute; inset: 0 auto 0 0; width: 0%; border-radius: 999px;
-      background: linear-gradient(90deg, rgba(255,190,120,0.95), rgba(255,140,160,0.95)); }
-    .ap-time { font-size: 10px; font-variant-numeric: tabular-nums; color: rgba(243,236,226,0.7); min-width: 68px; text-align: right; }
-    .ap-transport { display: flex; align-items: center; justify-content: center; gap: 4px; }
+    .ap-hint[data-note="true"] { color: #ffd9a8; letter-spacing: 0.2px; }
+
+    /* control deck: the thing that should feel generous ------------------- */
+    .ap-controls {
+      display: flex; flex-direction: column; gap: 10px;
+      padding: 12px 12px 11px; border-radius: 13px;
+      background: rgba(255,255,255,0.045);
+      border: 1px solid rgba(255,255,255,0.075);
+      box-shadow: 0 8px 22px rgba(0,0,0,0.28);
+      flex: none;
+    }
+    .ap-transport { display: flex; align-items: center; justify-content: center; gap: 8px; }
     .ap-transport button {
       appearance: none; border: 0; background: transparent; color: inherit; cursor: pointer;
-      width: 30px; height: 30px; border-radius: 9px; font-size: 14px;
+      width: 38px; height: 38px; border-radius: 12px; font-size: 16px;
       display: inline-flex; align-items: center; justify-content: center;
     }
     .ap-transport button:hover { background: rgba(255,255,255,0.12); }
     .ap-transport button[data-primary="true"] {
-      background: rgba(255,190,120,0.16); border: 1px solid rgba(255,190,120,0.35);
+      width: 48px; height: 48px; font-size: 19px; border-radius: 50%;
+      background: linear-gradient(160deg, rgba(255,205,140,0.95), rgba(255,150,110,0.95));
+      color: #241a12; box-shadow: 0 6px 18px rgba(255,170,110,0.28);
     }
-    .ap-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 0; padding-right: 2px; }
+    .ap-transport button[data-primary="true"]:hover { filter: brightness(1.06); }
+    .ap-scrub { display: flex; align-items: center; gap: 10px; }
+    .ap-track {
+      position: relative; flex: 1; height: 6px; border-radius: 999px;
+      background: rgba(255,255,255,0.18); cursor: pointer;
+    }
+    .ap-track:hover { background: rgba(255,255,255,0.26); }
+    .ap-fill {
+      position: absolute; inset: 0 auto 0 0; width: 0%; border-radius: 999px;
+      background: linear-gradient(90deg, rgba(255,200,130,0.98), rgba(255,140,160,0.98));
+    }
+    .ap-time {
+      font-size: 11px; font-variant-numeric: tabular-nums;
+      color: rgba(243,236,226,0.72); min-width: 84px; text-align: right;
+    }
+    .ap-row { display: flex; align-items: center; gap: 9px; }
+    .ap-icon { font-size: 13px; color: rgba(243,236,226,0.6); }
+    .ap-volume { flex: 1; accent-color: #ffbf78; height: 18px; }
+    .ap-watch {
+      appearance: none; border: 1px solid rgba(255,255,255,0.14); background: transparent;
+      color: rgba(243,236,226,0.8); width: 34px; height: 30px; border-radius: 9px;
+      cursor: pointer; font-size: 13px;
+    }
+    .ap-watch[data-active="true"] {
+      border-color: rgba(255,190,120,0.55); color: #ffd9a8; background: rgba(255,190,120,0.14);
+    }
+
+    /* film settings, directly under the film ------------------------------ */
+    .ap-settings {
+      display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+      border-radius: 12px; background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06); flex: none;
+    }
+    .ap-field { display: flex; align-items: center; gap: 10px; }
+    .ap-field-label {
+      font-size: 9.5px; letter-spacing: 0.7px; text-transform: uppercase;
+      color: rgba(243,236,226,0.45); min-width: 74px;
+    }
+    .ap-select { flex: 1; min-width: 0; font: inherit; font-size: 11px; }
+    .ap-pills { display: flex; gap: 4px; flex-wrap: wrap; }
+    .ap-pill {
+      appearance: none; border: 1px solid rgba(255,255,255,0.12); background: transparent;
+      color: rgba(243,236,226,0.66); font: inherit; font-size: 10px; padding: 3px 8px;
+      border-radius: 999px; cursor: pointer;
+    }
+    .ap-pill[data-active="true"] {
+      border-color: rgba(255,190,120,0.55); color: #ffd9a8; background: rgba(255,190,120,0.14);
+    }
+
+    /* shelf --------------------------------------------------------------- */
+    .ap-list {
+      display: flex; flex-direction: column; gap: 7px; overflow-y: auto; min-height: 0;
+      padding-right: 3px; flex: 1;
+    }
     .ap-card {
-      display: flex; align-items: center; gap: 9px; padding: 6px; border-radius: 10px; cursor: pointer;
-      background: rgba(255,255,255,0.035); border: 1px solid transparent; text-align: left;
+      display: flex; align-items: center; gap: 10px; padding: 7px; border-radius: 11px; cursor: pointer;
+      background: rgba(255,255,255,0.04); border: 1px solid transparent; text-align: left;
     }
-    .ap-card:hover { background: rgba(255,255,255,0.08); }
+    .ap-card:hover { background: rgba(255,255,255,0.09); }
     .ap-card[data-active="true"] { border-color: rgba(255,190,120,0.45); background: rgba(255,190,120,0.10); }
     .ap-thumb {
-      width: 64px; height: 36px; border-radius: 6px; flex: none; object-fit: cover;
+      width: 82px; height: 46px; border-radius: 8px; flex: none; object-fit: cover;
       background: linear-gradient(135deg, #2a2136, #40302a); display: block;
     }
     .ap-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-    .ap-title { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ap-title { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ap-kind { font-size: 9px; letter-spacing: 0.6px; text-transform: uppercase; color: rgba(243,236,226,0.45); }
-    .ap-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.08); }
-    .ap-foot input[type="range"] { flex: 1; accent-color: #ffbf78; }
-    .ap-empty { font-size: 11px; color: rgba(243,236,226,0.5); text-align: center; padding: 10px 0; }
+    .ap-empty { font-size: 11px; color: rgba(243,236,226,0.5); text-align: center; padding: 12px 0; }
   `
 }
 
@@ -3517,12 +3583,11 @@ function mountPanelInto(hostNode) {
   if (panelEl) removePanel()
   if (!doc.body) return
   ensurePanelStyle()
-  const collapsed = $settings.get().panelCollapsed === true
 
   const panel = doc.createElement('div')
   panel.setAttribute('id', 'aura-panel')
-  panel.setAttribute('data-collapsed', collapsed ? 'true' : 'false')
 
+  // ---- header: the word, the mode, the power -----------------------------
   const head = doc.createElement('div')
   head.className = 'ap-head'
 
@@ -3530,22 +3595,46 @@ function mountPanelInto(hostNode) {
   name.className = 'ap-name'
   name.textContent = 'Aura'
 
-  const collapse = panelButton(collapsed ? '›' : '‹', collapsed ? 'Expand panel' : 'Collapse panel', () => {
-    // Read the current value: the handler outlives this render, and a captured
-    // `collapsed` made the button only ever collapse.
-    setPanelCollapsed($settings.get().panelCollapsed !== true)
-  })
-  collapse.className = 'ap-collapse'
+  // Visualizer | Movie, side by side with the word: switching one turns the
+  // other off because it is one setting.
+  const mode = doc.createElement('div')
+  mode.className = 'ap-mode'
+  mode.setAttribute('role', 'group')
+  mode.setAttribute('aria-label', 'Aura mode')
+  const modeButtons = {}
+  for (const [value, label] of [['aura', 'Visualizer'], ['video', 'Movie']]) {
+    const button = doc.createElement('button')
+    button.type = 'button'
+    button.className = 'ap-mode-button'
+    button.textContent = label
+    button.setAttribute('data-mode', value)
+    button.addEventListener('click', event => {
+      if (event && event.preventDefault) event.preventDefault()
+      if ($settings.get().backdropMode !== value) void setBackdropMode(value)
+    })
+    modeButtons[value] = button
+    mode.appendChild(button)
+  }
 
-  const hide = panelButton('✕', 'Hide panel (status tray only)', () => setPanelEnabled(false))
+  const power = doc.createElement('button')
+  power.type = 'button'
+  power.className = 'ap-power'
+  power.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    const live = $live.get()
+    const on = live.ok ? live.enabled === true : $settings.get().enabled
+    void setEnabled(!on)
+  })
+
   const spacer = doc.createElement('span')
   spacer.className = 'ap-spacer'
 
   head.appendChild(name)
+  head.appendChild(mode)
   head.appendChild(spacer)
-  head.appendChild(collapse)
-  head.appendChild(hide)
+  head.appendChild(power)
 
+  // ---- stage -------------------------------------------------------------
   const body = doc.createElement('div')
   body.className = 'ap-body'
 
@@ -3555,6 +3644,19 @@ function mountPanelInto(hostNode) {
   hint.className = 'ap-hint'
   hint.textContent = 'No film playing'
   stage.appendChild(hint)
+
+  // ---- transport, full size, directly under the picture ------------------
+  const controls = doc.createElement('div')
+  controls.className = 'ap-controls'
+
+  const transport = doc.createElement('div')
+  transport.className = 'ap-transport'
+  const prev = panelButton('⏮', 'Previous (episode in a playlist, else previous source)', () => videoCommand('prev'))
+  const back = panelButton('⏪', 'Back 10 seconds', () => videoCommand('seek', -10))
+  const play = panelButton('▶', 'Play', () => videoCommand('toggle'), true)
+  const fwd = panelButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10))
+  const next = panelButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next'))
+  for (const node of [prev, back, play, fwd, next]) transport.appendChild(node)
 
   const scrub = doc.createElement('div')
   scrub.className = 'ap-scrub'
@@ -3577,39 +3679,102 @@ function mountPanelInto(hostNode) {
     postToBackdrop({ cmd: 'seekTo', value: ratio * state.duration })
   })
 
-  const transport = doc.createElement('div')
-  transport.className = 'ap-transport'
-  const prev = panelButton('⏮', 'Previous (episode in a playlist, else previous source)', () => videoCommand('prev'))
-  const back = panelButton('⏪', 'Back 10 seconds', () => videoCommand('seek', -10))
-  const play = panelButton('▶', 'Play', () => videoCommand('toggle'), true)
-  const fwd = panelButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10))
-  const next = panelButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next'))
-  for (const node of [prev, back, play, fwd, next]) transport.appendChild(node)
+  // ---- volume + where the picture lives ----------------------------------
+  const bar = doc.createElement('div')
+  bar.className = 'ap-row'
 
-  const list = doc.createElement('div')
-  list.className = 'ap-list'
+  const volIcon = doc.createElement('span')
+  volIcon.className = 'ap-icon'
+  volIcon.setAttribute('aria-hidden', 'true')
+  volIcon.textContent = '\u{1F50A}'
 
-  const foot = doc.createElement('div')
-  foot.className = 'ap-foot'
   const vol = doc.createElement('input')
   vol.type = 'range'
   vol.min = '0'
   vol.max = '100'
   vol.step = '1'
+  vol.className = 'ap-volume'
   vol.setAttribute('aria-label', 'Volume')
   vol.addEventListener('input', event => {
     setVideoVolume(Number(event && event.target ? event.target.value : 70) / 100)
   })
-  foot.appendChild(vol)
-  foot.appendChild(panelButton('⧉', 'Pop out or bring back', () => { void toggleDesktopWindow() }))
 
-  for (const node of [stage, scrub, transport, list, foot]) body.appendChild(node)
+  const watch = doc.createElement('button')
+  watch.type = 'button'
+  watch.className = 'ap-watch'
+  watch.textContent = '⧉'
+  watch.setAttribute('aria-label', 'Watch window')
+  watch.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    void setDesktopWindow($settings.get().videoWindow !== true)
+  })
+
+  for (const node of [volIcon, vol, watch]) bar.appendChild(node)
+
+  // ---- film settings, right under the film -------------------------------
+  const settingsBox = doc.createElement('div')
+  settingsBox.className = 'ap-settings'
+
+  const sourceRow = doc.createElement('label')
+  sourceRow.className = 'ap-field'
+  const sourceLabel = doc.createElement('span')
+  sourceLabel.className = 'ap-field-label'
+  sourceLabel.textContent = 'Source'
+  const source = doc.createElement('select')
+  source.className = 'aura-select ap-select'
+  source.setAttribute('aria-label', 'Video source')
+  source.addEventListener('change', event => {
+    void applyVideoSource(event && event.target ? String(event.target.value) : '')
+  })
+  sourceRow.appendChild(sourceLabel)
+  sourceRow.appendChild(source)
+
+  const opacityRow = doc.createElement('div')
+  opacityRow.className = 'ap-field'
+  const opacityLabel = doc.createElement('span')
+  opacityLabel.className = 'ap-field-label'
+  opacityLabel.textContent = 'Film see-through'
+  const opacityButtons = doc.createElement('div')
+  opacityButtons.className = 'ap-pills'
+  const opacityPills = []
+  for (const preset of VIDEO_OPACITY_PRESETS) {
+    const pill = doc.createElement('button')
+    pill.type = 'button'
+    pill.className = 'ap-pill'
+    pill.textContent = `${preset}%`
+    pill.setAttribute('aria-label', `${preset}% film see-through`)
+    pill.addEventListener('click', event => {
+      if (event && event.preventDefault) event.preventDefault()
+      setVideoOpacity(preset / 100)
+    })
+    opacityPills.push([preset, pill])
+    opacityButtons.appendChild(pill)
+  }
+  opacityRow.appendChild(opacityLabel)
+  opacityRow.appendChild(opacityButtons)
+
+  settingsBox.appendChild(sourceRow)
+  settingsBox.appendChild(opacityRow)
+
+  // ---- the shelf ---------------------------------------------------------
+  const list = doc.createElement('div')
+  list.className = 'ap-list'
+
+  for (const node of [controls, settingsBox, list]) body.appendChild(node)
+  controls.appendChild(transport)
+  controls.appendChild(scrub)
+  controls.appendChild(bar)
+
   panel.appendChild(head)
+  panel.appendChild(stage)
   panel.appendChild(body)
   hostNode.appendChild(panel)
 
   panelEl = panel
-  panelParts = { panel, body, stage, hint, track, fill, time, play, list, vol, collapse }
+  panelParts = {
+    panel, body, stage, hint, track, fill, time, play, list, vol,
+    power, modeButtons, watch, source, opacityPills, opacityButtons
+  }
   syncPanel(true)
 }
 
@@ -3641,20 +3806,65 @@ function syncPanel(force) {
   if (!parts) return
   const settings = $settings.get()
   const state = $video.get()
-  const collapsed = settings.panelCollapsed === true
-  if (parts.panel.getAttribute('data-collapsed') !== (collapsed ? 'true' : 'false')) {
-    parts.panel.setAttribute('data-collapsed', collapsed ? 'true' : 'false')
-    if (doc.body.classList && typeof doc.body.classList.toggle === 'function') {
-      // (no body padding: see the CSS note)
+  // header: which mode is live, and whether Aura is on at all
+  const liveNow = $live.get()
+  const auraOn = liveNow.ok ? liveNow.enabled === true : settings.enabled
+  if (parts.power) {
+    const label = auraOn ? 'Aura on — click to turn off' : 'Aura off — click to turn on'
+    if (parts.power.getAttribute('aria-label') !== label) {
+      parts.power.setAttribute('aria-label', label)
+      parts.power.title = label
+    }
+    const flag = auraOn ? 'on' : 'off'
+    if (parts.power.getAttribute('data-on') !== flag) {
+      parts.power.setAttribute('data-on', flag)
+      parts.power.textContent = auraOn ? 'On' : 'Off'
     }
   }
-  if (parts.collapse) {
-    const glyph = collapsed ? '›' : '‹'
-    const label = collapsed ? 'Expand panel' : 'Collapse panel'
-    if (parts.collapse.textContent !== glyph) parts.collapse.textContent = glyph
-    if (parts.collapse.getAttribute('aria-label') !== label) {
-      parts.collapse.setAttribute('aria-label', label)
-      parts.collapse.title = label
+  for (const [value, button] of Object.entries(parts.modeButtons || {})) {
+    const active = settings.backdropMode === value ? 'true' : 'false'
+    if (button.getAttribute('data-active') !== active) button.setAttribute('data-active', active)
+  }
+
+  // film settings under the picture
+  if (parts.watch) {
+    const watching = settings.videoWindow === true
+    const flag = watching ? 'true' : 'false'
+    if (parts.watch.getAttribute('data-active') !== flag) {
+      parts.watch.setAttribute('data-active', flag)
+      parts.watch.title = watching ? 'Close the watch window' : 'Pop the film out into a window'
+    }
+  }
+  if (parts.source) {
+    // videoSourceOptions() returns <optgroup> elements; mirror them as real DOM.
+    const groups = videoSourceOptions(settings)
+    const signature = groups.map(group => group.props.label + ':' +
+      group.props.children.map(item => item.props.value).join(',')).join('~')
+    if (parts.source.dataset.signature !== signature) {
+      parts.source.dataset.signature = signature
+      while (parts.source.firstChild) parts.source.removeChild(parts.source.firstChild)
+      for (const group of groups) {
+        const box = doc.createElement('optgroup')
+        box.label = group.props.label
+        for (const item of group.props.children) {
+          const option = doc.createElement('option')
+          option.value = item.props.value
+          option.textContent = item.props.children
+          box.appendChild(option)
+        }
+        parts.source.appendChild(box)
+      }
+    }
+    if (typeof settings.videoUrl === 'string' && parts.source.value !== settings.videoUrl) {
+      parts.source.value = settings.videoUrl
+    }
+  }
+  if (parts.opacityPills) {
+    const auto = settings.videoOpacityAuto !== false
+    const current = Math.round(clamp01(settings.videoOpacity) * 100)
+    for (const [preset, pill] of parts.opacityPills) {
+      const active = !auto && current === preset ? 'true' : 'false'
+      if (pill.getAttribute('data-active') !== active) pill.setAttribute('data-active', active)
     }
   }
 
