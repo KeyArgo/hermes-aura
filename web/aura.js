@@ -484,7 +484,12 @@
 
   function stopPulse() {
     if (mood.pulse) { clearInterval(mood.pulse); mood.pulse = null; }
-    if (dom.glow) dom.glow.classList.remove('peak');
+    if (dom.glow) {
+      dom.glow.classList.remove('peak');
+      // The calm/reduced-motion wash is an inline var on the glow itself, so it
+      // outranks the level-driven one on #aura-root until it is dropped here.
+      dom.glow.style.removeProperty('--aura-glow');
+    }
   }
 
   function startPulse() {
