@@ -920,6 +920,9 @@ function pageKey() {
  * the frame ever takes focus, hand it straight back.
  */
 let lastCaretEl = null
+// A contenteditable can hold focus and still have no caret range; every key
+// then lands in nothing and the field looks dead. Remember the range too.
+let lastCaretRange = null
 
 const focusTrace = []
 
@@ -952,6 +955,12 @@ function rememberCaret(event) {
   if (focusTrace.length > 8) focusTrace.shift()
   if (target === backdropEl) return
   if (typeof target.focus === 'function') lastCaretEl = target
+  try {
+    const sel = doc.getSelection ? doc.getSelection() : null
+    lastCaretRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null
+  } catch {
+    lastCaretRange = null
+  }
 }
 
 function releaseBackdropFocus(event) {
@@ -967,6 +976,13 @@ function releaseBackdropFocus(event) {
   if (caret && caret.isConnected !== false && typeof caret.focus === 'function') {
     try {
       caret.focus()
+      if (lastCaretRange) {
+        const sel = doc.getSelection ? doc.getSelection() : null
+        if (sel) {
+          sel.removeAllRanges()
+          sel.addRange(lastCaretRange)
+        }
+      }
     } catch {
       // the field went away while the film was starting
     }
