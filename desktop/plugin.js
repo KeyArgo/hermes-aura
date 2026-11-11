@@ -3686,7 +3686,7 @@ function mountPanelInto(hostNode) {
   const volIcon = doc.createElement('span')
   volIcon.className = 'ap-icon'
   volIcon.setAttribute('aria-hidden', 'true')
-  volIcon.textContent = '\u{1F50A}'
+  volIcon.textContent = '🔊'
 
   const vol = doc.createElement('input')
   vol.type = 'range'
@@ -5032,7 +5032,7 @@ function AuraQuickMenu() {
                     jsx('span', {
                       'aria-hidden': true,
                       style: { fontSize: 11, color: 'var(--ui-text-tertiary)' },
-                      children: '\\u{1F50A}'
+                      children: '🔊'
                     }),
                     jsx('input', {
                       type: 'range', min: 0, max: 100, step: 1,
