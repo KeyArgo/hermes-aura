@@ -810,6 +810,17 @@
   // --- end shuffle bag ---
   const presetBag = createPresetShuffleBag(Math.random);
 
+  function useVendoredPresets() {
+    // Fall back to the vendored preset pack; no network, still works offline.
+    const map = presetMap();
+    if (!map) return;
+    catalog.presets = Object.keys(map).sort().slice(0, 20)
+      .map((name) => ({ name, family: 'misc', strobe: false, beat: 0 }));
+    catalog.byName = Object.create(null);
+    for (const p of catalog.presets) catalog.byName[p.name] = p;
+    catalog.default = catalog.presets[0] ? catalog.presets[0].name : null;
+  }
+
   async function loadCatalog() {
     try {
       const res = await fetchWithTimeout('presets.json', { headers: { Accept: 'application/json' } });
@@ -828,15 +839,13 @@
       catalog.default = typeof data.default === 'string' ? data.default : null;
     } catch (e) {
       recordError(e);
-      // Fall back to the vendored preset pack; no network, still works offline.
-      const map = presetMap();
-      if (map) {
-        catalog.presets = Object.keys(map).sort().slice(0, 20)
-          .map((name) => ({ name, family: 'misc', strobe: false, beat: 0 }));
-        catalog.byName = Object.create(null);
-        for (const p of catalog.presets) catalog.byName[p.name] = p;
-        catalog.default = catalog.presets[0] ? catalog.presets[0].name : null;
-      }
+    }
+    if (!catalog.presets.length) {
+      // A catalog that loaded but has nothing playable in it is a load failure
+      // too: with an empty catalog no preset can ever be picked, so the canvas
+      // would stay a blank frame with no message.
+      recordError('presets.json offered no usable presets - using the vendored preset pack');
+      useVendoredPresets();
     }
   }
 
@@ -2473,6 +2482,8 @@
 
   window.__aura = {
     _getJson: getJson,
+    _loadCatalog: loadCatalog,
+    _catalog() { return { presets: catalog.presets.slice(), default: catalog.default }; },
     _setFetchTimeoutMs(ms) {
       fetchTimeoutMs = Number(ms) > 0 ? Number(ms) : 5000;
     },
