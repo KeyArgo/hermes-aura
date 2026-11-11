@@ -380,6 +380,7 @@ let overrideActive = false
 let lastAccentHex = null
 let lastAccentAt = 0
 let prevTheme = null
+let lastUserTheme = '' // last theme the host reported that is not our own
 let themeInfo = { name: '', accent: '' }
 let knownTheme = ''
 const disposers = []
@@ -1622,7 +1623,9 @@ function applyThemeIfOptedIn() {
   const before = themeInfo.name
   if (!before) return false // the probe has not mounted yet; it retries
   if (!requestTheme(THEME_NAME)) return false // refused rather than coerced
-  prevTheme = before
+  // What we owe the user is the theme they were wearing, never our own: the
+  // probe can still be reporting `aura-live` when Aura is switched back on.
+  prevTheme = before === THEME_NAME ? lastUserTheme : before
   $themeApplied.set(true)
   return true
 }
@@ -1630,8 +1633,9 @@ function applyThemeIfOptedIn() {
 function restoreTheme() {
   if (!$themeApplied.get()) return
   $themeApplied.set(false)
-  const back = prevTheme
+  let back = prevTheme === THEME_NAME ? lastUserTheme : prevTheme
   prevTheme = null
+  if (back === THEME_NAME) back = null // asking to keep the Aura theme is no restore
   if (back) requestTheme(back)
 }
 
@@ -1664,6 +1668,7 @@ function onThemeName(name) {
   if (typeof name !== 'string' || !name || name === knownTheme) return
   const first = !knownTheme
   knownTheme = name
+  if (name !== THEME_NAME) lastUserTheme = name
   if (!first && overrideActive) {
     clearAccent(true)
   }
@@ -6398,6 +6403,7 @@ function teardown() {
   lastDesktopPlayer = null
   handoffPlayback = null
   prevTheme = null
+  lastUserTheme = ''
   themeInfo = { name: '', accent: '' }
   knownTheme = ''
   $settings.set({ ...DEFAULT_SETTINGS })
@@ -6440,6 +6446,7 @@ export default {
     lastAccentHex = null
     lastAccentAt = 0
     prevTheme = null
+    lastUserTheme = ''
     themeInfo = { name: '', accent: '' }
     knownTheme = ''
     // A previous instance (hot reload) may still own a pane registration.

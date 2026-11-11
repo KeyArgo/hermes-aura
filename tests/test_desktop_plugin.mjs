@@ -1179,6 +1179,47 @@ record('dispose of the disabled instance is clean', () => {
   assert.equal(th.contributions.length, 0)
 })
 
+// ------------------------------------------------------------- scenario E
+// The probe can still be reporting our own skin at the moment Aura re-applies,
+// so "previous theme" must come from the last theme the USER wore, never from
+// aura-live. Otherwise every switch-off asks the host to keep Aura's theme.
+
+sdk.themeState.name = 'nous'
+const own = makeCtx({ enabled: true, intensity: 0.5, themeOptIn: true })
+const disposeOwn = pluginModule.default.register(own.ctx)
+const probeOwn = own.contributions.find(c => c.area === 'titleBar.center')
+const enabledSwitch = () => findSettingsSwitches(
+  renderContribution(own.contributions.find(c => c.area === 'settings.plugins'))).enabled
+
+await recordAsync('never hands back the Aura theme as the user previous theme', async () => {
+  await sleep(20)                       // let register settle, as scenario B does
+  renderContribution(probeOwn)          // first report: the user is on "nous"
+  await sleep(20)
+  assert.equal(sdk.calls.themes.at(-1), 'aura-live', 'the opt-in did not apply')
+  sdk.themeState.name = 'aura-live'     // the host is now wearing our skin
+  renderContribution(probeOwn)
+  await sleep(20)
+
+  enabledSwitch().props.onCheckedChange(false) // off: hands "nous" back
+  await sleep(30)
+  assert.equal(sdk.calls.themes.at(-1), 'nous', 'switching off did not restore the user theme')
+
+  enabledSwitch().props.onCheckedChange(true)  // on again, probe still says aura-live
+  await sleep(30)
+  const beforeSecondOff = sdk.calls.themes.length
+  enabledSwitch().props.onCheckedChange(false)
+  await sleep(30)
+  assert.equal(sdk.calls.themes.length, beforeSecondOff + 1,
+    'switching off did not request a restore')
+  assert.equal(sdk.calls.themes.at(-1), 'nous',
+    'switching off handed back the Aura theme (recorded as the user previous theme)')
+})
+
+record('dispose of the themed instance is clean', () => {
+  disposeOwn()
+  assert.equal(own.contributions.length, 0)
+})
+
 // ------------------------------------------------------------- scenario C
 // Legacy glass keys are accepted but ignored; host glass is gone. The active
 // theme is deliberately NOT aura-live, so any mounted glass would prove the
