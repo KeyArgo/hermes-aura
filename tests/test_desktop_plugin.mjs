@@ -231,7 +231,7 @@ function makeCtx(settings) {
           ok: true,
           port: 4321,
           url: 'http://127.0.0.1:4321/?token=not-shown-in-ui',
-          capture: 'pipewire',
+          capture: settings && typeof settings.capture === 'string' ? settings.capture : 'pipewire',
           enabled: serverEnabled
         }
       }
@@ -2751,6 +2751,30 @@ record('URL field keeps edits but ignores an unchanged stale draft', () => {
   b.ref(node)
   assert.equal(node.value, 'https://example.test/b')
   dispose()
+})
+
+await recordAsync('the settings page says when a motion that needs audio has none', async () => {
+  sdk.themeState.name = 'nous'
+  const noCap = makeCtx({ enabled: true, motion: 'both', capture: 'none' })
+  const disposeNoCap = pluginModule.default.register(noCap.ctx)
+  const pollNoCap = noCap.timers.find(t => t.ms === 250)
+  if (pollNoCap) pollNoCap.fn()
+  await sleep(40)
+  const hinted = texts(renderContribution(noCap.contributions.find(c => c.area === 'settings.plugins')))
+  assert.ok(/No system audio found/.test(hinted),
+    'no hint with a motion that needs audio and capture:none')
+  assert.ok(/nothing is listening/.test(hinted), 'the hint does not say nothing listens')
+  disposeNoCap()
+
+  const agentOnly = makeCtx({ enabled: true, motion: 'agent', capture: 'none' })
+  const disposeAgent = pluginModule.default.register(agentOnly.ctx)
+  const pollAgent = agentOnly.timers.find(t => t.ms === 250)
+  if (pollAgent) pollAgent.fn()
+  await sleep(40)
+  const quiet = texts(renderContribution(agentOnly.contributions.find(c => c.area === 'settings.plugins')))
+  assert.equal(/No system audio found/.test(quiet), false,
+    'hint shown for a motion that never uses audio')
+  disposeAgent()
 })
 
 // --------------------------------------------------------------- reporting

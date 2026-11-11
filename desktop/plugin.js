@@ -262,6 +262,10 @@ const BEHAVIOR_LABELS = { calm: 'Calm', balanced: 'Balanced', intense: 'Intense'
 // it is no longer offered in the select. The four offered values are below.
 const MOTIONS = ['designs', 'both', 'music', 'agent', 'agent_music']
 const MOTION_OPTIONS = ['both', 'music', 'agent', 'agent_music']
+// Motions whose visuals are driven by real audio: with one of these chosen and
+// no capture backend, the stage is silently design-less and the user deserves
+// to be told rather than left guessing.
+const AUDIO_MOTIONS = ['both', 'music', 'agent_music']
 const MOTION_LABELS = {
   designs: 'Designs only (legacy)',
   both: 'Music, or gentle designs',
@@ -5842,6 +5846,19 @@ function AuraSettings() {
           })
         )
       }),
+      AUDIO_MOTIONS.includes(settings.motion) && settings.enabled && live.ok && live.capture === 'none'
+        ? jsx('div', {
+            key: 'no-capture',
+            'data-aura-hint': 'no-capture',
+            style: {
+              fontSize: 11,
+              color: 'var(--ui-text-tertiary)',
+              margin: '-4px 0 6px'
+            },
+            children:
+              'No system audio found, so nothing is listening. Pick “Agent activity” to animate without audio, or start playing something.'
+          })
+        : null,
       jsx('div', {
         key: 'show',
         children: row(
