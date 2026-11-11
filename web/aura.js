@@ -307,7 +307,11 @@
     const boost = 1 / scrim; // keeps effective gradient alpha at today's level
     if (dom.canvas) {
       // Aura off keeps its old dimmed look (0.35 of the chosen opacity).
-      dom.canvas.style.opacity = String(state.enabled ? o : o * 0.35);
+      const target = state.enabled ? o : o * 0.35;
+      // While the silence gate holds, the canvas must stay faded out: its
+      // drawing buffer is cleared, so revealing it here would paint an opaque
+      // black panel. Only audio (resumeVisual) restores the user's opacity.
+      dom.canvas.style.opacity = state.renderPaused ? '0' : String(target);
     }
     if (dom.scrim) {
       dom.scrim.style.opacity = String(scrim);
