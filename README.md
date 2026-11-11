@@ -1,5 +1,7 @@
 # Aura
 
+[![release](https://img.shields.io/github/v/release/KeyArgo/hermes-aura)](https://github.com/KeyArgo/hermes-aura/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Hermes Agent](https://img.shields.io/badge/Hermes%20Agent-%E2%89%A50.22.5-0b6e99)](https://github.com/NousResearch/hermes-agent) [![tests](https://img.shields.io/badge/tests-482%20passing-brightgreen)](.github/workflows/tests.yml) [![platforms](https://img.shields.io/badge/Linux%20%C2%B7%20Windows-supported-informational)](#limits-stated-plainly) [![stars](https://img.shields.io/github/stars/KeyArgo/hermes-aura?style=social)](https://github.com/KeyArgo/hermes-aura/stargazers)
+
 **A film behind your work, and an app that breathes with your audio.**
 
 ![Aura's MilkDrop-compatible visualiser reacting to music, with the agent mood shown top-left](docs/img/aura-visualiser.jpg)
