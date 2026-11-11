@@ -4455,7 +4455,16 @@ function AuraQuickMenu() {
             children: modeToggle(settings.backdropMode)
           }),
           row(
-            'Aura',
+            jsxs('span', {
+              key: 'label',
+              style: { display: 'inline-flex', alignItems: 'center', gap: 6 },
+              children: [
+                'Aura',
+                // Compact build chip: same source as Settings, small enough to
+                // sit beside the word in the menu.
+                jsx(VersionChip, { key: 'build', compact: true })
+              ]
+            }),
             jsx(Switch, {
               checked: settings.enabled,
               'aria-label': 'Aura enabled',
@@ -4878,9 +4887,7 @@ function AuraQuickMenu() {
                   style: { fontSize: 10, color: 'var(--ui-text-tertiary)' },
                   children: 'Aura'
                 }),
-              // The same chip the settings page and the pane use — never a
-              // second build line that could disagree with them.
-              jsx(VersionChip, { key: 'build' })
+
             ]
           })
         ]
@@ -5671,8 +5678,11 @@ function buildTitle(build) {
   ].filter(Boolean).join('\n')
 }
 
-/** The build chip: filled from the backend's /version, never from a number compiled in here. */
-function VersionChip() {
+/** The build chip: filled from the backend's /version, never from a number compiled in here.
+ *  `compact` is the status-menu variant: same source, version + short sha only, at 9px,
+ *  because the full line does not fit beside the word Aura in a popover. */
+function VersionChip(props) {
+  const compact = Boolean(props && props.compact === true)
   const build = useValue($build)
   const live = useValue($live)
   const [copyState, setCopyState] = useState('')   // '' | 'copied' | 'failed'
@@ -5685,7 +5695,10 @@ function VersionChip() {
       .catch(() => {})            // no guess beats a wrong number
     return () => { alive = false }
   }, [live.ok])
-  const line = buildLine(build)
+  const sha = build.commit_short || build.commit || ''
+  const line = compact
+    ? ['v' + build.version].concat(sha ? [String(sha).slice(0, 8)] : []).join(' · ')
+    : buildLine(build)
   if (!line) return null
   const label = copyState === 'copied' ? 'copied ✓' : copyState === 'failed' ? 'copy failed' : line
   return jsx('button', {
@@ -5699,9 +5712,15 @@ function VersionChip() {
     },
     style: {
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-      fontSize: 10.5, padding: '1px 7px', borderRadius: 999,
+      fontSize: compact ? 9 : 10.5,
+      padding: compact ? '0px 5px' : '1px 7px',
+      lineHeight: compact ? '13px' : undefined,
+      letterSpacing: compact ? 0 : undefined,
+      borderRadius: 999,
       border: '1px solid var(--ui-stroke-secondary)', background: 'transparent',
       cursor: 'pointer', whiteSpace: 'nowrap',
+      maxWidth: compact ? 132 : undefined,
+      overflow: 'hidden', textOverflow: 'ellipsis',
       color: copyState === 'failed' ? '#e05a5a'
         : copyState === 'copied' ? 'var(--ui-accent)'
         : build.dirty ? '#e8a33d' : 'var(--ui-text-tertiary)',
