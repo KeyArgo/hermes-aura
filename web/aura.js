@@ -237,11 +237,24 @@
     recordError((e.reason && e.reason.message) || e.reason || 'unhandled rejection');
   });
 
+  // Every same-origin request is bounded. The page is served by this same
+  // server, so an endpoint that stops answering is wedged rather than slow, and
+  // an unbounded request would stall boot() before connect() - a dark stage
+  // with a perfectly healthy /api/stream and no way back.
+  let fetchTimeoutMs = 5000;
+
+  function fetchWithTimeout(path, opts) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), fetchTimeoutMs);
+    const init = Object.assign({}, opts, { signal: controller.signal });
+    return fetch(path, init).finally(() => clearTimeout(timer));
+  }
+
   async function getJson(path, opts) {
     const headers = Object.assign({ Accept: 'application/json' }, (opts && opts.headers) || {});
     if (TOKEN) headers.Authorization = 'Bearer ' + TOKEN;
     try {
-      const res = await fetch(path, Object.assign({}, opts, { headers }));
+      const res = await fetchWithTimeout(path, Object.assign({}, opts, { headers }));
       let body = null;
       try { body = await res.json(); } catch (_) { body = null; }
       return { status: res.status, ok: res.ok, json: body };
@@ -254,7 +267,7 @@
     const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
     if (TOKEN) headers.Authorization = 'Bearer ' + TOKEN;
     try {
-      const res = await fetch('/api/control', {
+      const res = await fetchWithTimeout('/api/control', {
         method: 'POST',
         headers,
         body: JSON.stringify(payload)
@@ -794,7 +807,7 @@
 
   async function loadCatalog() {
     try {
-      const res = await fetch('presets.json', { headers: { Accept: 'application/json' } });
+      const res = await fetchWithTimeout('presets.json', { headers: { Accept: 'application/json' } });
       if (!res.ok) throw new Error('presets.json ' + res.status);
       const data = await res.json();
       const list = Array.isArray(data.presets) ? data.presets : [];
@@ -2454,6 +2467,10 @@
   // ---------------------------------------------------------------------------
 
   window.__aura = {
+    _getJson: getJson,
+    _setFetchTimeoutMs(ms) {
+      fetchTimeoutMs = Number(ms) > 0 ? Number(ms) : 5000;
+    },
     snapshot() {
       return {
         ready: state.ready,
