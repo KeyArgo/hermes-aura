@@ -151,6 +151,9 @@ function makeCtx(settings) {
   // /control {enabled} actually applied, so off really stays off. The display
   // controls are mirrored too, so /state is a truthful server source.
   let serverEnabled = settings && typeof settings.enabled === 'boolean' ? settings.enabled : true
+  // The OS film window: available means the host can give us a real window.
+  let windowAvailable = true
+  let windowOpen = false
   const serverSettings = {
     motion: settings && typeof settings.motion === 'string' ? settings.motion : 'agent_music',
     behavior: settings && typeof settings.behavior === 'string' ? settings.behavior : 'balanced',
@@ -257,6 +260,18 @@ function makeCtx(settings) {
         if (options.body && typeof options.body.reduced_motion === 'boolean') serverSettings.reduced_motion = options.body.reduced_motion
         return { ok: true }
       }
+          if (route === '/window') {
+        return { ok: true, available: windowAvailable, open: windowOpen }
+      }
+      if (route === '/window/open') {
+        if (!windowAvailable) return { ok: false, error: 'window unavailable' }
+        windowOpen = true
+        return { ok: true, open: true, url: options.body ? options.body.url : '' }
+      }
+      if (route === '/window/close') {
+        windowOpen = false
+        return { ok: true, window: { open: false }, closed: true }
+      }
       if (route === '/version') {
         return {
           version: '1.2.3',
@@ -271,7 +286,11 @@ function makeCtx(settings) {
     }
   }
 
-  return { ctx, contributions, timers, controls, disposers, listeners, requests, storage, serverSettings, serverFrame }
+  return {
+    ctx, contributions, timers, controls, disposers, listeners, requests, storage, serverSettings, serverFrame,
+    windowState: () => ({ available: windowAvailable, open: windowOpen }),
+    setWindowAvailable: value => { windowAvailable = value }
+  }
 }
 
 // -------------------------------------------------------------- static checks
@@ -2474,6 +2493,20 @@ record('readPositions preserves a playlist episode videoId for resume', () => {
   })
   assert.equal(out[listUrl].videoId, 'ep4abcdefgh', 'the playlist episode id was dropped')
   assert.equal(out['https://example.com/film.mp4'].videoId, '', 'a non-string videoId was not discarded')
+})
+
+record('a pop-out resolves to ONE surface, never both at once', () => {
+  // Owner: "popping out does both a pop out in hermes while trying to pop out
+  // outside of hermes." The in-app frame and the OS window are alternatives:
+  // the OS window wins only when the host offers one AND it actually opened.
+  assert.equal(tx.popoutSurface(true, true), 'desktop', 'an opened OS window lost to the in-app frame')
+  assert.equal(tx.popoutSurface(true, false), 'inline', 'a failed OS window left no surface')
+  assert.equal(tx.popoutSurface(false, false), 'inline', 'unavailable host did not fall back')
+  // And the in-app frame is never switched on before the OS window is tried.
+  const fn = source.slice(source.indexOf('async function setDesktopWindow'), source.indexOf('async function toggleDesktopWindow'))
+  assert.ok(!/^\s{4}setVideoWindow\(true\)/m.test(fn.split('let available')[0]),
+    'setDesktopWindow still turns the in-app frame on before asking for a window')
+  assert.match(fn, /popoutSurface\(true, result\.open === true\) === 'desktop'/, 'the decision helper is not used')
 })
 
 record('a backdrop frame that takes focus gives the keyboard straight back', () => {

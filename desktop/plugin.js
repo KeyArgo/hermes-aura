@@ -1281,6 +1281,9 @@ async function pushControl(patch) {
 // The active window owns playback. The server snapshot is authoritative so
 // an agent-triggered open/close follows the same path as the buttons.
 let desktopOwned = false
+// A pop-out is in flight: the in-app frame is parked already, and stays parked
+// until we know whether a real window opened ("one or the other").
+let desktopPending = false
 let playerCursor = null
 let playerReportAt = 0
 let playerReportKey = ''
@@ -1368,31 +1371,64 @@ function restoreDesktopPlayback(player) {
 }
 let handoffPlayback = null
 
+/** The page's pop-out control doubles as "bring it back" while the film is
+ *  out — in the small in-app frame or in a real OS window. */
+function popoutBackLabel() {
+  return videoWindowOn() || desktopOwned || desktopPending ? 'Bring back' : 'Pop out'
+}
+
+/** Which surface a pop-out gets: the OS window when the host can give one and
+ *  it actually opened, otherwise the small in-app frame. Never both — the two
+ *  players are alternatives (owner: "there should be one or the other"). */
+function popoutSurface(available, opened) {
+  return available === true && opened === true ? 'desktop' : 'inline'
+}
+
 async function setDesktopWindow(on) {
   if (on) {
-    setVideoWindow(true)
+    // An OS window and the in-app frame are ALTERNATIVES, never both. Popping
+    // out used to switch the in-app frame on first and then also open the OS
+    // window, so one click produced two players on two surfaces. Ask the host
+    // whether it can give us a real window, try that, and only settle for the
+    // in-app frame when the answer is no.
+    // Park the in-app film before the first await: one click must never show
+    // two players, not even for the length of an HTTP request.
+    desktopPending = true
+    applyBackdropLayout()
+    let available = true
     try {
       const status = await ctxRef.rest('/window', { timeoutMs: 4000 })
-      if (status && status.ok === true && status.available === false) {
-        note('Using the in-app watch window', 5000)
+      if (status && status.ok === true && status.available === false) available = false
+    } catch { /* unknown: try to open, and fall back below */ }
+    if (available) {
+      const previousPlayer = { ...$video.get(), url: $settings.get().videoUrl || '' }
+      const result = await openDesktopWindow()
+      desktopPending = false
+      if (popoutSurface(true, result.open === true) === 'desktop') {
+        if (!desktopOwned) lastDesktopPlayer = previousPlayer
+        desktopOwned = true
+        // The window owns the picture now; park the in-app one.
+        if (videoWindowOn()) setVideoWindow(false)
         return
       }
-    } catch { /* try opening; a failed request falls back below */ }
-    const previousPlayer = { ...$video.get(), url: $settings.get().videoUrl || '' }
-    const result = await openDesktopWindow()
-    if (result.open) {
-      if (!desktopOwned) lastDesktopPlayer = previousPlayer
-      desktopOwned = true
-      return
     }
+    desktopPending = false
+    setVideoWindow(true)
     note('Using the in-app watch window', 5000)
   } else if (desktopOwned) {
     const result = await closeDesktopWindow()
     if (!result.error) await syncPlayerOwnership()
-  } else setVideoWindow(false)
+    desktopPending = false
+    applyBackdropLayout()
+  } else {
+    // Nothing is out there: bring the in-app film back, and stop pretending a
+    // pop-out is still in flight.
+    desktopPending = false
+    setVideoWindow(false)
+  }
 }
 async function toggleDesktopWindow() {
-  await setDesktopWindow(!(desktopOwned || videoWindowOn()))
+  await setDesktopWindow(!(desktopOwned || desktopPending || videoWindowOn()))
 }
 
 // ------------------------------------------------- desktop window (pop-out)
@@ -2792,6 +2828,15 @@ function applyBackdropLayout() {
   if (windowDrag) return
   const style = backdropEl.style
   const current = $settings.get()
+  // A popped-out OS window owns the picture: the in-app frame is parked, not
+  // shrunk into a corner. One film, one surface.
+  if (desktopOwned || desktopPending) {
+    style.display = 'none'
+    style.width = '0px'
+    style.height = '0px'
+    return
+  }
+  style.display = ''
   // The full page's stage outranks everything: it is the one place the film is
   // meant to be watched, and the page is only open while the user is there.
   if (pageVisible() && current.backdropMode === 'video' && !current.videoClosed) {
@@ -5077,6 +5122,26 @@ function AuraQuickMenu() {
                     onCheckedChange: value => setPanelEnabled(value)
                   })
                 ),
+                // Three surfaces, chosen on purpose: the Aura page, the small
+                // in-app frame, and a real OS window. The in-app switch and the
+                // pop-out button are separate so one never turns on the other.
+                row(
+                  'Small frame in Hermes',
+                  jsx(Switch, {
+                    checked: settings.videoWindow === true,
+                    'aria-label': 'Small frame in Hermes',
+                    onCheckedChange: value => setVideoWindow(value)
+                  })
+                ),
+                row(
+                  'Pop out to its own window',
+                  jsx(Button, {
+                    variant: 'default',
+                    size: 'sm',
+                    onClick: () => { void setDesktopWindow(true) },
+                    children: 'Open on a screen'
+                  })
+                ),
                 jsxs('div', {
                   key: 'videoFooter',
                   style: {
@@ -5104,8 +5169,8 @@ function AuraQuickMenu() {
                     }),
                     jsx(Switch, {
                       checked: settings.videoWindow === true,
-                      'aria-label': 'Watch window',
-                      onCheckedChange: value => { void setDesktopWindow(value) }
+                      'aria-label': 'Small frame in Hermes',
+                      onCheckedChange: value => { setVideoWindow(value) }
                     }),
                     jsx('select', { className: 'aura-select',
                       value: settings.videoWindowSize,
@@ -5740,7 +5805,7 @@ function AuraPage() {
         key: 'pop',
         size: 'micro',
         variant: settings.videoWindow === true ? 'default' : 'ghost',
-        'aria-label': settings.videoWindow === true ? 'Bring back' : 'Pop out',
+        'aria-label': popoutBackLabel() === 'Bring back' ? 'Bring back' : 'Pop out',
         title: settings.videoWindow === true
           ? 'Bring the film back onto this page'
           : 'Pop out — play in a floating window you can drag anywhere',
@@ -7007,5 +7072,10 @@ export const __test = {
   releaseBackdropFocus,
   // Tests hand in the frame they are working with; production sets it in
   // mountBackdrop.
-  setBackdropForTest: el => { backdropEl = el }
+  setBackdropForTest: el => { backdropEl = el },
+  // Popping out must produce ONE surface, not two (owner: "there should be
+  // one or the other").
+  setDesktopWindow,
+  setVideoWindow,
+  popoutSurface
 }
