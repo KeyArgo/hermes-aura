@@ -103,6 +103,9 @@
     behavior: DEFAULT_BEHAVIOR,
     behaviorProfile: Object.assign({}, BEHAVIOR_PROFILES[DEFAULT_BEHAVIOR]),
     motion: 'both',
+    // What the render gain does while the agent is idle or done (motion follows
+    // the agent): 'stop' dark, 'ember' a low glow, 'always' unchanged.
+    idleMotion: 'always',
     ambientFallback: false,
     // Agent-gated motion: tracked from the RAW mood stream, separate from the
     // mood visuals, so moodReactive=false never freezes agent mode.
@@ -161,9 +164,12 @@
     realGain: null,
     ambientGain: null,
     ambient: null,
-    mixTarget: ''
+    mixTarget: '',
+    mixGate: ''
   };
   const MOTIONS = ['designs', 'both', 'music', 'agent', 'agent_music'];
+  const IDLE_MOTIONS = ['stop', 'ember', 'always'];
+  const IDLE_EMBER_GAIN = 0.06;   // ember: a low glow while idle, never dark
   const MOTION_SILENCE_MS = 1500; // both: rest on designs after this much quiet
   const MOTION_FADE_S = 2;        // crossfade between real audio and designs
   // Raw moods that mean the agent is doing something. `done` counts until it
@@ -590,6 +596,8 @@
     startPulse();
     moodPresetHousekeeping(changed);
     updateMoodVisuals();
+    // A mood change may open or close the idle gate; re-ease the render gain.
+    applyMotionMix();
     updateMoodChip();
   }
 
@@ -1195,11 +1203,34 @@
   function applyMotionMix(immediate) {
     if (!audio.realGain || !audio.ambientGain) return;
     const target = desiredMix();
-    if (audio.mixTarget === target) return;
+    const gate = idleGate();
+    if (audio.mixTarget === target && audio.mixGate === gate) return;
     audio.mixTarget = target;
+    audio.mixGate = gate;
     const fade = immediate ? 0.01 : MOTION_FADE_S;
-    rampGain(audio.realGain.gain, target === 'real' ? 1 : 0, fade);
-    rampGain(audio.ambientGain.gain, target === 'ambient' ? 1 : 0, fade);
+    // The idle gate multiplies whichever source is live; it beats the source
+    // choice, and an attention mood already returned 1 from idleGate().
+    rampGain(audio.realGain.gain, (target === 'real' ? 1 : 0) * gate, fade);
+    rampGain(audio.ambientGain.gain, (target === 'ambient' ? 1 : 0) * gate, fade);
+  }
+
+  // Motion follows the agent: while the mood is idle or done, the render gain
+  // follows idle_motion. Precedence: an attention mood (approval/error) beats
+  // this gate; the gate beats the audio/design source choice.
+  function idleGate() {
+    if (ATTENTION.includes(mood.current)) return 1;
+    if (state.idleMotion === 'always') return 1;
+    if (mood.current !== 'idle' && mood.current !== 'done') return 1;
+    return state.idleMotion === 'stop' ? 0 : IDLE_EMBER_GAIN;
+  }
+
+  function setIdleMotionUI(value) {
+    const idleMotion = IDLE_MOTIONS.indexOf(value) !== -1 ? value : 'always';
+    if (idleMotion === state.idleMotion) return;
+    state.idleMotion = idleMotion;
+    if (dom.root) dom.root.dataset.idleMotion = idleMotion;
+    // Re-ease the live mix now: the mood may already be idle/done.
+    applyMotionMix();
   }
 
   function ambientActive() {
@@ -2139,6 +2170,9 @@
     if (typeof cfg.motion === 'string') {
       setMotionUI(cfg.motion);
     }
+    if (typeof cfg.idle_motion === 'string') {
+      setIdleMotionUI(cfg.idle_motion);
+    }
     if (typeof cfg.mood_reactive === 'boolean') setMoodReactiveUI(cfg.mood_reactive);
     if (typeof cfg.accent_pulse === 'boolean') setAccentPulseUI(cfg.accent_pulse);
     // A manually chosen preset arrives through the config event; preset
@@ -2518,6 +2552,8 @@
         behavior: state.behavior,
         behaviorProfile: Object.assign({}, state.behaviorProfile),
         motion: state.motion,
+        idleMotion: state.idleMotion,
+        idleGate: idleGate(),
         ambientFallback: state.ambientFallback,
         agentActive: state.agentActive,
         agentIdleSince: state.agentIdleSince,

@@ -150,6 +150,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   themeIdleRestore: true,
   windowVisual: false,
   motion: 'agent_music',
+  // What the render gain does while the agent is idle: stop / ember / keep going.
+  idleMotion: 'always',
   reducedMotion: false,
   showWhen: 'always',
   backdropMode: 'aura',
@@ -262,6 +264,12 @@ const BEHAVIOR_LABELS = { calm: 'Calm', balanced: 'Balanced', intense: 'Intense'
 // it is no longer offered in the select. The four offered values are below.
 const MOTIONS = ['designs', 'both', 'music', 'agent', 'agent_music']
 const MOTION_OPTIONS = ['both', 'music', 'agent', 'agent_music']
+const IDLE_MOTIONS = ['stop', 'ember', 'always']
+const IDLE_MOTION_LABELS = {
+  stop: 'Stop — go dark',
+  ember: 'Ember — a low glow',
+  always: 'Keep moving'
+}
 // Motions whose visuals are driven by real audio: with one of these chosen and
 // no capture backend, the stage is silently design-less and the user deserves
 // to be told rather than left guessing.
@@ -587,6 +595,7 @@ function readSettings(ctx) {
     if (typeof raw.themeIdleRestore === 'boolean') out.themeIdleRestore = raw.themeIdleRestore
     if (typeof raw.windowVisual === 'boolean') out.windowVisual = raw.windowVisual
     if (typeof raw.motion === 'string' && MOTIONS.includes(raw.motion)) out.motion = raw.motion
+    if (typeof raw.idleMotion === 'string' && IDLE_MOTIONS.includes(raw.idleMotion)) out.idleMotion = raw.idleMotion
     if (typeof raw.reducedMotion === 'boolean') out.reducedMotion = raw.reducedMotion
     if (typeof raw.showWhen === 'string' && SHOW_WHEN_OPTIONS.includes(raw.showWhen)) out.showWhen = raw.showWhen
     if (typeof raw.backdropMode === 'string' && BACKDROP_MODES.includes(raw.backdropMode)) out.backdropMode = raw.backdropMode
@@ -1751,6 +1760,15 @@ async function setOpacity(next) {
   const opacity = clamp01(next)
   writeSettings({ opacity })
   await pushControl({ opacity })
+}
+
+/** "While idle": what the visual does between agent turns. `always` is the
+ *  historical behaviour, so an existing install sees no change. */
+async function setIdleMotion(next) {
+  if (!ctxRef || disposed) return
+  const idleMotion = IDLE_MOTIONS.includes(next) ? next : 'always'
+  writeSettings({ idleMotion })
+  await pushControl({ idle_motion: idleMotion })
 }
 
 async function setMotion(next) {
@@ -5842,6 +5860,33 @@ function AuraSettings() {
             },
             children: motionChoices(settings).map(name =>
               jsx('option', { key: name, value: name, children: MOTION_LABELS[name] })
+            )
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'idle-motion',
+        children: row(
+          'While idle',
+          'Between agent turns: Stop goes dark, Ember leaves a low glow, Keep moving is unchanged. An attention mood (approval, error) always shows.',
+          jsx('select', { className: 'aura-select',
+            value: settings.idleMotion,
+            'aria-label': 'While idle',
+            style: {
+              font: 'inherit',
+              fontSize: 11,
+              color: 'var(--ui-text-primary)',
+              background: 'var(--ui-bg)',
+              border: '1px solid var(--ui-stroke-secondary)',
+              borderRadius: 6,
+              padding: '3px 6px'
+            },
+            onChange: event => {
+              const value = event && event.target ? String(event.target.value) : 'always'
+              void setIdleMotion(value)
+            },
+            children: IDLE_MOTIONS.map(name =>
+              jsx('option', { key: name, value: name, children: IDLE_MOTION_LABELS[name] })
             )
           })
         )

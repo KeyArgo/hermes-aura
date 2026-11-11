@@ -304,6 +304,56 @@ record('clears the accent override with setAccentOverride(null)', () =>
 record('polls at most 4 Hz (250 ms)', () => assert.match(source, /POLL_MS\s*=\s*250/))
 record('no user-facing "Left panel" remains', () => assert.doesNotMatch(source, /Left panel/))
 
+// ------------------------------------------------------- page: idle motion
+// web/aura.js is a browser IIFE. This pulls the shipped idleGate() out of the
+// file and runs it, so the precedence rules are exercised as written rather
+// than restated here.
+const AURA = path.join(ROOT, 'web', 'aura.js')
+const auraSource = fs.readFileSync(AURA, 'utf8')
+const gateMatch = /function idleGate\(\) \{[\s\S]*?\n  \}/.exec(auraSource)
+
+record('page ships an idleGate() for motion-follows-the-agent', () => {
+  assert.ok(gateMatch, 'no idleGate() in web/aura.js')
+  assert.match(auraSource, /const IDLE_MOTIONS = \['stop', 'ember', 'always'\]/)
+  assert.match(auraSource, /IDLE_EMBER_GAIN = 0\.06/)
+})
+
+record('page idle gate: attention beats the gate, working moods restore, idle/done follow the setting', () => {
+  assert.ok(gateMatch, 'no idleGate() in web/aura.js')
+  const makeGate = new Function('ATTENTION', 'mood', 'state', 'IDLE_EMBER_GAIN',
+    `${gateMatch[0]}\nreturn idleGate;`)
+  const gateFor = (idleMotion, moodName) =>
+    makeGate(['approval', 'error'], { current: moodName }, { idleMotion }, 0.06)()
+
+  // An attention mood beats the idle gate, whatever the setting says.
+  assert.equal(gateFor('stop', 'approval'), 1)
+  assert.equal(gateFor('stop', 'error'), 1)
+  assert.equal(gateFor('ember', 'approval'), 1)
+
+  // Idle and done follow the setting: dark for stop, a low ember for ember.
+  assert.equal(gateFor('stop', 'idle'), 0)
+  assert.equal(gateFor('stop', 'done'), 0)
+  assert.equal(gateFor('ember', 'idle'), 0.06)
+  assert.equal(gateFor('ember', 'done'), 0.06)
+
+  // Any working mood restores the render gain.
+  for (const working of ['thinking', 'tool', 'streaming']) {
+    assert.equal(gateFor('stop', working), 1, `${working} did not restore the gain`)
+    assert.equal(gateFor('ember', working), 1, `${working} did not restore the gain`)
+  }
+
+  // always never gates.
+  for (const moodName of ['idle', 'done', 'thinking', 'approval', 'error']) {
+    assert.equal(gateFor('always', moodName), 1)
+  }
+})
+
+record('page eases the gate through the existing gain ramp, not a new render path', () => {
+  assert.match(auraSource, /rampGain\(audio\.realGain\.gain, \(target === 'real' \? 1 : 0\) \* gate, fade\)/)
+  assert.match(auraSource, /rampGain\(audio\.ambientGain\.gain, \(target === 'ambient' \? 1 : 0\) \* gate, fade\)/)
+  assert.match(auraSource, /if \(typeof cfg\.idle_motion === 'string'\) \{\s*setIdleMotionUI\(cfg\.idle_motion\)/)
+})
+
 // --------------------------------------------------------------- temp module
 
 const tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'aura-plugin-test-'))
@@ -2775,6 +2825,37 @@ await recordAsync('the settings page says when a motion that needs audio has non
   assert.equal(/No system audio found/.test(quiet), false,
     'hint shown for a motion that never uses audio')
   disposeAgent()
+})
+
+await recordAsync('While idle offers Stop/Ember/Keep moving and pushes idle_motion', async () => {
+  sdk.themeState.name = 'nous'
+  const inst = makeCtx({ enabled: true })
+  const disposeInst = pluginModule.default.register(inst.ctx)
+  const findSelect = () => {
+    let sel = null
+    walk(renderContribution(inst.contributions.find(c => c.area === 'settings.plugins')), node => {
+      if (!sel && node.props && node.props['aria-label'] === 'While idle') sel = node
+    })
+    return sel
+  }
+
+  let sel = findSelect()
+  assert.ok(sel, 'no "While idle" select rendered')
+  const options = (sel.props.children || []).filter(Boolean).map(option => option.props)
+  assert.deepEqual(options.map(option => option.value), ['stop', 'ember', 'always'])
+  assert.equal(sel.props.value, 'always', 'idle motion should default to keep moving')
+
+  sel.props.onChange({ target: { value: 'stop' } })
+  await sleep(30)
+  assert.deepEqual(inst.controls.at(-1), { idle_motion: 'stop' })
+
+  sel = findSelect()
+  assert.equal(sel.props.value, 'stop', 'the select did not follow the saved value')
+
+  sel.props.onChange({ target: { value: 'ember' } })
+  await sleep(30)
+  assert.deepEqual(inst.controls.at(-1), { idle_motion: 'ember' })
+  disposeInst()
 })
 
 // --------------------------------------------------------------- reporting

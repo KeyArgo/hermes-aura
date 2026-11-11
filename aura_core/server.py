@@ -437,6 +437,7 @@ def _config_event() -> dict:
         "accent_pulse": bool(cfg["accent_pulse"]),
         "auto_preset": bool(cfg["auto_preset"]),
         "motion": cfg["motion"],
+        "idle_motion": cfg["idle_motion"],
         "behavior_profile": behavior.profile(cfg["behavior"]),
     }
 
@@ -1182,6 +1183,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "accent_pulse": bool(cfg["accent_pulse"]),
                 "auto_preset": bool(cfg["auto_preset"]),
                 "motion": cfg["motion"],
+                "idle_motion": cfg["idle_motion"],
                 "reduced_motion": bool(cfg["reduced_motion"]),
                 # [listen lane] The desktop half polls this; `None` means
                 # "nothing to do". The list carries every unapplied request in
@@ -1208,6 +1210,7 @@ class _Handler(BaseHTTPRequestHandler):
             "accent_pulse": bool(cfg["accent_pulse"]),
             "auto_preset": bool(cfg["auto_preset"]),
             "motion": cfg["motion"],
+            "idle_motion": cfg["idle_motion"],
             "behavior_profile": behavior.profile(cfg["behavior"]),
         }
 
@@ -1558,6 +1561,14 @@ def _validate_control(data) -> dict:
         if value not in config.MOTIONS:
             raise ValueError("bad_motion")
         applied["motion"] = value
+    if "idle_motion" in data:
+        value = data["idle_motion"]
+        if not isinstance(value, str):
+            raise ValueError("idle_motion_must_be_string")
+        value = value.strip().lower()
+        if value not in config.IDLE_MOTIONS:
+            raise ValueError("bad_idle_motion")
+        applied["idle_motion"] = value
     for toggle in ("mood_reactive", "accent_pulse", "auto_preset", "reduced_motion"):
         if toggle in data:
             if not isinstance(data[toggle], bool):
@@ -1571,7 +1582,7 @@ def _apply_control(data) -> dict:
     patch = {k: v for k, v in applied.items()
              if k in ("enabled", "intensity", "preset", "opacity", "behavior",
                       "mood_reactive", "accent_pulse", "auto_preset", "motion",
-                      "reduced_motion")}
+                      "idle_motion", "reduced_motion")}
     if patch:
         cfg = config.merge_config(patch)
         if "preset" in applied:

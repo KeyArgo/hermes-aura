@@ -472,6 +472,44 @@ def test_control_rejects_bad_reduced_motion(live, body):
     assert json_body(payload)["ok"] is False
 
 
+def test_idle_motion_defaults_to_always(live):
+    status, payload = http_call(live["port"], "GET", "/api/config", token=live["token"])
+    assert status == 200
+    assert json_body(payload)["idle_motion"] == "always"
+    assert server._config_event()["idle_motion"] == "always"
+    assert config.normalise({})["idle_motion"] == "always"
+    assert config.normalise({"idle_motion": "LOUD"})["idle_motion"] == "always"
+
+
+def test_control_accepts_idle_motion_and_persists_it(live, tmp_path):
+    status, payload = http_call(live["port"], "POST", "/api/control",
+                                token=live["token"], body={"idle_motion": "ember"})
+    assert status == 200
+    assert json_body(payload)["applied"] == {"idle_motion": "ember"}
+
+    stored = json.loads((tmp_path / "aura" / "config.json").read_text(encoding="utf-8"))
+    assert stored["idle_motion"] == "ember"
+
+    status, payload = http_call(live["port"], "GET", "/api/config", token=live["token"])
+    assert json_body(payload)["idle_motion"] == "ember"
+    assert server._config_event()["idle_motion"] == "ember"
+
+    status, payload = http_call(live["port"], "POST", "/api/control",
+                                token=live["token"], body={"idle_motion": "STOP"})
+    assert status == 200
+    assert json_body(payload)["applied"] == {"idle_motion": "stop"}
+    stored = json.loads((tmp_path / "aura" / "config.json").read_text(encoding="utf-8"))
+    assert stored["idle_motion"] == "stop"
+
+
+@pytest.mark.parametrize("body", [{"idle_motion": "dim"}, {"idle_motion": 1}, {"idle_motion": False}])
+def test_control_rejects_bad_idle_motion(live, body):
+    status, payload = http_call(live["port"], "POST", "/api/control",
+                                token=live["token"], body=body)
+    assert status == 400
+    assert json_body(payload)["ok"] is False
+
+
 def test_config_event_carries_display_controls(live):
     status, _ = http_call(live["port"], "POST", "/api/control", token=live["token"],
                           body={"opacity": 0.4, "behavior": "intense"})

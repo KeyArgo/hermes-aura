@@ -43,6 +43,9 @@ DEFAULTS = {
     # Motion source for the visualizer: ambient designs, real audio, both, or
     # the agent's own activity (optionally alongside music).
     "motion": "agent_music",
+    # What the render gain does while the agent is idle (mood idle/done):
+    # stop -> dark, ember -> a low ember glow, always -> unchanged.
+    "idle_motion": "always",
 }
 
 BEHAVIORS = ("calm", "balanced", "intense")
@@ -50,6 +53,7 @@ BEHAVIORS = ("calm", "balanced", "intense")
 # longer offers it. The agent values gate the ambient designs on the raw mood
 # stream (see CONTRACT.md §9.1).
 MOTIONS = ("designs", "both", "music", "agent", "agent_music")
+IDLE_MOTIONS = ("stop", "ember", "always")
 
 _lock = threading.RLock()
 
@@ -185,6 +189,12 @@ def _as_motion(value, default):
     return default
 
 
+def _as_idle_motion(value, default):
+    if isinstance(value, str) and value.strip().lower() in IDLE_MOTIONS:
+        return value.strip().lower()
+    return default
+
+
 def normalise(raw) -> dict:
     """Return a fully-populated, type-safe config dict from arbitrary input."""
     cfg = dict(DEFAULTS)
@@ -201,6 +211,7 @@ def normalise(raw) -> dict:
     cfg["accent_pulse"] = _as_bool(raw.get("accent_pulse"), DEFAULTS["accent_pulse"])
     cfg["auto_preset"] = _as_bool(raw.get("auto_preset"), DEFAULTS["auto_preset"])
     cfg["motion"] = _as_motion(raw.get("motion"), DEFAULTS["motion"])
+    cfg["idle_motion"] = _as_idle_motion(raw.get("idle_motion"), DEFAULTS["idle_motion"])
     return cfg
 
 
