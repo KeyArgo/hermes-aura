@@ -2068,7 +2068,10 @@ record('the page renders the player, the setup and the REVamp card', () => {
     assert.ok(pageAria(tree, label), `the page is missing "${label}"`)
   }
   assert.ok(pageAria(tree, 'Aura enabled'), 'the page does not render AuraSettings')
-  assert.ok(pageAria(tree, 'Visual behind the app'), 'the page does not render the full setup')
+  // This page is Video mode: the visualiser-only rows are hidden by the owner's
+  // rule, so "Visual behind the app" is deliberately absent here.
+  assert.equal(pageAria(tree, 'Visual behind the app'), null,
+    'a visualiser-only row leaked onto the film page')
   assert.match(body, /Aura setup/, 'the page has no setup section')
   assert.match(body, /Big Buck Bunny/, 'the page does not offer the starter sources')
   assert.match(body, /Winamp-style player for Hermes/, 'the REVamp card is missing')
@@ -2220,46 +2223,30 @@ await sleep(60)
 const sMenu = () => renderContribution(s.contributions.find(c => c.id === 'quick-menu'))
 const sSettings = () => renderDeep(renderContribution(s.contributions.find(c => c.area === 'settings.plugins')))
 
-record('video mode greys Style, Intensity, Aura Transparency and Gentle motion (quick menu)', () => {
+record('video mode hides the Aura-visual rows instead of greying them (quick menu)', () => {
   const tree = sMenu()
-  for (const label of ['Style', 'Intensity', 'Transparency', 'Gentle motion (motion-sensitive)']) {
-    const control = findByAria(tree, label)
-    assert.ok(control, `quick menu is missing ${label}`)
-    assert.equal(control.props.disabled, true, `${label} is not disabled in video mode`)
+  // Owner's rule: with Video on, everything that only affects the visualiser is
+  // gone; with Visualizer on, everything that only affects the film is gone.
+  for (const label of ['Reacts to', 'Style', 'Intensity', 'Transparency', 'Gentle motion (motion-sensitive)', 'Show']) {
+    assert.equal(findByAria(tree, label), null, `${label} is still rendered in video mode`)
   }
-  for (const label of ['Style', 'Intensity', 'Transparency', 'Gentle motion (motion-sensitive)']) {
-    assert.equal(findByAria(tree, label).props.title,
-      'Applies to the Aura visual — switch Backdrop to Aura visual to change',
-      `${label} has no explanatory tooltip`)
-  }
-  const show = findByAria(tree, 'Show')
-  assert.equal(show.props.disabled, true, 'Show is not disabled in video mode')
-  assert.equal(show.props.title, 'A playing film always shows', 'Show has no film tooltip')
-  assert.equal(show.props.value, 'active', 'the stored Show value must not be rewritten')
   // The video's own transparency stays usable.
   const preset = findByAria(tree, '50% video transparency')
   assert.ok(preset, 'the video transparency presets vanished')
   assert.ok(!preset.props.disabled, 'video transparency must stay active in video mode')
-  assert.equal(s.storage.get('settings').showWhen, 'active', 'showWhen was rewritten by the lock')
+  assert.ok(findByAria(tree, 'Movie volume'), 'the volume slider vanished')
+  assert.equal(s.storage.get('settings').showWhen, 'active', 'showWhen was rewritten by hiding')
 })
 
-record('Settings greys the same Aura-visual controls and Show in video mode', () => {
+record('Settings hides the Aura-visual rows in video mode and offers the same switch', () => {
   const tree = sSettings()
-  for (const label of ['Behaviour profile', 'Reaction strength', 'Visual opacity', 'Gentle motion (motion-sensitive)']) {
-    const control = findByAria(tree, label)
-    assert.ok(control, `Settings is missing ${label}`)
-    assert.equal(control.props.disabled, true, `${label} is not disabled in video mode`)
-    assert.equal(control.props.title,
-      'Applies to the Aura visual — switch Backdrop to Aura visual to change',
-      `${label} has no explanatory tooltip`)
+  for (const label of ['Behaviour profile', 'Reaction strength', 'Visual opacity', 'Gentle motion (motion-sensitive)', 'Show']) {
+    assert.equal(findByAria(tree, label), null, `Settings still renders ${label} in video mode`)
   }
-  const show = findByAria(tree, 'Show')
-  assert.equal(show.props.disabled, true, 'Settings leaves Show active in video mode')
-  assert.equal(show.props.title, 'A playing film always shows', 'Settings Show has no film tooltip')
-  assert.equal(show.props.value, 'active', 'the stored Show value must not be rewritten')
+  assert.ok(findByAria(tree, 'Aura mode'), 'Settings has no mode switch')
   // Video transparency presets are still live.
   assert.ok(!findByAria(tree, '25% video transparency').props.disabled,
-    'video transparency was locked with the Aura controls')
+    'video transparency was hidden with the Aura controls')
   assert.equal(s.storage.get('settings').showWhen, 'active', 'Settings rewrote showWhen')
 })
 
@@ -2856,6 +2843,38 @@ await recordAsync('While idle offers Stop/Ember/Keep moving and pushes idle_moti
   await sleep(30)
   assert.deepEqual(inst.controls.at(-1), { idle_motion: 'ember' })
   disposeInst()
+})
+
+// ---------------------------------------------------- visualiser mode (last)
+// Registering a fresh context replaces the module's global settings, so this
+// block sits just before the report and after everything that expects video.
+const auraMode = makeCtx({
+  enabled: true,
+  backdropMode: 'aura',
+  showWhen: 'always',
+  intensity: 0.5,
+  panelEnabled: false,
+  windowVisual: true,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+pluginModule.default.register(auraMode.ctx)
+const auraMenuTree = renderContribution(auraMode.contributions.find(c => c.id === 'quick-menu'))
+
+record('visualiser mode keeps the visual rows and drops the film rows', () => {
+  for (const label of ['Reacts to', 'Intensity', 'Gentle motion (motion-sensitive)', 'Show']) {
+    assert.ok(findByAria(auraMenuTree, label), `${label} is missing in visualiser mode`)
+  }
+  for (const label of ['Movie volume', 'Watch window']) {
+    assert.equal(findByAria(auraMenuTree, label), null, `film-only row ${label} leaked into visualiser mode`)
+  }
+})
+
+record('the mode switch offers exactly Visualizer and Video', () => {
+  const group = findByAria(auraMenuTree, 'Aura mode')
+  assert.ok(group, 'no mode switch in the quick menu')
+  const body = texts(group)
+  assert.match(body, /Visualizer/, 'the switch has no Visualizer option')
+  assert.match(body, /Video/, 'the switch has no Video option')
 })
 
 // --------------------------------------------------------------- reporting

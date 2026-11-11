@@ -3211,12 +3211,6 @@ function panelCss() {
       display: inline-flex; align-items: center; justify-content: center;
     }
     .ap-head button:hover { background: rgba(255,255,255,0.16); }
-    .ap-chip {
-      appearance: none; border: 1px solid rgba(255,255,255,0.14); background: transparent; color: rgba(243,236,226,0.72);
-      font: 9.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 3px 6px; border-radius: 999px;
-      cursor: pointer; white-space: nowrap; max-width: 58%; overflow: hidden; text-overflow: ellipsis;
-    }
-    .ap-chip:hover { color: #f3ece2; border-color: rgba(255,255,255,0.3); }
     .ap-spacer { flex: 1; }
     .ap-body { display: flex; flex-direction: column; gap: 10px; position: relative; z-index: 1; min-height: 0; }
     .ap-stage {
@@ -3547,28 +3541,7 @@ function mountPanelInto(hostNode) {
   const spacer = doc.createElement('span')
   spacer.className = 'ap-spacer'
 
-  const chip = doc.createElement('button')
-  chip.type = 'button'
-  chip.className = 'ap-chip'
-  chip.title = 'Which build is this? Click to copy.'
-  chip.textContent = buildLine($build.get()) || 'build …'
-  chip.title = buildTitle($build.get()) || 'Which build is this? Click to copy.'
-  chip.addEventListener('click', async event => {
-    if (event && event.preventDefault) event.preventDefault()
-    const line = buildLine($build.get())
-    if (!line) return
-    // Say "copied" only when something was copied: a badge that lies is worse than no badge.
-    const copied = await copyText(line)   // exactly what the chip shows: v… · date · sha
-    chip.dataset.copied = copied ? '1' : 'failed'
-    chip.textContent = copied ? 'copied ✓' : 'copy failed'
-    setTimeout(() => {
-      delete chip.dataset.copied
-      if (chip.isConnected) chip.textContent = buildLine($build.get()) || 'build …'
-    }, 1400)
-  })
-
   head.appendChild(name)
-  head.appendChild(chip)
   head.appendChild(spacer)
   head.appendChild(collapse)
   head.appendChild(hide)
@@ -3636,7 +3609,7 @@ function mountPanelInto(hostNode) {
   hostNode.appendChild(panel)
 
   panelEl = panel
-  panelParts = { panel, body, stage, hint, track, fill, time, play, list, vol, chip, collapse }
+  panelParts = { panel, body, stage, hint, track, fill, time, play, list, vol, collapse }
   syncPanel(true)
 }
 
@@ -3685,10 +3658,6 @@ function syncPanel(force) {
     }
   }
 
-  const stamp = buildLine($build.get())
-  if (stamp && parts.chip && !parts.chip.dataset.copied && parts.chip.textContent !== stamp) {
-    parts.chip.textContent = stamp
-  }
   const glyph = state.playing ? '⏸' : '▶'
   if (parts.play.textContent !== glyph) parts.play.textContent = glyph
   parts.time.textContent = state.duration
@@ -4305,6 +4274,45 @@ function onDevStatsKeydown(event) {
  * dispose (via $menuOpen) and whenever a control is used it stays open like
  * the settings page so the user can stack changes.
  */
+/** Visualiser | Video. One at a time: picking either turns the other off, which
+ *  is what the owner asked for instead of a Backdrop drop-down buried among
+ *  unrelated rows. */
+function modeToggle(mode, compact) {
+  compact = compact === true
+  const option = (value, label) =>
+    jsx('button', {
+      type: 'button',
+      'aria-pressed': mode === value ? 'true' : 'false',
+      'data-active': mode === value ? 'true' : 'false',
+      onClick: () => {
+        if (mode !== value) void setBackdropMode(value)
+      },
+      style: {
+        appearance: 'none',
+        border: '1px solid ' + (mode === value ? 'var(--ui-accent)' : 'var(--ui-stroke-secondary)'),
+        background: mode === value ? 'var(--ui-accent)' : 'transparent',
+        color: mode === value ? 'var(--ui-accent-text, #1a1207)' : 'var(--ui-text-secondary)',
+        font: 'inherit',
+        fontSize: compact ? 11 : 12,
+        fontWeight: mode === value ? 600 : 500,
+        padding: compact ? '3px 10px' : '5px 14px',
+        borderRadius: 999,
+        cursor: mode === value ? 'default' : 'pointer',
+        whiteSpace: 'nowrap'
+      },
+      children: label
+    })
+  return jsx('div', {
+    role: 'group',
+    'aria-label': 'Aura mode',
+    style: {
+      display: 'inline-flex', alignItems: 'center', gap: 4, padding: 3,
+      borderRadius: 999, background: 'var(--ui-surface-secondary, rgba(127,127,127,0.12))'
+    },
+    children: [option('aura', 'Visualizer'), option('video', 'Video')]
+  })
+}
+
 function AuraQuickMenu() {
   const settings = useValue($settings)
   const live = useValue($live)
@@ -4441,6 +4449,11 @@ function AuraQuickMenu() {
           gap: 1
         },
         children: [
+          jsx('div', {
+            key: 'mode',
+            style: { display: 'flex', justifyContent: 'center', padding: '8px 12px 6px' },
+            children: modeToggle(settings.backdropMode)
+          }),
           row(
             'Aura',
             jsx(Switch, {
@@ -4451,6 +4464,12 @@ function AuraQuickMenu() {
               }
             })
           ),
+          settings.backdropMode === 'video'
+            ? null
+            : jsxs('div', {
+              key: 'visualRows',
+              style: { display: 'contents' },
+              children: [
           row(
             'Reacts to',
             jsx('select', { className: 'aura-select',
@@ -4558,21 +4577,9 @@ function AuraQuickMenu() {
                 jsx('option', { key: name, value: name, children: SHOW_WHEN_LABELS[name] })
               )
             })
-          ),
-          row(
-            'Backdrop',
-            jsx('select', { className: 'aura-select',
-              value: settings.backdropMode,
-              'aria-label': 'Backdrop mode',
-              style: selectStyle,
-              onChange: event => {
-                void setBackdropMode(event && event.target ? String(event.target.value) : 'aura')
-              },
-              children: BACKDROP_MODES.map(name =>
-                jsx('option', { key: name, value: name, children: BACKDROP_MODE_LABELS[name] })
-              )
-            })
-          ),
+          )
+              ]
+            }),
           settings.backdropMode === 'video'
             ? jsxs('div', {
               key: 'video',
@@ -4726,27 +4733,40 @@ function AuraQuickMenu() {
                     children: 'This site refuses to be embedded (Plex/Netflix web apps do). Paste a direct stream URL instead.'
                   })
                   : null,
-                row(
-                  'Volume',
-                  jsxs('div', {
-                    style: { display: 'flex', alignItems: 'center', gap: 6 },
-                    children: [
-                      jsx('input', {
-                        type: 'range', min: 0, max: 100, step: 1,
-                        value: Math.round(clamp01(settings.videoVolume) * 100),
-                        'aria-label': 'Movie volume',
-                        style: { width: 96, accentColor: 'var(--ui-accent)' },
-                        onChange: event => {
-                          setVideoVolume(Number(event && event.target ? event.target.value : 0) / 100)
-                        }
-                      }),
-                      jsx('span', {
-                        style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30, textAlign: 'right' },
-                        children: `${Math.round(clamp01(settings.videoVolume) * 100)}%`
-                      })
-                    ]
-                  })
-                ),
+                jsxs('div', {
+                  key: 'timeline',
+                  style: { padding: '2px 12px 6px', display: 'flex', flexDirection: 'column', gap: 4 },
+                  children: [
+                    jsx('input', {
+                      type: 'range', min: 0, max: Math.max(1, Math.round(videoState.duration || 0)),
+                      step: 1, value: Math.round(videoState.position || 0),
+                      'aria-label': 'Position in video',
+                      style: { width: '100%', accentColor: 'var(--ui-accent)' },
+                      onChange: event => {
+                        const to = Number(event && event.target ? event.target.value : 0)
+                        postToBackdrop({ cmd: 'seekTo', value: to })
+                      }
+                    }),
+                    jsxs('div', {
+                      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
+                      children: [
+                        jsx('span', {
+                          style: { fontSize: 11, color: 'var(--ui-text-tertiary)', fontVariantNumeric: 'tabular-nums' },
+                          children: `${fmtClock(videoState.position)} / ${fmtClock(videoState.duration)}`
+                        }),
+                        jsxs('div', {
+                          style: { display: 'flex', alignItems: 'center', gap: 2 },
+                          children: [
+                            jsx(Button, { size: 'micro', variant: 'ghost', 'aria-label': 'Back 1 minute',
+                              onClick: () => videoCommand('seek', -60), children: '-1m' }),
+                            jsx(Button, { size: 'micro', variant: 'ghost', 'aria-label': 'Forward 1 minute',
+                              onClick: () => videoCommand('seek', 60), children: '+1m' })
+                          ]
+                        })
+                      ]
+                    })
+                  ]
+                }),
                 row(
                   'Open / close',
                   jsx(Button, {
@@ -4758,36 +4778,6 @@ function AuraQuickMenu() {
                       else closeVideo()
                     },
                     children: settings.videoClosed ? 'Open video' : 'Close video'
-                  })
-                ),
-                row(
-                  'Position',
-                  jsxs('div', {
-                    style: { display: 'flex', alignItems: 'center', gap: 6 },
-                    children: [
-                      jsx('input', {
-                        type: 'range', min: 0, max: Math.max(1, Math.round(videoState.duration || 0)),
-                        step: 1, value: Math.round(videoState.position || 0),
-                        'aria-label': 'Position in video',
-                        style: { width: 118, accentColor: 'var(--ui-accent)' },
-                        onChange: event => {
-                          const to = Number(event && event.target ? event.target.value : 0)
-                          postToBackdrop({ cmd: 'seekTo', value: to })
-                        }
-                      }),
-                      jsx('span', {
-                        style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 64, textAlign: 'right' },
-                        children: `${fmtClock(videoState.position)} / ${fmtClock(videoState.duration)}`
-                      }),
-                      jsx(Button, {
-                        size: 'micro', variant: 'ghost', 'aria-label': 'Back 1 minute',
-                        onClick: () => videoCommand('seek', -60), children: '−1m'
-                      }),
-                      jsx(Button, {
-                        size: 'micro', variant: 'ghost', 'aria-label': 'Forward 1 minute',
-                        onClick: () => videoCommand('seek', 60), children: '+1m'
-                      })
-                    ]
                   })
                 ),
                 row(
@@ -4813,35 +4803,53 @@ function AuraQuickMenu() {
                     onCheckedChange: value => setPanelEnabled(value)
                   })
                 ),
-                row(
-                  'Watch window',
-                  jsxs('div', {
-                    style: { display: 'flex', alignItems: 'center', gap: 4 },
-                    children: [
-                      jsx(Switch, {
-                        checked: settings.videoWindow === true,
-                        'aria-label': 'Watch window',
-                        onCheckedChange: value => { void setDesktopWindow(value) }
-                      }),
-                      jsx('select', { className: 'aura-select',
-                        value: settings.videoWindowSize,
-                        'aria-label': 'Watch window size',
-                        style: { ...selectStyle, colorScheme: 'light' },
-                        onChange: event => {
-                          setVideoWindowSize(String(event && event.target ? event.target.value : 'medium'))
-                        },
-                        children: ['small', 'medium', 'large'].map(size =>
-                          jsx('option', {
-                            key: size,
-                            value: size,
-                            style: { background: '#f1f1f1', color: '#111111' },
-                            children: size
-                          })
-                        )
-                      })
-                    ]
-                  })
-                )
+                jsxs('div', {
+                  key: 'videoFooter',
+                  style: {
+                    display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px 8px',
+                    borderTop: '1px solid var(--ui-stroke-secondary)', marginTop: 2
+                  },
+                  children: [
+                    jsx('span', {
+                      'aria-hidden': true,
+                      style: { fontSize: 11, color: 'var(--ui-text-tertiary)' },
+                      children: '\\u{1F50A}'
+                    }),
+                    jsx('input', {
+                      type: 'range', min: 0, max: 100, step: 1,
+                      value: Math.round(clamp01(settings.videoVolume) * 100),
+                      'aria-label': 'Movie volume',
+                      style: { flex: 1, minWidth: 60, accentColor: 'var(--ui-accent)' },
+                      onChange: event => {
+                        setVideoVolume(Number(event && event.target ? event.target.value : 0) / 100)
+                      }
+                    }),
+                    jsx('span', {
+                      style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30, textAlign: 'right' },
+                      children: `${Math.round(clamp01(settings.videoVolume) * 100)}%`
+                    }),
+                    jsx(Switch, {
+                      checked: settings.videoWindow === true,
+                      'aria-label': 'Watch window',
+                      onCheckedChange: value => { void setDesktopWindow(value) }
+                    }),
+                    jsx('select', { className: 'aura-select',
+                      value: settings.videoWindowSize,
+                      'aria-label': 'Watch window size',
+                      style: { ...selectStyle, colorScheme: 'light' },
+                      onChange: event => {
+                        setVideoWindowSize(String(event && event.target ? event.target.value : 'medium'))
+                      },
+                      children: ['small', 'medium', 'large'].map(size =>
+                        jsx('option', {
+                          key: size, value: size,
+                          style: { background: '#f1f1f1', color: '#111111' },
+                          children: size
+                        })
+                      )
+                    })
+                  ]
+                })
               ]
             })
             : null,
@@ -5765,6 +5773,20 @@ function AuraSettings() {
         )
       }),
       jsx('div', {
+        key: 'mode',
+        children: row(
+          'Mode',
+          'Visualizer: the audio-reactive visual behind the app. Video: a film you choose, in the right-hand pane. One at a time — switching either turns the other off.',
+          modeToggle(settings.backdropMode, true)
+        )
+      }),
+      settings.backdropMode === 'video'
+        ? null
+        : jsxs('div', {
+          key: 'visualRows',
+          style: { display: 'contents' },
+          children: [
+      jsx('div', {
         key: 'intensity',
         children: row(
           'Reaction strength',
@@ -5932,34 +5954,9 @@ function AuraSettings() {
             )
           })
         )
-      }),
-      jsx('div', {
-        key: 'backdropMode',
-        children: row(
-          'Backdrop mode',
-          'Aura visual shows the audio-reactive visual. Video player shows a video you choose instead — YouTube links are embedded automatically, direct media files play inline, other URLs are framed as-is.',
-          jsx('select', { className: 'aura-select',
-            value: settings.backdropMode,
-            'aria-label': 'Backdrop mode',
-            style: {
-              font: 'inherit',
-              fontSize: 11,
-              color: 'var(--ui-text-primary)',
-              background: 'var(--ui-bg)',
-              border: '1px solid var(--ui-stroke-secondary)',
-              borderRadius: 6,
-              padding: '3px 6px'
-            },
-            onChange: event => {
-              const value = event && event.target ? String(event.target.value) : 'aura'
-              void setBackdropMode(value)
-            },
-            children: BACKDROP_MODES.map(name =>
-              jsx('option', { key: name, value: name, children: BACKDROP_MODE_LABELS[name] })
-            )
-          })
-        )
-      }),
+      })
+          ]
+        }),
       settings.backdropMode === 'video'
         ? jsxs('div', {
           key: 'videoUrl',
@@ -6215,6 +6212,12 @@ function AuraSettings() {
         key: 'revamp',
         children: RevampLine()
       }),
+      settings.backdropMode === 'video'
+        ? null
+        : jsxs('div', {
+          key: 'visualSettings',
+          style: { display: 'contents' },
+          children: [
       jsx('div', {
         key: 'behavior',
         children: row(
@@ -6299,7 +6302,11 @@ function AuraSettings() {
             onCheckedChange: value => setWindowVisual(value)
           })
         )
-      }),
+      })
+          ]
+        }),
+      // The pane switch is workspace furniture, not a visualiser control: it stays
+      // visible in both modes.
       jsx('div', {
         key: 'panel',
         children: row(
