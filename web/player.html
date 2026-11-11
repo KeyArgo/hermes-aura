@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Explicit policy so this document never inherits `no-referrer` from the host
+     app's backdrop iframe: YouTube refuses embeds with no Referer (error 153).
+     Cross-origin children only ever see this page's origin, never the token. -->
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Aura video backdrop</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  #stage iframe, #stage video {
+    position: fixed; inset: 0; width: 100vw; height: 100vh; border: 0;
+  }
+  #stage video { object-fit: contain; }
+  #hint {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 24px; text-align: center; pointer-events: none;
+    color: #cfc9ff; font: 14px/1.5 system-ui, -apple-system, sans-serif;
+    background: radial-gradient(circle at 50% 40%, #221d3d, #0b0a14 70%);
+  }
+  #hint[hidden] { display: none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="hint" hidden>No video URL provided. Set one in Aura settings.</div>
+<!-- [listen lane] The audio channel (music/radio) lives beside the film, not
+     inside it: one <audio> element with its own volume, so the video can be
+     muted while the music keeps playing. -->
+<script src="audio.js"></script>
+<script>
+(function () {
+  'use strict'
+
+  var params = new URLSearchParams(window.location.search)
+  var bootstrapTicket = params.get('ticket') || ''
+  if (bootstrapTicket) {
+    params.delete('ticket')
+    history.replaceState(null, '', location.pathname + '?' + params.toString())
+  }
+  var raw = (params.get('url') || '').trim()
+  // Where the film should start. The page owns this: it keeps asking the
+  // player to seek until the position actually sticks, because a freshly
+  // created player ignores commands for a while.
+  var resumeAt = Number(params.get('resume')) || 0
+  var resumeTries = 0
+  // Sound is ON by default: Aura reacts to the system loopback, so a muted
+  // backdrop gives it nothing to listen to. `mute=1` restores silent playback.
+  var muted = params.get('mute') === '1'
+  var stage = document.getElementById('stage')
+  var hint = document.getElementById('hint')
+  var host = window.parent && window.parent !== window ? window.parent : null
+
+  var frame = null       // the YouTube iframe, when there is one
+  var video = null       // the native <video>, when there is one
+  var kind = 'frame'     // 'youtube' | 'playlist' | 'video' | 'frame'
+  var state = {
+    playing: false, position: 0, duration: 0, muted: muted, title: '',
+    volume: 0.7, ended: false, videoId: '', blocked: false
+  }
+  var lastPost = 0
+
+  // Keep asking the player to go to the resume point until it sticks. A new
+  // player ignores commands until it is ready, and a blocked autoplay can delay
+  // that for seconds — which is exactly why resuming "worked sometimes".
+  function maybeResume(position) {
+    if (resumeAt <= 0) return false
+    if (Number.isFinite(position) && position >= resumeAt - 4) {
+      resumeAt = 0
+      return false
+    }
+    if (resumeTries > 40) {
+      resumeAt = 0
+      return false
+    }
+    resumeTries += 1
+    if (kind === 'video' && video) {
+      try { video.currentTime = resumeAt } catch (err) { /* metadata not ready */ }
+      return true
+    }
+    if (frame) {
+      youtubeCommand('seekTo', [resumeAt, true])
+      return true
+    }
+    return false
+  }
+
+  function isHttpUrl(value) {
+    return /^https?:\/\//i.test(value)
+  }
+
+  // Accepts watch?v=, youtu.be/, /embed/, /shorts/, /live/ and bare ids.
+  function youtubeId(value) {
+    var match = value.match(
+      /(?:youtube(?:-nocookie)?\.com\/(?:watch\?(?:[^#]*&)?v=|embed\/|shorts\/|live\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/
+    )
+    return match ? match[1] : ''
+  }
+
+  function isVideoFile(value) {
+    return /\.(mp4|webm|ogg|ogv|m4v|mov|m3u8)(?:[?#]|$)/i.test(value)
+  }
+
+  // --- reporting up to the app -------------------------------------------
+  // The desktop half renders the transport controls (the backdrop itself is
+  // click-through, so it cannot host buttons), which means it needs to know
+  // what is playing. <= 4 Hz, plus once on every real change.
+  function postState(force) {
+    if (!host) return
+    var now = Date.now()
+    if (!force && now - lastPost < 250) return
+    lastPost = now
+    try {
+      host.postMessage({
+        aura: 'video-state',
+        url: raw,
+        kind: kind,
+        playing: state.playing,
+        position: state.position,
+        duration: state.duration,
+        muted: state.muted,
+        title: state.title,
+        volume: state.volume,
+        ended: state.ended,
+        videoId: state.videoId,
+        blocked: state.blocked,
+        controllable: kind !== 'frame'
+      }, '*')
+    } catch (err) { /* the host may be gone */ }
+  }
+
+  // --- YouTube ------------------------------------------------------------
+  // NOTE: no `referrerpolicy="no-referrer"` here. YouTube rejects embeds that
+  // arrive without a Referer header with "Video player configuration error"
+  // (error 153) — the frame renders as a black rectangle with no controls.
+  // `enablejsapi=1` is what lets the host's play/pause/seek/volume drive the
+  // player.
+  function playlistId(value) {
+    var match = /[?&]list=([A-Za-z0-9_-]{10,})/.exec(value || '')
+    return match ? match[1] : ''
+  }
+
+  function addYouTube(id, list) {
+    var query = ['autoplay=' + (params.get('paused') === '1' ? '0' : '1'), 'loop=1', 'controls=1', 'rel=0',
+                 'playsinline=1', 'enablejsapi=1',
+                 'origin=' + encodeURIComponent(window.location.origin)]
+    if (list) {
+      // A whole playlist: with an episode id, `embed/<id>?list=` starts inside
+      // the list at that episode (that is how a playlist resumes); without one,
+      // `videoseries` starts at the top.
+      query.push('list=' + list)
+      kind = 'playlist'
+    } else {
+      query.push('playlist=' + id)
+      kind = 'youtube'
+    }
+    if (muted) query.push('mute=1')
+    var src = list
+      ? (id
+        ? 'https://www.youtube.com/embed/' + id + '?' + query.join('&')
+        : 'https://www.youtube.com/embed/videoseries?' + query.join('&'))
+      : 'https://www.youtube.com/embed/' + id + '?' + query.join('&')
+    var el = document.createElement('iframe')
+    el.src = src
+    el.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen')
+    el.setAttribute('allowfullscreen', '')
+    stage.appendChild(el)
+    frame = el
+    // Tell the player we are listening so it emits infoDelivery (state, time,
+    // title). It ignores this until it is ready, so retry for ~10 s.
+    var tries = 0
+    var listen = setInterval(function () {
+      if (!frame || !frame.contentWindow) return
+      try {
+        frame.contentWindow.postMessage(JSON.stringify({ event: 'listening', id: 'aura' }), '*')
+      } catch (err) { /* not ready */ }
+      tries += 1
+      if (tries > 20) clearInterval(listen)
+    }, 500)
+  }
+
+  function youtubeCommand(func, args) {
+    if (!frame || !frame.contentWindow) return
+    try {
+      frame.contentWindow.postMessage(JSON.stringify({
+        event: 'command', func: func, args: args || []
+      }), '*')
+    } catch (err) { /* not ready */ }
+  }
+
+  // --- native <video> -----------------------------------------------------
+  function addVideo(src) {
+    var el = document.createElement('video')
+    el.src = src
+    el.autoplay = params.get("paused") !== "1"
+    el.muted = muted
+    el.loop = true
+    el.playsInline = true
+    el.setAttribute('playsinline', '')
+    el.addEventListener('play', function () {
+      state.playing = true
+      state.ended = false
+      postState(true)
+    })
+    el.addEventListener('pause', function () { state.playing = false; postState(true) })
+    el.addEventListener('ended', function () {
+      state.playing = false
+      state.ended = true
+      postState(true)
+    })
+    el.addEventListener('timeupdate', function () {
+      state.position = el.currentTime || 0
+      postState(false)
+    })
+    el.addEventListener('durationchange', function () {
+      state.duration = isFinite(el.duration) ? el.duration : 0
+      postState(true)
+    })
+    el.addEventListener('loadedmetadata', function () {
+      state.duration = isFinite(el.duration) ? el.duration : 0
+      postState(true)
+    })
+    stage.appendChild(el)
+    video = el
+    kind = 'video'
+  }
+
+  function addUnknownFrame(src) {
+    var el = document.createElement('iframe')
+    el.src = src
+    el.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen')
+    el.setAttribute('allowfullscreen', '')
+    stage.appendChild(el)
+    kind = 'frame'   // cannot be driven from outside: the host dims its transport
+  }
+
+  // --- messages in from the player and the host ---------------------------
+  window.addEventListener('message', function (event) {
+    var data = event.data
+
+    // State from the YouTube player inside us.
+    if (frame && event.source === frame.contentWindow) {
+      if (typeof data === 'string') {
+        try { data = JSON.parse(data) } catch (err) { return }
+      }
+      if (data && data.event === 'infoDelivery' && data.info) {
+        var info = data.info
+        if (typeof info.playerState === 'number') {
+          state.playing = info.playerState === 1 || info.playerState === 3
+          // 0 is "ended": the film finished, so its bookmark should be dropped
+          // rather than resuming on the credits next time.
+          state.ended = info.playerState === 0
+        }
+        if (typeof info.currentTime === 'number') state.position = info.currentTime
+        if (typeof info.duration === 'number' && info.duration > 0) state.duration = info.duration
+        if (typeof info.muted === 'boolean') state.muted = info.muted
+        if (info.videoData && typeof info.videoData.title === 'string') {
+          state.title = info.videoData.title
+        }
+        // Which episode of a playlist is playing — the bookmark needs this to
+        // resume the right one, not just the list.
+        if (info.videoData && typeof info.videoData.video_id === 'string') {
+          state.videoId = info.videoData.video_id
+        }
+        postState(false)
+      }
+      return
+    }
+
+    // Transport commands from the host app.
+    if (!host || event.source !== host) return
+    if (!data || typeof data !== 'object' || data.aura !== 'transport') return
+
+    var cmd = data.cmd
+    var value = data.value
+
+    if (kind === 'video' && video) {
+      if (cmd === 'play') video.play().catch(function () {})
+      else if (cmd === 'pause') video.pause()
+      else if (cmd === 'seek') {
+        var target = video.currentTime + (Number(value) || 0)
+        var end = isFinite(video.duration) ? video.duration : 0
+        video.currentTime = Math.max(0, end ? Math.min(end, target) : target)
+      } else if (cmd === 'seekTo') {
+        var exact = Math.max(0, Number(value) || 0)
+        var stop = isFinite(video.duration) ? video.duration : exact
+        video.currentTime = Math.min(stop, exact)
+      } else if (cmd === 'volume') {
+        var percent = Math.max(0, Math.min(1, Number(value)))
+        video.volume = percent
+        if (percent > 0 && video.muted) video.muted = false
+        state.volume = percent
+        state.muted = video.muted
+        postState(true)
+      } else if (cmd === 'mute') { video.muted = true; state.muted = true; postState(true) }
+      else if (cmd === 'unmute') { video.muted = false; state.muted = false; postState(true) }
+      return
+    }
+
+    if ((kind === 'youtube' || kind === 'playlist') && frame) {
+      if (cmd === 'play') { youtubeCommand('playVideo'); state.playing = true; postState(true) }
+      else if (cmd === 'pause') { youtubeCommand('pauseVideo'); state.playing = false; postState(true) }
+      else if (cmd === 'seek') {
+        var to = Math.max(0, state.position + (Number(value) || 0))
+        youtubeCommand('seekTo', [to, true])
+        postState(true)
+      } else if (cmd === 'seekTo') {
+        youtubeCommand('seekTo', [Math.max(0, Number(value) || 0), true])
+        postState(true)
+      } else if (cmd === 'volume') {
+        var level = Math.max(0, Math.min(1, Number(value)))
+        youtubeCommand('setVolume', [Math.round(level * 100)])
+        if (level > 0 && state.muted) youtubeCommand('unMute')
+        state.volume = level
+        if (level > 0) state.muted = false
+        postState(true)
+      } else if (cmd === 'mute') { youtubeCommand('mute'); state.muted = true; postState(true) }
+      else if (cmd === 'unmute') { youtubeCommand('unMute'); state.muted = false; postState(true) }
+      else if (cmd === 'next' && kind === 'playlist') { youtubeCommand('nextVideo'); postState(true) }
+      else if (cmd === 'prev' && kind === 'playlist') { youtubeCommand('previousVideo'); postState(true) }
+    }
+  })
+
+  // --- desktop window mode ------------------------------------------------
+  // `?desktop=1` means this page IS the player: it was opened by
+  // aura_core/window.py as its own OS window (another monitor, full screen),
+  // and Hermes drives it through the server's command queue instead of the
+  // host's postMessage transport. We poll the queue ~3 Hz and report state
+  // back ~1 Hz, so "pause", "next episode" or "play the octopus documentary"
+  // spoken to Hermes still works while the window has focus elsewhere.
+  var desktopMode = params.get('desktop') === '1'
+  var authToken = ''
+  try { if (desktopMode) authToken = sessionStorage.getItem('auraDesktopToken') || '' } catch (err) {}
+  var commandCursor = null
+  var commandPolling = false
+  var reportAt = 0
+  if (desktopMode && params.get("resumeCommands") === "1") {
+    try {
+      var savedCursor = Number(sessionStorage.getItem("auraCommandCursor"))
+      if (Number.isSafeInteger(savedCursor) && savedCursor >= 0) commandCursor = savedCursor
+    } catch (err) { /* start at the head */ }
+  }
+
+  // The window opens at the position the in-app player had reached.
+  if (desktopMode) {
+    var startAt = Number(params.get('t')) || 0
+    if (startAt > 0 && !(resumeAt > 0)) resumeAt = startAt
+  }
+
+  function desktopApi(path) {
+    return fetch(path, { cache: 'no-store', headers: { Authorization: 'Bearer ' + authToken } })
+      .then(function (response) { return response.ok ? response.json() : null })
+  }
+
+  function reportDesktop(force) {
+    if (!desktopMode || !authToken) return
+    var now = Date.now()
+    if (!force && now - reportAt < 1000) return
+    reportAt = now
+    try {
+      fetch('/api/player/report', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + authToken },
+        body: JSON.stringify({
+          desktop: true,
+          url: raw,
+          label: state.title,
+          title: state.title,
+          kind: kind,
+          videoId: state.videoId,
+          playing: state.playing,
+          position: state.position,
+          duration: state.duration,
+          volume: state.volume,
+          last_command: lastCommand,
+          applied: lastApplied
+        })
+      }).catch(function () { /* the server may be restarting */ })
+      if (state.title) document.title = state.title + ' — Aura'
+    } catch (err) { /* same */ }
+  }
+
+  function desktopSeek(target) {
+    var to = Math.max(0, Number(target) || 0)
+    if (kind === 'video' && video) {
+      video.currentTime = to
+      state.position = to
+    } else if ((kind === 'youtube' || kind === 'playlist') && frame) {
+      youtubeCommand('seekTo', [to, true])
+      state.position = to
+    }
+    postState(true)
+    reportDesktop(true)
+  }
+
+  // `load` swaps the film: a fresh page keeps every existing code path (and
+  // the resume bookkeeping) rather than growing a second boot sequence.
+  function desktopLoad(url) {
+    var next = new URLSearchParams()
+    next.set('desktop', '1')
+    next.set('url', String(url || ''))
+    try {
+      sessionStorage.setItem('auraCommandCursor', String(commandCursor))
+      next.set('resumeCommands', '1')
+    } catch (err) { /* a fresh cursor is safer than replay */ }
+    window.location.replace('/player.html?' + next.toString())
+  }
+
+  function desktopVolume(level) {
+    var value = Math.max(0, Math.min(1, Number(level) || 0))
+    if (kind === 'video' && video) {
+      video.volume = value
+      if (value > 0 && video.muted) video.muted = false
+    } else if ((kind === 'youtube' || kind === 'playlist') && frame) {
+      youtubeCommand('setVolume', [Math.round(value * 100)])
+      if (value > 0) { youtubeCommand('unMute'); state.muted = false }
+    }
+    state.volume = value
+    postState(true)
+    reportDesktop(true)
+  }
+
+  // [finding 7] What the last queued command did. A single-file film has no
+  // next/prev, so the page reports applied:false instead of silently ignoring
+  // it and letting the agent claim the skip worked.
+  var lastCommand = ''
+  var lastApplied = null
+
+  function markCommand(name, applied) {
+    lastCommand = String(name || '')
+    lastApplied = Boolean(applied)
+  }
+
+  function applyDesktopCommand(command) {
+    var name = String(command.cmd || '')
+    var playing = state.playing
+    if (name === 'load') { markCommand(name, true); desktopLoad(command.url); return }
+    if (name === 'seek') { markCommand(name, true); desktopSeek(command.value); return }
+    if (name === 'volume') { markCommand(name, true); desktopVolume(command.value); return }
+    if (name === 'next' || name === 'prev') {
+      var canSkip = (kind === 'youtube' || kind === 'playlist') && frame
+      markCommand(name, canSkip)
+      if (canSkip) {
+        youtubeCommand(name === 'next' ? 'nextVideo' : 'previousVideo')
+      }
+      reportDesktop(true)
+      return
+    }
+    if (name === 'toggle') name = playing ? 'pause' : 'play'
+    if (name !== 'play' && name !== 'pause') { markCommand(name, false); reportDesktop(true); return }
+    markCommand(name, true)
+    if (kind === 'video' && video) {
+      if (name === 'play') video.play().catch(function () { })
+      else video.pause()
+    } else if ((kind === 'youtube' || kind === 'playlist') && frame) {
+      youtubeCommand(name === 'play' ? 'playVideo' : 'pauseVideo')
+      state.playing = name === 'play'
+    }
+    postState(true)
+    reportDesktop(true)
+  }
+
+  function pollDesktopCommands() {
+    if (!desktopMode || !authToken || commandPolling) return
+    commandPolling = true
+    desktopApi('/api/player/commands?after=' + (commandCursor === null ? 0 : commandCursor)).then(function (payload) {
+      if (!payload || !Array.isArray(payload.commands)) return
+      if (commandCursor === null) {
+        if (typeof payload.head_seq === 'number') commandCursor = payload.head_seq
+        return
+      }
+      for (var i = 0; i < payload.commands.length; i++) {
+        var command = payload.commands[i]
+        if (!command || typeof command.cmd !== 'string' ||
+            typeof command.seq !== 'number' || command.seq <= commandCursor) continue
+        commandCursor = command.seq
+        applyDesktopCommand(command)
+        if (command.cmd === 'load') break
+      }
+    }).catch(function () { /* offline poll: next tick retries */ }).then(function () {
+      commandPolling = false
+    })
+  }
+
+  function startDesktopMode() {
+    var ready = bootstrapTicket ? fetch('/api/window/bootstrap', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticket: bootstrapTicket }), cache: 'no-store'
+    }).then(function (response) { return response.ok ? response.json() : null }).then(function (payload) {
+      if (payload && payload.token) {
+        authToken = payload.token
+        try { sessionStorage.setItem('auraDesktopToken', authToken) } catch (err) {}
+      }
+    }).catch(function () {}) : Promise.resolve()
+    ready.then(function () {
+      reportDesktop(true)
+      pollDesktopCommands()
+      setInterval(pollDesktopCommands, 350)
+      setInterval(function () { reportDesktop(false) }, 1000)
+    })
+  }
+
+  // --- boot --------------------------------------------------------------
+  if (!raw || !isHttpUrl(raw)) {
+    hint.hidden = false
+    postState(true)
+    if (desktopMode) startDesktopMode()
+    return
+  }
+
+  var id = youtubeId(raw)
+  var list = playlistId(raw)
+  var episode = (params.get('video') || '').trim()
+  if (list) {
+    addYouTube(/^[A-Za-z0-9_-]{11}$/.test(episode) ? episode : id, list)
+  } else if (id) {
+    addYouTube(id, '')
+  } else if (isVideoFile(raw)) {
+    addVideo(raw)
+  } else {
+    addUnknownFrame(raw)
+  }
+
+  postState(true)
+  if (desktopMode) startDesktopMode()
+  setInterval(function () { postState(false) }, 250)
+  // The resume nudge: every half second until the film actually sits at the
+  // saved point (or 20 s of trying), so an interruption always lands right.
+  setInterval(function () { maybeResume(state.position) }, 500)
+  // A playlist whose first video cannot be embedded reports "unavailable" and
+  // never sends metadata. Say so, instead of leaving a black rectangle.
+  setTimeout(function () {
+    if (!state.duration && !state.title && (kind === 'playlist' || kind === 'youtube')) {
+      state.blocked = true
+      postState(true)
+    }
+  }, 9000)
+})()
+</script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+name: aura
+label: Aura
+kind: standalone
+version: "1.0.0"
+author: Argo
+description: >
+  Aura turns Hermes Desktop into a room you can live in: play a film, lecture or YouTube playlist
+  in a docked theatre pane on the right while you work, then switch the film off and let the same
+  system audio drive a MilkDrop-compatible visualiser behind the interface. Per-film resume, playlist
+  episodes with auto-skip of un-embeddable items, a draggable watch window, and agent moods that
+  follow thinking, tool runs and approvals. Everything is analysed locally in memory from system
+  loopback — never the microphone, no account, no uploads. Linux-first (PipeWire/PulseAudio);
+  Windows unproven, macOS needs a virtual audio device. Off until you turn it on, one click to stop.
+requires_hermes: ">=0.22.5"
+license: MIT
+provides_tools:
+  - aura_control
+  - aura_listen
+  - aura_watch
+provides_hooks:
+  - on_session_start
+  - on_session_end
+  - pre_tool_call
+  - post_tool_call
+  - pre_approval_request
+  - post_approval_response
+  - api_request_error
+  - on_stream_start
+  - on_stream_end
+  - subagent_start
+  - subagent_stop
+dashboard: dashboard
+python_dependencies:
+  - 'soundcard>=0.4.2,<0.5; sys_platform == "win32"'
+  - 'numpy>=1.24,<3; sys_platform == "win32"'

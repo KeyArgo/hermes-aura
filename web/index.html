@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aura</title>
+<!--
+  Aura visualizer page (L2).
+
+  Mounted by the desktop plugin in a stage route, a pane, or the empty-chat screen.
+  It fills whatever box it is given: 100% width/height, no viewport units, canvas
+  tracks its container with a ResizeObserver. All chrome colours come from the host
+  theme vars (--ui-accent, --ui-text-secondary, --ui-bg, ...); the hex fallbacks in
+  :root only apply when the page is opened outside Hermes (e.g. standalone preview).
+  No external network requests. Never plays sound.
+-->
+<style>
+  :root {
+    /* Fallbacks only — Hermes supplies these vars in every skin. */
+    --aura-accent: var(--ui-accent, #6ea8ff);
+    --aura-text: var(--ui-text-secondary, rgba(255, 255, 255, 0.72));
+    --aura-bg: var(--ui-bg, #0b0d12);
+    --aura-danger: var(--ui-danger, color-mix(in srgb, var(--aura-accent) 35%, #e5484d 65%));
+    --aura-level: 0;
+    --aura-glow: 0.16;
+    --aura-tint: 0;
+    color-scheme: dark light;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--aura-bg);
+    color: var(--aura-text);
+    font: 13px/1.45 var(--ui-font, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  }
+
+  #aura-root {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    isolation: isolate;
+    background: var(--aura-bg);
+  }
+
+  /* Visualizer surface: scaled by JS to the container, then upscaled by CSS. */
+  #aura-stage {
+    position: absolute;
+    inset: 0;
+    transition: filter 900ms ease; /* mood saturate/contrast blends, never snaps */
+  }
+
+  #aura-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: transparent;
+    transition: opacity 240ms ease, filter 600ms ease;
+  }
+
+  /* Scrim keeps the chrome text readable over a bright preset. The gradient
+     alphas are JS-driven (--aura-scrim-a/b/c) from the user's opacity setting:
+     the element dims with the canvas but its alphas are compensated so the
+     effective contrast never drops below the pre-opacity behaviour. */
+  #aura-scrim {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(to top,
+        color-mix(in srgb, var(--aura-bg) calc(var(--aura-scrim-a, 82) * 1%), transparent) 0%,
+        color-mix(in srgb, var(--aura-bg) calc(var(--aura-scrim-b, 38) * 1%), transparent) 26%,
+        transparent 52%),
+      linear-gradient(to bottom,
+        color-mix(in srgb, var(--aura-bg) calc(var(--aura-scrim-c, 62) * 1%), transparent) 0%,
+        transparent 22%);
+    z-index: 2;
+    transition: opacity 240ms ease;
+  }
+
+  /* Error settle tint (semantic red, mixed from the theme accent). */
+  #aura-tint {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: var(--aura-tint);
+    background: radial-gradient(circle at 50% 55%,
+      color-mix(in srgb, var(--aura-danger) 55%, transparent) 0%,
+      transparent 78%);
+    mix-blend-mode: screen;
+    transition: opacity 700ms ease;
+    z-index: 1;
+  }
+
+  /* Accent-only fallback: the room still breathes with the music. */
+  #aura-glow {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: var(--aura-glow);
+    background:
+      radial-gradient(60% 55% at 50% 62%,
+        color-mix(in srgb, var(--aura-accent) 42%, transparent) 0%,
+        transparent 72%);
+    z-index: 1;
+    transition: opacity 180ms ease;
+    will-change: opacity;
+  }
+  #aura-glow.peak { opacity: calc(var(--aura-glow) + 0.34); }
+
+  #aura-bar {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    pointer-events: none;
+  }
+  #aura-brand {
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-size: 11px;
+    color: var(--aura-accent);
+  }
+  #aura-mood {
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: lowercase;
+    color: var(--aura-text);
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--aura-text) 26%, transparent);
+    background: color-mix(in srgb, var(--aura-bg) 55%, transparent);
+  }
+  #aura-mood[data-mood="approval"],
+  #aura-mood[data-mood="error"] {
+    color: var(--aura-accent);
+    border-color: color-mix(in srgb, var(--aura-accent) 55%, transparent);
+  }
+  #aura-conn {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--aura-text);
+    opacity: 0.8;
+  }
+  #aura-conn .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--aura-text);
+    opacity: 0.5;
+  }
+  #aura-conn[data-state="connected"] .dot { background: var(--aura-accent); opacity: 1; }
+  #aura-conn[data-state="reconnecting"] .dot { background: var(--aura-danger); opacity: 1; }
+
+  #aura-message {
+    position: absolute;
+    left: 50%;
+    bottom: 74px;
+    transform: translateX(-50%);
+    z-index: 5;
+    max-width: min(560px, calc(100% - 32px));
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--aura-text) 22%, transparent);
+    border-left: 3px solid var(--aura-accent);
+    background: color-mix(in srgb, var(--aura-bg) 88%, transparent);
+    color: var(--aura-text);
+    font-size: 12px;
+    text-align: left;
+    box-shadow: 0 6px 24px color-mix(in srgb, var(--aura-bg) 60%, transparent);
+  }
+  #aura-message[data-tone="warn"] { border-left-color: var(--aura-danger); }
+  #aura-message[hidden] { display: none; }
+
+  #aura-controls {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: color-mix(in srgb, var(--aura-bg) 72%, transparent);
+    border-top: 1px solid color-mix(in srgb, var(--aura-text) 14%, transparent);
+  }
+  #aura-controls label {
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--aura-text);
+    opacity: 0.85;
+  }
+  #aura-intensity {
+    flex: 1 1 auto;
+    min-width: 80px;
+    max-width: 320px;
+    accent-color: var(--aura-accent);
+    background: transparent;
+  }
+  #aura-intensity-out,
+  #aura-opacity-out {
+    min-width: 3.2em;
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    color: var(--aura-text);
+  }
+  #aura-opacity {
+    flex: 0 1 auto;
+    min-width: 64px;
+    max-width: 160px;
+    accent-color: var(--aura-accent);
+    background: transparent;
+  }
+  #aura-behavior,
+  #aura-motion {
+    appearance: none;
+    font: inherit;
+    font-size: 11px;
+    color: var(--aura-text);
+    background: color-mix(in srgb, var(--aura-bg) 70%, transparent);
+    border: 1px solid color-mix(in srgb, var(--aura-text) 26%, transparent);
+    border-radius: 6px;
+    padding: 3px 6px;
+  }
+  #aura-toggle {
+    margin-left: auto;
+    appearance: none;
+    border: 1px solid color-mix(in srgb, var(--aura-accent) 55%, transparent);
+    background: color-mix(in srgb, var(--aura-accent) 16%, transparent);
+    color: var(--aura-accent);
+    border-radius: 999px;
+    padding: 5px 14px;
+    font: inherit;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  #aura-toggle[aria-pressed="false"] {
+    border-color: color-mix(in srgb, var(--aura-text) 30%, transparent);
+    background: transparent;
+    color: var(--aura-text);
+  }
+  #aura-toggle:focus-visible,
+  #aura-intensity:focus-visible {
+    outline: 2px solid var(--aura-accent);
+    outline-offset: 2px;
+  }
+
+  @media (max-width: 520px) {
+    #aura-controls label { display: none; }
+    #aura-message { bottom: 68px; }
+  }
+
+  /* App overlay (?overlay=1): the page is only a canvas over the host window.
+     Everything else — chrome, labels, messages, scrims — stays unpainted. */
+  html.aura-overlay,
+  html.aura-overlay body,
+  html.aura-overlay #aura-root {
+    background: transparent !important;
+  }
+  html.aura-overlay #aura-bar,
+  html.aura-overlay #aura-message,
+  html.aura-overlay #aura-controls,
+  html.aura-overlay #aura-tint,
+  html.aura-overlay #aura-glow,
+  html.aura-overlay #aura-scrim {
+    display: none !important;
+  }
+
+  /* Reduced motion: the JS already drops the pulse and strobe presets; also stop
+     the decorative transitions so nothing flashes on state changes. */
+  @media (prefers-reduced-motion: reduce) {
+    #aura-canvas,
+    #aura-stage,
+    #aura-tint,
+    #aura-glow {
+      transition-duration: 0.01ms;
+    }
+  }
+</style>
+</head>
+<body>
+<div id="aura-root" data-state="boot">
+  <div id="aura-stage">
+    <canvas id="aura-canvas" role="img" aria-label="Audio-reactive visualizer"></canvas>
+  </div>
+  <div id="aura-tint" aria-hidden="true"></div>
+  <div id="aura-glow" aria-hidden="true"></div>
+  <div id="aura-scrim" aria-hidden="true"></div>
+
+  <div id="aura-bar">
+    <span id="aura-brand">Aura</span>
+    <span id="aura-mood" role="status" aria-live="polite" data-mood="idle">idle</span>
+    <span id="aura-conn" data-state="boot"><span class="dot" aria-hidden="true"></span><span id="aura-conn-label">starting</span></span>
+  </div>
+
+  <div id="aura-message" role="status" aria-live="polite" hidden></div>
+
+  <div id="aura-controls">
+    <label for="aura-intensity">Reaction strength</label>
+    <input id="aura-intensity" type="range" min="0" max="100" step="1" value="60"
+           aria-label="Aura reaction strength" aria-valuetext="60 percent">
+    <output id="aura-intensity-out" for="aura-intensity">60%</output>
+    <label for="aura-opacity">Opacity</label>
+    <input id="aura-opacity" type="range" min="0" max="100" step="1" value="75"
+           aria-label="Aura opacity" aria-valuetext="75 percent">
+    <output id="aura-opacity-out" for="aura-opacity">75%</output>
+    <select id="aura-behavior" aria-label="Aura behaviour profile">
+      <option value="calm" selected>calm</option>
+      <option value="balanced">balanced</option>
+      <option value="intense">intense</option>
+    </select>
+    <label for="aura-motion">Motion</label>
+    <select id="aura-motion" aria-label="Aura motion source">
+      <option value="designs">Designs only</option>
+      <option value="both" selected>Designs + music</option>
+      <option value="music">Music only</option>
+    </select>
+    <button id="aura-toggle" type="button" aria-pressed="true">On</button>
+  </div>
+</div>
+
+<script src="vendor/butterchurn.min.js"></script>
+<script src="vendor/butterchurnPresets.min.js"></script>
+<script src="aura.js"></script>
+<!-- [listen lane] Audio channel: radio / music plays here too, so the music
+     keeps going when the film pane is not the thing on screen. -->
+<script src="audio.js"></script>
+</body>
+</html>
