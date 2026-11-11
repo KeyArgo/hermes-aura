@@ -776,6 +776,43 @@ def test_mood_ttl_restores_previous_mood(live):
         ws.close()
 
 
+def test_attention_expiry_never_restores_an_attention_mood(live):
+    # CONTRACT §4: attention moods expire back to the previous NON-attention
+    # mood, and no mood may latch. error -> approval must not leave `error`
+    # (or any mood) held forever once both ttls have passed.
+    server.publish_mood("error", 1.0, 150)
+    time.sleep(0.02)
+    server.publish_mood("approval", 1.0, 150)
+    mood, expiry = "unset", "unset"
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        with server._STATE.lock:
+            mood = server._STATE.mood
+            expiry = server._STATE.mood_expiry
+        if mood == "idle" and expiry is None:
+            break
+        time.sleep(0.05)
+    assert (mood, expiry) == ("idle", None), (mood, expiry)
+
+
+def test_done_expiry_never_latches_done(live):
+    # done settles to idle within 1.5 s even when an attention mood interrupted
+    # it: done -> error must end at idle, never a held done.
+    server.publish_mood("done", 0.7, 150)
+    time.sleep(0.02)
+    server.publish_mood("error", 1.0, 150)
+    mood, expiry = "unset", "unset"
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        with server._STATE.lock:
+            mood = server._STATE.mood
+            expiry = server._STATE.mood_expiry
+        if mood == "idle" and expiry is None:
+            break
+        time.sleep(0.05)
+    assert (mood, expiry) == ("idle", None), (mood, expiry)
+
+
 def test_mood_cleared_when_page_disconnects(live):
     ws = WSClient(live["port"], live["token"])
     try:

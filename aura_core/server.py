@@ -463,8 +463,15 @@ def _mood_tick(now: float) -> None:
         ttl = _STATE.mood_ttl_ms
         send = False
         if expiry is not None and now >= expiry:
-            _STATE.mood = _STATE.mood_prev
-            _STATE.mood_intensity = _STATE.mood_prev_intensity
+            # Restore-on-clear, mirroring mood.py: only a transient activity mood
+            # may be restored. Restoring an attention mood (approval/error) or
+            # done bare would latch it forever.
+            target = _STATE.mood_prev
+            if target not in ("thinking", "tool", "streaming"):
+                target = "idle"
+            _STATE.mood = target
+            _STATE.mood_intensity = _STATE.mood_prev_intensity if target != "idle" else 0.0
+            _STATE.mood_prev = "idle" if target == "idle" else _STATE.mood_prev
             _STATE.mood_expiry = None
             _STATE.mood_ttl_ms = 0
             mood = _STATE.mood
