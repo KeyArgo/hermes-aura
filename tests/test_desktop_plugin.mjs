@@ -2161,7 +2161,9 @@ const q = makeCtx({
 const disposeQ = pluginModule.default.register(q.ctx)
 await sleep(60)
 
-record('an open page with Aura off draws no film', () => {
+record('an open page with Aura off still plays, and draws no glass', () => {
+  // Owner's rule: Aura on/off is about painting on the chat. The player is
+  // Aura's own surface and works with the overlay switched off.
   const tree = renderDeep(renderContribution(q.contributions.find(c => c.area === 'routes')))
   let stageRef = null
   walk(tree, node => {
@@ -2169,8 +2171,9 @@ record('an open page with Aura off draws no film', () => {
   })
   assert.equal(typeof stageRef, 'function', 'the page has no stage ref')
   stageRef({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 450 }) })
-  assert.equal(hostIframes().length, 0, 'Aura is off but the page still mounted a player')
-  assert.match(texts(tree), /Aura is off/, 'the page does not say why it is empty')
+  assert.ok(hostIframes().length >= 1, 'Aura is off but the page refused to play')
+  const glass = headChildren.find(node => node.attributes && node.attributes.id === 'aura-glass')
+  assert.equal(glass, undefined, 'the overlay glass was applied while Aura is off')
   stageRef(null)
   disposeQ()
   assert.equal(q.contributions.length, 0)

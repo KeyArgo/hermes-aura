@@ -816,13 +816,18 @@ function showEligible() {
   // the default settings (window visual off, not on the Aura theme) sees a pane
   // whose stage plays nothing, because nothing ever mounts.
   const paneFilm = panelVisible() && Boolean(settings.videoUrl) && !settings.videoClosed
+  // A pane film is not an overlay: it may mount with Aura switched off. Only the
+  // backdrop/theme/accent paths below require `enabled`.
   // The full page is the same kind of surface, for the same reason.
   const pageFilm = pageVisible() && Boolean(settings.videoUrl) && !settings.videoClosed
   // [finding 4] The audio channel lives inside this same backdrop document.
   // Without this a default install (window visual off, no theme) mounted no
   // page, so playAudioSource posted into nothing and "playing" was a lie.
   const audio = Boolean(settings.audioUrl)
-  return Boolean(doc && enabled && (audio || paneFilm || pageFilm || knownTheme === THEME_NAME || settings.windowVisual) && liveUrl())
+  // A pane or page film is Aura's own surface and needs no overlay permission;
+  // everything else is the overlay and does.
+  const overlay = Boolean(audio || knownTheme === THEME_NAME || settings.windowVisual)
+  return Boolean(doc && liveUrl() && (paneFilm || pageFilm || (enabled && overlay)))
 }
 
 // Host-owned timers: cancel through the disposer the SDK returns. A stale
@@ -944,7 +949,20 @@ function mountBackdrop(url, opacity) {
     : ''
   applyBackdropLayout()
   if (backdropEl.parentNode !== doc.body) doc.body.appendChild(backdropEl)
-  if (!glassStyleEl) applyGlassStyle()
+  // Glass clears the chat surfaces so the visual shows through: that is overlay
+  // work. A film playing in Aura's own pane must not wash the app while Aura is
+  // switched off.
+  const liveNow = $live.get()
+  const auraOn = liveNow.ok ? liveNow.enabled === true : settings.enabled
+  // Glass clears the chat surfaces so a full-bleed visual shows through. A film
+  // in Aura's own pane or page is not full-bleed, and an off Aura paints nothing.
+  const fullBleed = Boolean(settings.windowVisual || settings.audioUrl || knownTheme === THEME_NAME ||
+    (settings.backdropMode === 'video' && !panelVisible() && !pageVisible() && !videoWindowOn()))
+  if (auraOn && fullBleed) {
+    if (!glassStyleEl) applyGlassStyle()
+  } else if (glassStyleEl) {
+    removeGlassStyle()
+  }
 }
 
 /** Is audio actually playing right now? The server's own reading: level over
@@ -3174,10 +3192,11 @@ function hostPaneVisible() {
  *  hidden pane must not suppress the floating transport bar. */
 function panelVisible() {
   const settings = $settings.get()
-  const live = $live.get()
-  const enabled = live.ok ? live.enabled === true : settings.enabled
   if (hostPaneVisible() === false) return false
-  return Boolean(doc && enabled && settings.panelEnabled !== false)
+  // Deliberately NOT gated on `enabled`: switching Aura off stops it painting on
+  // the chat (backdrop, accent, theme). It must not stop the player — a film in
+  // the pane is Aura's own surface and works on its own (owner's rule).
+  return Boolean(doc && settings.panelEnabled !== false)
 }
 
 function panelCss() {
@@ -6852,7 +6871,10 @@ export default {
     // state per layout, and that outlives our setting. With the panel on, a
     // stale host dismissal must not leave the user with no pane at all — the
     // ✕ in the pane writes panelEnabled=false, which is the real opt-out.
-    if (settings.panelEnabled !== false) registerPanelPane(true)
+    // Always at boot: a remembered close (ours or the host's own dismissal)
+    // must not leave the user with no Aura surface at all. The ✕ disposes the
+    // pane for this session.
+    registerPanelPane(true)
 
     // One read of the build stamp: the pane's chip is useless without it, and
     // the settings page that also shows it may never be opened.
