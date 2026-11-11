@@ -59,7 +59,15 @@ class SoundDeviceCapture:
             callback=self._callback,
             **kwargs,
         )
-        stream.start()
+        try:
+            stream.start()
+        except Exception as exc:  # noqa: BLE001
+            # An opened-but-never-started stream still holds the device open.
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001 - the original error matters more
+                pass
+            raise base.CaptureError(f"stream start failed: {exc}") from exc
         self._stream = stream
         return self
 
