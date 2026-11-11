@@ -209,6 +209,70 @@ def _watch(proc: subprocess.Popen) -> None:
         _clear_lease()
 
 
+def open_page(url: str, title: str = "") -> Dict[str, Any]:
+    """Open a real web page in the private profile — not the player page.
+
+    Why this exists: the pop-out is ordinary Chromium with its own persistent
+    profile, so a site behaves like a site there. That is how a playlist can be
+    curated for real (add/remove) without any API scope: YouTube's own UI, the
+    user's own session.
+    """
+    global _proc, _film_url
+    target = str(url or "").strip()
+    if not (target.startswith("https://") or target.startswith("http://")):
+        raise WindowError("only http(s) pages can be opened")
+    with _lock:
+        if _proc is not None and _proc.poll() is None:
+            return {"open": True, "already": True, "url": _film_url or target}
+        browser = find_browser()
+        if not browser:
+            raise WindowError(
+                "no Chrome or Chromium found; install one or set "
+                "AURA_DESKTOP_BROWSER to its path"
+            )
+        profile = _profile()
+        try:
+            profile.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise WindowError(f"could not create the window profile: {exc}") from exc
+        args: List[str] = [
+            browser, f"--app={target}", f"--user-data-dir={profile}",
+            f"--window-size={WINDOW_SIZE[0]},{WINDOW_SIZE[1]}",
+            "--no-first-run", "--no-default-browser-check",
+            "--disable-features=Translate",
+        ]
+        if sys.platform.startswith("linux"):
+            args.append("--class=Aura")
+        args.extend(_gpu_args())
+        try:
+            proc = subprocess.Popen(
+                args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+        except OSError as exc:
+            raise WindowError(f"could not start the browser: {exc}") from exc
+        _proc = proc
+        _film_url = target
+        # A browser forwarding to an instance already using this profile exits
+        # at once; report that instead of pretending a window opened.
+        try:
+            proc.wait(1.5)
+            with _lock:
+                if _proc is proc:
+                    _proc = None
+                    _film_url = ""
+            _clear_lease()
+            raise WindowError(
+                f"{os.path.basename(browser)} exited immediately "
+                "(is another Aura window already open?)"
+            )
+        except subprocess.TimeoutExpired:
+            pass
+        _write_lease(proc.pid, target)
+        threading.Thread(target=_watch, args=(proc,), name="aura-window", daemon=True).start()
+        return {"open": True, "already": False, "url": target}
+
+
 def open_window(port: int, token: Optional[str], url: str,
                 position: float = 0.0, label: str = "", video_id: str = "",
                 paused: bool = False) -> Dict[str, Any]:

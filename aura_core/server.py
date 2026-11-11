@@ -1096,6 +1096,7 @@ class _Handler(BaseHTTPRequestHandler):
                     return
             if path not in ("/api/control", "/api/mood", "/api/config/push",
                             "/api/window/open", "/api/window/close",
+                            "/api/window/manage",
                             "/api/player/report", "/api/player/command",
                             "/api/audio"):
                 self._send_json({"ok": False, "error": "not_found"}, 404)
@@ -1116,6 +1117,17 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json(enqueue_command(data))
                 except ValueError as exc:
                     self._send_json({"ok": False, "error": str(exc)}, 400)
+                return
+            if path == "/api/window/manage":
+                try:
+                    self._send_json(manage_window(data))
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, 400)
+                    return
+                except desktop_window.WindowError as exc:
+                    self._send_json({"ok": False, "error": str(exc),
+                                     "window": desktop_window.status()}, 503)
+                    return
                 return
             if path in ("/api/window/open", "/api/window/close"):
                 try:

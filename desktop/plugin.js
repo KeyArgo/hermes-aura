@@ -2644,6 +2644,42 @@ function hiddenVideoIds() {
   return new Set(Array.isArray(list) ? list.filter(item => typeof item === 'string') : [])
 }
 
+/** Open the real playlist page in the pop-out window so it can be curated for
+ *  real: the window is ordinary Chromium on Aura's own profile, so YouTube's
+ *  own add/remove UI works with the user's own session. No API, no OAuth. */
+async function managePlaylist() {
+  if (!ctxRef || disposed) return
+  const url = String($settings.get().videoUrl || '')
+  const list = /[?&]list=([A-Za-z0-9_-]{10,})/.exec(url)
+  if (!list) {
+    note('This film is not part of a playlist', 5000)
+    return
+  }
+  const target = `https://www.youtube.com/playlist?list=${list[1]}`
+  const ask = () => ctxRef.rest('/window/manage',
+    { method: 'POST', body: { url: target }, timeoutMs: 15000 })
+  try {
+    let result = await ask()
+    if (result && result.already === true) {
+      // The window is showing the film; take it down and put the list there.
+      await closeDesktopWindow()
+      desktopOwned = false
+      result = await ask()
+    }
+    if (result && result.ok === true) {
+      // The playlist page owns the window now: park the in-app film.
+      desktopPending = true
+      desktopOwned = true
+      applyBackdropLayout()
+      note('Playlist open in its own window — edit it there', 7000)
+      return
+    }
+    setError('Aura could not open the playlist window.')
+  } catch {
+    setError('Aura could not open the playlist window — the local server is not answering.')
+  }
+}
+
 /** Hide the episode that is playing, then move to the next one that is not
  *  hidden. YouTube's playlist is read-only from here, so "remove" means "never
  *  show me this again" inside Aura. */
@@ -3905,7 +3941,19 @@ function mountPanelInto(hostNode) {
     hideCurrentEpisode()
   })
 
-  for (const node of [volIcon, vol, hide, watch]) bar.appendChild(node)
+  // Curate the list for real: opens YouTube's own playlist page in the pop-out.
+  const manage = doc.createElement('button')
+  manage.type = 'button'
+  manage.className = 'ap-watch'
+  manage.textContent = '☰'
+  manage.setAttribute('aria-label', 'Manage playlist')
+  manage.title = 'Open this playlist in its own window to edit it'
+  manage.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    void managePlaylist()
+  })
+
+  for (const node of [volIcon, vol, hide, manage, watch]) bar.appendChild(node)
 
   // ---- film settings, right under the film -------------------------------
   const settingsBox = doc.createElement('div')
@@ -7215,5 +7263,6 @@ export const __test = {
   popoutSurface,
   hiddenVideoIds,
   hideCurrentEpisode,
+  managePlaylist,
   keysSeenForTest: () => keysSeen
 }
