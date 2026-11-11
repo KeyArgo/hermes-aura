@@ -6619,7 +6619,11 @@ export default {
     // the user has the panel on: switching it off disposes the contribution so
     // the host removes the empty frame/tab/strip too.
     track(disposePaneRegistration)
-    if (settings.panelEnabled !== false) registerPanelPane(false)
+    // `restore: true` at boot: the host also remembers its own "pane closed"
+    // state per layout, and that outlives our setting. With the panel on, a
+    // stale host dismissal must not leave the user with no pane at all — the
+    // ✕ in the pane writes panelEnabled=false, which is the real opt-out.
+    if (settings.panelEnabled !== false) registerPanelPane(true)
 
     // One read of the build stamp: the pane's chip is useless without it, and
     // the settings page that also shows it may never be opened.
