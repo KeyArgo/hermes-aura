@@ -2495,6 +2495,25 @@ record('readPositions preserves a playlist episode videoId for resume', () => {
   assert.equal(out['https://example.com/film.mp4'].videoId, '', 'a non-string videoId was not discarded')
 })
 
+record('hidden episodes survive a reload and drop junk ids', () => {
+  // A YouTube playlist cannot be edited from Aura (read-only scrape), so
+  // "remove" is a local hide. It must persist, and a corrupt entry must not
+  // become a hidden film.
+  const ctx = makeCtx({
+    enabled: true, backdropMode: 'video', videoUrl: 'https://www.youtube.com/watch?v=abc123def45&list=PL0123456789',
+    videoHiddenIds: ['abc123def45', 42, null, 'zzz999yyy88']
+  })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const hidden = tx.hiddenVideoIds()
+    assert.equal(hidden.size, 2, 'junk entries were kept')
+    assert.ok(hidden.has('abc123def45'), 'a hidden id was dropped')
+    assert.ok(!hidden.has('42'), 'a numeric entry became an id')
+  } finally {
+    dispose()
+  }
+})
+
 record('a pop-out resolves to ONE surface, never both at once', () => {
   // Owner: "popping out does both a pop out in hermes while trying to pop out
   // outside of hermes." The in-app frame and the OS window are alternatives:

@@ -188,6 +188,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   videoRecent: [],
   videoPlaylists: [],
   videoHiddenStarters: [],
+  // Episodes the user never wants to see again (a YouTube list cannot be edited
+  // from here — it is read-only — so we skip them locally instead).
+  videoHiddenIds: [],
   // Per-film bookmarks: { [url]: { position, duration, at } }. This is what
   // makes an interrupted movie pick up where it stopped, days later.
   videoPositions: {}
@@ -624,6 +627,9 @@ function readSettings(ctx) {
     out.videoHiddenStarters = Array.isArray(raw.videoHiddenStarters)
       ? raw.videoHiddenStarters.filter(item => typeof item === 'string').slice(0, 40)
       : []
+    out.videoHiddenIds = Array.isArray(raw.videoHiddenIds)
+      ? raw.videoHiddenIds.filter(item => typeof item === 'string').slice(0, 500)
+      : []
     out.videoPositions = readPositions(raw.videoPositions)
     // [listen lane] Audio channel settings, validated on their own.
     Object.assign(out, readAudioSettings(raw))
@@ -915,9 +921,23 @@ function pageKey() {
  */
 let lastCaretEl = null
 
+const focusTrace = []
+
+function describeFocusable(node) {
+  if (!node) return '—'
+  if (node === backdropEl) return 'backdrop'
+  const tag = String(node.tagName || node.nodeName || 'node').toLowerCase()
+  const role = node.getAttribute ? node.getAttribute('role') : ''
+  const label = node.getAttribute ? (node.getAttribute('aria-label') || node.getAttribute('placeholder') || '') : ''
+  return `${tag}${role ? `[${role}]` : ''}${label ? ` ${String(label).slice(0, 18)}` : ''}`
+}
+
 function rememberCaret(event) {
   const target = event && event.target
-  if (!target || target === backdropEl) return
+  if (!target) return
+  focusTrace.push(describeFocusable(target))
+  if (focusTrace.length > 8) focusTrace.shift()
+  if (target === backdropEl) return
   if (typeof target.focus === 'function') lastCaretEl = target
 }
 
@@ -2589,7 +2609,33 @@ async function fetchPlaylistItems(listId) {
   }
 }
 
-async function skipBlockedEpisode() {
+/** The video ids the user has hidden from their playlists. */
+function hiddenVideoIds() {
+  const list = $settings.get().videoHiddenIds
+  return new Set(Array.isArray(list) ? list.filter(item => typeof item === 'string') : [])
+}
+
+/** Hide the episode that is playing, then move to the next one that is not
+ *  hidden. YouTube's playlist is read-only from here, so "remove" means "never
+ *  show me this again" inside Aura. */
+function hideCurrentEpisode() {
+  const video = $video.get()
+  const id = typeof video.videoId === 'string' && video.videoId
+    ? video.videoId
+    : (/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/.exec(String($settings.get().videoUrl || '')) || [])[1] || ''
+  if (!id) {
+    note('This film is not part of a playlist', 5000)
+    return false
+  }
+  const hidden = hiddenVideoIds()
+  hidden.add(id)
+  writeSettings({ videoHiddenIds: [...hidden].slice(-500) })
+  note('Hidden from this playlist', 5000)
+  void skipBlockedEpisode('hidden')
+  return true
+}
+
+async function skipBlockedEpisode(reason) {
   const url = $settings.get().videoUrl
   const mine = instanceSeq
   const match = /[?&]list=([A-Za-z0-9_-]{10,})/.exec(String(url || ''))
@@ -2604,11 +2650,19 @@ async function skipBlockedEpisode() {
   const currentId = $video.get().videoId ||
     (/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/.exec(String(url)) || [])[1] || ''
   const index = items.findIndex(item => item.videoId === currentId)
-  const nextItem = items[index + 1]
-  if (!nextItem) return
+  // Skip anything the user hid, and never land on a hidden episode.
+  const hidden = hiddenVideoIds()
+  let nextItem = null
+  for (let i = index + 1; i < items.length; i += 1) {
+    if (!hidden.has(items[i].videoId)) { nextItem = items[i]; break }
+  }
+  if (!nextItem) {
+    if (reason === 'hidden') note('No episodes left after the ones you hid', 6000)
+    return
+  }
   autoSkipCount += 1
   skippingEpisode = true
-  note('Skipped an episode that cannot be embedded', 7000)
+  note(reason === 'hidden' ? 'Skipped a hidden episode' : 'Skipped an episode that cannot be embedded', 7000)
   try {
     await applyVideoSource(
       `https://www.youtube.com/watch?v=${nextItem.videoId}&list=${listId}`,
@@ -3809,7 +3863,20 @@ function mountPanelInto(hostNode) {
     void setDesktopWindow($settings.get().videoWindow !== true)
   })
 
-  for (const node of [volIcon, vol, watch]) bar.appendChild(node)
+  // Hide this episode: the playlist is read-only from here, so this is the
+  // local "never show me this again" (owner: "remove off playlist").
+  const hide = doc.createElement('button')
+  hide.type = 'button'
+  hide.className = 'ap-watch'
+  hide.textContent = '⌀'
+  hide.setAttribute('aria-label', 'Hide this episode')
+  hide.title = 'Hide this episode from the playlist'
+  hide.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    hideCurrentEpisode()
+  })
+
+  for (const node of [volIcon, vol, hide, watch]) bar.appendChild(node)
 
   // ---- film settings, right under the film -------------------------------
   const settingsBox = doc.createElement('div')
@@ -4366,7 +4433,10 @@ const DEV_STATS_ROWS = Object.freeze([
   ['level', 'music level'],
   ['silence', 'silence'],
   ['fps', 'fps'],
-  ['preset', 'preset']
+  ['preset', 'preset'],
+  // What last took focus: the composer going dead for no visible reason is
+  // otherwise unprovable after the fact.
+  ['focus', 'last focus']
 ])
 
 let devStatsEl = null
@@ -4484,8 +4554,9 @@ function devStatsTick() {
   const silence = frame.silence === true ? 'yes' : frame.silence === false ? 'no' : '—'
   const fps = devFps > 0 ? devFps.toFixed(1) : '0.0'
   const preset = typeof frame.preset === 'string' && frame.preset ? frame.preset : '—'
+  const focus = focusTrace.length ? focusTrace[focusTrace.length - 1] : '—'
 
-  const values = { sessions, boost, intensity: `${Math.round(intensity * 100)}%`, mood, level, silence, fps, preset }
+  const values = { sessions, boost, intensity: `${Math.round(intensity * 100)}%`, mood, level, silence, fps, preset, focus }
   for (const [key] of DEV_STATS_ROWS) {
     const el = devStatsValueEls[key]
     const value = values[key]
@@ -5125,6 +5196,36 @@ function AuraQuickMenu() {
                 // Three surfaces, chosen on purpose: the Aura page, the small
                 // in-app frame, and a real OS window. The in-app switch and the
                 // pop-out button are separate so one never turns on the other.
+                row(
+                  'Hidden episodes',
+                  jsx(Button, {
+                    variant: 'ghost',
+                    size: 'sm',
+                    onClick: () => { writeSettings({ videoHiddenIds: [] }); syncPanel(true) },
+                    children: `${(Array.isArray(settings.videoHiddenIds) ? settings.videoHiddenIds.length : 0)} hidden · show all again`
+                  })
+                ),
+                row(
+                  'Edit this list on YouTube',
+                  jsx(Button, {
+                    variant: 'ghost',
+                    size: 'sm',
+                    onClick: () => {
+                      const url = String(settings.videoUrl || '')
+                      const list = /[?&]list=([A-Za-z0-9_-]{10,})/.exec(url)
+                      const target = list
+                        ? `https://www.youtube.com/playlist?list=${list[1]}`
+                        : url
+                      if (!target) return
+                      try {
+                        if (ctxRef && ctxRef.os && typeof ctxRef.os.openExternal === 'function') {
+                          ctxRef.os.openExternal(target)
+                        }
+                      } catch { /* no browser handle: nothing to open with */ }
+                    },
+                    children: 'Open in YouTube'
+                  })
+                ),
                 row(
                   'Small frame in Hermes',
                   jsx(Switch, {
@@ -7077,5 +7178,7 @@ export const __test = {
   // one or the other").
   setDesktopWindow,
   setVideoWindow,
-  popoutSurface
+  popoutSurface,
+  hiddenVideoIds,
+  hideCurrentEpisode
 }
