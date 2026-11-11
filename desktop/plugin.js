@@ -904,6 +904,42 @@ function pageKey() {
   ].join('|')
 }
 
+/** Keep the caret where the user put it.
+ *
+ * A film page can call `window.focus()` — YouTube's own player does exactly
+ * that when it starts — and an iframe that takes focus swallows every
+ * keystroke, so the composer stops accepting text until the user clicks back
+ * in ("Aura has a keyboard bug that keeps me from typing"). The backdrop is
+ * decoration: it must never hold focus. Remember the last real field, and if
+ * the frame ever takes focus, hand it straight back.
+ */
+let lastCaretEl = null
+
+function rememberCaret(event) {
+  const target = event && event.target
+  if (!target || target === backdropEl) return
+  if (typeof target.focus === 'function') lastCaretEl = target
+}
+
+function releaseBackdropFocus(event) {
+  const target = event && event.target
+  if (!target || target !== backdropEl) return
+  try {
+    backdropEl.blur()
+  } catch {
+    // a detached frame cannot be blurred; the retarget below still helps
+  }
+  const caret = lastCaretEl
+  lastCaretEl = null
+  if (caret && caret.isConnected !== false && typeof caret.focus === 'function') {
+    try {
+      caret.focus()
+    } catch {
+      // the field went away while the film was starting
+    }
+  }
+}
+
 function mountBackdrop(url, opacity) {
   const src = backdropSrc(url)
   if (!backdropEl) {
@@ -6913,6 +6949,11 @@ export default {
         track(() => doc.removeEventListener('keydown', onDevStatsKeydown))
         doc.addEventListener('keydown', onPanelKeydown)
         track(() => doc.removeEventListener('keydown', onPanelKeydown))
+        // The backdrop frame must never keep the keyboard (see releaseBackdropFocus).
+        doc.addEventListener('focusin', rememberCaret, true)
+        track(() => doc.removeEventListener('focusin', rememberCaret, true))
+        doc.addEventListener('focusin', releaseBackdropFocus, true)
+        track(() => doc.removeEventListener('focusin', releaseBackdropFocus, true))
       }
     }
 
@@ -6959,5 +7000,12 @@ export const __test = {
   applyVideoSource,
   applyUrlBox,
   skipBlockedEpisode,
-  panelVisible
+  panelVisible,
+  // The backdrop focus guard: a film page that calls window.focus() must not
+  // be able to keep the keyboard (owner: "keeps me from typing into hermes").
+  rememberCaret,
+  releaseBackdropFocus,
+  // Tests hand in the frame they are working with; production sets it in
+  // mountBackdrop.
+  setBackdropForTest: el => { backdropEl = el }
 }

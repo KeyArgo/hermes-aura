@@ -2476,6 +2476,29 @@ record('readPositions preserves a playlist episode videoId for resume', () => {
   assert.equal(out['https://example.com/film.mp4'].videoId, '', 'a non-string videoId was not discarded')
 })
 
+record('a backdrop frame that takes focus gives the keyboard straight back', () => {
+  // YouTube's player calls window.focus() when it starts. Without this guard the
+  // iframe keeps the keyboard and the composer silently stops accepting text
+  // ("Aura has a keyboard bug that keeps me from typing into hermes").
+  const frame = { blurred: false, blur() { this.blurred = true } }
+  tx.setBackdropForTest(frame)
+  const composer = { focused: false, isConnected: true, focus() { this.focused = true } }
+
+  // A field the user actually typed in is remembered...
+  tx.rememberCaret({ target: composer })
+  // ...and the frame grabbing focus does not win.
+  tx.releaseBackdropFocus({ target: frame })
+
+  assert.equal(frame.blurred, true, 'the film frame kept focus')
+  assert.equal(composer.focused, true, 'the caret was not handed back to the user')
+
+  // A focus event on anything else is none of our business.
+  const other = { blurred: false, blur() { this.blurred = true } }
+  tx.releaseBackdropFocus({ target: other })
+  assert.equal(other.blurred, false, 'the guard blurred an unrelated element')
+  tx.setBackdropForTest(null)
+})
+
 record('shortLabel survives a malformed percent escape', () => {
   const label = tx.shortLabel('https://example.com/%ZZ.mp4')
   assert.match(label, /%ZZ\.mp4/, 'the undecoded filename should still label the source')
