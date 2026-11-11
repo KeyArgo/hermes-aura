@@ -44,6 +44,10 @@ def test_silence_fallback_retries_real_backend(monkeypatch):
 
     monkeypatch.setattr(capture, "open_capture", fake_open)
     monkeypatch.setattr(server, "CAPTURE_RETRY_S", 0.1)
+    # The capture gate only opens a recorder while Aura is on and the motion
+    # source is audio (see _audio_wanted); a default config is off.
+    monkeypatch.setattr(server.config, "load_config",
+                        lambda: {"enabled": True, "motion": "both"})
     published = []
     monkeypatch.setattr(server, "publish_config", lambda: published.append(1))
     stop = threading.Event()

@@ -45,6 +45,9 @@ def live_scripted(tmp_path, monkeypatch):
     """Live server on a scripted fake capture; the sink sees every pushed frame."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("AURA_CAPTURE", "none")
+    # The capture gate (server._audio_wanted) only opens a recorder while Aura is
+    # on and the motion source is audio; this fixture exercises the capture path.
+    config.save_config({"enabled": True, "motion": "both"})
     cap = ScriptedCapture()
     monkeypatch.setattr(server.capture, "open_capture", lambda preferred=None: cap)
     monkeypatch.setattr(server, "_clients_snapshot", lambda: [cap.sink])

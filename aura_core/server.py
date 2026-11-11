@@ -55,6 +55,10 @@ SAMPLE_RATE = 48000
 FRAME_SAMPLES = 1024
 FEATURE_INTERVAL_S = 0.1  # ≤10 Hz (§2)
 CAPTURE_RETRY_S = 10.0  # while on silence, look for a real backend this often
+CAPTURE_GATE_S = 0.5  # how often the capture loop re-reads enabled/motion
+# Motion values whose visuals are driven by real audio. Anything else (designs,
+# agent) means no recorder may stay open.
+AUDIO_MOTIONS = ("both", "music", "agent_music")
 MOOD_KEEPALIVE_S = 2.0
 MAX_CONTROL_BYTES = 64 * 1024
 MAX_WS_QUEUE_PCM = 4      # ~85 ms of audio; older frames are dropped
@@ -506,6 +510,24 @@ def _session_boost_loop(stop_event: threading.Event) -> None:
 # capture / feature pump
 # ---------------------------------------------------------------------------
 
+def _audio_wanted() -> bool:
+    """Capture runs only while Aura is on and the motion source is audio."""
+    cfg = config.load_config()
+    return bool(cfg["enabled"]) and cfg["motion"] in AUDIO_MOTIONS
+
+
+def _swap_capture(old, new):
+    """Publish ``new`` as the live capture and close ``old`` (never leak a recorder)."""
+    with _STATE.lock:
+        _STATE.capture_obj = new
+        _STATE.capture_name = new.name
+    try:
+        old.close()
+    except Exception:  # noqa: BLE001
+        pass
+    return new
+
+
 def _capture_loop(stop_event: threading.Event) -> None:
     analyser = analysis.Analyser()
     frame_silence = analysis.FrameSilence()
@@ -515,11 +537,18 @@ def _capture_loop(stop_event: threading.Event) -> None:
         preferred = config.capture_override()
         if preferred and preferred not in ("pipewire", "pulse", "wasapi", "macos", "none"):
             preferred = None
-        cap = capture.open_capture(preferred)
-        with _STATE.lock:
-            _STATE.capture_obj = cap
-            _STATE.capture_name = cap.name
-        _log("aura: capture backend %s", cap.name)
+        if _audio_wanted():
+            cap = capture.open_capture(preferred)
+            with _STATE.lock:
+                _STATE.capture_obj = cap
+                _STATE.capture_name = cap.name
+            _log("aura: capture backend %s", cap.name)
+        else:
+            cap = capture.NullCapture()
+            with _STATE.lock:
+                _STATE.capture_obj = cap
+                _STATE.capture_name = "none"
+            _log("aura: capture off (Aura disabled or motion does not use audio)")
     except Exception as exc:  # noqa: BLE001 - capture must never break serving
         _log("aura: capture open failed (%s); using silence", type(exc).__name__)
         cap = capture.NullCapture()
@@ -530,10 +559,24 @@ def _capture_loop(stop_event: threading.Event) -> None:
     last_feature = 0.0
     last_data = time.monotonic()
     last_probe = last_data
+    last_gate = last_data
+    wanted = cap.name != "none" or _audio_wanted()
     try:
         while not stop_event.is_set():
             now = time.monotonic()
-            if (cap.name == "none" and preferred != "none"
+            if now - last_gate >= CAPTURE_GATE_S:
+                last_gate = now
+                was_wanted, wanted = wanted, _audio_wanted()
+                if not wanted and cap.name != "none":
+                    # Off, or a motion that ignores audio: no recorder may stay
+                    # open (privacy). Back off to silence without a respawn.
+                    cap = _swap_capture(cap, capture.NullCapture())
+                    frame_silence.reset()
+                    _log("aura: capture off (Aura disabled or motion does not use audio)")
+                    publish_config()
+                elif wanted and not was_wanted:
+                    last_probe = now - CAPTURE_RETRY_S  # reopen right away
+            if (wanted and cap.name == "none" and preferred != "none"
                     and now - last_probe >= CAPTURE_RETRY_S):
                 # The first probe can miss audio (busy host at startup, sound
                 # server or device not ready yet); never lock in silence.
@@ -543,11 +586,8 @@ def _capture_loop(stop_event: threading.Event) -> None:
                 except Exception:  # noqa: BLE001
                     retry = None
                 if retry is not None and retry.name != "none":
-                    cap = retry
+                    cap = _swap_capture(cap, retry)
                     frame_silence.reset()
-                    with _STATE.lock:
-                        _STATE.capture_obj = cap
-                        _STATE.capture_name = cap.name
                     _log("aura: capture backend %s (after retry)", cap.name)
                     publish_config()  # open pages still show "no system audio"
                 now = time.monotonic()
