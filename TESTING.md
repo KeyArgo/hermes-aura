@@ -20,6 +20,14 @@ The README badge counts this total. CI runs the same two commands.
 python3 -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration
 ```
 
+`pytest.ini` adds `-q` already, so a local run of the CI command may print only
+progress dots. Add `-o addopts=""` to see the final summary line:
+
+```bash
+python3 -m pytest tests -q -o addopts="" -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration
+# 489 passed
+```
+
 Covers capture backends and the idle gate, the FFT and feature extractor, the
 HTTP routes and WebSocket framing, single-server election, the player queue and
 window control, mood transitions and hooks, configuration coercion, radio
