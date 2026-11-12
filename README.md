@@ -6,7 +6,7 @@
   <a href="https://github.com/KeyArgo/hermes-aura/releases/tag/v1.0.0"><img alt="version 1.0.0" src="https://img.shields.io/badge/version-1.0.0-2f6bff?style=flat-square"></a>
   <a href="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml"><img alt="CI: all suites passing" src="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml/badge.svg"></a>
   <img alt="desktop tests 132 passing" src="https://img.shields.io/badge/desktop%20tests-132%20passing-16a34a?style=flat-square">
-  <img alt="python tests 485 passing" src="https://img.shields.io/badge/python%20tests-489%20passing-16a34a?style=flat-square">
+  <img alt="python tests 489 passing" src="https://img.shields.io/badge/python%20tests-489%20passing-16a34a?style=flat-square">
   <img alt="MIT licence" src="https://img.shields.io/badge/license-MIT-a855f7?style=flat-square">
   <img alt="Hermes Agent 0.22.5 or newer" src="https://img.shields.io/badge/hermes%20agent-%E2%89%A5%200.22.5-7c3aed?style=flat-square">
   <img alt="Linux, PipeWire or PulseAudio" src="https://img.shields.io/badge/platform-linux%20%C2%B7%20pipewire-0284c7?style=flat-square">
