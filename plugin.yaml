@@ -2,7 +2,7 @@ name: aura
 label: Aura
 kind: standalone
 version: "1.0.0"
-author: Argo
+author: InovinLabs
 description: >
   Aura turns Hermes Desktop into a room you can live in: play a film, lecture or YouTube playlist
   in a docked theatre pane on the right while you work, then switch the film off and let the same

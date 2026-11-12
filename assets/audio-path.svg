@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="430" viewBox="0 0 1240 430" role="img" aria-label="Aura's audio path: system loopback to a ring buffer, over a WebSocket as raw PCM, into Butterchurn on the GPU">
+  <defs>
+    <linearGradient id="bg3" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b0d12"/>
+      <stop offset="100%" stop-color="#12172b"/>
+    </linearGradient>
+    <linearGradient id="flow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6ea8ff"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+  </defs>
+  <rect width="1240" height="430" fill="url(#bg3)"/>
+  <g font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="60" y="50" fill="#8ea6d8" font-size="12.5" letter-spacing="4" font-weight="600">AUDIO PATH · LOCAL ONLY</text>
+    <text x="60" y="84" fill="#f3ece2" font-size="26" font-weight="600">Your speakers, never your microphone.</text>
+
+    <!-- boxes -->
+    <g>
+      <rect x="60" y="130" width="200" height="96" rx="12" fill="#101728" stroke="#2b3654"/>
+      <text x="78" y="160" fill="#f3ece2" font-size="14.5" font-weight="600">System output</text>
+      <text x="78" y="182" fill="#b3bedd" font-size="11.5">PipeWire / PulseAudio loopback</text>
+      <text x="78" y="200" fill="#b3bedd" font-size="11.5">whatever is already playing</text>
+
+      <rect x="300" y="130" width="200" height="96" rx="12" fill="#101728" stroke="#2b3654"/>
+      <text x="318" y="160" fill="#f3ece2" font-size="14.5" font-weight="600">Capture thread</text>
+      <text x="318" y="182" fill="#b3bedd" font-size="11.5">48 kHz PCM, ring buffer</text>
+      <text x="318" y="200" fill="#b3bedd" font-size="11.5">stops after 30 s with no viewer</text>
+
+      <rect x="540" y="130" width="200" height="96" rx="12" fill="#101728" stroke="#2b3654"/>
+      <text x="558" y="160" fill="#f3ece2" font-size="14.5" font-weight="600">/api/stream</text>
+      <text x="558" y="182" fill="#b3bedd" font-size="11.5">WebSocket, bearer token</text>
+      <text x="558" y="200" fill="#b3bedd" font-size="11.5">binary frames, no files</text>
+
+      <rect x="780" y="130" width="200" height="96" rx="12" fill="#101728" stroke="#2b3654"/>
+      <text x="798" y="160" fill="#f3ece2" font-size="14.5" font-weight="600">Butterchurn</text>
+      <text x="798" y="182" fill="#b3bedd" font-size="11.5">MilkDrop in WebGL</text>
+      <text x="798" y="200" fill="#b3bedd" font-size="11.5">100+ presets, GPU</text>
+
+      <rect x="1020" y="130" width="160" height="96" rx="12" fill="#151a34" stroke="#3b5cff" stroke-opacity="0.6"/>
+      <text x="1038" y="160" fill="#f3ece2" font-size="14.5" font-weight="600">The screen</text>
+      <text x="1038" y="182" fill="#b3bedd" font-size="11.5">backdrop, pane or</text>
+      <text x="1038" y="200" fill="#b3bedd" font-size="11.5">its own window</text>
+    </g>
+
+    <!-- flow arrows -->
+    <g stroke="url(#flow)" stroke-width="2.2" fill="none" stroke-linecap="round">
+      <path d="M262 178 h34" marker-end="url(#b)"/>
+      <path d="M502 178 h34" marker-end="url(#b)"/>
+      <path d="M742 178 h34" marker-end="url(#b)"/>
+      <path d="M982 178 h34" marker-end="url(#b)"/>
+    </g>
+    <defs>
+      <marker id="b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="#8ea6ff"/>
+      </marker>
+    </defs>
+
+    <!-- agent moods lane -->
+    <rect x="60" y="264" width="1120" height="86" rx="12" fill="#0e1424" stroke="#262f4c"/>
+    <text x="80" y="292" fill="#8ea6d8" font-size="12" letter-spacing="2.6" font-weight="600">SAME SIGNAL, SECOND JOB</text>
+    <text x="80" y="316" fill="#d7dffc" font-size="13">Hermes hooks — thinking, tool runs, approvals — pick a mood; the mood picks scene, motion and reaction strength.</text>
+    <g fill="#6ea8ff">
+      <circle cx="86" cy="334" r="3"/><circle cx="100" cy="334" r="3" opacity="0.7"/><circle cx="114" cy="334" r="3" opacity="0.45"/><circle cx="128" cy="334" r="3" opacity="0.25"/>
+    </g>
+    <text x="146" y="338" fill="#9aa7c8" font-size="11.5">calm · balanced · intense</text>
+
+    <!-- the moods, drawn: three preset scenes at increasing reaction -->
+    <g transform="translate(880 276)">
+      <text x="0" y="0" fill="#8f9cbe" font-size="10.5" letter-spacing="1.6">THE MOOD PAINTS IT</text>
+      <g>
+        <circle cx="16" cy="34" r="13" fill="none" stroke="#6ea8ff" stroke-opacity="0.35"/>
+        <circle cx="16" cy="34" r="6" fill="#6ea8ff" fill-opacity="0.45"/>
+        <circle cx="70" cy="34" r="13" fill="none" stroke="#8ea6ff" stroke-opacity="0.6"/>
+        <circle cx="70" cy="34" r="9" fill="#8ea6ff" fill-opacity="0.6"/>
+        <circle cx="124" cy="34" r="13" fill="none" stroke="#a78bfa" stroke-opacity="0.85"/>
+        <circle cx="124" cy="34" r="12" fill="#a78bfa" fill-opacity="0.8"/>
+        <circle cx="124" cy="34" r="5" fill="#f3ece2" fill-opacity="0.9"/>
+      </g>
+      <text x="152" y="39" fill="#b3bedd" font-size="11">calm → intense</text>
+    </g>
+    <text x="60" y="392" fill="#8f9cbe" font-size="11.5">No uploads, no account, no recording. The token stays in ~/.hermes/aura/token; the window is ordinary Chromium on its own profile.</text>
+  </g>
+</svg>

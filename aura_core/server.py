@@ -893,6 +893,24 @@ def open_window(data: Any) -> dict:
     return result
 
 
+def manage_window(data: Any) -> dict:
+    """``POST /api/window/manage`` — open a real web page in the window.
+
+    The pop-out is ordinary Chromium on Aura's own persistent profile, so a
+    site there behaves like a site: a YouTube playlist can be curated for real
+    (add, remove, reorder) with the user's own session — no API scope and no
+    account handshake.
+    """
+    body = data if isinstance(data, dict) else {}
+    url = _player_text(body.get("url"), 400)
+    if not url.lower().startswith(("http://", "https://")):
+        raise ValueError("only http(s) pages can be opened")
+    result = desktop_window.open_page(url)
+    result["ok"] = True
+    result["window"] = desktop_window.status()
+    return result
+
+
 def close_window() -> dict:
     closed = desktop_window.close_window()
     return {"ok": True, "closed": closed, "window": desktop_window.status()}

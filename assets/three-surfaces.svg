@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="540" viewBox="0 0 1240 540" role="img" aria-label="One player, three surfaces: a docked pane, the Aura page, and its own OS window">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b0d12"/>
+      <stop offset="100%" stop-color="#141227"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1b2748"/>
+      <stop offset="100%" stop-color="#0d1220"/>
+    </linearGradient>
+    <linearGradient id="strip" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6ea8ff"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+  </defs>
+  <rect width="1240" height="540" fill="url(#bg2)"/>
+  <g font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="60" y="52" fill="#8ea6d8" font-size="12.5" letter-spacing="4" font-weight="600">ONE PLAYER · THREE SURFACES</text>
+    <text x="60" y="88" fill="#f3ece2" font-size="27" font-weight="600">The film follows you, and only ever exists once.</text>
+
+    <!-- 1 · docked pane -->
+    <g transform="translate(60 124)">
+      <rect width="330" height="230" rx="14" fill="#0f1320" stroke="#2a3355" stroke-width="1.2"/>
+      <rect x="10" y="10" width="310" height="30" rx="8" fill="#151a2c"/>
+      <circle cx="26" cy="25" r="3.2" fill="#6ea8ff"/>
+      <text x="38" y="29" fill="#c9d6ff" font-size="11.5">Hermes Desktop — chat</text>
+      <rect x="10" y="48" width="196" height="172" rx="8" fill="#0b0e18" stroke="#232b45"/>
+      <text x="24" y="70" fill="#7d89ad" font-size="11">composer · sessions</text>
+      <rect x="214" y="48" width="106" height="172" rx="8" fill="url(#screen)" stroke="#3b5cff" stroke-opacity="0.55"/>
+      <rect x="222" y="56" width="90" height="46" rx="4" fill="#080a12"/>
+      <path d="M247 71 l15 8 -15 8 z" fill="#6ea8ff"/>
+      <rect x="222" y="110" width="90" height="3" rx="1.5" fill="#2a3355"/>
+      <rect x="222" y="110" width="52" height="3" rx="1.5" fill="url(#strip)"/>
+      <g fill="#3d4a72"><circle cx="234" cy="126" r="5"/><circle cx="250" cy="126" r="5"/><circle cx="266" cy="126" r="5"/><circle cx="282" cy="126" r="5"/></g>
+      <rect x="222" y="140" width="90" height="24" rx="3" fill="#131a2e"/>
+      <rect x="222" y="170" width="90" height="24" rx="3" fill="#131a2e"/>
+      <rect x="222" y="200" width="90" height="20" rx="3" fill="#131a2e"/>
+      <text x="0" y="266" fill="#f3ece2" font-size="15" font-weight="600">1 · Docked pane</text>
+      <text x="0" y="288" fill="#aab5d4" font-size="12">320 px on the right edge, above the composer —</text>
+      <text x="0" y="306" fill="#aab5d4" font-size="12">never covers a click. Close it, the tray remains.</text>
+    </g>
+
+    <!-- 2 · the page -->
+    <g transform="translate(455 124)">
+      <rect width="330" height="230" rx="14" fill="#0f1320" stroke="#2a3355" stroke-width="1.2"/>
+      <rect x="10" y="10" width="310" height="30" rx="8" fill="#151a2c"/>
+      <circle cx="26" cy="25" r="3.2" fill="#a78bfa"/>
+      <text x="38" y="29" fill="#c9d6ff" font-size="11.5">Aura page — sidebar</text>
+      <rect x="10" y="48" width="310" height="112" rx="8" fill="url(#screen)" stroke="#3b5cff" stroke-opacity="0.55"/>
+      <path d="M152 90 l20 10 -20 10 z" fill="#a78bfa"/>
+      <rect x="10" y="168" width="310" height="4" rx="2" fill="#2a3355"/>
+      <rect x="10" y="168" width="190" height="4" rx="2" fill="url(#strip)"/>
+      <g fill="#131a2e" stroke="#232b45">
+        <rect x="10" y="182" width="72" height="36" rx="4"/>
+        <rect x="89" y="182" width="72" height="36" rx="4"/>
+        <rect x="168" y="182" width="72" height="36" rx="4"/>
+        <rect x="247" y="182" width="73" height="36" rx="4"/>
+      </g>
+      <text x="0" y="266" fill="#f3ece2" font-size="15" font-weight="600">2 · The page</text>
+      <text x="0" y="288" fill="#aab5d4" font-size="12">The whole product in one place: stage, transport,</text>
+      <text x="0" y="306" fill="#aab5d4" font-size="12">Library, Picks and every setting underneath.</text>
+    </g>
+
+    <!-- 3 · pop-out -->
+    <g transform="translate(850 124)">
+      <rect width="330" height="230" rx="14" fill="#0f1320" stroke="#2a3355" stroke-width="1.2"/>
+      <rect x="10" y="10" width="310" height="26" rx="8" fill="#151a2c"/>
+      <g fill="#3d4a72"><circle cx="26" cy="23" r="3"/><circle cx="37" cy="23" r="3"/><circle cx="48" cy="23" r="3"/></g>
+      <text x="96" y="27" fill="#8b97bb" font-size="10.5">Aura — Chromium app window</text>
+      <rect x="10" y="44" width="310" height="112" rx="6" fill="url(#screen)" stroke="#3b5cff" stroke-opacity="0.55"/>
+      <path d="M152 86 l20 10 -20 10 z" fill="#6ea8ff"/>
+      <rect x="10" y="166" width="310" height="4" rx="2" fill="#2a3355"/>
+      <rect x="10" y="166" width="230" height="4" rx="2" fill="url(#strip)"/>
+      <g fill="#131a2e" stroke="#232b45">
+        <rect x="10" y="182" width="72" height="36" rx="4"/>
+        <rect x="89" y="182" width="72" height="36" rx="4"/>
+        <rect x="168" y="182" width="72" height="36" rx="4"/>
+        <rect x="247" y="182" width="73" height="36" rx="4"/>
+      </g>
+      <text x="0" y="266" fill="#f3ece2" font-size="15" font-weight="600">3 · Pop-out window</text>
+      <text x="0" y="288" fill="#aab5d4" font-size="12">Real Chromium, own profile: another monitor,</text>
+      <text x="0" y="306" fill="#aab5d4" font-size="12">full-screen. ☰ Manage edits the list there.</text>
+    </g>
+
+    <!-- arrows -->
+    <defs>
+      <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="#6ea8ff" fill-opacity="0.75"/>
+      </marker>
+    </defs>
+    <g stroke="#6ea8ff" stroke-opacity="0.55" stroke-width="1.6" fill="none">
+      <path d="M391 236 h59" marker-end="url(#a)"/>
+      <path d="M786 236 h59" marker-end="url(#a)"/>
+    </g>
+
+    <text x="60" y="474" fill="#8894b5" font-size="12">Same player instance. Move it and the old surface gives it up — the position is kept per film, keyed by URL, so nothing restarts.</text>
+    <text x="60" y="498" fill="#8894b5" font-size="12">Aura off means Aura stops painting on the chat. It never means the film stops: a pane, page or window film keeps playing.</text>
+  </g>
+</svg>

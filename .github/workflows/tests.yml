@@ -5,12 +5,40 @@ on:
   pull_request:
 
 jobs:
-  unit:
+  python:
+    name: python suite
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install pytest
+      - run: python -m pip install --upgrade pip pytest
       - run: python -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration
+
+  desktop:
+    name: desktop contract suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node --test tests/test_desktop_plugin.mjs
+
+  manifest:
+    name: manifest gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: the fields the catalog reads are present
+        run: |
+          set -e
+          grep -q '^name: aura$' plugin.yaml
+          grep -q '^version: ' plugin.yaml
+          grep -q '^author: ' plugin.yaml
+          grep -q '^label: ' plugin.yaml
+          grep -q '^description: ' plugin.yaml
+          grep -q '^requires_hermes: ' plugin.yaml
+          grep -q '^license: ' plugin.yaml
+          echo "manifest ok"

@@ -1,16 +1,28 @@
-# Aura
+<p align="center">
+  <img src="assets/hero.svg" alt="Aura — a film behind your work, and an app that breathes with your audio" width="100%">
+</p>
 
-[![release](https://img.shields.io/github/v/release/KeyArgo/hermes-aura)](https://github.com/KeyArgo/hermes-aura/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Hermes Agent](https://img.shields.io/badge/Hermes%20Agent-%E2%89%A50.22.5-0b6e99)](https://github.com/NousResearch/hermes-agent) [![tests](https://img.shields.io/badge/tests-482%20passing-brightgreen)](.github/workflows/tests.yml) [![platforms](https://img.shields.io/badge/Linux%20%C2%B7%20Windows-supported-informational)](#limits-stated-plainly) [![stars](https://img.shields.io/github/stars/KeyArgo/hermes-aura?style=social)](https://github.com/KeyArgo/hermes-aura/stargazers)
+<p align="center">
+  <a href="https://github.com/KeyArgo/hermes-aura/releases/tag/v1.0.0"><img alt="version 1.0.0" src="https://img.shields.io/badge/version-1.0.0-2f6bff?style=flat-square"></a>
+  <img alt="desktop tests 132 passing" src="https://img.shields.io/badge/desktop%20tests-132%20passing-16a34a?style=flat-square">
+  <img alt="python tests 485 passing" src="https://img.shields.io/badge/python%20tests-485%20passing-16a34a?style=flat-square">
+  <img alt="MIT licence" src="https://img.shields.io/badge/license-MIT-a855f7?style=flat-square">
+  <img alt="Hermes Agent 0.22.5 or newer" src="https://img.shields.io/badge/hermes%20agent-%E2%89%A5%200.22.5-7c3aed?style=flat-square">
+  <img alt="Linux, PipeWire or PulseAudio" src="https://img.shields.io/badge/platform-linux%20%C2%B7%20pipewire-0284c7?style=flat-square">
+  <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-3776ab?style=flat-square">
+  <img alt="Node 18 or newer" src="https://img.shields.io/badge/node-18%2B-5fa04e?style=flat-square">
+</p>
 
-**A film behind your work, and an app that breathes with your audio.**
+<p align="center">
+  <img alt="100+ MilkDrop presets" src="https://img.shields.io/badge/milkdrop%20presets-100%2B-ec4899?style=flat-square">
+  <img alt="no account, no uploads, no recording" src="https://img.shields.io/badge/privacy-no%20account%20%C2%B7%20no%20uploads-0d9488?style=flat-square">
+  <img alt="plugin surface: desktop pane, page, status bar, tools" src="https://img.shields.io/badge/surfaces-pane%20%C2%B7%20page%20%C2%B7%20window%20%C2%B7%20tray-f59e0b?style=flat-square">
+  <img alt="capture: system loopback, never the microphone" src="https://img.shields.io/badge/capture-system%20loopback%2C%20not%20mic-e11d48?style=flat-square">
+</p>
 
-![Aura's MilkDrop-compatible visualiser reacting to music, with the agent mood shown top-left](docs/img/aura-visualiser.jpg)
+<h3 align="center">A film behind your work, and an app that breathes with your audio.</h3>
 
-```bash
-hermes plugins install KeyArgo/hermes-aura --yes-deps --enable
-```
-
-_Applies to v1.0.0 · revised 2026-11-10._
+<p align="center"><i>Applies to v1.0.0 · revised 2026-11-11 · <a href="VERIFY.md">what was verified, and how</a></i></p>
 
 Aura turns Hermes Desktop into a room you can live in. Put any film, lecture or playlist in the
 right-hand pane and keep working; switch the film off and the same audio drives a MilkDrop-compatible
@@ -19,6 +31,37 @@ never the microphone — and nothing leaves the computer: no account, no uploads
 
 > Aura is not a music-service integration. It needs no Spotify, no YouTube Music and no account of any
 > kind. If the speakers are making a sound, Aura can see it.
+
+---
+
+## See it
+
+<p align="center">
+  <img src="assets/visualiser-tokamak-witchery.jpg" alt="Aura's visualiser rendering the tokamak witchery preset" width="49%">
+  <img src="assets/visualiser-spiral-movement.jpg" alt="Aura's visualiser rendering the spiral movement preset" width="49%">
+</p>
+<p align="center">
+  <img src="assets/visualiser-skylight.jpg" alt="Aura's visualiser rendering the skylight preset" width="32%">
+  <img src="assets/visualiser-fractopia.jpg" alt="Aura's visualiser rendering the fractopia preset" width="32%">
+  <img src="assets/visualiser-castle-in-the-air.jpg" alt="Aura's visualiser rendering the castle in the air preset" width="32%">
+</p>
+
+<sub>**Real renders, not mockups.** Captured 2026-11-11 at 1600 × 1000 from the Butterchurn build and the
+preset set Aura ships (`web/vendor/`), driven through an analyser by a synthetic signal — the same
+render path the app uses, so the colour, motion and preset behaviour are the product's. The preset
+names are the ones in the catalogue: *Flexi, fishbrain, Geiss + Martin — tokamak witchery* ·
+*Krash + Illusion — Spiral Movement* · *Eo.S. + Zylot — skylight* · *flexi — fractopia* ·
+*martin — castle in the air*. Screenshots of the pane and page chrome need a display server; the
+visualiser is the part that renders identically headless.</sub>
+
+## One player, three surfaces
+
+<p align="center"><img src="assets/three-surfaces.svg" alt="The docked pane, the Aura page, and the pop-out window" width="100%"></p>
+
+The film lives in exactly one place at a time. The docked pane is how you work with it beside the chat;
+the **Aura page** is the whole product in one screen; the **pop-out window** is ordinary Chromium so it
+can go full-screen on another monitor. Move the film and the old surface gives it up — the position is
+kept per film, keyed by URL, so nothing restarts.
 
 ---
 
@@ -33,6 +76,9 @@ never the microphone — and nothing leaves the computer: no account, no uploads
   sources when the current source is a single video.
 - **Auto-skip.** A playlist item that forbids embedding (or has been deleted) would otherwise break the
   whole list, so Aura resolves the playlist server-side and moves to the next playable episode.
+- **Manage a playlist where it lives.** `☰` hands the list to the pop-out window — real Chromium on its
+  own profile — so YouTube's own page opens and adding, removing and reordering work with your own
+  session. No API scope, no OAuth review, no second account.
 - **Free placement.** The floating watch window drags anywhere and remembers its spot; 320 / 480 / 640
   wide. Its control strip is two rows — the film's title, scrubber, clock, volume and window buttons
   above a centred transport row — stays inside the viewport, and dims when idle instead of vanishing.
@@ -113,6 +159,8 @@ also exposes the same search as `GET /api/plugins/aura/search?q=…&limit=…`.
 
 ## Watch the machine
 
+<p align="center"><img src="assets/audio-path.svg" alt="Audio path: system loopback, capture thread, /api/stream, Butterchurn, the screen" width="100%"></p>
+
 - A MilkDrop-compatible WebGL visualiser driven by system audio — level, bands, silence gating.
 - Backdrop opacity that follows the room: dim when quiet, brighter with music, with manual presets.
 - An optional accent that follows the audio, and agent moods: thinking, running tools, waiting for
@@ -158,10 +206,8 @@ other plugin, and Aura's visuals react to whatever it plays.
 ## Install
 
 ```bash
-hermes plugins install KeyArgo/hermes-aura --yes-deps --enable
+hermes plugins install KeyArgo/hermes-aura
 ```
-
-Once Aura is listed in the Hermes plugin catalog, `hermes plugins install aura` works too.
 
 Turn it on in **Settings ▸ Plugins ▸ Aura**. The Aura pane appears on the right; closing it leaves only
 the status-bar menu. Nothing is captured until Aura is enabled.
@@ -172,7 +218,7 @@ the status-bar menu. Nothing is captured until Aura is enabled.
 
 | Area | Status |
 |---|---|
-| Audio capture | **Linux** (PipeWire / PulseAudio monitor) — tested. **Windows** (WASAPI loopback through `soundcard`, installed automatically on Windows) — verified capturing system audio on Windows 11. macOS needs a virtual audio device. |
+| Audio capture | **Linux** (PipeWire / PulseAudio monitor) — tested. Windows (WASAPI) is implemented but unproven on real hardware; macOS needs a virtual audio device. Treat Aura as Linux-first. |
 | YouTube | Embeds play only when the uploader allows it. Aura detects the refusal and skips the episode; it cannot play a video that forbids embedding. |
 | Netflix, Disney+, most streaming services | **Not possible** — their players refuse to be framed (DRM + `X-Frame-Options`). Aura offers "open in browser" instead. |
 | Plex | Not built. A direct stream URL works; the server integration is not written. |

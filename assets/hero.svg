@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="Aura — a film behind your work, and an app that breathes with your audio">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b0d12"/>
+      <stop offset="55%" stop-color="#101426"/>
+      <stop offset="100%" stop-color="#1a1730"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.78" cy="0.42" r="0.55">
+      <stop offset="0%" stop-color="#6ea8ff" stop-opacity="0.55"/>
+      <stop offset="45%" stop-color="#7b6bff" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#0b0d12" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6ea8ff"/>
+      <stop offset="60%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fdfbff"/>
+      <stop offset="100%" stop-color="#c9d6ff"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="360" fill="url(#bg)"/>
+  <rect width="1280" height="360" fill="url(#glow)"/>
+
+  <!-- the seal: two wings around a waveform -->
+  <g opacity="0.9" transform="translate(1010 180)">
+    <circle r="104" fill="none" stroke="#6ea8ff" stroke-opacity="0.28" stroke-width="1.2"/>
+    <circle r="86" fill="none" stroke="#a78bfa" stroke-opacity="0.22" stroke-width="1"/>
+    <g stroke-width="2.8" stroke-linecap="round">
+      <line x1="-46" y1="-14" x2="-46" y2="14" stroke="#6ea8ff" stroke-opacity="0.55"/>
+      <line x1="-34" y1="-32" x2="-34" y2="32" stroke="#6ea8ff" stroke-opacity="0.75"/>
+      <line x1="-22" y1="-20" x2="-22" y2="20" stroke="#a78bfa" stroke-opacity="0.7"/>
+      <line x1="-10" y1="-52" x2="-10" y2="52" stroke="#8ea6ff"/>
+      <line x1="2"   y1="-30" x2="2"   y2="30" stroke="#c9d6ff" stroke-opacity="0.85"/>
+      <line x1="14"  y1="-62" x2="14"  y2="62" stroke="#6ea8ff"/>
+      <line x1="26"  y1="-24" x2="26"  y2="24" stroke="#a78bfa" stroke-opacity="0.8"/>
+      <line x1="38"  y1="-40" x2="38"  y2="40" stroke="#8ea6ff" stroke-opacity="0.7"/>
+      <line x1="50"  y1="-16" x2="50"  y2="16" stroke="#6ea8ff" stroke-opacity="0.5"/>
+    </g>
+  </g>
+
+  <g font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="72" y="104" fill="#8ea6d8" font-size="13" letter-spacing="4.4" font-weight="600">HERMES AGENT PLUGIN · INOVINLABS</text>
+    <text x="68" y="200" fill="url(#ink)" font-size="92" font-weight="700" letter-spacing="-1.5">Aura</text>
+    <rect x="72" y="228" width="420" height="2.5" fill="url(#rule)"/>
+    <text x="72" y="272" fill="#e9e6f7" font-size="23" font-weight="400">A film behind your work, and an app</text>
+    <text x="72" y="303" fill="#e9e6f7" font-size="23" font-weight="400">that breathes with your audio.</text>
+    <text x="72" y="340" fill="#9aa4bf" font-size="15" letter-spacing="0.3">Plays any film or playlist · 100+ MilkDrop presets · nothing leaves the machine</text>
+  </g>
+</svg>
