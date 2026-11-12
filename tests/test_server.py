@@ -6,6 +6,7 @@ Run with the shared venv:
 
 from __future__ import annotations
 
+from pathlib import Path
 import base64
 import http.client
 import json
@@ -243,7 +244,10 @@ def test_good_token_healthz(live):
     assert status == 200
     body = json_body(payload)
     assert body["ok"] is True
-    assert body["version"] == "0.1.0"
+    declared = next(line.split(":", 1)[1].strip().strip('"') for line in
+                    (Path(__file__).resolve().parent.parent / "plugin.yaml").read_text().splitlines()
+                    if line.startswith("version:"))
+    assert body["version"] == declared  # the server mirrors plugin.yaml (tools/release_check.py)
     assert body["capture"] == "none"
     assert body["rate"] == 48000
     assert isinstance(body["clients"], int)
