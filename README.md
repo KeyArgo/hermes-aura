@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/KeyArgo/hermes-aura/releases/tag/v1.0.0"><img alt="version 1.0.0" src="https://img.shields.io/badge/version-1.0.0-2f6bff?style=flat-square"></a>
+  <a href="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml"><img alt="CI: all suites passing" src="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml/badge.svg"></a>
   <img alt="desktop tests 132 passing" src="https://img.shields.io/badge/desktop%20tests-132%20passing-16a34a?style=flat-square">
   <img alt="python tests 485 passing" src="https://img.shields.io/badge/python%20tests-485%20passing-16a34a?style=flat-square">
   <img alt="MIT licence" src="https://img.shields.io/badge/license-MIT-a855f7?style=flat-square">
