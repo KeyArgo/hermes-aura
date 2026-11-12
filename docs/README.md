@@ -23,4 +23,4 @@ Applies to Aura 1.0.0 · revised 2026-11-11
 | [../SECURITY.md](../SECURITY.md) | What Aura touches and how to report a vulnerability privately. |
 | [../THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) | Vendored libraries and preset attribution. |
 
-Back to [README](../README.md).
+Back to [docs index](README.md) · [project README](../README.md).
