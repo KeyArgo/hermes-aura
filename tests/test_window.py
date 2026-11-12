@@ -234,3 +234,44 @@ def test_window_preserves_paused_state(popen):
     window.open_window(4567, 'token', 'https://example.test/film.mp4', paused=True)
     app = next(arg for arg in popen[0][0] if arg.startswith('--app='))
     assert 'paused=1' in app
+
+
+def test_open_page_loads_the_raw_page_not_the_player(popen):
+    """Manage opens YouTube's own page in the window, not Aura's player.
+
+    The window is ordinary Chromium on Aura's own profile, which is the only
+    reason a playlist can be edited for real: the site is the site there.
+    """
+    url = "https://www.youtube.com/playlist?list=PL0123456789"
+    window.open_page(url)
+    app = next(arg for arg in popen[0][0] if arg.startswith("--app="))
+    assert app == "--app=" + url
+    assert "player.html" not in app
+    assert "ticket=" not in app
+
+
+def test_open_page_refuses_anything_but_http(popen):
+    for bad in ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,x", "", "   "]:
+        with pytest.raises(window.WindowError):
+            window.open_page(bad)
+    assert popen == [], "a rejected url still launched a browser"
+
+
+def test_open_page_reuses_a_live_window(popen):
+    first = window.open_page("https://example.test/one")
+    second = window.open_page("https://example.test/two")
+    assert first["already"] is False
+    assert second["already"] is True, "a second page was launched over a live window"
+    assert len(popen) == 1
+    assert second["url"] == "https://example.test/one"
+
+
+def test_open_page_that_exits_at_once_is_an_error(popen, monkeypatch):
+    def dying(args, **kwargs):
+        proc = FakeProc(exit_immediately=True)
+        proc.args = args
+        return proc
+
+    monkeypatch.setattr(window.subprocess, "Popen", dying)
+    with pytest.raises(window.WindowError):
+        window.open_page("https://example.test/one")

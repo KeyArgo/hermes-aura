@@ -2945,6 +2945,47 @@ record('the mode switch offers exactly Visualizer and Video', () => {
   assert.match(body, /Video/, 'the switch has no Video option')
 })
 
+await recordAsync('manage playlist refuses a film that is not a playlist', async () => {
+  // "Manage" opens YouTube's own playlist page in the pop-out. A single film
+  // has no list, so the button must say so instead of asking the server to
+  // open a page that cannot be curated.
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/film.mp4' })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  const routes = []
+  const oldRest = ctx.ctx.rest
+  ctx.ctx.rest = async (route, options) => { routes.push(String(route)); return oldRest(route, options) }
+  try {
+    await tx.managePlaylist()
+    assert.equal(routes.filter(r => r.includes('/window/manage')).length, 0,
+      'a film with no list still asked for a playlist window')
+  } finally {
+    ctx.ctx.rest = oldRest
+    dispose()
+  }
+})
+
+await recordAsync('manage playlist opens the real list page in the window', async () => {
+  const ctx = makeCtx({
+    enabled: true, backdropMode: 'video',
+    videoUrl: 'https://www.youtube.com/watch?v=abc123def45&list=PL0123456789'
+  })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  const calls = []
+  const oldRest = ctx.ctx.rest
+  ctx.ctx.rest = async (route, options) => { calls.push([String(route), options]); return { ok: true, already: false } }
+  try {
+    await tx.managePlaylist()
+    const hit = calls.find(([route]) => route.includes('/window/manage'))
+    assert.ok(hit, 'no manage request reached the server')
+    assert.equal(hit[1].method, 'POST')
+    assert.equal(hit[1].body.url, 'https://www.youtube.com/playlist?list=PL0123456789',
+      'the window was pointed somewhere other than the playlist page')
+  } finally {
+    ctx.ctx.rest = oldRest
+    dispose()
+  }
+})
+
 // --------------------------------------------------------------- reporting
 
 console.log(results.join('\n'))
