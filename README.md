@@ -26,10 +26,11 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/visualiser-page-chrome.png" alt="Aura's visualiser page rendering the skylight preset, with reaction strength, opacity, behaviour and motion controls" width="100%">
+  <img src="docs/media/aura-demo.gif" alt="Aura in Hermes Desktop: a documentary plays in the docked film pane, then the visualiser fills the app behind the chat" width="100%">
 </p>
 
-<sub>**A real render at this commit.** The visualiser page with the skylight preset, captured headlessly at 1440 × 900 from `web/aura.js` and the shipped preset set (`web/presets.json`), driven through the same analyser and WebGL path the app uses. Screenshots of the Hermes Desktop pane and page chrome need a display server; the visualiser is the part that renders identically headless. More in the [screenshots](#screenshots) gallery.</sub>
+<p align="center"><sub><b>Aura inside Hermes Desktop</b>: the film pane beside your work, then the same audio driving the visualiser behind the chat.
+<a href="https://x.com/MHArgonaut/status/2120634853146435961">Watch the full 50-second demo ▶</a></sub></p>
 
 <p align="center">
   <a href="#install">Install</a> ·
@@ -218,6 +219,14 @@ dashboard also exposes the same search as
 ### Screenshots
 
 <table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/desktop-film-pane.png" alt="The film pane docked in Hermes Desktop playing a documentary"><br><sub><b>The film pane</b><br>A film docked beside your work in Hermes Desktop.</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/desktop-film-shelf.png" alt="The Aura page with the film shelf and a YouTube link field"><br><sub><b>The shelf</b><br>Pick a film, or paste any YouTube link or playlist.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/desktop-visualiser-behind-chat.png" alt="The visualiser filling Hermes Desktop behind a chat"><br><sub><b>Behind the chat</b><br>The whole app breathes with what is playing.</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/desktop-visualiser-full.png" alt="The Aura visualiser page reacting to the agent's state"><br><sub><b>It follows the agent</b><br>Thinking, waiting for approval, streaming an answer.</sub></td>
+  </tr>
   <tr>
     <td width="50%" align="center"><img src="docs/screenshots/visualiser-skylight.png" alt="Skylight preset"><br><sub><b>Eo.S. + Zylot — skylight</b><br>Stained-glass blooms over a dark room.</sub></td>
     <td width="50%" align="center"><img src="docs/screenshots/visualiser-tokamak-witchery.png" alt="Tokamak witchery preset"><br><sub><b>Flexi, fishbrain, Geiss + Martin — tokamak witchery</b><br>Particles drift with the low end.</sub></td>
