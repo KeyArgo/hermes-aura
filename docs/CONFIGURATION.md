@@ -19,7 +19,7 @@ atomically with mode `0600` (`aura_core/config.py`).
 | `intensity` | number 0..1 | `0.5` | Upper bound on the render gain. |
 | `preset` | string or null | `null` | A named preset from `web/presets.json`; `null` lets the server pick. |
 | `reduced_motion` | boolean | `false` | Lowers intensity, avoids strobe presets, disables the accent pulse. |
-| `theme_opt_in` | boolean | `false` | Reserved for theme opt-in; the host theme is not repainted unless the user asks. |
+| `theme_opt_in` | boolean | `false` | Published in `/api/config` for compatibility; no renderer reads it at this commit. The host theme is only changed through the SDK's sanctioned accent path. |
 | `opacity` | number 0..1 | `0.35` | Dims the canvas and its scrim together. |
 | `behavior` | `calm` \| `balanced` \| `intense` | `balanced` | Named render profile; see the table below. |
 | `mood_reactive` | boolean | `true` | Let agent moods pick scene, motion and reaction strength. |
