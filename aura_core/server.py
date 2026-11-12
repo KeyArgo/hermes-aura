@@ -50,7 +50,7 @@ from .capture import base as capture
 
 logger = logging.getLogger("aura.server")
 
-VERSION = "0.1.0"
+VERSION = "1.0.0"  # mirrors plugin.yaml; tools/release_check.py enforces it
 SAMPLE_RATE = 48000
 FRAME_SAMPLES = 1024
 FEATURE_INTERVAL_S = 0.1  # ≤10 Hz (§2)
