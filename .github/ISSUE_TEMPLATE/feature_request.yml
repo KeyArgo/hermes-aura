@@ -1,0 +1,30 @@
+name: Feature request
+description: An idea that would make Aura more useful
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem you want solved
+      description: What are you trying to do, and where does Aura get in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you would like to happen
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: Anything you have tried instead
+    validations:
+      required: false
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This may need a new network call, stored data or capability (say so above)
+          required: false
