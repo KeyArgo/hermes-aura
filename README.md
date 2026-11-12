@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml"><img alt="CI: tests" src="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml/badge.svg?branch=main"></a>
   <a href="TESTING.md"><img alt="621 tests passing" src="https://img.shields.io/badge/tests-621%20passing-2ea44f?style=flat-square"></a>
-  <a href="https://github.com/KeyArgo/hermes-aura/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/KeyArgo/hermes-aura?style=flat-square&color=2f6bff"></a>
+  <a href="https://github.com/NousResearch/hermes-agent/pull/154027"><img alt="Hermes plugin catalog: in review" src="https://img.shields.io/badge/plugin%20catalog-in%20review-f59e0b?style=flat-square"></a>
   <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/license-MIT-2f6bff?style=flat-square"></a>
   <a href="https://github.com/NousResearch/hermes-agent"><img alt="Hermes Agent 0.22.5 or newer" src="https://img.shields.io/badge/Hermes%20Agent-%E2%89%A5%200.22.5-7c3aed?style=flat-square"></a>
   <img alt="Linux, PipeWire or PulseAudio" src="https://img.shields.io/badge/platform-linux%20%C2%B7%20pipewire%2Fpulseaudio-555?style=flat-square">

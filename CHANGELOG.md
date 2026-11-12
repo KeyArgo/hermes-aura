@@ -1,13 +1,6 @@
 # Changelog
 
-## Unreleased
-
-- **The server reports the release version.** Its health check said `0.1.0`; it now matches `plugin.yaml`.
-- **The version chip tells a release from a development build.** A catalog install of the pinned commit, or a checkout at the release tag, reads `X.Y.Z`; any other build reads `X.Y.Z-dev`. `tools/release_check.py` and the release workflow keep the version, the changelog, the tag and the GitHub release in step.
-- **Documentation:** a rebuilt README with a recorded demo and current Hermes Desktop screenshots, and a full docs set (usage, reference, architecture, configuration, troubleshooting, FAQ, development and testing).
-- **Project files:** contributing guide, code of conduct, security policy, issue and pull request templates, and CODEOWNERS.
-
-## 1.0.0 — 2026-11-11
+## 1.0.0 — in catalog review
 
 First public release.
 
@@ -23,3 +16,12 @@ First public release.
   `soundcard`, installed automatically on Windows). macOS needs a virtual audio device.
 - **Private by design:** loopback only, never the microphone; audio is analysed in memory and never
   recorded or uploaded.
+
+### After the hackathon submission
+
+The hackathon entry pins commit `90e8b80` ([NousResearch/hermes-agent#154027](https://github.com/NousResearch/hermes-agent/pull/154027), tag `hackathon-submission`). 1.0.0 is the commit the catalog accepts; these changes came after the submission:
+
+- **The server reports the release version.** Its health check said `0.1.0`; it now matches `plugin.yaml`.
+- **The version chip tells a release from a development build.** A catalog install of the pinned commit, or a checkout at the release tag, reads `X.Y.Z`; any other build reads `X.Y.Z-dev`. `tools/release_check.py` and the release workflow keep the version, the changelog, the tag and the GitHub release in step.
+- **Documentation:** a rebuilt README with a recorded demo and current Hermes Desktop screenshots, and a full docs set (usage, reference, architecture, configuration, troubleshooting, FAQ, development and testing).
+- **Project files:** contributing guide, code of conduct, security policy, issue and pull request templates, and CODEOWNERS.
