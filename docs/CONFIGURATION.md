@@ -65,4 +65,7 @@ Behaviour profiles are concrete, not labels (`aura_core/behavior.py`):
 | `~/.hermes/aura/lease.json` | Leader advertisement read by followers and tools. |
 | `~/.hermes/aura/radio_favorites.json` | Saved radio stations. |
 
+The test suite also reads `AURA_TEST_OVERRIDE_HOME` to point a subprocess at a
+temporary Hermes home; it is not a user setting.
+
 Back to [docs/README.md](README.md).
