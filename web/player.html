@@ -33,6 +33,9 @@
 <!-- [subtitles] The captions rules (embed query + live player commands) are one
      small file so the page and its contract test run the same logic. -->
 <script src="captions.js"></script>
+<!-- [quality] What a quality switch really is: YouTube's one honest answer, and
+     the swap rule that keeps the viewer's second. Same file, same test. -->
+<script src="quality.js"></script>
 <script src="audio.js"></script>
 <script>
 (function () {
@@ -69,6 +72,16 @@
     hasCaptions: function () { return false }
   }
 
+  // A page served by a server older than this file has no quality.js. Degrade
+  // to "nothing known about quality" — never fail to boot the film over it.
+  var AuraQuality = window.AuraQuality || {
+    autoLabel: 'Auto (YouTube decides)',
+    autoOnly: function () { return true },
+    fromInfo: function () { return { current: '', preferred: '', levels: [] } },
+    swapPlan: function () { return null },
+    label: function () { return 'file' }
+  }
+
   var frame = null       // the YouTube iframe, when there is one
   var video = null       // the native <video>, when there is one
   var kind = 'frame'     // 'youtube' | 'playlist' | 'video' | 'frame'
@@ -83,7 +96,11 @@
   }
   var state = {
     playing: false, position: 0, duration: 0, muted: muted, title: '', author: '',
-    volume: 0.7, ended: false, videoId: '', blocked: false
+    volume: 0.7, ended: false, videoId: '', blocked: false,
+    // [quality] What the player is really playing. YouTube picks it and ignores
+    // the command to change it (measured), so this is reported upward, never
+    // forced — the app shows "Auto (YouTube decides)" and this is the detail.
+    quality: { current: '', preferred: '', levels: [] }
   }
   var lastPost = 0
 
@@ -164,6 +181,9 @@
           known: captions.known,
           tracks: captions.tracks
         },
+        // [quality] What is really being played, so the app can show it next to
+        // "Auto (YouTube decides)" instead of inventing a level.
+        quality: state.quality,
         controllable: kind !== 'frame'
       }, '*')
     } catch (err) { /* the host may be gone */ }
@@ -307,6 +327,35 @@
     postState(true)
   }
 
+  // --- quality ------------------------------------------------------------
+  // [quality] A quality switch is a source swap, and a source swap is only
+  // acceptable if it keeps the second the viewer is at. The rule for "where the
+  // film was" lives in web/quality.js (the contract test runs it too); this
+  // applies it to the <video>. YouTube has no equivalent: its embed publishes
+  // the level it chose but ignores setPlaybackQuality, so nothing here pretends
+  // to force one.
+  var qualityPlan = null
+
+  function applyVideoQuality(url) {
+    var plan = AuraQuality.swapPlan(
+      { position: state.position, playing: state.playing }, { url: url }
+    )
+    if (!plan || kind !== 'video' || !video) return false
+    qualityPlan = plan
+    state.position = plan.position
+    // The film is now that file: report the url that is really playing, so a
+    // bookmark or a status answer never names the previous derivative.
+    raw = plan.url
+    video.src = plan.url
+    video.load()
+    // A player that already has metadata lands now; a cold one lands once its
+    // metadata is in (see addVideo). Either way it is the same second.
+    try { if (plan.position > 0) video.currentTime = plan.position } catch (err) { /* not ready */ }
+    if (!plan.playing) { try { video.pause() } catch (err) { /* not ready */ } }
+    postState(true)
+    return true
+  }
+
   // --- native <video> -----------------------------------------------------
   function addVideo(src) {
     var el = document.createElement('video')
@@ -337,6 +386,15 @@
     })
     el.addEventListener('loadedmetadata', function () {
       state.duration = isFinite(el.duration) ? el.duration : 0
+      // [quality] A swap lands where the viewer was, and keeps playing. This is
+      // the second half of the rule in web/quality.js: a source that is cold
+      // cannot seek before its metadata is in.
+      if (qualityPlan) {
+        var plan = qualityPlan
+        qualityPlan = null
+        try { if (plan.position > 0) el.currentTime = plan.position } catch (err) { /* not seekable */ }
+        if (plan.playing) el.play().catch(function () { })
+      }
       // [subtitles] Its tracks are known once the metadata is: apply the
       // switch before the first frame is drawn, not after a click.
       applyVideoCaptions()
@@ -412,6 +470,14 @@
         if (info.videoData && typeof info.videoData.video_id === 'string') {
           state.videoId = info.videoData.video_id
         }
+        // [quality] YouTube reports the level it chose, the levels it has and
+        // its own preference. Reading that is honest; sending
+        // setPlaybackQuality is not (measured: it is ignored), so the page only
+        // ever reports what it is told.
+        var saidQuality = AuraQuality.fromInfo(info)
+        if (saidQuality.current) state.quality.current = saidQuality.current
+        if (saidQuality.preferred) state.quality.preferred = saidQuality.preferred
+        if (saidQuality.levels.length) state.quality.levels = saidQuality.levels
         // [subtitles] A new video is a new captions context.
         applyCaptionsForVideo()
         postState(false)
@@ -431,6 +497,13 @@
     // per-kind transport branches.
     if (cmd === 'captions') {
       setCaptions(value === 1 || value === true || value === 'on', data.lang)
+      return
+    }
+
+    // [quality] Switch the film to another one of its own files, at the same
+    // second. Only a direct file has versions to swap between.
+    if (cmd === 'quality') {
+      applyVideoQuality(String(data.url || value || ''))
       return
     }
 
@@ -610,6 +683,13 @@
       // applied in this page and reported back to the app.
       markCommand(name, true)
       setCaptions(command.value === 1 || command.value === true, command.lang)
+      reportDesktop(true)
+      return
+    }
+    if (name === 'quality') {
+      // [quality] The window is the player: the swap happens in this page so
+      // the film keeps the second it is at, and the app remembers the choice.
+      markCommand(name, applyVideoQuality(String(command.url || '')))
       reportDesktop(true)
       return
     }
