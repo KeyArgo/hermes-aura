@@ -4960,6 +4960,291 @@ await recordAsync('pop out: an error reply shows the server reason and moves not
   }
 })
 
+// ------------------------------------------- watching with Aura switched off
+// Owner: "even if aura is off you should be able to play in the aura app, the
+// on and off is for being able to overlay on your chat … not inside the plugin".
+// The page, the Right panel, the film frame, the pop-outs and the strip are
+// Aura's own surfaces. Aura's switch owns the overlay painted on the chat.
+
+const offWatchUrl = 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+const offCtx = makeCtx({
+  enabled: false,
+  backdropMode: 'video',
+  panelEnabled: true,
+  videoUrl: offWatchUrl
+})
+closePopout(offCtx)
+const disposeOffCtx = pluginModule.default.register(offCtx.ctx)
+await primeLive()
+pageStage(1200, 400)
+
+record('aura off: the page plays the film instead of asking for Aura to be on', () => {
+  const body = texts(layoutPageOf(offCtx))
+  assert.ok(!/Aura is off/i.test(body),
+    `the page still refuses to play while Aura is off: ${JSON.stringify(body)}`)
+  globalThis.__sdkFrames.length = 0
+  layoutPageOf(offCtx)
+  const framed = globalThis.__sdkFrames.filter(frame => String(frame.src || '').includes('/player.html'))
+  assert.equal(framed.length, 1, 'the page drew no film frame while Aura is off')
+})
+
+record('aura off: the Right panel still holds the film and never refuses', () => {
+  const panel = layoutMountPanel(offCtx)
+  const texts_ = layoutDescendants(panel)
+    .map(node => String(node.textContent || ''))
+    .join('\n')
+  assert.ok(!/Aura is off/i.test(texts_),
+    `the Right panel still refuses to play while Aura is off: ${JSON.stringify(texts_)}`)
+  assert.equal(tx.filmOwner() === 'page', true,
+    `an in-app surface no longer owns the film: ${JSON.stringify(tx.filmGates())}`)
+})
+
+await recordAsync('aura off: Frame in Hermes and Pop out to desktop still move the film', async () => {
+  pageAria(layoutPageOf(offCtx), 'Frame in Hermes').props.onClick()
+  assert.equal(pluginModule.wiringTest.settings.get().videoWindow, true,
+    'Frame in Hermes did nothing while Aura is off')
+  tx.setVideoWindow(false)
+  // An earlier scenario can leave a pop-out half-open; settle it first.
+  await tx.setOwnWindow(false)
+  pageAria(layoutPageOf(offCtx), 'Pop out to desktop').props.onClick()
+  await sleep(80)
+  assert.ok(pageAria(layoutPageOf(offCtx), 'Bring back'),
+    `Pop out to desktop opened nothing while Aura is off: ${JSON.stringify(tx.filmGates())}`)
+  assert.equal(tx.filmOwner(), '',
+    `the film is still in an in-app surface with the window open: ${JSON.stringify(tx.filmGates())}`)
+  await tx.setOwnWindow(false)
+})
+
+pageStage(null)
+disposeOffCtx()
+
+const offStripCtx = makeCtx({
+  enabled: false,
+  backdropMode: 'video',
+  panelEnabled: false,
+  videoUrl: offWatchUrl
+})
+closePopout(offStripCtx)
+const disposeOffStrip = pluginModule.default.register(offStripCtx.ctx)
+await primeLive()
+
+record('aura off: the control strip is there to play the film with', () => {
+  const strip = offStripCtx.contributions.find(c => c.id === 'strip')
+  assert.ok(strip, 'the strip contribution is gone')
+  const tree = strip.render()
+  const element = tree && typeof tree.type === 'function' ? tree.type(tree.props) : tree
+  assert.ok(element, 'the control strip renders nothing while Aura is off')
+  assert.equal(offStripCtx.storage.get('settings').enabled, false,
+    'the scenario is meant to run with Aura off')
+})
+
+disposeOffStrip()
+
+// ------------------------------------------- the sidebar row is optional
+// Owner: "there should be an option in there to remove the menu option and
+// only have in status tray". Off removes the sidebar row only: the page stays
+// registered, and the status-bar menu carries the way in.
+
+const navCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: false,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+const disposeNav = pluginModule.default.register(navCtx.ctx)
+await primeLive()
+
+const navRow = () => navCtx.contributions.find(c => c.area === 'sidebar.nav')
+const navPage = () => navCtx.contributions.find(c => c.area === 'routes')
+const navMenu = () => renderContribution(navCtx.contributions.find(c => c.id === 'quick-menu'))
+const navSettings = () => renderDeep(renderContribution(navCtx.contributions.find(c => c.area === 'settings.plugins')))
+const navSwitch = () => findSwitch(navSettings(), 'Show Aura in the sidebar')
+
+record('sidebar: the row is there by default and the menu adds no second way in', () => {
+  assert.ok(navRow(), 'the sidebar row is missing by default')
+  assert.ok(navPage(), 'the Aura page route is missing')
+  assert.equal(findByAria(navMenu(), 'Open Aura page'), null,
+    'the menu carries an Open Aura page link while the row is in the sidebar')
+})
+
+record('sidebar: switching it off removes the row and keeps the page reachable from the menu', () => {
+  const control = navSwitch()
+  assert.ok(control, 'Settings has no "Show Aura in the sidebar" switch')
+  control.props.onCheckedChange(false)
+  assert.equal(navCtx.storage.get('settings').sidebarPage, false, 'the choice was not remembered')
+  assert.equal(navRow(), undefined, 'the sidebar row survived the switch')
+  assert.ok(navPage(), 'switching the row off removed the page itself')
+  const link = findByAria(navMenu(), 'Open Aura page')
+  assert.ok(link, 'the menu has no way into the page while the row is hidden')
+  const before = sdk.calls.navigations.length
+  link.props.onClick()
+  assert.equal(sdk.calls.navigations.at(-1), '/aura', 'the menu link did not open the Aura page')
+  assert.equal(sdk.calls.navigations.length, before + 1)
+})
+
+record('sidebar: switching it back on puts the row back and drops the menu link', () => {
+  const control = navSwitch()
+  assert.ok(control, 'the switch vanished with its own row off')
+  control.props.onCheckedChange(true)
+  assert.ok(navRow(), 'the sidebar row did not come back')
+  assert.equal(findByAria(navMenu(), 'Open Aura page'), null,
+    'the menu kept its Open Aura page link after the row returned')
+})
+
+disposeNav()
+
+// ------------------------------------------- one-click "Play a film"
+// Owner: playing a film from the status bar took three switches. One control
+// resumes the last film where it stopped (or starts the first pick), and it
+// puts Aura into video mode itself.
+
+const playLastUrl = 'https://example.com/last-night.mp4'
+const playCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'aura',
+  panelEnabled: false,
+  videoUrl: '',
+  videoRecent: [{ label: 'Last night', url: playLastUrl }],
+  videoPositions: { [playLastUrl]: { position: 1432, duration: 3600, at: 1 } }
+})
+const disposePlay = pluginModule.default.register(playCtx.ctx)
+await primeLive()
+pageStage(1200, 400)
+
+await recordAsync('play a film: the menu resumes the last film and switches to video mode', async () => {
+  const button = findByAria(renderContribution(playCtx.contributions.find(c => c.id === 'quick-menu')), 'Play a film')
+  assert.ok(button, 'the status-bar menu has no "Play a film"')
+  button.props.onClick()
+  await sleep(60)
+  const saved = playCtx.storage.get('settings')
+  assert.equal(saved.backdropMode, 'video', 'Play a film did not switch to video mode')
+  assert.equal(saved.videoUrl, playLastUrl, 'Play a film did not play the last film')
+  assert.equal(saved.videoClosed, false, 'Play a film left the film closed')
+  assert.equal(new URL(tx.filmSrc()).searchParams.get('resume'), '1432',
+    'the film did not resume where it stopped')
+})
+
+pageStage(null)
+disposePlay()
+
+const playFreshCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'aura',
+  panelEnabled: false,
+  videoUrl: ''
+})
+const disposePlayFresh = pluginModule.default.register(playFreshCtx.ctx)
+await primeLive()
+const firstStarterUrl = tx.videoQueue()[0].url
+
+await recordAsync('play a film: with nothing watched yet it starts the first pick', async () => {
+  const button = findByAria(renderContribution(playFreshCtx.contributions.find(c => c.id === 'quick-menu')), 'Play a film')
+  assert.ok(button, 'the status-bar menu has no "Play a film"')
+  button.props.onClick()
+  await sleep(60)
+  const saved = playFreshCtx.storage.get('settings')
+  assert.equal(saved.backdropMode, 'video', 'Play a film did not switch to video mode')
+  assert.equal(saved.videoUrl, firstStarterUrl, 'Play a film did not start the first pick')
+})
+
+disposePlayFresh()
+
+// ------------------------------------------- a film that never loads
+// Row 46, second half: a blocked embed reports itself, but a film that simply
+// never starts says nothing at all. After 20 s without a ready/playing signal
+// the surfaces say so and offer a way out instead of spinning forever.
+
+const stallUrl = 'https://www.youtube.com/watch?v=4Xy0KzPq1Wm'
+const stallCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: true,
+  videoUrl: stallUrl
+})
+closePopout(stallCtx)
+const disposeStall = pluginModule.default.register(stallCtx.ctx)
+await primeLive()
+pageStage(1200, 400)
+
+const stallTimers = ctx => ctx.timers.filter(t => t.kind === 'timeout' && t.ms === 20000 && !t.cleared)
+const panelText = ctx => layoutDescendants(layoutMountPanel(ctx))
+  .map(node => String(node.textContent || ''))
+  .join('\n')
+
+record('stall: a film that never reports is called stuck after 20 s, on page and panel', () => {
+  const timers = stallTimers(stallCtx)
+  assert.equal(timers.length, 1,
+    `expected one 20 s watchdog, timers: ${stallCtx.timers.map(t => t.ms).join(',')}`)
+  timers[0].fn()
+  const page = layoutPageOf(stallCtx)
+  assert.match(texts(page), /isn't loading/, 'the page says nothing after 20 s of nothing')
+  assert.ok(pageAria(page, 'Try again'), 'the page offers no Try again')
+  assert.ok(pageAria(page, 'Pick another'), 'the page offers no way to pick another film')
+  assert.match(panelText(stallCtx), /isn't loading/, 'the Right panel says nothing after 20 s')
+})
+
+await recordAsync('stall: Try again reloads the same film and re-arms the watch', async () => {
+  pageAria(layoutPageOf(stallCtx), 'Try again').props.onClick()
+  await sleep(30)
+  assert.ok(!/isn't loading/.test(texts(layoutPageOf(stallCtx))), 'Try again left the message up')
+  assert.match(tx.filmSrc(), /retry=/, 'Try again did not reload the film')
+  const state = tx.stallStateForTest()
+  assert.equal(state.timer, true, 'Try again did not watch the new attempt')
+  assert.match(String(state.armed), /\|1$/, `the reload was not a new watch: ${state.armed}`)
+})
+
+await recordAsync('stall: Pick another starts a different film', async () => {
+  // The reload never arrives either: the same 20 s verdict, then the way out.
+  const last = stallCtx.timers.filter(t => t.kind === 'timeout' && t.ms === 20000).at(-1)
+  last.fn()
+  const another = pageAria(layoutPageOf(stallCtx), 'Pick another')
+  assert.ok(another, 'the film was not called stuck a second time')
+  another.props.onClick()
+  await sleep(60)
+  const saved = stallCtx.storage.get('settings')
+  assert.ok(saved.videoUrl && saved.videoUrl !== stallUrl,
+    `Pick another did not change the film: ${saved.videoUrl}`)
+})
+
+pageStage(null)
+disposeStall()
+
+const readyCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: true,
+  videoUrl: stallUrl
+})
+closePopout(readyCtx)
+const disposeReady = pluginModule.default.register(readyCtx.ctx)
+await primeLive()
+pageStage(1200, 400)
+
+record('stall: a film that reports playing is never called stuck', () => {
+  const timers = stallTimers(readyCtx)
+  assert.equal(timers.length, 1, 'no watchdog was armed for the film')
+  const listener = readyCtx.listeners.find(entry => entry.type === 'message' && !entry.removed)
+  assert.ok(listener, 'no message bridge listener')
+  const frame = { contentWindow: { postMessage() {} } }
+  tx.setBackdropForTest(frame)
+  listener.fn({
+    source: frame.contentWindow,
+    data: {
+      aura: 'video-state', url: stallUrl, kind: 'youtube', playing: true, position: 4,
+      duration: 5400, muted: true, title: 'A film', controllable: true
+    }
+  })
+  assert.equal(timers[0].cleared, true, 'a playing film left its 20 s watchdog armed')
+  // Even if a stale timer somehow runs, a film with a known length is not stuck.
+  timers[0].fn()
+  assert.ok(!/isn't loading/.test(texts(layoutPageOf(readyCtx))),
+    'a film that reported playing was called stuck')
+  tx.setBackdropForTest(null)
+})
+
+pageStage(null)
+disposeReady()
+
 // --------------------------------------- lane controlbar: the strip, redesigned
 // Owner ask, in his words: "seek bar across the whole top, times on the bottom;
 // big bottom controls; both pop-out buttons on the bottom row; X on the left,
