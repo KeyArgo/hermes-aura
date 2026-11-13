@@ -35,8 +35,8 @@ Recorded on the catalog-pinned build; the current release draws the visualiser i
 <a href="#where-the-visual-lives">where the visual lives</a>. The plugin asks Hermes for a backdrop area so the full-window version can return.
 <a href="https://x.com/MHArgonaut/status/2120634853146435961">Watch the full 50-second demo ▶</a></sub></p>
 
-<p align="center"><img src="docs/media/aura-film.gif" alt="Aura: picking a film from the shelf, then it plays docked beside the chat" width="100%"/>
-<br/><sub><b>A film beside your work.</b> Pick one from the shelf and it plays docked next to the chat.</sub></p>
+<p align="center"><img src="docs/media/aura-film.gif" alt="Aura: picking a film from the shelf, then it plays behind the Hermes chat while you keep working" width="100%"/>
+<br/><sub><b>A film behind your work.</b> Pick one from the shelf and keep chatting while it plays behind the conversation.</sub></p>
 
 <p align="center">
   <a href="#install">Install</a> ·
