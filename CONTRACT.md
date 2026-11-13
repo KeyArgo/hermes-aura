@@ -383,3 +383,40 @@ Ownership is unchanged: the page owns the player, the desktop half owns the choi
   the rest.
 - **Not detectable, and stated as such:** subtitles burned into the picture. No player API exposes
   them, so the CC switch cannot remove them; the README and USAGE say so.
+
+## 15. Quality (additive, 2026-11-13)
+
+Ownership is unchanged: the server asks archive.org, the desktop half owns the choice, the page owns
+the picture.
+
+- **`GET /api/quality?url=<film>`** (server, token-gated). Answers one of three shapes:
+  - `{ok: true, mode: "archive", item, current, choices: [{url, file, label, source, format, width,
+    height, size_bytes, current}], smallest, largest, note}` — from
+    `https://archive.org/metadata/<id>`, parsed for playable suffixes only (`.mp4`, `.webm`,
+    `.ogv`, `.m4v`; an original `.avi`, a `.gif`, posters and the item's metadata files are not
+    choices). Largest first, at most 12. `METADATA_TIMEOUT` is 4 s, the read is capped at 512 KiB,
+    and answers are cached per item for 10 min (32 items). A short timeout here can only cost the
+    list — the film keeps playing on the url it already has.
+  - `{ok: true, mode: "youtube", choices: [{url: "", label: "Auto (YouTube decides)", auto: true}],
+    smallest: "", largest: ""}`. Measured: the embed publishes `playbackQuality`,
+    `availableQualityLevels` and `preferredQuality` but ignores `setPlaybackQuality` (sent
+    `small`/`medium`/`hd720`/`hd1080`/`large`/`default`; `playbackQuality` stayed `hd1080`,
+    `preferredQuality` stayed `auto`). No `vq` parameter is ever added.
+  - `{ok: true, mode: "single", choices: [one file]}` for a direct media file, or
+    `{ok: false, error: "not_a_film"}`.
+  - Only `archive.org`/`www.archive.org` hosts are contacted; a lookalike host is not archive.org.
+- **Dashboard mirror:** `GET /quality?url=…` forwards the same payload (the desktop's only door).
+- **Page → app.** `video-state` gains `quality: {current, preferred, levels}` — what the player
+  says it is playing, never what Aura asked for.
+- **App → page.** `{aura: 'transport', cmd: 'quality', url: '<file>'}` swaps the `<video>` source in
+  place: `web/quality.js#swapPlan` carries the position and the play state, the new element is
+  seeked once its metadata is in, and `raw` (the url the page reports) becomes the new file. A
+  YouTube or unknown frame cannot be swapped, so the command is a no-op there.
+- **Queue.** `/api/player/command` accepts `cmd: "quality"` with `url` and/or `preference`
+  (`auto`/`smallest`/`largest`); a command with neither is refused. The desktop applies it through
+  the same `setVideoQuality`/`setVideoQualityRule` the picker uses, and its player report gains
+  `quality: <rule>` so `aura_watch action=quality` can report the standing rule.
+- **Settings.** `videoQuality` (`auto` | `smallest` | `largest`, default `auto`) is the rule applied
+  when an archive.org film is opened; a specific choice is just the new `videoUrl`, with the
+  bookmark copied to it.
+

@@ -57,13 +57,15 @@ Find something to watch, play the user's pick, report what is playing.
 
 | Parameter | Type | Required | Notes |
 |---|---|---|---|
-| `action` | string enum | yes | `search`, `browse`, `play`, `now`, `save`, `remove`, `list` |
+| `action` | string enum | yes | `search`, `browse`, `play`, `now`, `save`, `remove`, `list`, `quality` |
 | `q` | string | for `search` | What the user wants to watch. |
 | `limit` | integer 1..10 | optional | Numbered options; default 6. |
 | `category` | string | for `browse` | A catalogue category, e.g. `Anime`, `Classic films`, `Slow TV`. |
 | `query` | string | for `browse` | Words from a title or its description; also accepted as an alias of `q` for `search`. |
 | `url` | string | for `play` | YouTube watch/`youtu.be`/shorts/embed/playlist, or `.mp4`/`.webm`/`.m3u8`/`.mov`. |
 | `label` | string | optional | Title to show. |
+| `n` | integer ≥ 1 | for `quality` | The number of the option to play, from the `quality` list. |
+| `preference` | `auto` \| `smallest` \| `largest` | for `quality` | The standing rule for new archive.org films (and the switch used now). |
 
 `search` returns `ok`, `query`, `count`, `items` (`n`, title, channel, length,
 url), `text` and `next`. `browse` reads `web/catalog.json` (no network, nothing
@@ -71,7 +73,13 @@ plays) and returns `ok`, `count`, `items` (`n`, title, year, category, url),
 `text` and `next`; with neither `category` nor `query` it returns `categories`
 (`category`, `count`) and lists them. `play` returns `ok`, `playing`, `url`,
 `label`, `kind`, `seq`, `delivery`. `now` returns `ok`, `running`, `playing`,
-`player`, `window`.
+`player`, `window`. `quality` with no arguments returns `ok`, `mode`
+(`archive`/`youtube`/`single`), `url`, `current`, `preference`, `count`, `items`
+(`n`, `label`, `url`, `height`, `size_bytes`, `current`), `text` and a `next`
+line; with `n`, `url` or `preference` it queues one `quality` command and
+returns `ok`, `mode`, `url`, `label`, `preference`, `position`, `text`. A
+YouTube film cannot be switched: it answers `ok: false` with the measured reason
+and queues nothing.
 
 ## Hooks
 
@@ -117,6 +125,7 @@ redeems a short-lived ticket.
 | GET | `/api/catalog` | The shelf catalogue from `web/catalog.json` (read once, cached). |
 | GET | `/api/config` | Effective config plus the behaviour profile. |
 | GET | `/api/player` | Last player report, command sequence, window status. |
+| GET | `/api/quality?url=…` | The film's real versions: archive.org `choices` (url, label, size, resolution), YouTube's `auto` answer, or one file. Short timeout, cached per item. |
 | GET | `/api/player/commands?after=N` | Queued transport commands after sequence `N`. |
 | GET | `/api/window` | Pop-out status; never returns the token. |
 | GET | `/api/stream` | WebSocket: binary PCM frames plus JSON feature/event frames. |
@@ -145,6 +154,7 @@ only routes the desktop half calls; it never guesses the server port.
 | GET | `/state` | Proxy of the server's `/api/state`. |
 | GET | `/player` | Proxy of `/api/player`. |
 | GET | `/catalog` | Proxy of `/api/catalog` (the shelf catalogue). |
+| GET | `/quality?url=…` | Proxy of `/api/quality` (the film's real versions). |
 | GET | `/player/commands?after=N` | Proxy of the command queue. |
 | POST | `/player/report` | Forward the player report. |
 | POST | `/player/command` | Forward a transport command. |
@@ -184,6 +194,12 @@ Subtitles live there too: `videoCaptions` (boolean, default `false`) and
 `videoCaptionLang` (a language tag such as `fr` or `en-US`; empty means
 "the machine's language, then English"). See
 [USAGE.md](USAGE.md#subtitles-cc) and §14 of [CONTRACT.md](../CONTRACT.md).
+
+Quality settings: `videoQuality` — the standing rule for archive.org films,
+`auto` (the file the source names), `smallest` or `largest`; default `auto`.
+A specific choice for the film playing now is the new `videoUrl`, with its
+bookmark copied across. See [USAGE.md](USAGE.md#quality) and §15 of
+[CONTRACT.md](../CONTRACT.md).
 
 Environment variables: `HERMES_HOME`, `AURA_CAPTURE`, `AURA_RADIO_BROWSER_SERVERS`,
 `AURA_DESKTOP_BROWSER`, `AURA_DESKTOP_GPU`, plus `XDG_SESSION_TYPE` /

@@ -156,7 +156,7 @@ def _call(p, args):
     return json.loads(raw)
 
 
-ACTIONS = ["search", "browse", "play", "now", "save", "remove", "list"]
+ACTIONS = ["search", "browse", "play", "now", "save", "remove", "list", "quality"]
 
 
 # ---------------------------------------------------------------------------
@@ -713,3 +713,138 @@ def test_dashboard_search_survives_a_broken_module(dashboard, monkeypatch):
     assert payload["ok"] is False
     assert payload["error"] == "search_failed"
     assert payload["items"] == []
+
+
+# ---------------------------------------------------------------------------
+# quality — what the film can really be shown at
+#
+# Measured, not assumed: archive.org items have real files (with size and
+# resolution), YouTube's embed publishes its levels but ignores the command to
+# change them, and a direct file is one file. The choices themselves come from
+# the server's /api/quality, so the tool is exercised against a recorder.
+# ---------------------------------------------------------------------------
+
+from aura_core import quality as quality_mod  # noqa: E402
+
+QUALITY_FIXTURE = pathlib.Path(__file__).resolve().parent / "fixtures" / "archive_metadata_the_general.json"
+QUALITY_ITEM = "The_General_Buster_Keaton"
+QUALITY_BASE = f"https://archive.org/download/{QUALITY_ITEM}/"
+QUALITY_ORIGINAL = QUALITY_BASE + "The_General.mp4"
+QUALITY_OGV = QUALITY_BASE + "The_General.ogv"
+QUALITY_SMALL = QUALITY_BASE + "The_General_512kb.mp4"
+
+
+class QualityRecorder(Recorder):
+    """The player plus the server's quality answer."""
+
+    def __init__(self, player=None, choices=None):
+        super().__init__(player=player)
+        self.choices = choices
+
+    def __call__(self, method, path, body=None, timeout=2.0):
+        self.calls.append((method, path, body))
+        if method == "POST" and path == "/api/player/command":
+            self.commands.append(body)
+            return {"ok": True, "seq": len(self.commands)}
+        if path == "/api/player":
+            return {"ok": True, "player": self.player, "seq": 4, "library": None}
+        if path.startswith("/api/quality"):
+            return self.choices if self.choices is not None else {"ok": False, "error": "no"}
+        return {}
+
+
+def _quality_choices():
+    metadata = json.loads(QUALITY_FIXTURE.read_text(encoding="utf-8"))
+    return quality_mod.choices_from_metadata(metadata, QUALITY_ITEM, current_url=QUALITY_SMALL)
+
+
+@pytest.fixture()
+def archive_online(plugin, monkeypatch):
+    p, fake = plugin
+    fake.port = 45999
+    recorder = QualityRecorder(
+        player={"url": QUALITY_SMALL, "label": "The General", "playing": True,
+                "position": 412.5, "duration": 4723.0, "quality": "smallest"},
+        choices=_quality_choices())
+    monkeypatch.setattr(p, "_request", recorder)
+    return recorder
+
+
+def test_quality_list_shows_the_choices_and_the_film_playing(archive_online, plugin):
+    p, _ = plugin
+    payload = _call(p, {"action": "quality"})
+    assert payload["ok"] is True
+    assert payload["mode"] == "archive"
+    assert payload["count"] == 3
+    assert payload["items"][0]["label"] == "640×480 · 393 MB · h.264"
+    assert [item["n"] for item in payload["items"]] == [1, 2, 3]
+    assert payload["current"] == QUALITY_SMALL
+    assert payload["preference"] == "smallest"
+    assert QUALITY_SMALL in payload["text"]
+
+
+def test_quality_set_by_choice_number_queues_exactly_one_command(archive_online, plugin):
+    p, _ = plugin
+    payload = _call(p, {"action": "quality", "n": 1})
+    assert payload["ok"] is True
+    assert archive_online.commands == [{"cmd": "quality", "url": QUALITY_ORIGINAL}]
+    assert payload["url"] == QUALITY_ORIGINAL
+
+
+def test_quality_set_by_url_keeps_the_time_and_says_so(archive_online, plugin):
+    p, _ = plugin
+    payload = _call(p, {"action": "quality", "url": QUALITY_OGV})
+    assert payload["ok"] is True
+    assert archive_online.commands == [{"cmd": "quality", "url": QUALITY_OGV}]
+    assert payload["position"] == 412.5
+    assert "412" in payload["text"], "the answer does not say the second the film keeps"
+
+
+def test_quality_set_a_preference_queues_it_and_switches_now(archive_online, plugin):
+    p, _ = plugin
+    payload = _call(p, {"action": "quality", "preference": "largest"})
+    assert payload["ok"] is True
+    assert archive_online.commands == [
+        {"cmd": "quality", "preference": "largest", "url": QUALITY_ORIGINAL}]
+    assert payload["preference"] == "largest"
+
+
+def test_quality_set_on_youtube_says_it_cannot_and_changes_nothing(plugin, monkeypatch):
+    p, fake = plugin
+    fake.port = 45999
+    url = "https://www.youtube.com/watch?v=EF8C4v7JIbA"
+    recorder = QualityRecorder(
+        player={"url": url, "playing": True},
+        choices=quality_mod.choices_for(url))
+    monkeypatch.setattr(p, "_request", recorder)
+    payload = _call(p, {"action": "quality", "preference": "smallest"})
+    assert payload["ok"] is False
+    assert "YouTube" in payload["error"]
+    assert recorder.commands == [], "a YouTube player must not be sent a fake quality command"
+
+
+def test_quality_set_with_nothing_to_do_is_refused(archive_online, plugin):
+    p, _ = plugin
+    payload = _call(p, {"action": "quality"})
+    assert payload["ok"] is True  # list is the default, and list is honest
+    payload = _call(p, {"action": "quality", "set": True})
+    assert payload["ok"] is False
+    assert archive_online.commands == []
+
+
+def test_quality_with_the_server_down_says_so(plugin):
+    p, fake = plugin
+    fake.port = None
+    payload = _call(p, {"action": "quality", "preference": "smallest"})
+    assert payload["ok"] is False
+    assert payload["running"] is False
+
+
+def test_the_watch_schema_names_the_quality_action_and_its_arguments(plugin):
+    p, _ = plugin
+    assert "quality" in p._WATCH_ACTIONS
+    schema = p.SCHEMA_AURA_WATCH["parameters"]["properties"]
+    assert "quality" in schema["action"]["enum"]
+    for key in ("preference", "n"):
+        assert key in schema, f"aura_watch has no {key} argument"
+    assert "quality" in p.SCHEMA_AURA_WATCH["description"]

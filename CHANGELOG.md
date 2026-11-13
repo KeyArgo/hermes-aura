@@ -23,6 +23,60 @@
   toggles captions and Escape gives the keyboard back to the chat. A key pressed
   in the chat's own text box is never taken.
 
+## Unreleased — the quality picker tells the truth about each source
+
+- **A Quality control, in the settings area of the A menu and the Aura page**
+  (never on the transport strip). For an archive.org film it lists the item's
+  real files with the resolution, size and format the archive reports
+  (`640×480 · 393 MB · h.264`, `400×300 · 290 MB · Ogg Video`,
+  `320×240 · 289 MB · 512Kb MPEG4`), parsed from `/metadata/<id>` by the local
+  server at a new `GET /api/quality?url=` (4 s timeout, 512 KiB cap, 10-minute
+  cache per item, archive.org hosts only) and mirrored for the desktop at
+  `GET /quality`. Switching swaps the source in place and keeps the second —
+  measured in headless Chromium: a film at 124.5 s moved to another derivative
+  and carried on from 124.5 s — and the bookmark follows the new url, so a
+  reload resumes there too.
+- **The preference is remembered and applied to new films.** A second small
+  control (`videoQuality`: `auto` / `smallest` / `largest`) is the rule for the
+  next archive.org film; `auto` plays exactly the file the source named. A
+  direct file is one file and gets no picker at all.
+- **YouTube gets one honest line: "Auto (YouTube decides)".** Measured against
+  `web/player.html` in headless Chromium with video `EF8C4v7JIbA`: the embed
+  publishes `playbackQuality`, `availableQualityLevels` and `preferredQuality`,
+  but `setPlaybackQuality` with `small`, `medium`, `hd720`, `hd1080`, `large`
+  and `default` changed nothing (`playbackQuality` stayed `hd1080`,
+  `preferredQuality` stayed `auto`), and `getAvailableQualityLevels` has no
+  return channel. The picker is disabled with that one label, the page reports
+  the level it is really playing, and no `vq=` parameter or quality command is
+  ever sent.
+- **`aura_watch action=quality` (list / set).** `list` shows the film's choices
+  with numbers, sizes and which one is playing, plus the standing rule; `set`
+  takes `n`, `url` or `preference` and queues exactly one `quality` command.
+  On YouTube it answers `ok: false` with the reason and queues nothing.
+- **A dashboard fix this needed.** `dashboard/plugin_api.py::_search_module`
+  preferred a namespaced copy of `aura_core.search` over the canonical module,
+  so the dashboard could answer from a different cache than the one the caller
+  patched or warmed. The canonical name now wins.
+
+## Unreleased — watching is the plugin, the overlay is the switch
+
+- **A film plays with Aura switched off.** The switch is the overlay painted on
+  the chat (backdrop, accent, theme); the Aura page, the Right panel, the film
+  frame, both pop-outs and the control strip are Aura's own surfaces and no
+  longer wait for it. The page's "Aura is off. Turn it on in the setup below"
+  refusal is gone, and so are the `enabled` gates on the page's film and on the
+  floating strip.
+- **Show Aura in the sidebar** (Settings, on by default). Off disposes the
+  `/aura` row through the SDK and keeps the page: the status-bar **A** menu
+  gains **Open Aura page** so nothing becomes unreachable.
+- **Play a film, one click.** The **A** menu starts the film on screen, else the
+  last one played, else the first pick, switching to video mode itself; a
+  bookmark carries the resume position.
+- **A film that never loads says so.** One watch per attempt on the page and the
+  pane: with no ready or playing signal inside 20 s the stage reads *This film
+  isn't loading* and offers **Try again** (a fresh player document) and **Pick
+  another** (the next source). A film that reports a picture cancels the watch.
+
 ## Unreleased — the music outlives the film, and CI runs every desktop suite
 
 - **Closing the film no longer takes the music with it.** The audio channel

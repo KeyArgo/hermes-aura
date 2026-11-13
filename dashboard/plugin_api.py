@@ -20,6 +20,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -263,6 +264,16 @@ def catalog() -> dict:
     return _forward_json("/api/catalog", timeout=5.0)[1]
 
 
+@router.get("/quality")
+def quality(url: str = "") -> dict:
+    """The film's real versions — the same payload the server serves at
+    ``/api/quality``. The desktop never asks archive.org itself, and the URL is
+    validated (and length-capped) by the server."""
+    target = str(url or "").strip()[:2048]
+    return _forward_json(
+        f"/api/quality?url={urllib.parse.quote(target, safe='')}", timeout=8.0)[1]
+
+
 @router.get("/player/commands")
 def player_commands(after: int = 0) -> dict:
     return _forward_json(f"/api/player/commands?after={max(0, after)}", timeout=5.0)[1]
@@ -380,6 +391,9 @@ def version_route() -> dict:
 _PLAYLIST_CACHE: dict[str, tuple[float, list[dict]]] = {}
 _PLAYLIST_TTL = 300.0
 _LIST_RE = re.compile(r"[A-Za-z0-9_-]{10,64}")
+# A video id is interpolated into the player's own URL and into a watch link, so
+# it must be an id and nothing else — the playlist page is third-party input.
+_VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
        "Chrome/124.0.0.0 Safari/537.36")
 _INITIAL_DATA_RE = re.compile(r"ytInitialData\s*=\s*(\{.*\});</script>", re.S)
@@ -401,7 +415,7 @@ def _walkPlaylist(node: Any, out: list[dict]) -> None:
             length_obj = renderer.get("lengthText")
             if isinstance(length_obj, dict) and isinstance(length_obj.get("simpleText"), str):
                 length = length_obj["simpleText"]
-            if isinstance(vid, str) and len(vid) == 11:
+            if isinstance(vid, str) and _VIDEO_ID_RE.fullmatch(vid):
                 out.append({"videoId": vid, "title": title.strip()[:160], "length": length})
         # YouTube's newer playlist UI: `lockupViewModel` carries the same facts.
         lockup = node.get("lockupViewModel")
@@ -427,7 +441,7 @@ def _walkPlaylist(node: Any, out: list[dict]) -> None:
                             break
                     if length:
                         break
-            if isinstance(vid, str) and len(vid) == 11:
+            if isinstance(vid, str) and _VIDEO_ID_RE.fullmatch(vid):
                 out.append({"videoId": vid, "title": title.strip()[:160], "length": length})
         for value in node.values():
             _walkPlaylist(value, out)
@@ -487,11 +501,20 @@ def playlist(id: str = "") -> dict:
 # ---------------------------------------------------------------------------
 
 def _search_module():
-    """The aura_core.search module, preferring the already-imported instance."""
+    """The aura_core.search module, preferring the already-imported instance.
+
+    The canonical ``aura_core.search`` wins over a namespaced copy of the same
+    file (``aura_watch_plugin.aura_core.search``): the copies hold separate
+    caches, so answering from a different one than the caller patched or warmed
+    is how a search silently stops matching what the app just did.
+    """
+    canonical = sys.modules.get("aura_core.search")
+    if canonical is not None:
+        return canonical
     for name, module in list(sys.modules.items()):
         if module is None:
             continue
-        if name == "aura_core.search" or name.endswith(".aura_core.search"):
+        if name.endswith(".aura_core.search"):
             return module
     for loader in (
         lambda: __import__("aura_core.search", fromlist=["search"]),

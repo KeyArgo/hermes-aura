@@ -8,6 +8,19 @@ Leader election uses `fcntl.flock`. On Windows (no `fcntl`) the import is guarde
 its previous per-process behaviour: each importing process/module copy may start its own server.
 `lease.json` is still written by each server there, but followers are not used.
 
+## YouTube chooses its own quality, and cannot be told otherwise
+
+The embed publishes the level it is playing (`playbackQuality`), the levels it has
+(`availableQualityLevels`) and its own preference, but the IFrame API's
+`setPlaybackQuality` is deprecated and ignored. Measured in headless Chromium against
+Aura's own player page: sending `small`, `medium`, `hd720`, `hd1080`, `large` and
+`default` left `playbackQuality` at `hd1080` and `preferredQuality` at `auto`, and
+`getAvailableQualityLevels` has no return channel at all. The Quality control therefore
+shows one disabled line — *Auto (YouTube decides)* — and Aura sends no quality command
+and no `vq=` parameter, because a hack that pretends to work is worse than a control
+that says what it can do. archive.org films are the opposite: their files are real, so
+they are listed and switchable.
+
 ## Subtitles burned into the picture cannot be switched off
 
 The CC switch drives the caption *track*: `cc_load_policy` on the embed, the captions module on a

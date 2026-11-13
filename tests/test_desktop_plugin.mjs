@@ -139,7 +139,7 @@ function renderContribution(contribution) {
   return typeof element.type === 'function' ? element.type(element.props) : element
 }
 
-function makeCtx(settings, catalog) {
+function makeCtx(settings, catalog, quality) {
   const contributions = []
   const timers = []
   const controls = []
@@ -288,6 +288,13 @@ function makeCtx(settings, catalog) {
         // route is as absent as it is on an old server, so the page must cope.
         if (!catalog) throw new Error('unexpected route /catalog')
         return catalog
+      }
+      if (String(route).startsWith('/quality')) {
+        // The quality picker asks the server for the film's real files. Only
+        // the quality scenarios hand in an answer; everywhere else the route is
+        // as absent as it is on an old server, so the control must cope.
+        if (!quality) throw new Error('unexpected route /quality')
+        return typeof quality === 'function' ? quality(String(route)) : quality
       }
       throw new Error(`unexpected route ${route}`)
     }
@@ -4953,6 +4960,291 @@ await recordAsync('pop out: an error reply shows the server reason and moves not
   }
 })
 
+// ------------------------------------------- watching with Aura switched off
+// Owner: "even if aura is off you should be able to play in the aura app, the
+// on and off is for being able to overlay on your chat … not inside the plugin".
+// The page, the Right panel, the film frame, the pop-outs and the strip are
+// Aura's own surfaces. Aura's switch owns the overlay painted on the chat.
+
+const offWatchUrl = 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+const offCtx = makeCtx({
+  enabled: false,
+  backdropMode: 'video',
+  panelEnabled: true,
+  videoUrl: offWatchUrl
+})
+closePopout(offCtx)
+const disposeOffCtx = pluginModule.default.register(offCtx.ctx)
+await primeLive()
+pageStage(1200, 400)
+
+record('aura off: the page plays the film instead of asking for Aura to be on', () => {
+  const body = texts(layoutPageOf(offCtx))
+  assert.ok(!/Aura is off/i.test(body),
+    `the page still refuses to play while Aura is off: ${JSON.stringify(body)}`)
+  globalThis.__sdkFrames.length = 0
+  layoutPageOf(offCtx)
+  const framed = globalThis.__sdkFrames.filter(frame => String(frame.src || '').includes('/player.html'))
+  assert.equal(framed.length, 1, 'the page drew no film frame while Aura is off')
+})
+
+record('aura off: the Right panel still holds the film and never refuses', () => {
+  const panel = layoutMountPanel(offCtx)
+  const texts_ = layoutDescendants(panel)
+    .map(node => String(node.textContent || ''))
+    .join('\n')
+  assert.ok(!/Aura is off/i.test(texts_),
+    `the Right panel still refuses to play while Aura is off: ${JSON.stringify(texts_)}`)
+  assert.equal(tx.filmOwner() === 'page', true,
+    `an in-app surface no longer owns the film: ${JSON.stringify(tx.filmGates())}`)
+})
+
+await recordAsync('aura off: Frame in Hermes and Pop out to desktop still move the film', async () => {
+  pageAria(layoutPageOf(offCtx), 'Frame in Hermes').props.onClick()
+  assert.equal(pluginModule.wiringTest.settings.get().videoWindow, true,
+    'Frame in Hermes did nothing while Aura is off')
+  tx.setVideoWindow(false)
+  // An earlier scenario can leave a pop-out half-open; settle it first.
+  await tx.setOwnWindow(false)
+  pageAria(layoutPageOf(offCtx), 'Pop out to desktop').props.onClick()
+  await sleep(80)
+  assert.ok(pageAria(layoutPageOf(offCtx), 'Bring back'),
+    `Pop out to desktop opened nothing while Aura is off: ${JSON.stringify(tx.filmGates())}`)
+  assert.equal(tx.filmOwner(), '',
+    `the film is still in an in-app surface with the window open: ${JSON.stringify(tx.filmGates())}`)
+  await tx.setOwnWindow(false)
+})
+
+pageStage(null)
+disposeOffCtx()
+
+const offStripCtx = makeCtx({
+  enabled: false,
+  backdropMode: 'video',
+  panelEnabled: false,
+  videoUrl: offWatchUrl
+})
+closePopout(offStripCtx)
+const disposeOffStrip = pluginModule.default.register(offStripCtx.ctx)
+await primeLive()
+
+record('aura off: the control strip is there to play the film with', () => {
+  const strip = offStripCtx.contributions.find(c => c.id === 'strip')
+  assert.ok(strip, 'the strip contribution is gone')
+  const tree = strip.render()
+  const element = tree && typeof tree.type === 'function' ? tree.type(tree.props) : tree
+  assert.ok(element, 'the control strip renders nothing while Aura is off')
+  assert.equal(offStripCtx.storage.get('settings').enabled, false,
+    'the scenario is meant to run with Aura off')
+})
+
+disposeOffStrip()
+
+// ------------------------------------------- the sidebar row is optional
+// Owner: "there should be an option in there to remove the menu option and
+// only have in status tray". Off removes the sidebar row only: the page stays
+// registered, and the status-bar menu carries the way in.
+
+const navCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: false,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+const disposeNav = pluginModule.default.register(navCtx.ctx)
+await primeLive()
+
+const navRow = () => navCtx.contributions.find(c => c.area === 'sidebar.nav')
+const navPage = () => navCtx.contributions.find(c => c.area === 'routes')
+const navMenu = () => renderContribution(navCtx.contributions.find(c => c.id === 'quick-menu'))
+const navSettings = () => renderDeep(renderContribution(navCtx.contributions.find(c => c.area === 'settings.plugins')))
+const navSwitch = () => findSwitch(navSettings(), 'Show Aura in the sidebar')
+
+record('sidebar: the row is there by default and the menu adds no second way in', () => {
+  assert.ok(navRow(), 'the sidebar row is missing by default')
+  assert.ok(navPage(), 'the Aura page route is missing')
+  assert.equal(findByAria(navMenu(), 'Open Aura page'), null,
+    'the menu carries an Open Aura page link while the row is in the sidebar')
+})
+
+record('sidebar: switching it off removes the row and keeps the page reachable from the menu', () => {
+  const control = navSwitch()
+  assert.ok(control, 'Settings has no "Show Aura in the sidebar" switch')
+  control.props.onCheckedChange(false)
+  assert.equal(navCtx.storage.get('settings').sidebarPage, false, 'the choice was not remembered')
+  assert.equal(navRow(), undefined, 'the sidebar row survived the switch')
+  assert.ok(navPage(), 'switching the row off removed the page itself')
+  const link = findByAria(navMenu(), 'Open Aura page')
+  assert.ok(link, 'the menu has no way into the page while the row is hidden')
+  const before = sdk.calls.navigations.length
+  link.props.onClick()
+  assert.equal(sdk.calls.navigations.at(-1), '/aura', 'the menu link did not open the Aura page')
+  assert.equal(sdk.calls.navigations.length, before + 1)
+})
+
+record('sidebar: switching it back on puts the row back and drops the menu link', () => {
+  const control = navSwitch()
+  assert.ok(control, 'the switch vanished with its own row off')
+  control.props.onCheckedChange(true)
+  assert.ok(navRow(), 'the sidebar row did not come back')
+  assert.equal(findByAria(navMenu(), 'Open Aura page'), null,
+    'the menu kept its Open Aura page link after the row returned')
+})
+
+disposeNav()
+
+// ------------------------------------------- one-click "Play a film"
+// Owner: playing a film from the status bar took three switches. One control
+// resumes the last film where it stopped (or starts the first pick), and it
+// puts Aura into video mode itself.
+
+const playLastUrl = 'https://example.com/last-night.mp4'
+const playCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'aura',
+  panelEnabled: false,
+  videoUrl: '',
+  videoRecent: [{ label: 'Last night', url: playLastUrl }],
+  videoPositions: { [playLastUrl]: { position: 1432, duration: 3600, at: 1 } }
+})
+const disposePlay = pluginModule.default.register(playCtx.ctx)
+await primeLive()
+pageStage(1200, 400)
+
+await recordAsync('play a film: the menu resumes the last film and switches to video mode', async () => {
+  const button = findByAria(renderContribution(playCtx.contributions.find(c => c.id === 'quick-menu')), 'Play a film')
+  assert.ok(button, 'the status-bar menu has no "Play a film"')
+  button.props.onClick()
+  await sleep(60)
+  const saved = playCtx.storage.get('settings')
+  assert.equal(saved.backdropMode, 'video', 'Play a film did not switch to video mode')
+  assert.equal(saved.videoUrl, playLastUrl, 'Play a film did not play the last film')
+  assert.equal(saved.videoClosed, false, 'Play a film left the film closed')
+  assert.equal(new URL(tx.filmSrc()).searchParams.get('resume'), '1432',
+    'the film did not resume where it stopped')
+})
+
+pageStage(null)
+disposePlay()
+
+const playFreshCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'aura',
+  panelEnabled: false,
+  videoUrl: ''
+})
+const disposePlayFresh = pluginModule.default.register(playFreshCtx.ctx)
+await primeLive()
+const firstStarterUrl = tx.videoQueue()[0].url
+
+await recordAsync('play a film: with nothing watched yet it starts the first pick', async () => {
+  const button = findByAria(renderContribution(playFreshCtx.contributions.find(c => c.id === 'quick-menu')), 'Play a film')
+  assert.ok(button, 'the status-bar menu has no "Play a film"')
+  button.props.onClick()
+  await sleep(60)
+  const saved = playFreshCtx.storage.get('settings')
+  assert.equal(saved.backdropMode, 'video', 'Play a film did not switch to video mode')
+  assert.equal(saved.videoUrl, firstStarterUrl, 'Play a film did not start the first pick')
+})
+
+disposePlayFresh()
+
+// ------------------------------------------- a film that never loads
+// Row 46, second half: a blocked embed reports itself, but a film that simply
+// never starts says nothing at all. After 20 s without a ready/playing signal
+// the surfaces say so and offer a way out instead of spinning forever.
+
+const stallUrl = 'https://www.youtube.com/watch?v=4Xy0KzPq1Wm'
+const stallCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: true,
+  videoUrl: stallUrl
+})
+closePopout(stallCtx)
+const disposeStall = pluginModule.default.register(stallCtx.ctx)
+await primeLive()
+pageStage(1200, 400)
+
+const stallTimers = ctx => ctx.timers.filter(t => t.kind === 'timeout' && t.ms === 20000 && !t.cleared)
+const panelText = ctx => layoutDescendants(layoutMountPanel(ctx))
+  .map(node => String(node.textContent || ''))
+  .join('\n')
+
+record('stall: a film that never reports is called stuck after 20 s, on page and panel', () => {
+  const timers = stallTimers(stallCtx)
+  assert.equal(timers.length, 1,
+    `expected one 20 s watchdog, timers: ${stallCtx.timers.map(t => t.ms).join(',')}`)
+  timers[0].fn()
+  const page = layoutPageOf(stallCtx)
+  assert.match(texts(page), /isn't loading/, 'the page says nothing after 20 s of nothing')
+  assert.ok(pageAria(page, 'Try again'), 'the page offers no Try again')
+  assert.ok(pageAria(page, 'Pick another'), 'the page offers no way to pick another film')
+  assert.match(panelText(stallCtx), /isn't loading/, 'the Right panel says nothing after 20 s')
+})
+
+await recordAsync('stall: Try again reloads the same film and re-arms the watch', async () => {
+  pageAria(layoutPageOf(stallCtx), 'Try again').props.onClick()
+  await sleep(30)
+  assert.ok(!/isn't loading/.test(texts(layoutPageOf(stallCtx))), 'Try again left the message up')
+  assert.match(tx.filmSrc(), /retry=/, 'Try again did not reload the film')
+  const state = tx.stallStateForTest()
+  assert.equal(state.timer, true, 'Try again did not watch the new attempt')
+  assert.match(String(state.armed), /\|1$/, `the reload was not a new watch: ${state.armed}`)
+})
+
+await recordAsync('stall: Pick another starts a different film', async () => {
+  // The reload never arrives either: the same 20 s verdict, then the way out.
+  const last = stallCtx.timers.filter(t => t.kind === 'timeout' && t.ms === 20000).at(-1)
+  last.fn()
+  const another = pageAria(layoutPageOf(stallCtx), 'Pick another')
+  assert.ok(another, 'the film was not called stuck a second time')
+  another.props.onClick()
+  await sleep(60)
+  const saved = stallCtx.storage.get('settings')
+  assert.ok(saved.videoUrl && saved.videoUrl !== stallUrl,
+    `Pick another did not change the film: ${saved.videoUrl}`)
+})
+
+pageStage(null)
+disposeStall()
+
+const readyCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: true,
+  videoUrl: stallUrl
+})
+closePopout(readyCtx)
+const disposeReady = pluginModule.default.register(readyCtx.ctx)
+await primeLive()
+pageStage(1200, 400)
+
+record('stall: a film that reports playing is never called stuck', () => {
+  const timers = stallTimers(readyCtx)
+  assert.equal(timers.length, 1, 'no watchdog was armed for the film')
+  const listener = readyCtx.listeners.find(entry => entry.type === 'message' && !entry.removed)
+  assert.ok(listener, 'no message bridge listener')
+  const frame = { contentWindow: { postMessage() {} } }
+  tx.setBackdropForTest(frame)
+  listener.fn({
+    source: frame.contentWindow,
+    data: {
+      aura: 'video-state', url: stallUrl, kind: 'youtube', playing: true, position: 4,
+      duration: 5400, muted: true, title: 'A film', controllable: true
+    }
+  })
+  assert.equal(timers[0].cleared, true, 'a playing film left its 20 s watchdog armed')
+  // Even if a stale timer somehow runs, a film with a known length is not stuck.
+  timers[0].fn()
+  assert.ok(!/isn't loading/.test(texts(layoutPageOf(readyCtx))),
+    'a film that reported playing was called stuck')
+  tx.setBackdropForTest(null)
+})
+
+pageStage(null)
+disposeReady()
+
 // --------------------------------------- lane controlbar: the strip, redesigned
 // Owner ask, in his words: "seek bar across the whole top, times on the bottom;
 // big bottom controls; both pop-out buttons on the bottom row; X on the left,
@@ -5210,7 +5502,238 @@ record('control bar: every button is named, and a 320px window wraps instead of 
   })
 })
 
-// --------------------------------------------------------------- reporting
+// ---------------------------------------------------------------- quality
+// The owner asked for a quality picker that is honest about each source:
+// archive.org's real derivatives as choices, YouTube's one honest answer ("Auto
+// (YouTube decides)" — measured: the embed ignores setPlaybackQuality), and
+// nothing at all for a single direct file. No control goes on the strip.
+
+const ARCHIVE_ITEM = 'The_General_Buster_Keaton'
+const ARCHIVE_BASE = `https://archive.org/download/${ARCHIVE_ITEM}/`
+const ARCHIVE_ORIGINAL = `${ARCHIVE_BASE}The_General.mp4`
+const ARCHIVE_OGV = `${ARCHIVE_BASE}The_General.ogv`
+const ARCHIVE_SMALL = `${ARCHIVE_BASE}The_General_512kb.mp4`
+const YOUTUBE_FILM = 'https://www.youtube.com/watch?v=EF8C4v7JIbA'
+
+const archiveQuality = {
+  ok: true, mode: 'archive', item: ARCHIVE_ITEM, current: ARCHIVE_ORIGINAL,
+  choices: [
+    { url: ARCHIVE_ORIGINAL, file: 'The_General.mp4', label: '640×480 · 393 MB · h.264', height: 480, width: 640, size_bytes: 412400222, current: true },
+    { url: ARCHIVE_OGV, file: 'The_General.ogv', label: '400×300 · 290 MB · Ogg Video', height: 300, width: 400, size_bytes: 304061885, current: false },
+    { url: ARCHIVE_SMALL, file: 'The_General_512kb.mp4', label: '320×240 · 289 MB · 512Kb MPEG4', height: 240, width: 320, size_bytes: 302790246, current: false }
+  ],
+  smallest: ARCHIVE_SMALL, largest: ARCHIVE_ORIGINAL, note: '3 files on archive.org'
+}
+const youtubeQuality = {
+  ok: true, mode: 'youtube', current: '', smallest: '', largest: '',
+  choices: [{ url: '', label: 'Auto (YouTube decides)', auto: true }],
+  note: 'YouTube chooses the quality itself; the embed API is deprecated.'
+}
+const singleQuality = {
+  ok: true, mode: 'single', current: 'https://example.org/films/octopus.mp4', smallest: '', largest: '',
+  choices: [{ url: 'https://example.org/films/octopus.mp4', label: 'The film\'s own file', current: true }],
+  note: 'A direct file is one file.'
+}
+
+const menuOf = ctx => renderContribution(ctx.contributions.find(c => c.id === 'quick-menu'))
+const pageOf = ctx => {
+  const route = ctx.contributions.find(c => c.area === 'routes')
+  assert.ok(route, 'the Aura page route vanished')
+  return renderDeep(renderContribution(route))
+}
+const qualitySelect = (tree, label) => {
+  let found = null
+  walk(tree, node => {
+    if (!found && node.type === 'select' && node.props && node.props['aria-label'] === label) found = node
+  })
+  return found
+}
+const optionText = (select, value) => {
+  const option = (select.props.children || []).flat(Infinity)
+    .find(node => node && node.props && node.props.value === value)
+  return option ? texts(option) : ''
+}
+
+await recordAsync('quality: the A menu lists the film\'s real archive.org files', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: ARCHIVE_OGV },
+    null, archiveQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    // The poll tick loads a film's quality choices in the real app; this
+    // harness has no /player route, so the same function is called directly.
+    await tx.refreshQuality(true)
+    const menu = menuOf(ctx)
+    const select = qualitySelect(menu, 'Quality (film)')
+    assert.ok(select, 'the A menu has no Quality control')
+    assert.ok(!select.props.disabled, 'an archive film with real choices is disabled')
+    assert.equal(optionText(select, ARCHIVE_ORIGINAL), '640×480 · 393 MB · h.264',
+      'the real resolution/size is not offered')
+    assert.equal(optionText(select, ARCHIVE_SMALL), '320×240 · 289 MB · 512Kb MPEG4')
+    assert.equal(select.props.value, ARCHIVE_ORIGINAL, 'the file playing is not the one shown')
+    // The rule for new films is its own small control, and persisting is a rule
+    // — not a fake file.
+    const rule = qualitySelect(menu, 'Quality rule (film)')
+    assert.ok(rule, 'the A menu has no quality rule control')
+    for (const value of ['auto', 'smallest', 'largest']) {
+      assert.ok(optionText(rule, value), `the ${value} rule is not offered`)
+    }
+    // The page carries the same control, in the setup section.
+    const page = pageOf(ctx)
+    assert.ok(qualitySelect(page, 'Quality (settings)'), 'the Aura page has no Quality control')
+    assert.ok(qualitySelect(page, 'Quality rule (settings)'), 'the page has no quality rule control')
+    // And it is NOT on the floating strip (another lane owns that strip).
+    const strip = layoutMountPanel(ctx)
+    walk(strip, node => {
+      assert.notEqual(node.props && node.props['aria-label'], 'Quality', 'the quality control is on the strip')
+    })
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('quality: a real choice switches the film and keeps the second', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: ARCHIVE_OGV },
+    null, archiveQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const posts = []
+    const frame = { style: {}, contentWindow: { postMessage: message => posts.push(message) } }
+    tx.setBackdropForTest(frame)
+    // The page says where the film is; the switch has to keep that.
+    const listener = ctx.listeners.find(entry => entry.type === 'message' && !entry.removed)
+    listener.fn({
+      source: frame.contentWindow,
+      data: {
+        aura: 'video-state', url: ARCHIVE_OGV, kind: 'video', playing: true,
+        position: 412.5, duration: 4723, muted: false, title: 'The General'
+      }
+    })
+    await tx.refreshQuality(true)
+    const select = qualitySelect(menuOf(ctx), 'Quality (film)')
+    select.props.onChange({ target: { value: ARCHIVE_SMALL } })
+    await sleep(90)
+    assert.equal(ctx.storage.get('settings').videoUrl, ARCHIVE_SMALL,
+      'the chosen file did not become the film')
+    assert.deepEqual(posts.at(-1), { aura: 'transport', cmd: 'quality', url: ARCHIVE_SMALL },
+      'the page was not told to swap in place')
+    const marks = ctx.storage.get('settings').videoPositions || {}
+    assert.equal(marks[ARCHIVE_SMALL] && marks[ARCHIVE_SMALL].position, 412.5,
+      'the swap forgot where the film was, so a reload would restart it')
+  } finally {
+    tx.setBackdropForTest(null)
+    dispose()
+  }
+})
+
+await recordAsync('quality: "Smallest" is remembered and switches now', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: false, videoUrl: ARCHIVE_ORIGINAL },
+    null, archiveQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await tx.refreshQuality(true)
+    const rule = qualitySelect(menuOf(ctx), 'Quality rule (film)')
+    rule.props.onChange({ target: { value: 'smallest' } })
+    await sleep(90)
+    assert.equal(ctx.storage.get('settings').videoQuality, 'smallest', 'the preference was not persisted')
+    assert.equal(ctx.storage.get('settings').videoUrl, ARCHIVE_SMALL, 'the film did not switch now')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('quality: YouTube offers exactly one choice, and no fake command', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: YOUTUBE_FILM },
+    null, youtubeQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await tx.refreshQuality(true)
+    const select = qualitySelect(menuOf(ctx), 'Quality (film)')
+    assert.ok(select, 'YouTube has no Quality control at all')
+    const options = (select.props.children || []).flat(Infinity)
+      .filter(node => node && node.props && 'value' in node.props)
+    assert.equal(options.length, 1, `YouTube offered ${options.length} choices`)
+    assert.equal(texts(options[0]), 'Auto (YouTube decides)')
+    assert.equal(select.props.disabled, true, 'the YouTube control pretends it can change the level')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('quality: a direct file has no picker at all', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: 'https://example.org/films/octopus.mp4' },
+    null, singleQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await tx.refreshQuality(true)
+    assert.equal(tx.qualityInfoForTest().mode, 'single', 'a direct file was not recognised')
+    assert.equal(qualitySelect(menuOf(ctx), 'Quality (film)'), null,
+      'a single file was given a picker')
+    assert.equal(qualitySelect(pageOf(ctx), 'Quality (settings)'), null,
+      'the Aura page gave a single file a picker')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('quality: the preference is applied to the next archive.org film', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: false, videoUrl: ARCHIVE_OGV, videoQuality: 'largest' },
+    null, archiveQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await tx.applyVideoSource(ARCHIVE_SMALL)
+    assert.equal(ctx.storage.get('settings').videoUrl, ARCHIVE_ORIGINAL,
+      'the "largest" rule was not applied to the new film')
+  } finally {
+    dispose()
+  }
+
+  const auto = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: false, videoUrl: YOUTUBE_FILM, videoQuality: 'auto' },
+    null, archiveQuality
+  )
+  const d2 = pluginModule.default.register(auto.ctx)
+  try {
+    await tx.applyVideoSource(ARCHIVE_SMALL)
+    assert.equal(auto.storage.get('settings').videoUrl, ARCHIVE_SMALL,
+      '"auto" changed the file the source named')
+    assert.equal(auto.requests.filter(r => String(r.route).startsWith('/quality')).length, 0,
+      '"auto" still asked the server for a different file')
+  } finally {
+    d2()
+  }
+})
+
+await recordAsync('quality: a queued quality command from Hermes is applied', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: false, videoUrl: ARCHIVE_OGV },
+    null, archiveQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    // The same function the player-command poll calls for {cmd:'quality'}.
+    tx.applyQualityCommand({ cmd: 'quality', url: ARCHIVE_ORIGINAL })
+    assert.equal(ctx.storage.get('settings').videoUrl, ARCHIVE_ORIGINAL,
+      'the queued quality command did not switch the film')
+    tx.applyQualityCommand({ cmd: 'quality', preference: 'smallest' })
+    assert.equal(ctx.storage.get('settings').videoQuality, 'smallest',
+      'the queued preference was not remembered')
+  } finally {
+    dispose()
+  }
+})
+
 
 console.log(results.join('\n'))
 console.log(`\n${results.length - failed} passed, ${failed} failed`)

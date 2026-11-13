@@ -196,6 +196,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   // player publishes; empty means "the machine's language, then English".
   videoCaptions: false,
   videoCaptionLang: '',
+  // [quality] The standing rule for archive.org films (auto / smallest /
+  // largest). A specific choice for the film playing now lives in videoUrl.
+  videoQuality: 'auto',
   // Highest audio_request seq this install has consumed. A new seq plays;
   // anything at or below it is history.
   audioRequestSeq: 0,
@@ -216,6 +219,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   // switch leaves only the tray.
   panelEnabled: true,
   panelCollapsed: false,
+  // The Aura page in the sidebar. Off is furniture, not function: the page
+  // itself stays registered and the status-bar menu carries the way in.
+  sidebarPage: true,
   // The pane's own settings drawer starts closed: the film is the reason the
   // pane exists, and every control is still one click away.
   panelSettingsOpen: false,
@@ -422,12 +428,31 @@ const EMPTY_VIDEO = Object.freeze({
   title: '', author: '', controllable: false, reportedAt: 0,
   // [subtitles] What the player says about its captions: {on, lang, current,
   // known, tracks:[{code, name}]}. null until it has said anything.
-  captions: null
+  captions: null,
+  // [quality] The level YouTube reports it is playing ('' when it has not said,
+  // and always '' for a direct file).
+  quality: ''
 })
 const VIDEO_URL_MAX = 2048
 // [subtitles] A caption language tag the player (and YouTube) will accept.
 // Anything else is dropped: it ends up in a query string and a third party.
 const CAPTION_LANG_RE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/
+// [quality] The standing rule a film is opened with: `auto` plays the file the
+// source names, the other two pick from the item's real derivatives (the server
+// lists them; the desktop never asks archive.org itself).
+const VIDEO_QUALITY_RULES = ['auto', 'smallest', 'largest']
+const VIDEO_QUALITY_LABELS = {
+  auto: 'Auto',
+  smallest: 'Smallest',
+  largest: 'Largest'
+}
+// [quality] What YouTube can honestly be told, measured in headless Chromium:
+// the embed publishes its levels and ignores setPlaybackQuality, so this is the
+// only choice it gets — and there is no vq= hack anywhere in this plugin.
+const QUALITY_AUTO_YOUTUBE = 'Auto (YouTube decides)'
+const EMPTY_QUALITY = Object.freeze({
+  url: '', mode: '', choices: [], smallest: '', largest: '', note: '', loading: false, error: ''
+})
 
 const BEHAVIORS = ['calm', 'balanced', 'intense']
 const BEHAVIOR_LABELS = { calm: 'Calm', balanced: 'Balanced', intense: 'Intense' }
@@ -592,6 +617,10 @@ const $live = atom({ ...EMPTY_LIVE })
 // Transport state as reported by web/player.html. Kept in an atom so the A
 // popover, the floating bar and the settings page all read one truth.
 const $video = atom({ ...EMPTY_VIDEO })
+// The film the watchdog gave up on ('' while the film is fine), and how many
+// times the film on screen has been reloaded by hand.
+const $stall = atom('')
+const $filmRetry = atom(0)
 const $themeApplied = atom(false)
 // Quick-menu state: which way the host Popover is open (so dispose can close
 // it) and the current pulse-dot opacity (recomputed by the poll ticker).
@@ -608,6 +637,10 @@ const $staleServer = atom(false)
 // `loaded` is false until that fetch has succeeded, so a failed request is
 // retried on the next visit instead of being remembered as "no catalogue".
 const $catalog = atom({ loaded: false, error: '', items: [] })
+// [quality] The film's real versions, as the server reported them: {url, mode,
+// choices:[{url,label,width,height,size_bytes,current}], smallest, largest}.
+// Keyed by the film's url so a switch cannot show the previous film's files.
+const $quality = atom({ ...EMPTY_QUALITY })
 let catalogRequest = null
 let pulseIndex = 0
 
@@ -853,7 +886,13 @@ function readSettings(ctx) {
     if (typeof raw.videoCaptionLang === 'string' && CAPTION_LANG_RE.test(raw.videoCaptionLang.trim())) {
       out.videoCaptionLang = raw.videoCaptionLang.trim()
     }
+    // [quality] One of three words, validated here so a stale or hand-edited
+    // config can never become a rule the picker invents.
+    if (typeof raw.videoQuality === 'string' && VIDEO_QUALITY_RULES.includes(raw.videoQuality)) {
+      out.videoQuality = raw.videoQuality
+    }
     if (typeof raw.panelEnabled === 'boolean') out.panelEnabled = raw.panelEnabled
+    if (typeof raw.sidebarPage === 'boolean') out.sidebarPage = raw.sidebarPage
     if (typeof raw.panelCollapsed === 'boolean') out.panelCollapsed = raw.panelCollapsed
     if (typeof raw.panelSettingsOpen === 'boolean') out.panelSettingsOpen = raw.panelSettingsOpen
     // Readable: each choice is validated against its own list, so a stale
@@ -1146,6 +1185,9 @@ function mountBackdrop(url, opacity) {
     backdropKey = pageKey()
   }
   void opacity
+  // The frame is about to load a film on a page or a pane: watch it, so a film
+  // that never starts stops being a silent spinner.
+  armFilmWatchdog()
 }
 
 /** Is audio actually playing right now? The server's own reading: level over
@@ -1252,13 +1294,100 @@ function filmSrc() {
   if (!base) return ''
   const mode = filmPageMode()
   if (!mode) return ''
-  return backdropSrc(base, mode)
+  const src = backdropSrc(base, mode)
+  if (!src) return ''
+  const retry = Number($filmRetry.get()) || 0
+  // A manual retry has to be a NEW document: reusing the same URL would keep
+  // the player that never started.
+  if (!retry || mode !== 'video') return src
+  return `${src}${src.includes('?') ? '&' : '?'}retry=${retry}`
+}
+
+// ---- a film that never loads --------------------------------------------
+// A blocked embed reports itself; a film that simply never starts says nothing
+// at all, so the stage used to spin forever. One watch per attempt: with no
+// ready/playing signal inside FILM_STALL_MS the surfaces say so and offer a way
+// out.
+const FILM_STALL_MS = 20000
+let stallTimer = null
+let stallEpoch = 0
+let stallArmedFor = ''
+
+/** Is the film on screen the one the watch gave up on? */
+function filmStalled() {
+  const url = $stall.get()
+  if (!url) return false
+  const settings = $settings.get()
+  return url === String(settings.videoUrl || '').trim() && settings.videoClosed !== true
+}
+
+function resetFilmStall() {
+  stallEpoch += 1
+  if (stallTimer) {
+    clearShowTimer(stallTimer)
+    stallTimer = null
+  }
+  stallArmedFor = ''
+  if ($stall.get()) $stall.set('')
+}
+
+/** Only a surface that can say "this isn't loading" is worth watching: the page
+ *  and the pane. The pop-out windows are players of their own. */
+function watchdogSurface() {
+  const owner = filmOwner()
+  return owner === 'page' || owner === 'pane' ? owner : ''
+}
+
+function armFilmWatchdog() {
+  if (!ctxRef || disposed || !doc) return
+  const settings = $settings.get()
+  const url = String(settings.videoUrl || '').trim()
+  const surface = watchdogSurface()
+  if (!url || !surface || settings.backdropMode !== 'video' || settings.videoClosed || !liveUrl()) return
+  const key = `${url}|${surface}|${$filmRetry.get()}`
+  if (stallArmedFor === key) return
+  if (stallTimer) clearShowTimer(stallTimer)
+  stallArmedFor = key
+  const epoch = ++stallEpoch
+  stallTimer = setShowTimer(() => {
+    stallTimer = null
+    if (disposed || epoch !== stallEpoch) return
+    const now = $settings.get()
+    if (String(now.videoUrl || '').trim() !== url || now.videoClosed) return
+    // A paused film has reported its length; only silence is a stall.
+    const state = $video.get()
+    if (state.playing === true || Number(state.duration) > 0) return
+    $stall.set(url)
+    syncPanel(true)
+    syncVideoBar(true)
+  }, FILM_STALL_MS)
+}
+
+/** The player proved it is loading, so this film is not stuck. */
+function noteFilmReady(info) {
+  if (!stallTimer) return
+  if (info.playing !== true && !(Number(info.duration) > 0)) return
+  clearShowTimer(stallTimer)
+  stallTimer = null
+}
+
+/** Reload the film that is stuck: a frame that never booted will not answer a
+ *  command, so a new document is the only honest retry. */
+function retryFilm() {
+  if (!ctxRef || disposed) return
+  const url = String($settings.get().videoUrl || '').trim()
+  if (!url) return
+  resetFilmStall()
+  $filmRetry.set($filmRetry.get() + 1)
+  syncBackdrop()
 }
 
 function AuraFilm({ surface, style }) {
   const settings = useValue($settings)
   const live = useValue($live)
   const video = useValue($video)
+  // A manual retry changes the frame's URL, so the element has to re-render.
+  useValue($filmRetry)
   const owner = filmOwner()
   // Subscribed above so a server coming up (or a source/close change) re-renders
   // this element; the values themselves are read imperatively below.
@@ -2024,6 +2153,9 @@ async function syncPlayerOwnership() {
     // Library first, so this tick's report already describes the list after a
     // save/remove the agent queued.
     await applyLibraryCommands()
+    // [quality] Which files this film really has. Cheap: the atom is keyed by
+    // url, so this is one request per film, and the server caches the item.
+    void refreshQuality()
     const settings = $settings.get()
     const video = $video.get()
     const report = {
@@ -2031,12 +2163,15 @@ async function syncPlayerOwnership() {
       title: video.title || '', videoId: video.videoId || '',
       playing: video.playing === true, position: Number(video.position) || 0,
       duration: Number(video.duration) || 0, volume: Number(settings.videoVolume) || 0,
+      // [quality] The standing rule, so aura_watch action=quality can report it
+      // with the film's real choices.
+      quality: settings.videoQuality || 'auto',
       // [savelist lane] What the owner has saved, so aura_watch action=list can
       // answer "what's on my list?" with the real list.
       library: libraryReport()
     }
     const key = JSON.stringify([report.url, report.kind, report.title, report.videoId,
-      report.playing, report.volume, report.library])
+      report.playing, report.volume, report.quality, report.library])
     if (Date.now() - playerReportAt >= 1000 || key !== playerReportKey) {
       await ctxRef.rest('/player/report', { method: 'POST', body: report, timeoutMs: 3000 })
       playerReportAt = Date.now()
@@ -2052,6 +2187,12 @@ async function syncPlayerOwnership() {
       // settings, not the player, and keeping them out of this chain is what
       // stops a save from being mistaken for a transport verb.
       if (command.cmd === 'save' || command.cmd === 'remove') continue
+      // [quality] A quality switch is a real source swap at the same second, so
+      // it goes through the one function the picker uses.
+      if (command.cmd === 'quality') {
+        applyQualityCommand(command)
+        continue
+      }
       // [subtitles] The CC switch is the owner's choice, not just a verb for
       // the page: applying it through the one writer is what remembers it.
       if (command.cmd === 'captions') {
@@ -2774,6 +2915,9 @@ async function setVideoUrl(next) {
   const videoUrl = typeof next === 'string' ? next.trim().slice(0, VIDEO_URL_MAX) : ''
   if ($settings.get().videoUrl === videoUrl) return
   handoffPlayback = null
+  // A different film is not the stuck one: drop the message and its watch.
+  resetFilmStall()
+  $filmRetry.set(0)
   // A deliberate source change keeps its bookmark: switching away and back
   // should carry on, not restart. Save where we are before the switch.
   saveCurrentPosition()
@@ -2859,8 +3003,12 @@ async function applyVideoSource(url, label) {
   if (!videoUrl) return
   if ($settings.get().backdropMode !== 'video') await setBackdropMode('video')
   if ($settings.get().videoClosed) openVideo()
-  rememberVideoSource(videoUrl, label)
-  await setVideoUrl(videoUrl)
+  // [quality] The standing rule picks one of the item's real files before it
+  // starts (auto plays exactly the file the source named).
+  const preferred = await qualityRuleTarget(videoUrl)
+  const target = preferred || videoUrl
+  rememberVideoSource(target, label)
+  await setVideoUrl(target)
 }
 
 /** A URL box: a nonempty value is a play, so it takes the same path as every
@@ -2869,6 +3017,37 @@ async function applyVideoSource(url, label) {
 function applyUrlBox(value) {
   const clean = typeof value === 'string' ? value.trim() : ''
   return clean ? applyVideoSource(clean) : setVideoUrl('')
+}
+
+/** The film one click should start: the one on screen, else the one played
+ *  last, else the first pick. */
+function lastFilmUrl() {
+  const settings = $settings.get()
+  const current = String(settings.videoUrl || '').trim()
+  if (current) return current
+  const recent = Array.isArray(settings.videoRecent) ? settings.videoRecent : []
+  for (const item of recent) {
+    const url = item && typeof item.url === 'string' ? item.url.trim() : ''
+    if (url) return url
+  }
+  const first = STARTER_SOURCES[0]
+  return first && typeof first.url === 'string' ? first.url : ''
+}
+
+/** One click from the status bar: video mode, the film open, playing. The
+ *  bookmark travels with the source, so a film watched before continues where
+ *  it stopped. */
+async function playAFilm() {
+  if (!ctxRef || disposed) return ''
+  const url = lastFilmUrl()
+  if (!url) {
+    sayIt('No film to play yet — paste a link on the Aura page.')
+    return ''
+  }
+  await applyVideoSource(url)
+  // A film that is already loaded sits paused: start it instead of reloading.
+  postToBackdrop({ cmd: 'play' })
+  return url
 }
 
 /** Video transparency pinned by hand: turns the automatic 20/30% follow off. */
@@ -2939,6 +3118,7 @@ function closeVideo() {
   saveCurrentPosition()
   postToBackdrop({ cmd: 'pause' })
   writeSettings({ videoClosed: true })
+  resetFilmStall()
   resetShow()
   removeBackdrop()
   removeVideoBar()
@@ -3493,6 +3673,271 @@ function captionLanguageValue(info) {
   return detail.lang
 }
 
+// [quality] A quality control that tells the truth about each source --------
+// YouTube: the embed publishes `playbackQuality`/`availableQualityLevels` but
+// ignores setPlaybackQuality (measured in headless Chromium; sending small,
+// medium, hd720, hd1080, large and default left it at hd1080 with
+// preferredQuality 'auto'), so its one choice is "Auto (YouTube decides)" and
+// nothing in this plugin ever sends that command or a `vq=` hack.
+// archive.org: the item's real files, listed by the SERVER (/api/quality, short
+// timeout + cache) — the desktop never asks archive.org itself.
+// A direct file: one file, no picker at all.
+
+/** The quality picture for the film playing now, as one object. */
+function qualityInfo() {
+  const info = $quality.get()
+  const settings = $settings.get()
+  const url = String(settings.videoUrl || '').trim()
+  const same = info.url === url
+  const choices = same && Array.isArray(info.choices)
+    ? info.choices.filter(choice => choice && typeof choice.url === 'string')
+    : []
+  const rule = VIDEO_QUALITY_RULES.includes(settings.videoQuality)
+    ? settings.videoQuality
+    : 'auto'
+  const mode = same && typeof info.mode === 'string' ? info.mode : ''
+  return {
+    url,
+    mode,
+    rule,
+    choices,
+    smallest: same && typeof info.smallest === 'string' ? info.smallest : '',
+    largest: same && typeof info.largest === 'string' ? info.largest : '',
+    note: same && typeof info.note === 'string' ? info.note : '',
+    error: same && typeof info.error === 'string' ? info.error : '',
+    // Only an archive.org item with more than one file has a real choice.
+    available: mode === 'archive' && choices.length > 1,
+    // A youtube embed still gets one honest line, so the app can say why there
+    // is nothing to pick instead of hiding the control.
+    youtube: mode === 'youtube'
+  }
+}
+
+/** Ask the server which files this film really has (cached per item there). */
+async function refreshQuality(force) {
+  if (!ctxRef || disposed) return
+  const url = String($settings.get().videoUrl || '').trim()
+  if (!url) {
+    if ($quality.get().url) $quality.set({ ...EMPTY_QUALITY })
+    return
+  }
+  const seen = $quality.get()
+  if (!force && seen.url === url && (seen.mode || seen.loading)) return
+  $quality.set({ ...EMPTY_QUALITY, url, loading: true })
+  try {
+    const payload = await ctxRef.rest('/quality?url=' + encodeURIComponent(url), { timeoutMs: 5000 })
+    // The film may have changed while this was in flight: never show one
+    // film's files under another film's name.
+    if (String($settings.get().videoUrl || '').trim() !== url) return
+    const clean = payload && typeof payload === 'object' ? payload : {}
+    $quality.set({
+      url,
+      loading: false,
+      mode: typeof clean.mode === 'string' ? clean.mode : '',
+      choices: Array.isArray(clean.choices)
+        ? clean.choices.filter(choice => choice && typeof choice.url === 'string')
+        : [],
+      smallest: typeof clean.smallest === 'string' ? clean.smallest : '',
+      largest: typeof clean.largest === 'string' ? clean.largest : '',
+      note: typeof clean.note === 'string' ? clean.note : '',
+      error: clean.ok === false ? String(clean.error || 'quality_unavailable') : ''
+    })
+  } catch {
+    // An old server has no /quality: say nothing was learned, keep the film.
+    if ($quality.get().url === url) {
+      $quality.set({ ...$quality.get(), loading: false, error: 'quality_unavailable' })
+    }
+  }
+}
+
+/** Switch the film to another of its own files, keeping the exact second.
+ *  The page swaps the source in place (a quality change must not restart the
+ *  film); the bookmark follows the new url so a reload resumes there too. */
+function setVideoQuality(url) {
+  if (!ctxRef || disposed) return false
+  const next = typeof url === 'string' ? url.trim().slice(0, VIDEO_URL_MAX) : ''
+  if (!next) return false
+  const settings = $settings.get()
+  const current = String(settings.videoUrl || '').trim()
+  if (next === current) return false
+  const state = $video.get()
+  const position = Number(state.position) || 0
+  const positions = { ...(settings.videoPositions || {}) }
+  if (position > 0) {
+    positions[next] = {
+      position,
+      duration: Number(state.duration) || 0,
+      at: Date.now(),
+      videoId: String(state.videoId || '')
+    }
+  }
+  handoffPlayback = null
+  // One write: the url the app remembers is the file it is really playing, and
+  // the place in the film moves with it.
+  writeSettings({ videoUrl: next, videoPositions: positions })
+  const body = { cmd: 'quality', url: next }
+  if (desktopOwned && ctxRef) {
+    // The OS window owns the picture: the swap is queued to it.
+    void ctxRef.rest('/player/command', { method: 'POST', body, timeoutMs: 4000 })
+      .catch(() => setError('Aura could not reach the film window.'))
+  } else {
+    postToBackdrop(body)
+  }
+  $quality.set({ ...EMPTY_QUALITY, url: next, loading: true })
+  void refreshQuality(true)
+  void pushControl({ video_url: next })
+  syncPanel(true)
+  syncVideoBar(true)
+  return true
+}
+
+/** Remember the rule for new archive.org films, and switch this one now. */
+function setVideoQualityRule(rule) {
+  if (!ctxRef || disposed) return
+  const videoQuality = VIDEO_QUALITY_RULES.includes(rule) ? rule : 'auto'
+  writeSettings({ videoQuality })
+  if (videoQuality !== 'auto') {
+    const info = qualityInfo()
+    const target = videoQuality === 'smallest' ? info.smallest : info.largest
+    if (target && target !== info.url) setVideoQuality(target)
+  }
+  syncPanel(true)
+  syncVideoBar(true)
+}
+
+/** Apply a queued {cmd:'quality'} from Hermes: a file, a rule, or both. */
+function applyQualityCommand(command) {
+  if (!command || command.cmd !== 'quality') return false
+  if (typeof command.preference === 'string' && VIDEO_QUALITY_RULES.includes(command.preference)) {
+    setVideoQualityRule(command.preference)
+  }
+  const url = String(command.url || '').trim()
+  if (url) setVideoQuality(url)
+  return true
+}
+
+/** What the standing rule means for the film about to be opened: its own file
+ *  (auto) or one of the item's real derivatives. '' means "leave the url". */
+async function qualityRuleTarget(url) {
+  const rule = $settings.get().videoQuality
+  if (rule !== 'smallest' && rule !== 'largest') return ''
+  if (!ctxRef || disposed) return ''
+  // Only an archive.org item has versions to choose between; asking about a
+  // YouTube link would be a wasted round trip on every play.
+  if (!/^https?:\/\/(?:www\.)?archive\.org\/(?:download|details)\//i.test(url)) return ''
+  try {
+    const payload = await ctxRef.rest('/quality?url=' + encodeURIComponent(url), { timeoutMs: 4000 })
+    if (!payload || payload.ok !== true || payload.mode !== 'archive') return ''
+    const choice = rule === 'smallest' ? payload.smallest : payload.largest
+    return typeof choice === 'string' && choice && choice !== url ? choice : ''
+  } catch {
+    // No answer: play what the source named rather than nothing at all.
+    return ''
+  }
+}
+
+/** The files the picker offers, as `[{value, label}]`. Only real choices. */
+function qualityFileChoices(info) {
+  const detail = info || qualityInfo()
+  if (!detail.available) return []
+  return detail.choices.map(choice => ({ value: choice.url, label: choice.label || 'file' }))
+}
+
+/** What the file picker should show: the url playing, when it is one of them. */
+function qualityFileValue(info) {
+  const detail = info || qualityInfo()
+  const match = detail.choices.find(choice => choice.current) ||
+    detail.choices.find(choice => choice.url === detail.url)
+  return match ? match.url : (detail.choices[0] ? detail.choices[0].url : '')
+}
+
+/** The honest one-line explanation of a source's quality rules. */
+function qualityHint(info) {
+  const detail = info || qualityInfo()
+  if (detail.youtube) {
+    return ('YouTube picks the level itself: the embed API used to force one is ' +
+            'deprecated and ignored, so this is the only honest choice.')
+  }
+  if (detail.mode === 'single') return 'A direct file is one file — nothing to pick.'
+  if (detail.error === 'quality_unavailable') {
+    return 'Aura could not read this item\'s file list; the film plays on the file it has.'
+  }
+  if (detail.loading) return 'Reading the versions archive.org has for this film…'
+  if (detail.available) return detail.note || 'The film\'s own versions on archive.org.'
+  if (detail.mode === 'archive') return 'This item has only one playable file.'
+  return 'Quality applies to archive.org films and YouTube.'
+}
+
+/** Does this film earn a Quality row at all? A direct file does not (one file,
+ *  no picker); YouTube does, so the app can say why it cannot be changed. */
+function qualityRowWanted(info) {
+  const detail = info || qualityInfo()
+  return detail.mode === 'archive' || detail.mode === 'youtube'
+}
+
+/** The Quality controls: this film's real files, and the rule for new films.
+ *  `which` only changes the aria-labels ('film' in the A menu, 'settings' on
+ *  the Aura page) so a test — and a screen reader — can tell them apart. */
+function qualityControls(info, which) {
+  const detail = info || qualityInfo()
+  const tag = which === 'settings' ? 'settings' : 'film'
+  const nothing = detail.youtube
+    ? QUALITY_AUTO_YOUTUBE
+    : (detail.mode === 'single' ? 'The film\'s own file' : 'No choice yet')
+  const files = detail.available
+    ? qualityFileChoices(detail)
+    : [{ value: detail.url || '', label: nothing }]
+  const selectStyle = {
+    font: 'inherit', fontSize: 11, color: 'var(--ui-text-primary)',
+    background: 'var(--ui-bg)', border: '1px solid var(--ui-stroke-secondary)',
+    borderRadius: 6, padding: '3px 6px', colorScheme: 'light'
+  }
+  const fileSelect = jsx('select', {
+    className: 'aura-select',
+    value: detail.available ? qualityFileValue(detail) : (detail.url || ''),
+    disabled: !detail.available,
+    'aria-label': `Quality (${tag})`,
+    title: qualityHint(detail),
+    style: { ...selectStyle, maxWidth: 180 },
+    onChange: event => {
+      setVideoQuality(String(event && event.target ? event.target.value : ''))
+    },
+    children: files.map(choice =>
+      jsx('option', {
+        key: choice.value || 'auto',
+        value: choice.value,
+        style: { background: '#f1f1f1', color: '#111111' },
+        children: choice.label
+      })
+    )
+  })
+  // The standing rule, applied when the next archive.org film is opened. One
+  // word each: what it means is the row's hint.
+  const ruleSelect = jsx('select', {
+    className: 'aura-select',
+    value: detail.rule,
+    'aria-label': `Quality rule (${tag})`,
+    title: 'What the next archive.org film plays: its own file, or the smallest / '
+      + 'largest version the item has',
+    style: { ...selectStyle, maxWidth: 90 },
+    onChange: event => {
+      setVideoQualityRule(String(event && event.target ? event.target.value : 'auto'))
+    },
+    children: VIDEO_QUALITY_RULES.map(rule =>
+      jsx('option', {
+        key: rule,
+        value: rule,
+        style: { background: '#f1f1f1', color: '#111111' },
+        children: VIDEO_QUALITY_LABELS[rule]
+      })
+    )
+  })
+  return jsxs('div', {
+    style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexWrap: 'wrap' },
+    children: [fileSelect, ruleSelect]
+  })
+}
+
 /**
  * Consume one `audio_request` from /api/state. Returns what it did, so the
  * contract test (and a future UI) can read the decision instead of guessing:
@@ -3768,6 +4213,8 @@ function onBackdropMessage(event) {
     blockedFor = data.url
     void skipBlockedEpisode()
   }
+  // A film that reports a picture is not stuck, whatever the watchdog thinks.
+  noteFilmReady(data)
   if (typeof data.url === 'string' && data.url) {
     if (data.ended === true) rememberPosition(data.url, 0, duration, true, data.videoId)
     else rememberPosition(data.url, position, duration, false, data.videoId)
@@ -3798,6 +4245,12 @@ function onBackdropMessage(event) {
         tracks: Array.isArray(data.captions.tracks) ? data.captions.tracks.slice(0, 60) : []
       }
       : $video.get().captions,
+    // [quality] The level YouTube is really playing. Read from the player, never
+    // requested: it is the detail behind "Auto (YouTube decides)".
+    quality: data.quality && typeof data.quality === 'object' &&
+      typeof data.quality.current === 'string'
+      ? data.quality.current.slice(0, 20)
+      : ($video.get().quality || ''),
     controllable: data.controllable === true,
     reportedAt: Date.now()
   })
@@ -4163,9 +4616,9 @@ function startVideoBarDrag(event) {
 
 function videoBarActive() {
   const settings = $settings.get()
-  const live = $live.get()
-  const enabled = live.ok ? live.enabled === true : settings.enabled
-  if (!doc || !enabled || settings.backdropMode !== 'video' || !settings.videoUrl || settings.videoClosed) return false
+  // The strip drives Aura's own player, so it is there whenever a film is open
+  // in video mode — Aura's on/off switch only governs the overlay on the chat.
+  if (!doc || settings.backdropMode !== 'video' || !settings.videoUrl || settings.videoClosed) return false
   // When the docked panel is open it owns the controls; the pill is for the
   // tray-only life.
   if (panelVisible() && settings.panelCollapsed !== true) return false
@@ -4686,6 +5139,18 @@ function panelCss() {
       text-align: center; padding: 16px; color: #cfc4b8; font-size: 12px; pointer-events: none;
     }
     .ap-hint[data-note="true"] { color: #ffd9a8; letter-spacing: 0.2px; }
+    /* A film that never starts: the words come from .ap-hint, the way out
+       sits under them and takes the clicks. */
+    .ap-stall {
+      position: absolute; left: 0; right: 0; bottom: 10px;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .ap-stall button {
+      appearance: none; border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(20,16,28,0.86); color: #f3ece2;
+      font: inherit; font-size: 11px; padding: 4px 10px; border-radius: 999px;
+      cursor: pointer;
+    }
 
     /* control deck: the thing that should feel generous ------------------- */
     .ap-controls {
@@ -5228,6 +5693,15 @@ function mountPanelInto(hostNode) {
   hint.textContent = 'No film playing'
   stage.appendChild(hint)
 
+  // A film that never loads is not a blocked film: nothing is reported at all.
+  // Once the watch gives up, the stage offers its own way out.
+  const stall = doc.createElement('div')
+  stall.className = 'ap-stall'
+  stall.style.display = 'none'
+  stall.appendChild(panelButton('Try again', 'Try again', () => retryFilm()))
+  stall.appendChild(panelButton('Pick another', 'Pick another', () => stepVideo(1)))
+  stage.appendChild(stall)
+
   // ---- transport, full size, directly under the picture ------------------
   const controls = doc.createElement('div')
   controls.className = 'ap-controls'
@@ -5448,7 +5922,7 @@ function mountPanelInto(hostNode) {
 
   panelEl = panel
   panelParts = {
-    panel, body, stage, hint, track, fill, time, play, list, vol,
+    panel, body, stage, hint, stall, track, fill, time, play, list, vol,
     power, modeButtons, frameBtn, ownBtn, source, opacityPills, opacityButtons,
     ccBtn, captionSelect
   }
@@ -5603,20 +6077,24 @@ function syncPanel(force) {
     : '—'
   const progress = state.duration ? Math.min(1, Math.max(0, state.position / state.duration)) : 0
   parts.fill.style.width = `${(progress * 100).toFixed(2)}%`
+  const stalled = filmStalled()
   const baseHint = settings.videoClosed
     ? 'Film closed — press Open video in the A menu'
     : !settings.videoUrl
       ? 'No source chosen yet'
-      : (state.blocked
-        ? 'This video (or the first one in the playlist) cannot be embedded. Remove it from the playlist, or paste a link to a different episode.'
-        : '')
+      : stalled
+        ? "This film isn't loading — try again, or pick another."
+        : (state.blocked
+          ? 'This video (or the first one in the playlist) cannot be embedded. Remove it from the playlist, or paste a link to a different episode.'
+          : '')
   if (!baseHint && paneNote && Date.now() < paneNoteUntil) {
     parts.hint.textContent = paneNote
     parts.hint.setAttribute('data-note', 'true')
   } else {
     parts.hint.textContent = baseHint
-    parts.hint.setAttribute('data-note', 'false')
+    parts.hint.setAttribute('data-note', stalled ? 'true' : 'false')
   }
+  if (parts.stall) parts.stall.style.display = stalled ? '' : 'none'
   // When the SDK frame is showing the film, the stage box is just an empty
   // 16:9 hole: the hint belongs to a stage with no picture in it.
   if (parts.stage) parts.stage.style.display = filmFrame ? 'none' : ''
@@ -6177,6 +6655,9 @@ function AuraQuickMenu() {
   const captionState = captionInfo()
   const captionChoices = captionLanguageChoices(captionState)
   const captionTip = captionTooltip(captionState)
+  // [quality] The film's real files, read once for the whole menu.
+  useValue($quality)
+  const qualityState = qualityInfo()
 
   const setOpen = value => {
     if ($menuOpen.get() !== Boolean(value)) $menuOpen.set(Boolean(value))
@@ -6346,6 +6827,21 @@ function AuraQuickMenu() {
             key: 'mode',
             style: { display: 'flex', justifyContent: 'center', padding: '8px 12px 6px' },
             children: modeToggle(settings.backdropMode)
+          }),
+          // One click, both modes: the last film where it stopped, else the
+          // first pick. Anything that takes three switches is a wall.
+          jsx('div', {
+            key: 'play-film',
+            style: { padding: '0 12px 6px' },
+            children: jsx(Button, {
+              size: 'sm',
+              variant: 'default',
+              'aria-label': 'Play a film',
+              title: 'Play the last film where you stopped, or the first pick',
+              style: { width: '100%' },
+              onClick: () => { void playAFilm() },
+              children: 'Play a film'
+            })
           }),
           row(
             jsxs('span', {
@@ -6581,8 +7077,12 @@ function AuraQuickMenu() {
                     ]
                   })
                 ),
-                // The picker lists everything; editing lives on the page where
-                // there is room for names, removal and playlists.
+                // [quality] The film's real versions (archive.org derivatives)
+                // and the rule for the next one. Not on the strip: the strip is
+                // the owner's transport, this is a settings choice.
+                qualityRowWanted(qualityState)
+                  ? row('Quality', qualityControls(qualityState, 'film'))
+                  : null,
                 useHostNav
                   ? jsx('div', {
                     key: 'edit-sources',
@@ -6861,7 +7361,26 @@ function AuraQuickMenu() {
                   style: { fontSize: 10, color: 'var(--ui-text-tertiary)' },
                   children: 'Aura'
                 }),
-
+              // With the sidebar row hidden the page needs a door of its own;
+              // with the row in place this link would just be a duplicate.
+              useHostNav && !sidebarPageWanted()
+                ? jsx(Button, {
+                  key: 'page',
+                  size: 'micro',
+                  variant: 'ghost',
+                  'aria-label': 'Open Aura page',
+                  title: 'Open the Aura page — the film, your sources and every switch',
+                  onClick: () => {
+                    setOpen(false)
+                    try {
+                      host.navigate('/aura')
+                    } catch {
+                      // older hosts without navigate
+                    }
+                  },
+                  children: 'Open Aura page'
+                })
+                : null
             ]
           })
         ]
@@ -6902,12 +7421,11 @@ function pageVideoSlot() {
 }
 
 /** The page alone wants the film: like the pane, it is a watch surface. Gated
- *  exactly like showEligible, so Aura off (or no server) still draws nothing. */
+ *  on a film and a live server, never on Aura's overlay switch: turning Aura
+ *  off stops the visual painted on the chat, not watching in its own page. */
 function pageFilmWanted() {
   const settings = $settings.get()
-  const live = $live.get()
-  const enabled = live.ok ? live.enabled === true : settings.enabled
-  return Boolean(doc && enabled && liveUrl() && pageVisible() &&
+  return Boolean(doc && liveUrl() && pageVisible() &&
     settings.backdropMode === 'video' && !settings.videoClosed && settings.videoUrl)
 }
 
@@ -6923,6 +7441,47 @@ function pageStageRef(node) {
   applyBackdropLayout()
   applyVideoOpacity()
   syncVideoBar(true)
+}
+
+/** Optional furniture: the /aura row in the sidebar. The page itself is always
+ *  registered — without the row the status-bar menu carries the way in. */
+let navRegistration = null
+
+function sidebarPageWanted() {
+  return Boolean(doc) && $settings.get().sidebarPage !== false
+}
+
+function disposeNavRegistration() {
+  if (!navRegistration) return
+  try {
+    navRegistration()
+  } catch {
+    // already removed
+  }
+  navRegistration = null
+}
+
+/** Keep the sidebar row in step with its setting, through the SDK's own
+ *  contribution/disposal — never the host's markup. */
+function syncSidebarNav() {
+  if (!ctxRef || disposed) return
+  if (!sidebarPageWanted()) {
+    disposeNavRegistration()
+    return
+  }
+  if (navRegistration) return
+  const off = ctxRef.register({
+    id: 'aura-nav',
+    area: SIDEBAR_NAV_AREA,
+    data: { path: '/aura', label: 'Aura', codicon: 'play-circle' }
+  })
+  navRegistration = typeof off === 'function' ? off : null
+}
+
+function setSidebarPage(on) {
+  if (!ctxRef || disposed) return
+  writeSettings({ sidebarPage: Boolean(on) })
+  syncSidebarNav()
 }
 
 // REVamp is the owner's Winamp-style audio player for Hermes. Aura hears
@@ -7610,16 +8169,21 @@ function AuraPage() {
   // [subtitles] The player's caption report, read once for the whole page.
   const captionState = captionInfo()
   const captionChoices = captionLanguageChoices(captionState)
-  const hint = !auraOn
-    ? 'Aura is off. Turn it on in the setup below to watch here.'
-    : settings.videoClosed
-      ? 'Film closed — press Open video below.'
-      : !settings.videoUrl
-        ? 'No film yet. Paste a link below, or pick one of the sources.'
-        : settings.backdropMode !== 'video'
-          ? 'Backdrop mode is set to the Aura visual. Choose "Video player" in the setup below to watch here.'
-          : videoWindowOn()
-            ? 'Playing in the pop-out window. Press Bring back to watch it here.'
+  // Subscribed so the watchdog's verdict redraws the stage with its two ways out.
+  useValue($stall)
+  const stalled = filmStalled()
+  // The page is Aura's own watch surface: Aura's on/off switch belongs to the
+  // overlay painted on the chat, never to watching a film here.
+  const hint = settings.videoClosed
+    ? 'Film closed — press Open video below.'
+    : !settings.videoUrl
+      ? 'No film yet. Paste a link below, or pick one of the sources.'
+      : settings.backdropMode !== 'video'
+        ? 'Backdrop mode is set to the Aura visual. Choose "Video player" in the setup below to watch here.'
+        : videoWindowOn()
+          ? 'Playing in the pop-out window. Press Bring back to watch it here.'
+          : stalled
+            ? ''
             : state.blocked
               ? 'This video cannot be embedded. Paste a different link, or pick another source.'
               : ''
@@ -7641,18 +8205,54 @@ function AuraPage() {
     },
     children: [
       jsx(AuraFilm, { key: 'film', surface: 'page', style: { position: 'absolute', inset: 0 } }),
-      hint
-      ? jsx('div', {
-        key: 'hint',
-        className: 'aura-hint',
-        style: {
-          position: 'absolute', inset: 0, display: 'flex',
-          alignItems: 'center', justifyContent: 'center', textAlign: 'center',
-          padding: 16, fontSize: 12, color: '#cfc4b8'
-        },
-        children: hint
-      })
-      : null
+      stalled
+        ? jsxs('div', {
+          key: 'stall',
+          className: 'aura-hint',
+          style: {
+            position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 8, textAlign: 'center',
+            padding: 16, fontSize: 12, color: '#cfc4b8'
+          },
+          children: [
+            jsx('div', { key: 'msg', children: "This film isn't loading." }),
+            jsxs('div', {
+              key: 'actions',
+              style: { display: 'flex', alignItems: 'center', gap: 8 },
+              children: [
+                jsx(Button, {
+                  key: 'retry',
+                  size: 'micro',
+                  'aria-label': 'Try again',
+                  title: 'Load this film again',
+                  onClick: () => retryFilm(),
+                  children: 'Try again'
+                }),
+                jsx(Button, {
+                  key: 'another',
+                  size: 'micro',
+                  variant: 'ghost',
+                  'aria-label': 'Pick another',
+                  title: 'Play the next film in your sources',
+                  onClick: () => stepVideo(1),
+                  children: 'Pick another'
+                })
+              ]
+            })
+          ]
+        })
+        : hint
+          ? jsx('div', {
+            key: 'hint',
+            className: 'aura-hint',
+            style: {
+              position: 'absolute', inset: 0, display: 'flex',
+              alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+              padding: 16, fontSize: 12, color: '#cfc4b8'
+            },
+            children: hint
+          })
+          : null
     ]
   })
 
@@ -8092,6 +8692,9 @@ function AuraSettings() {
   // [subtitles] Subscribed so the CC row redraws when the player reports the
   // tracks this video has (the language list is the player's, not a constant).
   useValue($video)
+  // [quality] Subscribed so the Quality row redraws when the server answers
+  // with this film's real files.
+  useValue($quality)
 
   const serverLine = live.ok
     ? `Server reachable on 127.0.0.1${live.port ? `:${live.port}` : ''}${live.capture ? ` · capture: ${live.capture}` : ''}`
@@ -8480,6 +9083,16 @@ function AuraSettings() {
                 ]
               })
             ),
+            // [quality] What the film can really be shown at: the archive.org
+            // item's own files, or YouTube's one honest answer. A direct file
+            // gets no row (one file, nothing to pick).
+            qualityRowWanted(qualityInfo())
+              ? row(
+                'Quality',
+                qualityHint(qualityInfo()),
+                qualityControls(qualityInfo(), 'settings')
+              )
+              : null,
             row(
               'Controls transparency',
               'How solid the floating control strip is over the film. The strip still fades out when the mouse rests.',
@@ -8711,6 +9324,18 @@ function AuraSettings() {
             checked: settings.panelEnabled !== false,
             'aria-label': 'Right panel',
             onCheckedChange: value => setPanelEnabled(value)
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'sidebar',
+        children: row(
+          'Show Aura in the sidebar',
+          'The Aura row in the sidebar. Off keeps the page: the Aura menu still opens it.',
+          jsx(Switch, {
+            checked: settings.sidebarPage !== false,
+            'aria-label': 'Show Aura in the sidebar',
+            onCheckedChange: value => setSidebarPage(value)
           })
         )
       }),
@@ -9124,6 +9749,8 @@ function teardown() {
   watchFrameLive = null
   removeVideoBar()
   disposePaneRegistration()
+  disposeNavRegistration()
+  resetFilmStall()
   removePanel()
   removeUiStyle()
   saveCurrentPosition()
@@ -9227,6 +9854,10 @@ export default {
     $settings.set(settings)
     $live.set({ ...EMPTY_LIVE })
     $video.set({ ...EMPTY_VIDEO })
+    // A hot reload starts with no film and no stuck-film message: both belong
+    // to the instance that watched them.
+    resetFilmStall()
+    $filmRetry.set(0)
     // Bookmarks live in settings, so a remount (another plugin, another chat)
     // reads them straight back without any extra storage key.
 
@@ -9302,9 +9933,8 @@ export default {
     )
 
     // The full page: a sidebar row that opens the film, the whole setup and the
-    // REVamp hand-off in one place. Both contributions are plain registrations,
-    // tracked like every other one, so dispose takes the row and the route with
-    // it.
+    // REVamp hand-off in one place. The route is always registered; the row is
+    // optional furniture and comes and goes with its setting.
     track(
       ctx.register({
         id: 'aura-page',
@@ -9314,13 +9944,7 @@ export default {
         render: () => jsx(AuraPage, {})
       })
     )
-    track(
-      ctx.register({
-        id: 'aura-nav',
-        area: SIDEBAR_NAV_AREA,
-        data: { path: '/aura', label: 'Aura', codicon: 'play-circle' }
-      })
-    )
+    syncSidebarNav()
 
     // The theatre pane, docked to the right of the workspace. The host owns the
     // box and the width; we own nothing but the content. Registered ONLY while
@@ -9468,6 +10092,13 @@ export const __test = {
   setCatalogSearchForTest: value => { catalogSearch = String(value) },
   applyVideoSource,
   applyUrlBox,
+  // [quality] The one switch the picker, the A menu and the agent's queued
+  // command all go through.
+  applyQualityCommand,
+  setVideoQuality,
+  setVideoQualityRule,
+  refreshQuality,
+  qualityInfoForTest: () => qualityInfo(),
   skipBlockedEpisode,
   panelVisible,
   // The quick menu's own width, so a layout test asserts against the number the
@@ -9522,4 +10153,6 @@ export const __test = {
   captionInfo,
   captionTooltip,
   syncVideoBar,
+  // The stuck-film watch: what it is armed for, and which film it gave up on.
+  stallStateForTest: () => ({ armed: stallArmedFor, timer: Boolean(stallTimer), stalled: $stall.get(), ms: FILM_STALL_MS }),
 }
