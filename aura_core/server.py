@@ -323,6 +323,15 @@ _START_LOCK = threading.RLock()
 # True once a non-blocking lock attempt found a live leader for this home.
 _FOLLOWING = False
 
+# Windows has no ``flock``. The counterpart with the same one-leader-per-home promise is a named
+# kernel mutex: it lives exactly as long as one process holds it, every process finds it by name,
+# and it dies with the process. Without it every process that merely loads the plugin (a CLI
+# command, a doctor probe, an app rescan) started its own server and rewrote ``<home>/aura/token``,
+# so the pane and the tools held a token the live server rejected: every control call answered 401
+# while the already-loaded film kept playing.
+_WIN_MUTEX: int | None = None
+_MUTEX_ERROR_ALREADY_EXISTS = 183
+
 
 def _home_key() -> str | None:
     """The current context's Hermes home as a resolved string."""
@@ -343,6 +352,68 @@ def _log(msg: str, *args) -> None:
     """Log without ever leaking the token."""
     try:
         logger.info(redact.redact_text(msg % args if args else msg))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _win_mutex_name() -> str | None:
+    """Per-home kernel object name: one leader per HERMES_HOME, no cross-home collisions."""
+    try:
+        home = str(config.hermes_home().resolve()).casefold()
+    except Exception:  # noqa: BLE001
+        return None
+    digest = hashlib.sha256(home.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+    return "Local\\hermes-aura-" + digest
+
+
+def _try_acquire_win_mutex() -> bool:
+    """Non-blocking Windows leader election; True when this process now owns the mutex.
+
+    ``CreateMutexW`` returns a handle either way; ``ERROR_ALREADY_EXISTS`` means another process
+    created it first, so this one is a follower and must not start a server or rewrite the
+    token/lease advertisement.
+    """
+    global _WIN_MUTEX, _LOCK_HOME
+    if _WIN_MUTEX is not None:
+        return True
+    if os.name != "nt":
+        return False
+    name = _win_mutex_name()
+    if name is None:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CreateMutexW.argtypes = [wintypes.LPCVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        handle = kernel32.CreateMutexW(None, True, name)
+        if not handle:
+            _log("aura: mutex create failed (errno %s)", ctypes.get_last_error())
+            return False
+        if ctypes.get_last_error() == _MUTEX_ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(wintypes.HANDLE(handle))
+            return False
+    except Exception as exc:  # noqa: BLE001 - election must never block register()
+        _log("aura: mutex election failed (%s)", type(exc).__name__)
+        return False
+    _WIN_MUTEX = int(handle)
+    _LOCK_HOME = _home_key()
+    return True
+
+
+def _release_win_mutex() -> None:
+    """Drop the Windows leader mutex, if this process holds it."""
+    global _WIN_MUTEX
+    handle, _WIN_MUTEX = _WIN_MUTEX, None
+    if handle is None or os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(wintypes.HANDLE(handle))
     except Exception:  # noqa: BLE001
         pass
 
@@ -1882,9 +1953,18 @@ def _start_server() -> None:
 # ---------------------------------------------------------------------------
 
 def _pid_alive(pid: Any) -> bool:
-    """True when ``pid`` is a live process we can signal."""
+    """True when ``pid`` is a live process.
+
+    Windows needs its own probe: there ``os.kill(pid, 0)`` is not a liveness check, because signal
+    0 is CTRL_C_EVENT, so CPython sends a console Ctrl+C event to the process group instead of
+    asking whether the pid exists. A follower trusts this to accept the leader lease, so the wrong
+    answer either rejects a live leader (the pane then gets no port or token) or fires a Ctrl+C at
+    whatever shares the console.
+    """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
+    if os.name == "nt":
+        return _pid_alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -1894,6 +1974,33 @@ def _pid_alive(pid: Any) -> bool:
     except OSError:
         return False
     return True
+
+
+def _pid_alive_windows(pid: int) -> bool:
+    """``OpenProcess`` + ``GetExitCodeProcess``: the Windows liveness probe."""
+    if pid == os.getpid():
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            # Access denied means the process exists but is beyond our reach (an elevated one).
+            return ctypes.get_last_error() == 5
+        try:
+            code = wintypes.DWORD()
+            ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        finally:
+            kernel32.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    except Exception:  # noqa: BLE001 - a probe never takes the election down
+        return False
 
 
 def _write_lease(token: str, port: int) -> None:
@@ -1943,7 +2050,9 @@ def _try_acquire_lock() -> bool:
     if _LOCK_FD is not None:
         return True
     if fcntl is None:
-        # No flock on Windows: keep today's per-process server behaviour.
+        # Windows: the flock's counterpart is the named mutex (_try_acquire_win_mutex).
+        if os.name == "nt":
+            return _try_acquire_win_mutex()
         return True
     try:
         config._ensure_dir()
@@ -1972,6 +2081,7 @@ def _release_lock() -> None:
     _TAKEOVER_AT = 0.0
     _FOLLOWING = False
     if fd is None:
+        _release_win_mutex()
         return
     try:
         if fcntl is not None:
@@ -1985,9 +2095,9 @@ def _release_lock() -> None:
 
 
 def _is_leader() -> bool:
-    if fcntl is None:
+    if fcntl is None and os.name != "nt":
         return True
-    if _LOCK_FD is not None:
+    if _LOCK_FD is not None or _WIN_MUTEX is not None:
         return True
     with _STATE.lock:
         return _STATE.httpd is not None
@@ -2010,13 +2120,13 @@ def _try_become_leader() -> bool:
         # second server here; the caller forwards to that home's leader.
         _FOLLOWING = True
         return False
-    if fcntl is None:
+    if fcntl is None and os.name != "nt":
         _FOLLOWING = False
         _LOCK_HOME = _home_key()
         if not _server_running():
             _start_server()
         return True
-    if _LOCK_FD is not None:
+    if _LOCK_FD is not None or _WIN_MUTEX is not None:
         _FOLLOWING = False
         if not _server_running():
             _start_server()
@@ -2121,7 +2231,7 @@ def get_port() -> int | None:
                     return _STATE.port
             # Only a follower (or a lock holder whose thread died) retries here;
             # a fresh/stopped process must not start a server just from get_port().
-            if _FOLLOWING or _LOCK_FD is not None:
+            if _FOLLOWING or _LOCK_FD is not None or _WIN_MUTEX is not None:
                 with _START_LOCK:
                     if not _server_running():
                         _try_become_leader()
