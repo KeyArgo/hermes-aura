@@ -489,7 +489,8 @@ def test_transport_response_says_command_is_queued(plugin, monkeypatch):
     assert result['delivery'] == 'queued'
 
 
-def test_agent_popout_queues_fallback_when_browser_unavailable(plugin, monkeypatch):
+def test_agent_popout_without_a_browser_says_so_and_opens_nothing(plugin, monkeypatch):
+    """popout means the OS window — never a silent swap to the in-app surface."""
     p, _ = plugin
     calls = []
     def request(method, path, body=None, timeout=2):
@@ -501,8 +502,26 @@ def test_agent_popout_queues_fallback_when_browser_unavailable(plugin, monkeypat
         return {}
     monkeypatch.setattr(p, '_request', request)
     result = _call(p, {'action': 'popout', 'url': 'https://example.test/a.mp4'})
-    assert result['delivery'] == 'queued'
-    assert ('POST', '/api/player/command', {'cmd': 'watch_window', 'url': 'https://example.test/a.mp4'}) in calls
+    assert result['ok'] is False
+    assert result['error'] == 'no_browser'
+    assert 'popout_inline' in result['hint']
+    assert not [c for c in calls if c[1] == '/api/player/command'], 'a fallback was queued'
+
+
+def test_agent_popout_inline_queues_the_floating_window(plugin, monkeypatch):
+    p, _ = plugin
+    calls = []
+    def request(method, path, body=None, timeout=2):
+        calls.append((method, path, body))
+        if path == '/api/player/command':
+            return {'ok': True, 'seq': 11}
+        return {}
+    monkeypatch.setattr(p, '_request', request)
+    url = 'https://example.test/a.mp4'
+    result = _call(p, {'action': 'popout_inline', 'url': url})
+    assert result['ok'] is True and result['surface'] == 'inline'
+    assert ('POST', '/api/player/command', {'cmd': 'watch_window', 'url': url}) in calls
+    assert not [c for c in calls if c[1].startswith('/api/window')], 'popout_inline touched the OS window'
 
 
 def test_agent_popin_queues_fallback_return_when_no_os_window(plugin, monkeypatch):

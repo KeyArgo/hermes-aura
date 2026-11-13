@@ -386,7 +386,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, video: $video, settings: $settings };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setOwnWindow: typeof setOwnWindow === "function" ? setOwnWindow : null, video: $video, settings: $settings };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -2229,18 +2229,22 @@ record('hidden episodes survive a reload and drop junk ids', () => {
   }
 })
 
-record('a pop-out resolves to ONE surface, never both at once', () => {
-  // Owner: "popping out does both a pop out in hermes while trying to pop out
-  // outside of hermes." The in-app frame and the OS window are alternatives:
-  // the OS window wins only when the host offers one AND it actually opened.
-  assert.equal(tx.popoutSurface(true, true), 'desktop', 'an opened OS window lost to the in-app frame')
-  assert.equal(tx.popoutSurface(true, false), 'inline', 'a failed OS window left no surface')
-  assert.equal(tx.popoutSurface(false, false), 'inline', 'unavailable host did not fall back')
-  // And the in-app frame is never switched on before the OS window is tried.
-  const fn = source.slice(source.indexOf('async function setDesktopWindow'), source.indexOf('async function toggleDesktopWindow'))
-  assert.ok(!/^\s{4}setVideoWindow\(true\)/m.test(fn.split('let available')[0]),
-    'setDesktopWindow still turns the in-app frame on before asking for a window')
-  assert.match(fn, /popoutSurface\(true, result\.open === true\) === 'desktop'/, 'the decision helper is not used')
+record('two pop-out buttons: each names its own surface, neither falls back', () => {
+  // Owner: "two separate pop-out buttons". Pop out = the floating window inside
+  // Hermes, and nothing else. Own window = the real OS window, and nothing else.
+  const inline = source.slice(source.indexOf('function setInlineWindow'), source.indexOf('async function setOwnWindow'))
+  const own = source.slice(source.indexOf('async function setOwnWindow'), source.indexOf('function popoutSurface'))
+
+  assert.ok(!/openDesktopWindow|\/window\/open/.test(inline),
+    'Pop out can still open an OS window')
+  assert.match(inline, /setVideoWindow\(true\)/, 'Pop out does not open the floating window')
+  assert.match(inline, /registerWatchPane\(true\)/, 'Pop out does not register its pane')
+
+  assert.match(own, /openDesktopWindow/, 'Own window does not open the OS window')
+  assert.ok(!/setVideoWindow\(true\)/.test(own),
+    'Own window falls back to the in-app surface')
+  assert.match(own, /setError\(/, 'a failed OS window says nothing')
+  assert.match(own, /film stays in Hermes/i, 'the failure path does not say where the film went')
 })
 
 record('review 2: no document-level focus/key capture, and focus returns via the SDK', () => {
@@ -2497,7 +2501,7 @@ await recordAsync('player coordinator reports, consumes commands, and restores a
   await pluginModule.wiringTest.sync()
   assert.equal(pluginModule.wiringTest.video.get().playing, false)
   pluginModule.wiringTest.video.set({ ...pluginModule.wiringTest.video.get(), playing: true })
-  await pluginModule.wiringTest.setWindow(true)
+  await pluginModule.wiringTest.setOwnWindow(true)
   const sent = calls.find(c => c.route === '/window/open').options.body
   assert.equal(sent.videoId, 'abcdefghijk')
   assert.equal(sent.position, 12)
@@ -2518,14 +2522,14 @@ await recordAsync('player coordinator reports, consumes commands, and restores a
   dispose()
 })
 
-await recordAsync('page Pop out opens the OS window and unavailable browsers use the in-app window', async () => {
+await recordAsync('page buttons: Pop out floats inside Hermes, Own window opens the OS window', async () => {
   const x = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/one.mp4' })
   const calls = []
-  let available = true
+  const frames = []
   const original = x.ctx.rest
   x.ctx.rest = async (route, options = {}) => {
     calls.push(route)
-    if (route === '/window') return { ok: true, available, open: false }
+    if (route === '/window') return { ok: true, available: true, open: false }
     if (route === '/window/open') return { ok: true, window: { open: true } }
     if (route === '/window/close') return { ok: true, closed: true, window: { open: false } }
     if (route === '/player') return { ok: true, player: {}, window: { open: false } }
@@ -2537,20 +2541,44 @@ await recordAsync('page Pop out opens the OS window and unavailable browsers use
   await sleep(40)
   const route = x.contributions.find(c => c.area === 'routes')
   const tree = renderDeep(renderContribution(route))
+  // "Pop out": the floating pane appears, and no OS window is asked for.
   pageAria(tree, 'Pop out').props.onClick()
   await sleep(40)
-  assert.ok(calls.includes('/window/open'))
+  assert.ok(!calls.includes('/window/open'), 'Pop out opened an OS window')
+  assert.ok(x.contributions.find(c => c.id === 'watch'), 'Pop out did not register the floating pane')
+  assert.equal(x.storage.get('settings').videoWindow, true, 'the floating window was not remembered')
+
+  // "Own window": now the OS window, and the floating pane goes away.
+  const tree2 = renderDeep(renderContribution(route))
+  pageAria(tree2, 'Own window').props.onClick()
+  await sleep(60)
+  assert.ok(calls.includes('/window/open'), 'Own window did not ask the server for a window')
+  assert.ok(!x.contributions.find(c => c.id === 'watch'), 'the floating pane survived Own window')
+  assert.notEqual((x.storage.get('settings') || {}).videoWindow, true, 'the floating window stayed on')
   dispose()
+  void frames
+
+  // A host with no browser: say why, do not fall back to the in-app surface.
   const y = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/one.mp4' })
   const originalY = y.ctx.rest
   y.ctx.rest = async (route, options = {}) => {
+    if (route === '/window/open') return { ok: false, error: 'no Chrome or Chromium found' }
     if (route === '/window') return { ok: true, available: false, open: false }
-    if (route === '/window/open') throw Error('should not launch')
+    if (route === '/player') return { ok: true, window: { open: false }, player: {} }
+    if (route.startsWith('/player/commands')) return { ok: true, head_seq: 0, commands: [] }
+    if (route === '/player/report') return { ok: true }
     return originalY(route, options)
   }
   const disposeY = pluginModule.default.register(y.ctx)
-  await pluginModule.wiringTest.setWindow(true)
-  assert.equal(pluginModule.wiringTest.settings.get().videoWindow, true)
+  await sleep(40)
+  const routeY = y.contributions.find(c => c.area === 'routes')
+  pageAria(renderDeep(renderContribution(routeY)), 'Own window').props.onClick()
+  await sleep(60)
+  // A never-set key is absent, not false: what matters is that the floating
+  // surface was not switched on by a failed OS window.
+  assert.notEqual((y.storage.get('settings') || {}).videoWindow, true,
+    'the failure fell back to the floating window')
+  assert.ok(!y.contributions.find(c => c.id === 'watch'), 'the failure opened the floating pane')
   disposeY()
 })
 
@@ -2832,6 +2860,56 @@ await recordAsync('quality: pane and page open together produce ONE player, owne
     void page
   } finally {
     pageStage(null)
+    dispose()
+  }
+})
+
+await recordAsync('two pop-outs never coexist, and Bring back returns the film to the pane', async () => {
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/one.mp4' })
+  const opened = []
+  let windowOpen = false
+  const original = ctx.ctx.rest
+  ctx.ctx.rest = async (route, options = {}) => {
+    const path = String(route)
+    if (path === '/window/open') { opened.push(options.body && options.body.url); windowOpen = true; return { ok: true, window: { open: true } } }
+    if (path === '/window/close') { windowOpen = false; return { ok: true, closed: true, window: { open: false } } }
+    if (path === '/window') return { ok: true, available: true, open: windowOpen }
+    if (path === '/player') return { ok: true, window: { open: windowOpen }, player: {} }
+    if (path.startsWith('/player/commands')) return { ok: true, head_seq: 0, commands: [] }
+    if (path === '/player/report') return { ok: true }
+    return original(route, options)
+  }
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await primeLive()
+    // Pop out: floating surface only.
+    tx.setInlineWindow(true)
+    assert.ok(ctx.contributions.find(c => c.id === 'watch'), 'Pop out did not open the floating window')
+    assert.equal(tx.filmOwner(), 'window', 'the floating window did not take the film')
+    assert.equal(opened.length, 0, 'Pop out opened an OS window')
+
+    // Own window: the floating surface closes as the OS window opens.
+    await tx.setOwnWindow(true)
+    assert.equal(opened.length, 1, 'Own window did not open the OS window')
+    assert.ok(!ctx.contributions.find(c => c.id === 'watch'), 'both surfaces were open at once')
+    assert.equal(tx.filmOwner(), '', 'an in-app surface still claims the film while the OS window owns it')
+
+    // Bring back: the OS window closes and the pane has the film again.
+    await tx.setOwnWindow(false)
+    assert.equal(tx.filmOwner(), 'pane', `Bring back did not return the film to the pane: ${JSON.stringify(tx.filmGates())}`)
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('the floating watch window is restored after a reload', async () => {
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/one.mp4', videoWindow: true })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await primeLive()
+    assert.ok(ctx.contributions.find(c => c.id === 'watch'), 'a saved floating window did not come back')
+    assert.equal(tx.filmOwner(), 'window', 'the restored pane did not own the film')
+  } finally {
     dispose()
   }
 })

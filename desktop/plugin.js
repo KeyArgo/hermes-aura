@@ -916,6 +916,9 @@ function filmOwner() {
   if (desktopOwned || desktopPending) return ''
   if (!liveUrl()) return ''
   if (settings.backdropMode === 'video' && !String(settings.videoUrl || '').trim()) return ''
+  // The floating watch window is a surface the user opened on purpose: it takes
+  // the film with it and parks the pane/page (one film, one surface).
+  if (settings.videoWindow === true) return 'window'
   if (pageVisible()) return 'page'
   if (panelVisible()) return 'pane'
   return ''
@@ -975,6 +978,86 @@ function AuraFilm({ surface, style }) {
         filmFrameOwner = ''
       }
     }
+  })
+}
+
+
+// ------------------------------------------------- the floating watch window
+// "Pop out" in the owner's words: a small window that floats inside Hermes, so
+// the film can be dragged over the work without leaving the app. It is an SDK
+// pane with placement 'floating' — the host owns the geometry, the drag and the
+// corner it spawns from — not a fixed-position element of our own.
+let watchPaneRegistration = null
+
+function registerWatchPane(on) {
+  if (!ctxRef || disposed) return
+  if (on && !watchPaneRegistration) {
+    const off = ctxRef.register({
+      id: 'watch',
+      area: PANES_AREA,
+      title: 'Aura film',
+      data: {
+        placement: 'floating',
+        anchor: 'bottom-right',
+        width: '420px',
+        height: '260px'
+      },
+      render: () => jsx(AuraWatchWindow, {})
+    })
+    watchPaneRegistration = typeof off === 'function' ? off : null
+    return
+  }
+  if (!on && watchPaneRegistration) {
+    const off = watchPaneRegistration
+    watchPaneRegistration = null
+    try {
+      off()
+    } catch {
+      // one broken disposer must not strand the pane
+    }
+  }
+}
+
+function AuraWatchWindow() {
+  useValue($settings)
+  useValue($video)
+  return jsxs('div', {
+    style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, gap: 0 },
+    children: [
+      jsx(AuraFilm, {
+        key: 'film',
+        surface: 'window',
+        style: { flex: '1 1 auto', minHeight: 0, width: '100%', background: '#000' }
+      }),
+      jsxs('div', {
+        key: 'bar',
+        style: {
+          flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 4,
+          padding: '5px 8px', fontSize: 11
+        },
+        children: [
+          jsx(Button, {
+            size: 'micro', variant: 'ghost', 'aria-label': 'Play', title: 'Play or pause',
+            onClick: () => videoCommand('toggle'), children: '▶'
+          }),
+          jsx(Button, {
+            size: 'micro', variant: 'ghost', 'aria-label': 'Next', title: 'Next episode or source',
+            onClick: () => videoCommand('next'), children: '⏭'
+          }),
+          jsx('span', { style: { flex: '1 1 auto' } }),
+          jsx(Button, {
+            size: 'micro', variant: 'ghost', 'aria-label': 'Own window',
+            title: 'Open the film in its own OS window',
+            onClick: () => { void setOwnWindow(true) }, children: '⛶ Own window'
+          }),
+          jsx(Button, {
+            size: 'micro', variant: 'ghost', 'aria-label': 'Bring back',
+            title: 'Bring the film back into Hermes',
+            onClick: () => setInlineWindow(false), children: '⟲ Bring back'
+          })
+        ]
+      })
+    ]
   })
 }
 
@@ -1431,64 +1514,88 @@ function restoreDesktopPlayback(player) {
 }
 let handoffPlayback = null
 
-/** The page's pop-out control doubles as "bring it back" while the film is
- *  out — in the small in-app frame or in a real OS window. */
-function popoutBackLabel() {
-  return videoWindowOn() || desktopOwned || desktopPending ? 'Bring back' : 'Pop out'
+/** Labels for the two pop-out controls. Each one names its own surface, and
+ *  each becomes "Bring back" while ITS surface holds the film. */
+function inlineLabel() {
+  return videoWindowOn() ? 'Bring back' : 'Pop out'
 }
 
-/** Which surface a pop-out gets: the OS window when the host can give one and
- *  it actually opened, otherwise the small in-app frame. Never both — the two
- *  players are alternatives (owner: "there should be one or the other"). */
+function ownLabel() {
+  return desktopOwned || desktopPending ? 'Bring back' : 'Own window'
+}
+
+/** "Pop out": the floating watch window INSIDE Hermes, and nothing else.
+ *
+ *  It never opens an OS window. The two surfaces are alternatives, so an open
+ *  OS window is closed first (the film moves, it is never played twice). */
+function setInlineWindow(on) {
+  if (!ctxRef || disposed) return
+  if (on) {
+    if (desktopOwned || desktopPending) void setOwnWindow(false)
+    setVideoWindow(true)
+    registerWatchPane(true)
+    note('Film is in the floating watch window — drag its title bar anywhere', 5000)
+    return
+  }
+  setVideoWindow(false)
+  registerWatchPane(false)
+  returnFocusToComposer()
+}
+
+/** "Own window": a real OS window outside Hermes (another monitor, full screen).
+ *
+ *  No silent fallback: if the window cannot open, the reason is shown and the
+ *  film stays exactly where it was — quietly turning this into the in-app frame
+ *  is what made one button do two jobs. */
+async function setOwnWindow(on) {
+  if (!ctxRef || disposed) return
+  if (on) {
+    const settings = $settings.get()
+    if (!String(settings.videoUrl || '').trim()) {
+      setError('Choose a film first — then it can open in its own window.')
+      return
+    }
+    // Park the floating window BEFORE the request: one film, one surface, not
+    // even for the length of an HTTP round trip.
+    if (videoWindowOn()) {
+      setVideoWindow(false)
+      registerWatchPane(false)
+    }
+    desktopPending = true
+    applyBackdropLayout()
+    const result = await openDesktopWindow()
+    desktopPending = false
+    if (result && result.open === true) {
+      desktopOwned = true
+      applyBackdropLayout()
+      return
+    }
+    const reason = (result && result.error) || 'no Chrome or Chromium was found'
+    setError(`Aura could not open the film in its own window — ${reason}. The film stays in Hermes.`)
+    applyBackdropLayout()
+    return
+  }
+  if (desktopOwned) {
+    const closed = await closeDesktopWindow()
+    // The window is gone, so nothing out there owns the film any more — say so
+    // before the sync, or every in-app surface stays parked until the next poll.
+    desktopOwned = false
+    desktopPending = false
+    if (!closed || !closed.error) await syncPlayerOwnership()
+  }
+  desktopPending = false
+  applyBackdropLayout()
+}
+
+/** Which surface a pop-out gets — kept for the old call sites and the tests.
+ *  The decision is no longer made here: each button asks for its own surface. */
 function popoutSurface(available, opened) {
   return available === true && opened === true ? 'desktop' : 'inline'
 }
 
-async function setDesktopWindow(on) {
-  if (on) {
-    // An OS window and the in-app frame are ALTERNATIVES, never both. Popping
-    // out used to switch the in-app frame on first and then also open the OS
-    // window, so one click produced two players on two surfaces. Ask the host
-    // whether it can give us a real window, try that, and only settle for the
-    // in-app frame when the answer is no.
-    // Park the in-app film before the first await: one click must never show
-    // two players, not even for the length of an HTTP request.
-    desktopPending = true
-    applyBackdropLayout()
-    let available = true
-    try {
-      const status = await ctxRef.rest('/window', { timeoutMs: 4000 })
-      if (status && status.ok === true && status.available === false) available = false
-    } catch { /* unknown: try to open, and fall back below */ }
-    if (available) {
-      const previousPlayer = { ...$video.get(), url: $settings.get().videoUrl || '' }
-      const result = await openDesktopWindow()
-      desktopPending = false
-      if (popoutSurface(true, result.open === true) === 'desktop') {
-        if (!desktopOwned) lastDesktopPlayer = previousPlayer
-        desktopOwned = true
-        // The window owns the picture now; park the in-app one.
-        if (videoWindowOn()) setVideoWindow(false)
-        return
-      }
-    }
-    desktopPending = false
-    setVideoWindow(true)
-    note('Using the in-app watch window', 5000)
-  } else if (desktopOwned) {
-    const result = await closeDesktopWindow()
-    if (!result.error) await syncPlayerOwnership()
-    desktopPending = false
-    applyBackdropLayout()
-  } else {
-    // Nothing is out there: bring the in-app film back, and stop pretending a
-    // pop-out is still in flight.
-    desktopPending = false
-    setVideoWindow(false)
-  }
-}
 async function toggleDesktopWindow() {
-  await setDesktopWindow(!(desktopOwned || desktopPending || videoWindowOn()))
+  // The quick menu's single control keeps its old meaning: the OS window.
+  await setOwnWindow(!(desktopOwned || desktopPending))
 }
 
 // ------------------------------------------------- desktop window (pop-out)
@@ -3062,9 +3169,30 @@ function mountVideoBar(node) {
   })
 
   // Watch window: the film in its own frame instead of behind the app.
-  const windowBtn = videoBarButton('⧉', 'Watch window', 'noop')
-  Object.assign(windowBtn.style, { width: 'auto', padding: '0 6px', fontSize: '12px' })
-  windowBtn.addEventListener('click', () => { void toggleDesktopWindow() })
+  // Two controls, two surfaces (owner: "two separate pop-out buttons"). Pop out
+  // is the floating window inside Hermes; Own window is the real OS window.
+  const inlineBtn = doc.createElement('button')
+  inlineBtn.type = 'button'
+  inlineBtn.setAttribute('aria-label', 'Pop out')
+  inlineBtn.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    setInlineWindow(!videoWindowOn())
+  })
+  const ownBtn = doc.createElement('button')
+  ownBtn.type = 'button'
+  ownBtn.setAttribute('aria-label', 'Own window')
+  ownBtn.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    void setOwnWindow(!(desktopOwned || desktopPending))
+  })
+  for (const [node, label] of [[inlineBtn, '⧉'], [ownBtn, '⛶']]) {
+    node.textContent = label
+    Object.assign(node.style, {
+      width: 'auto', padding: '0 6px', fontSize: '12px', cursor: 'pointer',
+      background: 'transparent', color: 'inherit', border: '0'
+    })
+  }
+  const windowBtn = inlineBtn
 
   // The current film's name, at the head of the top row: the strip is small,
   // so the title earns its place by answering "what am I watching?".
@@ -3119,7 +3247,7 @@ function mountVideoBar(node) {
   Object.assign(topRow.style, {
     display: 'flex', alignItems: 'center', gap: '4px', minWidth: '0'
   })
-  for (const node of [grip, title, scrub, time, sep, volume, windowBtn, close]) {
+  for (const node of [grip, title, scrub, time, sep, volume, inlineBtn, ownBtn, close]) {
     topRow.appendChild(node)
   }
   const transportRow = doc.createElement('div')
@@ -3151,7 +3279,7 @@ function mountVideoBar(node) {
 
   slot.appendChild(bar)
   videoBarEl = bar
-  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill, title }
+  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, inlineBtn, ownBtn, scrub, fill, title }
 }
 
 function removeVideoBar() {
@@ -4152,6 +4280,7 @@ function setPanelEnabled(on) {
   writeSettings({ panelEnabled: next })
   if (next) {
     registerPanelPane(true)
+    if ($settings.get().videoWindow === true) registerWatchPane(true)
     syncPanel(true)
   } else {
     // Remove first: the panel disappears on the click even if something later
@@ -4232,10 +4361,21 @@ function syncVideoBar(force) {
   const percentWidth = `${(progress * 100).toFixed(2)}%`
   if (parts.fill && parts.fill.style.width !== percentWidth) parts.fill.style.width = percentWidth
   if (parts.scrub) parts.scrub.setAttribute('aria-valuetext', clock)
-  if (parts.windowBtn) {
-    const wantGlyph = videoWindowOn() ? '⛶' : '⧉'
-    if (parts.windowBtn.textContent !== wantGlyph) parts.windowBtn.textContent = wantGlyph
-    parts.windowBtn.title = videoWindowOn() ? 'Back to full-window backdrop' : 'Watch in its own window'
+  if (parts.inlineBtn) {
+    const wantGlyph = videoWindowOn() ? '⟲' : '⧉'
+    if (parts.inlineBtn.textContent !== wantGlyph) parts.inlineBtn.textContent = wantGlyph
+    parts.inlineBtn.title = inlineLabel() === 'Bring back'
+      ? 'Bring the film back into Hermes'
+      : 'Pop out — a floating window you can drag anywhere'
+    parts.inlineBtn.setAttribute('aria-label', inlineLabel())
+  }
+  if (parts.ownBtn) {
+    const wantGlyph = (desktopOwned || desktopPending) ? '⟲' : '⛶'
+    if (parts.ownBtn.textContent !== wantGlyph) parts.ownBtn.textContent = wantGlyph
+    parts.ownBtn.title = ownLabel() === 'Bring back'
+      ? 'Bring the film back from its own window'
+      : 'Own window — open the film outside Hermes (another monitor, full screen)'
+    parts.ownBtn.setAttribute('aria-label', ownLabel())
   }
   if (parts.title) {
     const current = videoQueue().find(item => item.url === settings.videoUrl)
@@ -5571,16 +5711,30 @@ function AuraPage() {
       jsx('span', { key: 'f', style: { display: 'inline-flex' }, children: pageButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10)) }),
       jsx('span', { key: 'n', style: { display: 'inline-flex' }, children: pageButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next')) }),
       jsx('span', { key: 'gap', style: { flex: 1 } }),
+      // Two surfaces, two buttons: the floating window inside Hermes, and the
+      // real OS window outside it. Each turns into "Bring back" for its own
+      // surface only.
       jsx(Button, {
-        key: 'pop',
+        key: 'pop-inline',
         size: 'micro',
-        variant: settings.videoWindow === true ? 'default' : 'ghost',
-        'aria-label': popoutBackLabel() === 'Bring back' ? 'Bring back' : 'Pop out',
-        title: settings.videoWindow === true
+        variant: videoWindowOn() ? 'default' : 'ghost',
+        'aria-label': inlineLabel(),
+        title: videoWindowOn()
           ? 'Bring the film back onto this page'
-          : 'Pop out — play in a floating window you can drag anywhere',
-        onClick: () => { void toggleDesktopWindow() },
-        children: settings.videoWindow === true ? 'Bring back' : 'Pop out'
+          : 'Pop out — a floating window inside Hermes you can drag anywhere',
+        onClick: () => setInlineWindow(!videoWindowOn()),
+        children: inlineLabel()
+      }),
+      jsx(Button, {
+        key: 'pop-own',
+        size: 'micro',
+        variant: (desktopOwned || desktopPending) ? 'default' : 'ghost',
+        'aria-label': ownLabel(),
+        title: (desktopOwned || desktopPending)
+          ? 'Bring the film back from its own window'
+          : 'Own window — play outside Hermes, on another monitor or full screen',
+        onClick: () => { void setOwnWindow(!(desktopOwned || desktopPending)) },
+        children: ownLabel()
       }),
       jsx(Button, {
         key: 'open',
@@ -6722,6 +6876,9 @@ export default {
     // must not leave the user with no Aura surface at all. The ✕ disposes the
     // pane for this session.
     registerPanelPane(true)
+    // A floating watch window the user left open comes back with the plugin;
+    // it is a surface, so it must not silently disappear on reload.
+    if ($settings.get().videoWindow === true) registerWatchPane(true)
 
     // One read of the build stamp: the pane's chip is useless without it, and
     // the settings page that also shows it may never be opened.
@@ -6834,8 +6991,10 @@ export const __test = {
   setBackdropForTest: el => { filmFrame = el },
   // Popping out must produce ONE surface, not two (owner: "there should be
   // one or the other").
-  setDesktopWindow,
+  setOwnWindow,
+  setInlineWindow,
   setVideoWindow,
+  registerWatchPane,
   popoutSurface,
   hiddenVideoIds,
   hideCurrentEpisode,

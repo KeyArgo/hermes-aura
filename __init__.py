@@ -93,7 +93,7 @@ class _Config:
 _CFG = _Config()
 _CTX: Any = None
 _ACTIONS = ("on", "off", "status", "intensity", "preset", "mood",
-            "pause", "resume", "next", "prev", "seek", "popout", "popin")
+            "pause", "resume", "next", "prev", "seek", "popout", "popout_inline", "popin")
 
 
 # ---------------------------------------------------------------------------
@@ -560,18 +560,15 @@ def _action_popout(args: dict) -> dict:
         body["position"] = max(0.0, float(raw))
     window_status = _get("/api/window")
     if window_status.get("ok") is True and window_status.get("available") is False:
-        fallback = {"cmd": "watch_window"}
-        if body.get("url"):
-            fallback["url"] = body["url"]
-        if "position" in body:
-            fallback["value"] = body["position"]
-        try:
-            queued = _request("POST", "/api/player/command", body=fallback)
-        except Exception:
-            queued = {}
-        if queued.get("ok") is True:
-            return {"ok": True, "delivery": "queued", "seq": queued.get("seq"),
-                    "hint": "No browser found; the in-app watch window was requested."}
+        # No silent substitution: popout means the OS window. Say why it cannot
+        # happen and let the caller choose action=popout_inline instead.
+        return {
+            "ok": False,
+            "error": "no_browser",
+            "hint": "No Chrome or Chromium was found, so the film cannot open in its "
+                    "own window. It stays where it is — use action=popout_inline for "
+                    "the floating window inside Hermes.",
+        }
     try:
         result = _request("POST", "/api/window/open", body=body, timeout=20.0)
     except Exception as exc:  # noqa: BLE001
@@ -589,6 +586,32 @@ def _action_popout(args: dict) -> dict:
         "hint": "The film now plays in its own window; tell me pause, next "
                 "episode or popin to bring it back.",
     }
+
+
+def _action_popout_inline(args: dict) -> dict:
+    """Put the film in the floating watch window inside Hermes (never an OS window)."""
+    body: dict = {"cmd": "watch_window"}
+    url = args.get("url")
+    if isinstance(url, str) and url.strip():
+        body["url"] = url.strip()
+        problem = _film_url_problem(body["url"])
+        if problem:
+            return {"ok": False, "error": problem,
+                    "hint": "Pass the film's http(s) URL, or omit it to float the current film."}
+    raw = args.get("position")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        body["value"] = max(0.0, float(raw))
+    try:
+        queued = _request("POST", "/api/player/command", body=body, timeout=20.0)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                "hint": "Aura's server is not running; call action=status."}
+    if not isinstance(queued, dict) or queued.get("ok") is not True:
+        return {"ok": False, "error": "not_delivered",
+                "hint": "The floating window did not acknowledge; the film is unchanged."}
+    return {"ok": True, "surface": "inline", "seq": queued.get("seq"),
+            "hint": "The film is in the floating watch window inside Hermes; "
+                    "action=popin returns it to the backdrop."}
 
 
 def _action_popin() -> dict:
@@ -693,6 +716,8 @@ def _tool_aura_control(args: dict, **kw) -> str:
             payload = _action_transport("play" if action == "resume" else action, args)
         elif action == "popout":
             payload = _action_popout(args)
+        elif action == "popout_inline":
+            payload = _action_popout_inline(args)
         else:  # popin
             payload = _action_popin()
         return _dump(payload)
@@ -715,7 +740,8 @@ SCHEMA_AURA_CONTROL = {
         "with position in seconds. A single-file film has no next/prev; the next "
         "status shows film.player.applied:false and last_command instead of "
         "pretending the skip worked. action=popout moves the film into its own OS "
-        "window (another monitor / full screen) and action=popin closes it; "
+        "window (another monitor / full screen), action=popout_inline moves it into "
+        "the floating window inside Hermes, and action=popin closes either; "
         "optional url and position choose what to open. Use these when the user "
         "says 'pause', 'next episode', 'play the octopus documentary' or 'put it "
         "on my other screen'. Returns JSON. Never blocks the turn; if the server "
