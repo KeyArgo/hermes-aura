@@ -13,9 +13,13 @@
  *      the same bridge and touch only their own setting (the video's mute is
  *      not the audio channel's);
  *   4. the page that hosts audio.js (web/audio.js) exists whenever the music
- *      does — including while the film is closed — and it is the SDK's
- *      SandboxedFrame inside Aura's own surfaces, not an iframe on the app
- *      body;
+ *      does — including while the film is closed, and with NO Right panel at
+ *      all (visualiser mode: the panel is a video surface). That page is the
+ *      SDK's SandboxedFrame inside Aura's own surfaces — the pane when there
+ *      is one, and the always-registered audio seat in the composer's
+ *      underside slot when there is not — never an iframe on the app body.
+ *      There is exactly ONE such frame in every one of those states, and it
+ *      moves (with the music) when a visible surface appears;
  *   5. REVAMP_PITCH says what it must say, and revampCard() wires
  *      "Open REVamp" to host.navigate('/revamp') and "Get REVamp" to the
  *      public repo.
@@ -190,10 +194,12 @@ export const COMPOSER_AREAS = {
 export const frames = []
 globalThis.__sdkFrames = frames
 globalThis.__sdkFrameMessages = []
-const frameNode = { contentWindow: { postMessage: message => { globalThis.__sdkFrameMessages.push(message) } } }
 export const SandboxedFrame = props => {
   frames.push(props)
-  if (typeof props.ref === 'function') props.ref(frameNode)
+  // A frame element is one document: its own node, so a surface that mounts a
+  // new frame really is a new page (and the plugin may hand it the music once).
+  const node = { contentWindow: { postMessage: message => { globalThis.__sdkFrameMessages.push(message) } } }
+  if (typeof props.ref === 'function') props.ref(node)
   return null
 }
 `)
@@ -286,26 +292,36 @@ const clearFrames = () => { globalThis.__sdkFrames.length = 0 }
 // the DOM. The stub's frame node records every postMessage it receives.
 const sent = globalThis.__sdkFrameMessages
 
-// Mount the docked pane's tree the way a real render does, so the film/audio
-// page exists before a command is posted into it.
-function mountSurface(contributions) {
-  const pane = contributions.find(contribution => contribution.area === 'panes')
-  if (!pane) return null
-  const tree = pane.render()
-  expandTree(tree)
-  return tree
+// Mount every surface that can hold the ONE frame the way a real render does:
+// the docked pane (video mode only), the Aura page, the floating watch window
+// and the always-registered audio seat in the composer's underside slot. Which
+// of them draws the frame is the plugin's decision, not this helper's.
+const FRAME_SURFACES = new Set(['panel', 'watch', 'audio-surface', 'aura-page'])
+function mountFrameSurfaces(contributions) {
+  clearFrames()
+  const mounted = []
+  for (const contribution of contributions) {
+    if (!FRAME_SURFACES.has(contribution.id)) continue
+    expandTree(contribution.render())
+    mounted.push(contribution.id)
+  }
+  return mounted
 }
 
-// A fresh instance with a mounted surface — the audio channel only exists while
-// the page that hosts it does. One poll tick fills the live server state (url +
-// token) the frame's src is built from.
+// The bucket of the instance the current check is working with.
+let bucket = null
+
+// A fresh instance with its surfaces mounted — the audio channel only exists
+// while the page that hosts it does. One poll tick fills the live server state
+// (url + token) the frame's src is built from.
 async function remount(settings = {}) {
   clearFrames()
-  const { ctx, contributions, intervals } = makeCtx({ enabled: true, windowVisual: true, backdropMode: 'aura', ...settings })
-  const dispose = plugin.default.register(ctx)
-  if (intervals.length) intervals[0]()
+  const made = makeCtx({ enabled: true, windowVisual: true, backdropMode: 'aura', ...settings })
+  const dispose = plugin.default.register(made.ctx)
+  if (made.intervals.length) made.intervals[0]()
   await new Promise(resolve => setTimeout(resolve, 20))
-  mountSurface(contributions)
+  mountFrameSurfaces(made.contributions)
+  bucket = made
   return dispose
 }
 
@@ -379,6 +395,12 @@ await record('handleAudioRequest: an old seq never replays', () => {
 })
 
 await record('handleAudioRequest: a new play reaches the page and is remembered', async () => {
+  // The music is already on: a live audioUrl means the page that hosts it
+  // exists, wherever the film is. In visualiser mode that page is the audio
+  // seat's — the Right panel does not exist here at all.
+  await remount({ audioUrl: 'https://ice.example/start.mp3', audioLabel: 'Started' })
+  assert.equal(bucket.contributions.find(c => c.id === 'panel'), undefined,
+    'visualiser mode mounted a Right panel')
   const outcome = api.handleAudioRequest({
     audio_request: { action: 'play', url: 'https://ice.example/live.mp3', label: 'Example Radio', seq: 4, at: Date.now() }
   })
@@ -386,7 +408,7 @@ await record('handleAudioRequest: a new play reaches the page and is remembered'
   assert.equal(api.audioState().settings.audioRequestSeq, 4)
   // playAudioSource is async; let its promise land.
   await new Promise(resolve => setTimeout(resolve, 0))
-  const play = sent.find(message => message.aura === 'audio' && message.cmd === 'play')
+  const play = sent.find(message => message.aura === 'audio' && message.cmd === 'play' && message.url === 'https://ice.example/live.mp3')
   assert.ok(play, 'no play command reached the audio channel')
   assert.equal(play.url, 'https://ice.example/live.mp3')
   assert.equal(play.label, 'Example Radio')
@@ -394,7 +416,7 @@ await record('handleAudioRequest: a new play reaches the page and is remembered'
 })
 
 await record('handleAudioRequests: every unseen request is applied in order', async () => {
-  const dispose = await remount({ audioRequestSeq: 200 })
+  const dispose = await remount({ audioRequestSeq: 200, audioUrl: 'https://ice.example/current.mp3', audioLabel: 'Current' })
   const outcomes = plugin.handleAudioRequests({
     audio_requests: [
       { action: 'play', url: 'https://ice.example/batch.mp3', label: 'Batch', seq: 201, at: Date.now() },
@@ -417,7 +439,15 @@ await record('audio-only still mounts the backdrop that hosts audio.js', async (
     audioUrl: 'https://ice.example/audio-only.mp3',
     audioLabel: 'Audio only'
   })
-  const frame = framed().find(props => String(props.src || '').includes('overlay=1'))
+  // Visualiser mode: no Right panel (owner: it disappears outside video mode),
+  // so the page that hosts the music is the audio seat's, and there is one.
+  assert.equal(bucket.contributions.find(c => c.id === 'panel'), undefined,
+    'the Right panel is contributed while the Aura visual is the backdrop')
+  assert.ok(bucket.contributions.find(c => c.id === 'audio-surface'),
+    'the audio seat is not registered — the music has nowhere to play')
+  const pages = framed()
+  assert.equal(pages.length, 1, `expected exactly one framed page, got ${JSON.stringify(pages.map(props => props.src))}`)
+  const frame = pages.find(props => String(props.src || '').includes('overlay=1'))
   assert.ok(frame, `no page was framed for an audio-only session: ${JSON.stringify(framed().map(props => props.src))}`)
   dispose()
 })
@@ -431,6 +461,7 @@ await record('a closed film does not tear down the audio-only backdrop', async (
     audioUrl: 'https://ice.example/audio-only.mp3',
     audioLabel: 'Audio only'
   })
+  assert.equal(framed().length, 1, `expected exactly one framed page, got ${JSON.stringify(framed().map(props => props.src))}`)
   const frame = framed().find(props => String(props.src || '').includes('token='))
   assert.ok(frame, `the closed-film branch removed the audio channel page: ${JSON.stringify(framed().map(props => props.src))}`)
   assert.ok(!String(frame.src).includes('/player.html'),
@@ -448,8 +479,51 @@ await record('music keeps its page when the film is closed in visualiser mode', 
     audioUrl: 'https://ice.example/audio-only.mp3',
     audioLabel: 'Audio only'
   })
+  assert.equal(framed().length, 1, `expected exactly one framed page, got ${JSON.stringify(framed().map(props => props.src))}`)
   const frame = framed().find(props => String(props.src || '').includes('overlay=1'))
   assert.ok(frame, `a closed film took the music page down with it: ${JSON.stringify(framed().map(props => props.src))}`)
+  dispose()
+})
+
+await record('audio: radio plays with no Right panel, and the one frame moves to the panel in video mode', async () => {
+  // The owner's ask: the Right panel exists ONLY in video mode. The music does
+  // not get to disappear with it — radio played into nothing and went silent.
+  const radio = 'https://ice.example/radio.mp3'
+  const filmUrl = 'https://example.test/film.mp4'
+  const dispose = await remount({ backdropMode: 'aura', audioUrl: radio, audioLabel: 'Radio', videoUrl: filmUrl })
+
+  // Visualiser mode: no panel at all. Exactly ONE frame between every surface,
+  // and it is the visualiser page (the one that hosts web/audio.js).
+  assert.equal(bucket.contributions.find(c => c.id === 'panel'), undefined,
+    'the Right panel is contributed in visualiser mode')
+  mountFrameSurfaces(bucket.contributions)
+  assert.equal(plugin.__test.filmOwner(), 'audio', 'the audio channel is not the film owner with the panel gone')
+  assert.equal(framed().length, 1, `expected exactly one frame, got ${JSON.stringify(framed().map(props => props.src))}`)
+  assert.ok(String(framed()[0].src).includes('overlay=1'), 'the audio seat did not frame the visualiser page')
+  assert.ok(!String(framed()[0].src).includes('/player.html'), 'the audio seat framed the film page')
+
+  // …and a play command really reaches that page.
+  sent.length = 0
+  assert.equal(await plugin.playAudioSource(radio, 'Radio'), true)
+  const play = sent.find(message => message.aura === 'audio' && message.cmd === 'play' && message.url === radio)
+  assert.ok(play, `the radio play reached no frame (sent: ${JSON.stringify(sent)})`)
+
+  // Now the film's own surface appears: video mode brings the Right panel back.
+  await plugin.__test.setBackdropMode('video')
+  assert.ok(bucket.contributions.find(c => c.id === 'panel'), 'video mode did not bring the Right panel back')
+  sent.length = 0
+  mountFrameSurfaces(bucket.contributions)
+  assert.equal(plugin.__test.filmOwner(), 'pane', 'the panel did not take the film in video mode')
+  assert.equal(framed().length, 1, `the frame was duplicated when the panel appeared: ${JSON.stringify(framed().map(props => props.src))}`)
+  assert.ok(String(framed()[0].src).includes('/player.html'), 'the pane is not showing the film')
+  assert.ok(!framed().some(props => String(props.src || '').includes('overlay=1')),
+    'the audio seat kept its own second frame')
+
+  // The music follows the frame: the new page is a new document, so the channel
+  // the settings remember is handed to it.
+  await new Promise(resolve => setTimeout(resolve, 700))
+  assert.ok(sent.some(message => message.aura === 'audio' && message.cmd === 'play' && message.url === radio),
+    `the music did not follow the frame (sent: ${JSON.stringify(sent)})`)
   dispose()
 })
 
@@ -469,8 +543,9 @@ await record('handleAudioRequest: a request older than 60 s is stale on first po
 })
 
 // A later test disposed the instance above; every following check needs a live
-// one (and its mounted backdrop).
-await remount({ audioVolume: 0.4, videoMuted: false })
+// one (and its mounted backdrop). The music is on, so the page that hosts it is
+// mounted (the audio seat's, in visualiser mode).
+await remount({ audioUrl: 'https://ice.example/music.mp3', audioLabel: 'Music', audioVolume: 0.4, videoMuted: false })
 
 await record('volume, mute_video and unmute_video only touch their own setting', () => {
   const before = api.audioState().settings
