@@ -4866,6 +4866,7 @@ await recordAsync('quality: a queued quality command from Hermes is applied', as
 
 
 console.log(results.join('\n'))
+console.log(`\n${results.length - failed} passed, ${failed} failed`)
 
 try {
   fs.rmSync(tmp, { recursive: true, force: true })
