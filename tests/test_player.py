@@ -123,6 +123,61 @@ def test_player_page_without_any_token_is_refused(live):
 
 
 # ---------------------------------------------------------------------------
+# subtitles (CC)
+# ---------------------------------------------------------------------------
+
+def test_player_page_has_one_caption_rule_and_no_hand_written_query():
+    # The embed query and the toggle commands are decided in web/captions.js so
+    # the page cannot drift from the thing the tests exercise. cc_load_policy and
+    # loadModule/unloadModule therefore appear nowhere in the page itself.
+    root = Path(__file__).resolve().parents[1]
+    page = (root / "web" / "player.html").read_text()
+    assert '<script src="captions.js"></script>' in page
+    assert "AuraCaptions.embedParams(" in page
+    assert "AuraCaptions.commands(" in page
+    assert "cc_load_policy" not in page, "the page hand-writes the caption query"
+    assert "loadModule" not in page and "unloadModule" not in page, \
+        "the page hand-writes the caption commands"
+    rule = (root / "web" / "captions.js").read_text()
+    assert "cc_load_policy" in rule and "loadModule" in rule and "unloadModule" in rule
+
+
+def test_captions_rule_file_is_served(live):
+    # The page loads it by relative path; an unlisted file is a 404, so the
+    # static whitelist is part of the feature.
+    port = live["port"]
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request("GET", "/captions.js")
+    resp = conn.getresponse()
+    body = resp.read().decode("utf-8")
+    conn.close()
+    assert resp.status == 200
+    assert "text/javascript" in (resp.getheader("Content-Type") or "")
+    assert "AuraCaptions" in body
+
+
+def test_command_queue_carries_the_captions_switch(live):
+    port, token = live["port"], live["token"]
+    status, body = call(port, "POST", "/api/player/command", token,
+                        {"cmd": "captions", "value": 1})
+    assert status == 200 and body["ok"] is True
+    _s, listing = call(port, "GET", "/api/player/commands?after=0", token)
+    assert listing["commands"][-1]["cmd"] == "captions"
+    assert listing["commands"][-1]["value"] == 1
+    # A language travels with it, validated as a language code.
+    status, _body = call(port, "POST", "/api/player/command", token,
+                         {"cmd": "captions", "value": 1, "lang": "fr"})
+    assert status == 200
+    _s, listing = call(port, "GET", f"/api/player/commands?after={body['seq']}", token)
+    assert listing["commands"][-1]["lang"] == "fr"
+    status, _body = call(port, "POST", "/api/player/command", token,
+                         {"cmd": "captions", "value": 1, "lang": "fr; drop"})
+    assert status == 200
+    _s, listing = call(port, "GET", "/api/player/commands?after=0", token)
+    assert "lang" not in listing["commands"][-1], "a junk language code was queued"
+
+
+# ---------------------------------------------------------------------------
 # the command queue
 # ---------------------------------------------------------------------------
 

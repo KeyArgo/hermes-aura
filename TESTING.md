@@ -25,7 +25,7 @@ progress dots. Add `-o addopts=""` to see the final summary line:
 
 ```bash
 python3 -m pytest tests -q -o addopts="" -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration
-# 489 passed
+# 528 passed
 ```
 
 Covers capture backends and the idle gate, the FFT and feature extractor, the

@@ -181,6 +181,11 @@ const DEFAULT_SETTINGS = Object.freeze({
   audioLabel: '',
   audioVolume: 0.7,
   videoMuted: false,
+  // [subtitles] Captions are off unless asked for: YouTube picks for itself
+  // otherwise. The language is the viewer's own choice from the list the
+  // player publishes; empty means "the machine's language, then English".
+  videoCaptions: false,
+  videoCaptionLang: '',
   // Highest audio_request seq this install has consumed. A new seq plays;
   // anything at or below it is history.
   audioRequestSeq: 0,
@@ -404,9 +409,15 @@ const MEDIA_FILE_RE = /\.(mp4|webm|ogg|ogv|m4v|mov|m3u8)(?:[?#]|$)/i
 // direct file and for a source the player has not described yet.
 const EMPTY_VIDEO = Object.freeze({
   kind: '', playing: false, position: 0, duration: 0, muted: true,
-  title: '', author: '', controllable: false, reportedAt: 0
+  title: '', author: '', controllable: false, reportedAt: 0,
+  // [subtitles] What the player says about its captions: {on, lang, current,
+  // known, tracks:[{code, name}]}. null until it has said anything.
+  captions: null
 })
 const VIDEO_URL_MAX = 2048
+// [subtitles] A caption language tag the player (and YouTube) will accept.
+// Anything else is dropped: it ends up in a query string and a third party.
+const CAPTION_LANG_RE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/
 
 const BEHAVIORS = ['calm', 'balanced', 'intense']
 const BEHAVIOR_LABELS = { calm: 'Calm', balanced: 'Balanced', intense: 'Intense' }
@@ -820,6 +831,12 @@ function readSettings(ctx) {
     if (Number.isFinite(raw.videoWindowX)) out.videoWindowX = Math.round(raw.videoWindowX)
     if (Number.isFinite(raw.videoWindowY)) out.videoWindowY = Math.round(raw.videoWindowY)
     if (typeof raw.videoClosed === 'boolean') out.videoClosed = raw.videoClosed
+    // [subtitles] A boolean and a language tag, each validated on its own so a
+    // stale or hand-edited config can never reach the embed query.
+    if (typeof raw.videoCaptions === 'boolean') out.videoCaptions = raw.videoCaptions
+    if (typeof raw.videoCaptionLang === 'string' && CAPTION_LANG_RE.test(raw.videoCaptionLang.trim())) {
+      out.videoCaptionLang = raw.videoCaptionLang.trim()
+    }
     if (typeof raw.panelEnabled === 'boolean') out.panelEnabled = raw.panelEnabled
     if (typeof raw.panelCollapsed === 'boolean') out.panelCollapsed = raw.panelCollapsed
     if (typeof raw.panelSettingsOpen === 'boolean') out.panelSettingsOpen = raw.panelSettingsOpen
@@ -906,6 +923,13 @@ function backdropSrc(url, mode) {
     // [listen lane] A muted film must come back muted: the music channel is
     // what the user hears while it is.
     if (settings.videoMuted) query.append('mute', '1')
+    // [subtitles] The page asks the embed for captions only when the viewer
+    // wants them, and in the language they chose (the page falls back to the
+    // machine's own language when none is set).
+    if (settings.videoCaptions) query.append('captions', '1')
+    if (settings.videoCaptions && CAPTION_LANG_RE.test(settings.videoCaptionLang || '')) {
+      query.append('cc_lang', settings.videoCaptionLang)
+    }
     return `${base}/player.html?${query.toString()}`
   }
   const params = ['overlay=1']
@@ -1694,7 +1718,16 @@ async function syncPlayerOwnership() {
       postToBackdrop({ cmd: 'pause' })
       if (player.desktop === true) {
         lastDesktopPlayer = player
-        $video.set({ ...$video.get(), ...player, reportedAt: Date.now() })
+        // [subtitles] The window is the player while it is open: its caption
+        // report is what is on screen, so the app's switch follows it instead
+        // of disagreeing with the picture.
+        const windowCaptions = typeof player.captions === 'boolean' ? player.captions : null
+        $video.set({ ...$video.get(), ...player, captions: $video.get().captions, reportedAt: Date.now() })
+        if (windowCaptions !== null && windowCaptions !== $settings.get().videoCaptions) {
+          writeSettings({ videoCaptions: windowCaptions })
+          syncVideoBar(true)
+          syncPanel(true)
+        }
       }
       playerCursor = null
       // The saved library is this half's own settings, so save/remove still
@@ -1742,6 +1775,12 @@ async function syncPlayerOwnership() {
       // settings, not the player, and keeping them out of this chain is what
       // stops a save from being mistaken for a transport verb.
       if (command.cmd === 'save' || command.cmd === 'remove') continue
+      // [subtitles] The CC switch is the owner's choice, not just a verb for
+      // the page: applying it through the one writer is what remembers it.
+      if (command.cmd === 'captions') {
+        setVideoCaptions(command.value === 1 || command.value === true, command.lang)
+        continue
+      }
       if (command.cmd === 'load') await playOnPage(command.url, command.label)
       else if (command.cmd === 'watch_window') {
         if (command.url) await playOnPage(command.url, command.label)
@@ -1904,8 +1943,12 @@ async function openDesktopWindow() {
     position: Number.isFinite(video.position) ? Math.max(0, video.position) : 0,
     label: typeof video.title === 'string' ? video.title : '',
     videoId: typeof video.videoId === 'string' ? video.videoId : '',
-    playing: video.playing === true
+    playing: video.playing === true,
+    // [subtitles] The OS window is a player surface: it opens with the same
+    // caption choice the in-app player had.
+    captions: settings.videoCaptions === true
   }
+  if (CAPTION_LANG_RE.test(settings.videoCaptionLang || '')) body.lang = settings.videoCaptionLang
   try {
     const result = await ctxRef.rest('/window/open', { method: 'POST', body, timeoutMs: 15000 })
     if (result && result.ok === true) {
@@ -3004,6 +3047,104 @@ function setVideoMuted(muted) {
   syncVideoBar(true)
 }
 
+// [subtitles] Captions: one switch, one language list ----------------------
+// The player owns the truth about WHICH tracks a video has (YouTube publishes
+// them; a direct file carries them as textTracks). The settings own the
+// choice. A CC button reads both, and it is disabled only when the player has
+// actually said "no tracks" — never because the answer has not arrived yet.
+
+/** What the player last said about this video's captions, made safe. */
+function captionInfo() {
+  const settings = $settings.get()
+  const reported = $video.get().captions
+  const tracks = reported && Array.isArray(reported.tracks)
+    ? reported.tracks
+      .filter(track => track && typeof track.code === 'string' && CAPTION_LANG_RE.test(track.code))
+      .slice(0, 60)
+      .map(track => ({
+        code: track.code,
+        name: typeof track.name === 'string' && track.name ? track.name.slice(0, 80) : track.code
+      }))
+    : []
+  const known = Boolean(reported && reported.known === true)
+  return {
+    on: settings.videoCaptions === true,
+    lang: settings.videoCaptionLang || '',
+    current: reported && typeof reported.current === 'string' ? reported.current : '',
+    tracks,
+    known,
+    // A video without captions is still "available" until the player says
+    // otherwise: a button that flickers to disabled on every load is worse
+    // than one that says so once it knows.
+    available: !known || tracks.length > 0
+  }
+}
+
+/** What the CC button will do — or why it cannot. */
+function captionTooltip(info) {
+  const detail = info || captionInfo()
+  if (!detail.available) return 'No subtitles for this video'
+  return detail.on ? 'Subtitles on — click to turn off' : 'Show subtitles (CC)'
+}
+
+/** Send the caption switch to whichever player owns the picture. An empty
+ *  language means "the page decides": it has the tracks and the machine's
+ *  language, and only it knows which track to show. */
+function sendCaptionsToPlayer(on, lang) {
+  const body = { cmd: 'captions', value: on ? 1 : 0 }
+  if (CAPTION_LANG_RE.test(lang || '')) body.lang = lang
+  if (desktopOwned && ctxRef) {
+    // The OS window owns the picture: it is driven through the server queue,
+    // exactly like the transport, so one film never listens on two surfaces.
+    void ctxRef.rest('/player/command', { method: 'POST', body, timeoutMs: 4000 })
+      .catch(() => setError('Aura could not reach the film window.'))
+    return true
+  }
+  return postToBackdrop(body)
+}
+
+/** The CC switch. Persisted: "I read subtitles" outlives any one film. */
+function setVideoCaptions(on, lang) {
+  const videoCaptions = Boolean(on)
+  const patch = { videoCaptions }
+  const code = typeof lang === 'string' ? lang.trim() : ''
+  if (CAPTION_LANG_RE.test(code)) patch.videoCaptionLang = code
+  writeSettings(patch)
+  const reported = $video.get().captions || {}
+  $video.set({ ...$video.get(), captions: { ...reported, on: videoCaptions }, reportedAt: Date.now() })
+  sendCaptionsToPlayer(videoCaptions, $settings.get().videoCaptionLang)
+  syncVideoBar(true)
+  syncPanel(true)
+}
+
+/** Choose a caption language from the player's own list. */
+function setVideoCaptionLang(code) {
+  const raw = String(code || '').trim()
+  const videoCaptionLang = CAPTION_LANG_RE.test(raw) ? raw : ''
+  writeSettings({ videoCaptionLang })
+  // A language only means something while captions are on; choosing one with
+  // them off just remembers it for the next time they are turned on.
+  if ($settings.get().videoCaptions) sendCaptionsToPlayer(true, videoCaptionLang)
+  syncVideoBar(true)
+  syncPanel(true)
+}
+
+/** The language choices worth offering: Automatic, then the player's own
+ *  tracks. Empty list when the video has no captions. */
+function captionLanguageChoices(info) {
+  const detail = info || captionInfo()
+  if (!detail.available) return []
+  return [{ value: '', label: 'Automatic' }].concat(
+    detail.tracks.map(track => ({ value: track.code, label: track.name }))
+  )
+}
+
+/** The language a select should show: the viewer's choice, else Automatic. */
+function captionLanguageValue(info) {
+  const detail = info || captionInfo()
+  return detail.lang
+}
+
 /**
  * Consume one `audio_request` from /api/state. Returns what it did, so the
  * contract test (and a future UI) can read the decision instead of guessing:
@@ -3298,6 +3439,17 @@ function onBackdropMessage(event) {
     author: typeof data.author === 'string' ? data.author.slice(0, 120) : '',
     videoId: typeof data.videoId === 'string' ? data.videoId : '',
     blocked: data.blocked === true,
+    // [subtitles] The player's own answer about this video's captions: the
+    // tracks it has, which one is playing, and whether it has answered at all.
+    captions: data.captions && typeof data.captions === 'object'
+      ? {
+        on: data.captions.on === true,
+        lang: typeof data.captions.lang === 'string' ? data.captions.lang : '',
+        current: typeof data.captions.current === 'string' ? data.captions.current.slice(0, 20) : '',
+        known: data.captions.known === true,
+        tracks: Array.isArray(data.captions.tracks) ? data.captions.tracks.slice(0, 60) : []
+      }
+      : $video.get().captions,
     controllable: data.controllable === true,
     reportedAt: Date.now()
   })
@@ -3606,7 +3758,7 @@ function videoBarActive() {
   return true
 }
 
-function videoBarButton(label, aria, cmd, value) {
+function videoBarButton(label, aria, cmd, value, onClick) {
   const el = doc.createElement('button')
   el.type = 'button'
   el.textContent = label
@@ -3624,7 +3776,8 @@ function videoBarButton(label, aria, cmd, value) {
   el.addEventListener('click', event => {
     if (event && event.preventDefault) event.preventDefault()
     showVideoBar()
-    videoCommand(cmd, value)
+    if (typeof onClick === 'function') onClick()
+    else videoCommand(cmd, value)
   })
   return el
 }
@@ -3719,6 +3872,18 @@ function mountVideoBar(node) {
   volume.addEventListener('click', () => {
     const current = $settings.get().videoVolume
     setVideoVolume(current > 0 ? 0 : (VIDEO_VOLUME || 0.7))
+  })
+
+  // [subtitles] CC: the film's own switch, on the strip people use while they
+  // work. It is disabled — with the reason in the tooltip — only once the
+  // player has actually said this video has no subtitles.
+  const cc = videoBarButton('CC', 'Subtitles (CC)', 'captions', null, () => {
+    setVideoCaptions(!$settings.get().videoCaptions)
+  })
+  Object.assign(cc.style, {
+    width: 'auto', minWidth: '26px', padding: '0 5px', fontSize: '10.5px',
+    fontWeight: '600', letterSpacing: '0.02em', border: '1px solid transparent',
+    borderRadius: '6px'
   })
 
   // Two pop-out controls in the strip, worded exactly like the ones in the
@@ -3822,7 +3987,7 @@ function mountVideoBar(node) {
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '2px',
     paddingTop: '3px', borderTop: '1px solid rgba(255,255,255,0.08)'
   })
-  for (const node of [prev, backMin, back, play, fwd, fwdMin, next]) {
+  for (const node of [prev, backMin, back, play, fwd, fwdMin, next, cc]) {
     transportRow.appendChild(node)
   }
   const popoutRow = doc.createElement('div')
@@ -3838,7 +4003,7 @@ function mountVideoBar(node) {
   // Empty strip chrome (a gap, the title, the padding) drags the strip too; a
   // press on one of the controls stays that control's. Only the strip's own
   // nodes are consulted.
-  videoBarControls = new Set([prev, backMin, back, play, fwd, fwdMin, next, scrub, volume, inlineBtn, ownBtn, close])
+  videoBarControls = new Set([prev, backMin, back, play, fwd, fwdMin, next, cc, scrub, volume, inlineBtn, ownBtn, close])
   bar.addEventListener('mousedown', event => {
     if (videoBarControlAt(event && event.target)) return
     startVideoBarDrag(event)
@@ -3864,7 +4029,7 @@ function mountVideoBar(node) {
   videoBarEl = bar
   // Where the user last dropped it (or the home corner), clamped on screen.
   applyVideoBarPosition()
-  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, inlineBtn, ownBtn, scrub, fill, title }
+  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, inlineBtn, ownBtn, scrub, fill, title, cc }
 }
 
 function removeVideoBar() {
@@ -4114,6 +4279,19 @@ function panelCss() {
     .ap-pill[data-active="true"] {
       border-color: rgba(255,190,120,0.55); color: #ffd9a8; background: rgba(255,190,120,0.14);
     }
+    /* [subtitles] The CC switch is its own control, not one of the five
+       see-through presets, and it says "off" by being plain. */
+    .ap-cc {
+      appearance: none; border: 1px solid rgba(255,255,255,0.16); background: transparent;
+      color: rgba(243,236,226,0.8); font: inherit; font-size: 10px; font-weight: 600;
+      letter-spacing: 0.04em; padding: 3px 8px; border-radius: 999px; cursor: pointer;
+      flex: 0 0 auto; min-width: 30px;
+    }
+    .ap-cc[aria-pressed="true"] {
+      border-color: rgba(255,190,120,0.55); color: #ffd9a8; background: rgba(255,190,120,0.16);
+    }
+    .ap-cc:disabled { cursor: not-allowed; }
+    .ap-cc-lang { flex: 1 1 90px; min-width: 0; max-width: 100%; }
 
     /* shelf --------------------------------------------------------------- */
     .ap-list {
@@ -4713,8 +4891,40 @@ function mountPanelInto(hostNode) {
   opacityRow.appendChild(opacityLabel)
   opacityRow.appendChild(opacityButtons)
 
+  // [subtitles] The film's subtitles: the switch, and the language list the
+  // player publishes (only when this video has more than one track).
+  const captionRow = doc.createElement('div')
+  captionRow.className = 'ap-field'
+  const captionLabel = doc.createElement('span')
+  captionLabel.className = 'ap-field-label'
+  captionLabel.textContent = 'Subtitles'
+  const captionControls = doc.createElement('div')
+  captionControls.className = 'ap-pills'
+  const ccBtn = doc.createElement('button')
+  ccBtn.type = 'button'
+  ccBtn.className = 'ap-cc'
+  ccBtn.textContent = 'CC'
+  ccBtn.setAttribute('aria-label', 'Subtitles (CC)')
+  ccBtn.setAttribute('aria-pressed', 'false')
+  ccBtn.title = 'Show subtitles (CC)'
+  ccBtn.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    setVideoCaptions(!$settings.get().videoCaptions)
+  })
+  const captionSelect = doc.createElement('select')
+  captionSelect.className = 'aura-select ap-select ap-cc-lang'
+  captionSelect.setAttribute('aria-label', 'Subtitle language')
+  captionSelect.addEventListener('change', event => {
+    setVideoCaptionLang(String(event && event.target ? event.target.value : ''))
+  })
+  captionControls.appendChild(ccBtn)
+  captionControls.appendChild(captionSelect)
+  captionRow.appendChild(captionLabel)
+  captionRow.appendChild(captionControls)
+
   settingsBox.appendChild(sourceRow)
   settingsBox.appendChild(opacityRow)
+  settingsBox.appendChild(captionRow)
 
   // ---- the shelf ---------------------------------------------------------
   const list = doc.createElement('div')
@@ -4734,7 +4944,8 @@ function mountPanelInto(hostNode) {
   panelEl = panel
   panelParts = {
     panel, body, stage, hint, track, fill, time, play, list, vol,
-    power, modeButtons, frameBtn, ownBtn, source, opacityPills, opacityButtons
+    power, modeButtons, frameBtn, ownBtn, source, opacityPills, opacityButtons,
+    ccBtn, captionSelect
   }
   syncPanel(true)
 }
@@ -4841,6 +5052,42 @@ function syncPanel(force) {
         ? (auto ? 'true' : 'false')
         : (!auto && current === preset ? 'true' : 'false')
       if (pill.getAttribute('data-active') !== active) pill.setAttribute('data-active', active)
+    }
+  }
+
+  // [subtitles] CC: pressed state, the "no subtitles" answer, and the language
+  // list — only when this video actually has a choice to offer.
+  if (parts.ccBtn) {
+    const info = captionInfo()
+    const tip = captionTooltip(info)
+    if (parts.ccBtn.textContent !== 'CC') parts.ccBtn.textContent = 'CC'
+    if (parts.ccBtn.getAttribute('aria-pressed') !== (info.on ? 'true' : 'false')) {
+      parts.ccBtn.setAttribute('aria-pressed', info.on ? 'true' : 'false')
+    }
+    if (parts.ccBtn.title !== tip) parts.ccBtn.title = tip
+    parts.ccBtn.disabled = !info.available
+    parts.ccBtn.style.opacity = info.available ? '1' : '0.45'
+    if (parts.captionSelect) {
+      const choices = captionLanguageChoices(info)
+      const visible = choices.length > 1
+      parts.captionSelect.style.display = visible ? '' : 'none'
+      if (visible) {
+        const signature = choices.map(choice => choice.value).join('|')
+        if (parts.captionSelect.dataset.signature !== signature) {
+          parts.captionSelect.dataset.signature = signature
+          while (parts.captionSelect.firstChild) parts.captionSelect.removeChild(parts.captionSelect.firstChild)
+          for (const choice of choices) {
+            const option = doc.createElement('option')
+            option.value = choice.value
+            option.textContent = choice.label
+            option.style.background = '#f1f1f1'
+            option.style.color = '#111111'
+            parts.captionSelect.appendChild(option)
+          }
+        }
+        const value = captionLanguageValue(info)
+        if (parts.captionSelect.value !== value) parts.captionSelect.value = value
+      }
     }
   }
 
@@ -5201,6 +5448,24 @@ function syncVideoBar(force) {
   const volumeLabel = volume === 0 ? '🔇' : `🔊 ${volume}%`
   if (parts.volume.textContent !== volumeLabel) parts.volume.textContent = volumeLabel
 
+  // [subtitles] The strip's CC button: pressed while captions are on, disabled
+  // (with the reason) when this video has none.
+  if (parts.cc) {
+    const info = captionInfo()
+    const tip = captionTooltip(info)
+    if (parts.cc.title !== tip) parts.cc.title = tip
+    parts.cc.disabled = !info.available
+    parts.cc.setAttribute('aria-pressed', info.on ? 'true' : 'false')
+    parts.cc.style.opacity = info.available ? '1' : '0.4'
+    parts.cc.style.cursor = info.available ? 'pointer' : 'not-allowed'
+    parts.cc.style.borderColor = info.on && info.available
+      ? 'rgba(255,190,120,0.55)'
+      : 'transparent'
+    parts.cc.style.background = info.on && info.available
+      ? 'rgba(255,190,120,0.16)'
+      : 'transparent'
+  }
+
   if (parts.picker) {
     const queue = videoQueue()
     const signature = queue.map(item => item.url).join('|') + '#' + settings.videoUrl
@@ -5375,6 +5640,10 @@ function AuraQuickMenu() {
   // permanent "0 hidden" line was noise the owner asked to lose.
   const skippedCount = Array.isArray(settings.videoHiddenIds) ? settings.videoHiddenIds.length : 0
   const SKIPPED_TITLE = 'Episodes you hid from your playlists. Aura skips them.'
+  // [subtitles] One read of the player's caption report for the whole menu.
+  const captionState = captionInfo()
+  const captionChoices = captionLanguageChoices(captionState)
+  const captionTip = captionTooltip(captionState)
 
   const setOpen = value => {
     if ($menuOpen.get() !== Boolean(value)) $menuOpen.set(Boolean(value))
@@ -5735,6 +6004,48 @@ function AuraQuickMenu() {
                       void applyVideoSource(url)
                     },
                     children: videoSourceOptions(settings)
+                  })
+                ),
+                // [subtitles] The CC switch, and the language list the player
+                // publishes for this video (only when there is a choice).
+                row(
+                  'Subtitles',
+                  jsxs('div', {
+                    style: { display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, flexWrap: 'wrap' },
+                    children: [
+                      jsx(Button, {
+                        key: 'cc',
+                        size: 'micro',
+                        variant: captionState.on ? 'default' : 'ghost',
+                        'aria-label': 'Subtitles (CC)',
+                        'aria-pressed': captionState.on,
+                        title: captionTip,
+                        disabled: !captionState.available,
+                        onClick: () => setVideoCaptions(!captionState.on),
+                        children: 'CC'
+                      }),
+                      captionChoices.length > 1
+                        ? jsx('select', {
+                          key: 'lang',
+                          className: 'aura-select',
+                          value: captionLanguageValue(captionState),
+                          'aria-label': 'Subtitle language',
+                          title: 'The subtitle language, from the ones this video has',
+                          style: { ...selectStyle, maxWidth: 150, colorScheme: 'light' },
+                          onChange: event => {
+                            setVideoCaptionLang(String(event && event.target ? event.target.value : ''))
+                          },
+                          children: captionChoices.map(choice =>
+                            jsx('option', {
+                              key: choice.value || 'auto',
+                              value: choice.value,
+                              style: { background: '#f1f1f1', color: '#111111' },
+                              children: choice.label
+                            })
+                          )
+                        })
+                        : null
+                    ]
                   })
                 ),
                 // The picker lists everything; editing lives on the page where
@@ -6763,6 +7074,9 @@ function AuraPage() {
   }, [])
   const duration = Number(state.duration) || 0
   const progress = duration ? clamp01((Number(state.position) || 0) / duration) : 0
+  // [subtitles] The player's caption report, read once for the whole page.
+  const captionState = captionInfo()
+  const captionChoices = captionLanguageChoices(captionState)
   const hint = !auraOn
     ? 'Aura is off. Turn it on in the setup below to watch here.'
     : settings.videoClosed
@@ -6859,6 +7173,39 @@ function AuraPage() {
       jsx('span', { key: 't', style: { display: 'inline-flex' }, children: pageButton(playing ? '⏸' : '▶', playing ? 'Pause' : 'Play', () => videoCommand('toggle'), true) }),
       jsx('span', { key: 'f', style: { display: 'inline-flex' }, children: pageButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10)) }),
       jsx('span', { key: 'n', style: { display: 'inline-flex' }, children: pageButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next')) }),
+      // [subtitles] CC, and the language list this video actually offers.
+      jsx(Button, {
+        key: 'cc',
+        size: 'micro',
+        variant: captionState.on ? 'default' : 'ghost',
+        'aria-label': 'Subtitles (CC)',
+        'aria-pressed': captionState.on,
+        title: captionTooltip(captionState),
+        disabled: !captionState.available,
+        onClick: () => setVideoCaptions(!captionState.on),
+        children: 'CC'
+      }),
+      captionChoices.length > 1
+        ? jsx('select', {
+          key: 'cc-lang',
+          className: 'aura-select',
+          value: captionLanguageValue(captionState),
+          'aria-label': 'Subtitle language',
+          title: 'The subtitle language, from the ones this video has',
+          style: { maxWidth: 150 },
+          onChange: event => {
+            setVideoCaptionLang(String(event && event.target ? event.target.value : ''))
+          },
+          children: captionChoices.map(choice =>
+            jsx('option', {
+              key: choice.value || 'auto',
+              value: choice.value,
+              style: { background: '#f1f1f1', color: '#111111' },
+              children: choice.label
+            })
+          )
+        })
+        : null,
       jsx('span', { key: 'gap', style: { flex: 1 } }),
       // Two surfaces, two buttons, equal and named the same way everywhere:
       // "Frame in Hermes" (a toggle, pressed while the in-app frame holds the
@@ -7209,6 +7556,9 @@ function AuraSettings() {
   const settings = useValue($settings)
   const live = useValue($live)
   const applied = useValue($themeApplied)
+  // [subtitles] Subscribed so the CC row redraws when the player reports the
+  // tracks this video has (the language list is the player's, not a constant).
+  useValue($video)
 
   const serverLine = live.ok
     ? `Server reachable on 127.0.0.1${live.port ? `:${live.port}` : ''}${live.capture ? ` · capture: ${live.capture}` : ''}`
@@ -7557,6 +7907,43 @@ function AuraSettings() {
                     style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30, textAlign: 'right' },
                     children: `${Math.round(clamp01(settings.videoVolume) * 100)}%`
                   })
+                ]
+              })
+            ),
+            // [subtitles] CC: the same switch the player surfaces carry, with
+            // the language list this video offers. Burned-in subtitles are part
+            // of the picture — no API can remove them, so this says so.
+            row(
+              'Subtitles',
+              'Captions for the film: the player shows its own caption track. Subtitles burned into the picture cannot be switched off.',
+              jsxs('div', {
+                style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+                children: [
+                  jsx(Switch, {
+                    checked: settings.videoCaptions === true,
+                    'aria-label': 'Subtitles (CC) (settings)',
+                    title: captionTooltip(captionInfo()),
+                    onCheckedChange: value => setVideoCaptions(value)
+                  }),
+                  captionLanguageChoices(captionInfo()).length > 1
+                    ? jsx('select', {
+                      className: 'aura-select',
+                      value: captionLanguageValue(captionInfo()),
+                      'aria-label': 'Subtitle language (settings)',
+                      style: { maxWidth: 170, colorScheme: 'light' },
+                      onChange: event => {
+                        setVideoCaptionLang(String(event && event.target ? event.target.value : ''))
+                      },
+                      children: captionLanguageChoices(captionInfo()).map(choice =>
+                        jsx('option', {
+                          key: choice.value || 'auto',
+                          value: choice.value,
+                          style: { background: '#f1f1f1', color: '#111111' },
+                          children: choice.label
+                        })
+                      )
+                    })
+                    : null
                 ]
               })
             ),
@@ -8557,4 +8944,11 @@ export const __test = {
   videoBarPointForTest: () => videoBarPoint(),
   videoBarHomeForTest: () => videoBarHome(),
   videoBarSizeForTest: () => videoBarSize(),
+  // [subtitles] The CC switch and what it reads, so a headless test can drive
+  // the same writer every surface's button uses.
+  setVideoCaptions,
+  setVideoCaptionLang,
+  captionInfo,
+  captionTooltip,
+  syncVideoBar,
 }

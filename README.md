@@ -106,6 +106,15 @@ streams audio from the backend, and that stream is what keeps capture awake on a
   window — real Chromium on its own profile — so YouTube's own page opens and
   adding, removing and reordering work with your own session. No API scope, no
   OAuth review, no second account.
+- **Subtitles you control.** A **CC** button on the control strip, the pane, the
+  Aura page and the A menu turns the film's captions on and off, and the choice
+  is remembered. When a video has several caption tracks the menu lists the ones
+  it actually has and switches between them (Automatic means your machine's
+  language, then English); YouTube forgets captions per video, so Aura
+  re-applies the choice on every episode. A video with no caption track greys
+  the button out — *No subtitles for this video*. **Subtitles burned into the
+  picture cannot be turned off**: no player API exposes them, so the CC button
+  cannot remove them. That is the upload's choice, not a setting of ours.
 - **Free placement.** The floating watch window drags anywhere and remembers its
   spot; 320 / 480 / 640 wide. Its control strip is two rows — the film's title,
   scrubber, clock, volume and window buttons above a centred transport row —
@@ -185,6 +194,7 @@ from the chat — no alt-tab, no reaching for the mouse:
 - “pause” / “resume” / “next episode” / “go back an episode”
 - “jump to 40 minutes” (seek)
 - “put it on my other screen” / “pop the film out” / “bring it back into Hermes”
+- “turn the subtitles on” / “turn them off” (`action=captions`)
 
 The agent calls `aura_control` with
 `action=pause|resume|next|prev|seek|popout|popin`, and `action=status` answers
