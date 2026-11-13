@@ -1939,13 +1939,14 @@ def _start_server() -> None:
         _STATE.session_boost = 1.0
     cap_thread.start()
     _write_lease(token, port)
+    threading.Thread(target=_lease_loop, args=(stop_event,), name="aura-lease", daemon=True).start()
     # A window left behind by a previous server holds a dead token: close it,
     # before it plays audio nobody can control.
     try:
         desktop_window.reap_orphan()
     except Exception as exc:  # noqa: BLE001 - reaping is best-effort
         _log("aura: window reap failed (%s)", type(exc).__name__)
-    _log("aura: listening on 127.0.0.1:%d", port)
+    _log("aura: listening on 127.0.0.1:%d (pid %d)", port, os.getpid())
 
 
 # ---------------------------------------------------------------------------
@@ -2015,6 +2016,54 @@ def _write_lease(token: str, port: int) -> None:
         })
     except OSError as exc:
         _log("aura: lease write failed (%s)", type(exc).__name__)
+
+
+# How often a leader checks that the lease and the token file still name its own server.
+LEASE_CHECK_S = 2.0
+
+
+def _holds_lock() -> bool:
+    """True only in a process that won the election lock (flock, or the Windows mutex)."""
+    return _LOCK_FD is not None or _WIN_MUTEX is not None
+
+
+def _reassert_lease() -> bool:
+    """Leader only: put this server back into the lease and token file after another writer.
+
+    The lease is advertised once at start. A process that won the election in a gap and then
+    exited leaves the file naming a dead pid and port, and every reader that relies on it (a
+    follower module in this same process, the CLI, the tools) then finds no server at all.
+    Only the lock holder rewrites, so two servers can never take turns overwriting each other.
+    """
+    if not _holds_lock():
+        return False
+    with _STATE.lock:
+        token, port = _STATE.token, _STATE.port
+    if not token or not port or not _server_running():
+        return False
+    changed = False
+    lease = config.read_lease()
+    if not (isinstance(lease, dict) and lease.get("pid") == os.getpid()
+            and lease.get("port") == port and lease.get("token") == token):
+        _write_lease(token, port)
+        changed = True
+    if config.read_token() != token:
+        try:
+            config.write_token(token)
+        except OSError as exc:
+            _log("aura: token file write failed (%s)", type(exc).__name__)
+        changed = True
+    if changed:
+        _log("aura: lease re-advertised by pid %d on port %d", os.getpid(), port)
+    return changed
+
+
+def _lease_loop(stop_event: threading.Event) -> None:
+    while not stop_event.wait(LEASE_CHECK_S):
+        try:
+            _reassert_lease()
+        except Exception as exc:  # noqa: BLE001 - the check must never take the server down
+            _log("aura: lease check failed (%s)", type(exc).__name__)
 
 
 def _valid_lease() -> dict | None:
