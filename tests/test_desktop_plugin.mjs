@@ -449,9 +449,12 @@ export const StatusDot = () => null
 // Host popover used by the status-bar quick menu; the real one owns
 // Escape/outside-click/focus, the stub just has to exist so the plugin's
 // import resolves and the descriptor tree can be walked.
-export const Popover = () => null
-export const PopoverTrigger = () => null
-export const PopoverContent = () => null
+// The real Popover is a portal: its content is only in the tree when it is
+// open. The stub keeps the children reachable so a test can drive a control in
+// the panel; the app still owns open/close/Escape.
+export const Popover = props => ({ type: 'div', props: { children: props && props.children } })
+export const PopoverTrigger = props => ({ type: 'div', props: { children: props && props.children } })
+export const PopoverContent = props => ({ type: 'div', props: { children: props && props.children } })
 
 export const PALETTE_AREA = 'palette'
 export const PANES_AREA = 'panes'
@@ -654,6 +657,50 @@ function collectText(node, out) {
   return out
 }
 const texts = element => collectText(element, []).join('\n')
+// The stub returns descriptors rather than rendering: expand function elements
+// (AuraPane → AuraFilm → SandboxedFrame) so a test sees what a render produces.
+const expandTree = (node, depth = 0) => {
+  if (depth > 8 || node === null || node === undefined || typeof node !== 'object') return
+  if (Array.isArray(node)) { node.forEach(child => expandTree(child, depth)); return }
+  if (typeof node.type === 'function') {
+    const out = node.type(node.props || {})
+    if (!out || typeof out !== 'object') return
+    // Replace in place, so a walker sees what the render produced — and then
+    // resolve again, because the output may itself be a component.
+    node.type = out.type
+    node.props = out.props
+    if (typeof node.type === 'function') { expandTree(node, depth + 1); return }
+  }
+  if (node.props) expandTree(node.props.children, depth + 1)
+}
+// The harness reports the pop-out window as open by default; a test that wants
+// the in-app surfaces to own the player says so explicitly.
+const closePopout = ctx => {
+  const old = ctx.ctx.rest
+  ctx.ctx.rest = async (route, options) => {
+    const path = String(route)
+    if (path.startsWith('/window')) return { ok: true, open: false }
+    if (path === '/player') return { ok: true, window: { open: false }, player: {} }
+    if (path.startsWith('/player/commands')) return { ok: true, commands: [], head_seq: 0 }
+    if (path === '/player/report') return { ok: true }
+    return old(route, options)
+  }
+}
+
+// Run the real poll until the live server state lands (a previous test's
+// in-flight poll can make a single call a no-op).
+const primeLive = async () => {
+  for (let attempt = 0; attempt < 8 && !tx.liveUrlForTest(); attempt += 1) {
+    await tx.poll()
+    await sleep(25)
+  }
+  return tx.liveUrlForTest()
+}
+// Mount/unmount the page stage the way React's ref does.
+const pageStage = (width, height) => {
+  if (!width) { tx.pageStageRef(null); return }
+  tx.pageStageRef({ getBoundingClientRect: () => ({ width, height, top: 0, left: 0 }) })
+}
 const findSwitch = (tree, label) => {
   let found = null
   walk(tree, node => {
@@ -2237,6 +2284,8 @@ record('saved playlist Remove sits in the control column, not the hint', () => {
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
     const tree = renderContribution(ctx.contributions.find(c => c.area === 'settings.plugins'))
+    // The box is its own component now (one controlled draft, one apply path).
+    expandTree(tree)
     const row = findRowByTitle(tree, 'Watch list')
     assert.ok(row, 'the saved playlist row did not render')
     const hint = row.props.children[0].props.children[1]
@@ -2278,9 +2327,13 @@ await recordAsync('the Settings URL box saves a playlist through applyVideoSourc
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
     const tree = renderContribution(ctx.contributions.find(c => c.area === 'settings.plugins'))
+    expandTree(tree)
     const input = findByAria(tree, 'Video URL')
     assert.ok(input, 'the Settings Video URL box is missing')
-    input.props.onBlur({ target: { value: listUrl } })
+    // One path: type, then Enter. No blur handler any more, so a click on Apply
+    // can never race an apply that already ran on blur.
+    input.props.onChange({ target: { value: listUrl } })
+    input.props.onKeyDown({ key: 'Enter', preventDefault() {} })
     await sleep(40)
     const saved = ctx.storage.get('settings')
     assert.equal(saved.videoUrl, listUrl)
@@ -2296,18 +2349,20 @@ await recordAsync('the Settings URL box saves a playlist through applyVideoSourc
 
 await recordAsync('the quick-menu URL box reopens a closed film', async () => {
   const source = 'https://example.com/film.mp4'
-  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: '', videoClosed: true })
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.com/old.mp4', videoClosed: true })
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
     const menu = ctx.contributions.find(c => c.id === 'quick-menu')
-    const input = findByAria(renderContribution(menu), 'Video URL')
+    const menuTree = renderContribution(menu)
+    expandTree(menuTree)
+    const input = findByAria(menuTree, 'Video URL')
     assert.ok(input, 'the quick-menu Video URL box is missing')
-    input.props.onBlur({ target: { value: source } })
+    input.props.onChange({ target: { value: source } })
+    input.props.onKeyDown({ key: 'Enter', preventDefault() {} })
     await sleep(40)
     const saved = ctx.storage.get('settings')
-    assert.equal(saved.backdropMode, 'video')
-    assert.equal(saved.videoClosed, false, 'the quick-menu URL box did not reopen the film')
     assert.equal(saved.videoUrl, source)
+    assert.equal(saved.videoClosed, false, 'the quick-menu box did not reopen the film')
   } finally {
     dispose()
   }
@@ -2678,53 +2733,105 @@ record('review 3: the film is an SDK SandboxedFrame, never a raw iframe', () => 
   assert.ok(!/#aura-glass/.test(source), 'the host stylesheet injection is back')
 })
 
-await recordAsync('review 3: the film is a SandboxedFrame on the player page', async () => {
-  const ctx = makeCtx({
-    enabled: true, backdropMode: 'video',
-    videoUrl: 'https://www.youtube.com/watch?v=abc123def45&list=PL0123456789',
-    positions: { 'https://www.youtube.com/watch?v=abc123def45&list=PL0123456789': { position: 91, duration: 600, at: 1, videoId: 'abc123def45' } }
-  })
+await recordAsync('review 3 + quality: the frame is the LOCAL player page, with its token', async () => {
+  const videoUrl = 'https://www.youtube.com/watch?v=abc123def45&list=PL0123456789'
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl })
+  closePopout(ctx)
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
-    // One poll: $live carries the server url (and its token) after this.
-    for (const timer of ctx.timers) {
-      if (typeof timer.fn === 'function') timer.fn()
-    }
-    await sleep(120)
+    // Drive the real poll: it is what fills $live with the server's url+token.
+    await primeLive()
     globalThis.__sdkFrames.length = 0
     const pane = ctx.contributions.find(c => c.area === 'panes')
-    assert.ok(pane && typeof pane.render === 'function', 'no pane to draw the film in')
-    // The stub renders descriptors, not components: expand function elements
-    // (AuraFilm → its SandboxedFrame) so the frame is actually constructed.
-    const expand = (node, depth = 0) => {
-      if (depth > 4 || node === null || typeof node !== 'object') return
-      if (Array.isArray(node)) { node.forEach(child => expand(child, depth)); return }
-      if (typeof node.type === 'function') expand(node.type(node.props || {}), depth + 1)
-      if ('props' in node) expand(node.props.children, depth + 1)
-    }
-    expand(pane.render())
-    const framed = globalThis.__sdkFrames.find(props => String(props.src || '').includes('player.html'))
-    assert.ok(framed, 'the pane never rendered a SandboxedFrame with the player page')
-    // The token rides on the live /status url; the frame builder copies whatever
-    // the server handed us, and the /status tests pin that it is present there.
-    assert.match(framed.src, /player\.html\?/, `the frame is not the player page: ${framed.src}`)
-    assert.match(framed.src, /url=https%3A%2F%2Fwww\.youtube\.com%2Fwatch/, 'the film url was not passed through')
-    assert.equal(framed.title, 'Aura film', 'the frame is unlabelled for the a11y tree')
+    expandTree(pane.render())
+    const framed = globalThis.__sdkFrames.find(props => String(props.src || '').includes('/player.html'))
+    assert.ok(framed, `no player frame: owner=${tx.filmOwner()} live=${tx.liveUrlForTest()} liveObj=${JSON.stringify(tx.liveForTest())} src=${tx.filmSrc()} gates=${JSON.stringify(tx.filmGates())} frames=${JSON.stringify(globalThis.__sdkFrames.map(f => f.src))}`)
+    const url = new URL(framed.src)
+    // Exactly the local server the backend reported — never the film's own host.
+    assert.equal(url.origin, 'http://127.0.0.1:4321', `wrong origin: ${framed.src}`)
+    assert.equal(url.pathname, '/player.html', `wrong path: ${framed.src}`)
+    assert.equal(url.searchParams.get('token'), 'not-shown-in-ui', 'the token was dropped')
+    assert.equal(url.searchParams.get('url'), videoUrl, 'the film url was not passed through')
+    assert.equal(framed.title, 'Aura film')
   } finally {
     dispose()
   }
 })
 
-record('review 3: with nothing playing there is no frame at all', () => {
-  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: '' })
+await recordAsync('quality: Aura (visualiser) mode frames the local visualiser, not the audio url', async () => {
+  const ctx = makeCtx({
+    enabled: true, backdropMode: 'aura',
+    audioUrl: 'https://example.test/stream.mp3'
+  })
+  closePopout(ctx)
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
+    await primeLive()
     globalThis.__sdkFrames.length = 0
     const pane = ctx.contributions.find(c => c.area === 'panes')
-    if (pane) pane.render()
-    assert.equal(globalThis.__sdkFrames.filter(props => String(props.src || '').includes('player.html')).length, 0,
-      'a frame was drawn with no source')
+    if (pane) expandTree(pane.render())
+    const framed = globalThis.__sdkFrames.find(f => String(f.src || '').includes('token='))
+    assert.ok(framed, `the visualiser was not framed: owner=${tx.filmOwner()} src=${tx.filmSrc()} gates=${JSON.stringify(tx.filmGates())}`)
+    const url = new URL(framed.src)
+    assert.equal(url.origin, 'http://127.0.0.1:4321', `wrong origin: ${framed.src}`)
+    assert.ok(!String(framed.src).includes('example.test'), 'the audio url was embedded as a page')
+    assert.equal(url.searchParams.get('overlay'), '1', 'the visualiser frame is not overlay mode')
   } finally {
+    dispose()
+  }
+})
+
+await recordAsync('quality: a closed film and an off server draw no frame', async () => {
+  // Closed: the user pressed Close, so nothing may keep playing.
+  const closed = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/a.mp4', videoClosed: true })
+  closePopout(closed)
+  const disposeClosed = pluginModule.default.register(closed.ctx)
+  try {
+    await primeLive()
+    globalThis.__sdkFrames.length = 0
+    const pane = closed.contributions.find(c => c.area === 'panes')
+    if (pane) expandTree(pane.render())
+    assert.equal(tx.filmOwner(), '', 'a closed film still owns the player')
+    assert.equal(globalThis.__sdkFrames.filter(f => String(f.src || '').includes('/player.html')).length, 0,
+      'a closed film still rendered a player frame')
+  } finally {
+    disposeClosed()
+  }
+  // No server: no url, so no page to load.
+  const offline = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/a.mp4' })
+  offline.ctx.rest = async () => { throw new Error('down') }
+  const disposeOffline = pluginModule.default.register(offline.ctx)
+  try {
+    await primeLive()
+    globalThis.__sdkFrames.length = 0
+    const pane = offline.contributions.find(c => c.area === 'panes')
+    if (pane) expandTree(pane.render())
+    assert.equal(tx.filmOwner(), '', 'a dead server still produced an owner')
+    assert.equal(globalThis.__sdkFrames.filter(f => String(f.src || '').includes('/player.html')).length, 0)
+  } finally {
+    disposeOffline()
+  }
+})
+
+await recordAsync('quality: pane and page open together produce ONE player, owned by the page', async () => {
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/a.mp4' })
+  closePopout(ctx)
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await primeLive()
+    // Open the page: it registers a stage, which is what pageVisible() reads.
+    const page = ctx.contributions.find(c => c.area === 'routes' || c.area === 'routes')
+    const pane = ctx.contributions.find(c => c.area === 'panes')
+    // Pretend the page is mounted by handing the plugin its stage element.
+    pageStage(1200, 400)
+    globalThis.__sdkFrames.length = 0
+    expandTree(pane.render())
+    const frames = globalThis.__sdkFrames.filter(f => String(f.src || '').includes('/player.html'))
+    assert.equal(frames.length, 0, 'the pane drew a second player while the page owned it')
+    assert.equal(tx.filmOwner(), 'page', `the page did not take ownership: ${JSON.stringify(tx.filmGates())}`)
+    void page
+  } finally {
+    pageStage(null)
     dispose()
   }
 })

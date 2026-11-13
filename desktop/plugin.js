@@ -388,9 +388,6 @@ let liveFrame = null // latest /state frame — hot path, deliberately not an at
 let liveKey = ''
 let filmFrame = null
 let backdropUrl = ''
-// The URL box's live text, so the Apply button never has to find its own input
-// in the DOM (see review 1: no app-markup queries from a plugin).
-let urlDraft = ''
 // What the backdrop page should be showing, independent of the server's port
 // and token: `videoUrl|reducedMotion|mode`. A key change reloads the frame; a
 // port/token change must not, or the film restarts on every server refresh.
@@ -894,18 +891,70 @@ function returnFocusToComposer() {
 /** The film, drawn by the SDK's own sandboxed frame.
  *
  *  Was: a raw `<iframe>` created with `document.createElement` and appended to
- *  the app's own body element, positioned fixed behind the whole window. That is
- *  markup the plugin does not own, and the frame carried a hand-built `sandbox`
- *  attribute the SDK is meant to arbitrate. Now the frame is a React element
- *  from `@hermes/plugin-sdk`, mounted inside Aura's own pane/page/window; the
- *  element it produces is adopted into `filmFrame` so the existing postMessage
- *  transport keeps working unchanged.
+ *  the app body, positioned fixed behind the whole window. That is markup the
+ *  plugin does not own, and the frame carried a hand-built `sandbox` attribute
+ *  the SDK is meant to arbitrate. Now the frame is a React element from
+ *  `@hermes/plugin-sdk`, mounted inside Aura's own pane or page.
+ *
+ *  ONE owner: the frame renders only on the surface that currently owns the
+ *  player (`filmOwner()`), so a pane and a page open together never produce two
+ *  decoders fighting over the same soundtrack, and the transport always has
+ *  exactly one frame to drive.
  */
-function AuraFilm({ style }) {
+let filmFrameOwner = ''
+
+/** Which surface owns the one player right now, or '' when none may show it.
+ *
+ *  Precedence: the OS pop-out window wins (one film, one surface), then the
+ *  page while it is open, then the docked pane. Nothing renders while the film
+ *  is closed, while no local server is up (no token, no page), or when the mode
+ *  wants a source the user has not chosen.
+ */
+function filmOwner() {
+  const settings = $settings.get()
+  if (settings.videoClosed === true) return ''
+  if (desktopOwned || desktopPending) return ''
+  if (!liveUrl()) return ''
+  if (settings.backdropMode === 'video' && !String(settings.videoUrl || '').trim()) return ''
+  if (pageVisible()) return 'page'
+  if (panelVisible()) return 'pane'
+  return ''
+}
+
+/** The player/visualiser URL for the owning surface, or '' when there is nothing
+ *  to show. Built from the LIVE SERVER url (origin + token), never from the
+ *  film's own link: `backdropSrc` turns the server url into
+ *  `<origin>/player.html?url=…&token=…`. */
+function filmSrc() {
+  const settings = $settings.get()
+  const base = liveUrl()
+  if (!base) return ''
+  if (settings.backdropMode === 'video') {
+    if (settings.videoClosed === true) return ''
+    if (!String(settings.videoUrl || '').trim()) return ''
+    return backdropSrc(base)
+  }
+  return backdropSrc(base)
+}
+
+function AuraFilm({ surface, style }) {
   const settings = useValue($settings)
+  const live = useValue($live)
   const video = useValue($video)
-  const src = filmSrc()
-  if (!src) return null
+  const owner = filmOwner()
+  // Subscribed above so a server coming up (or a source/close change) re-renders
+  // this element; the values themselves are read imperatively below.
+  void live
+  const src = owner === surface ? filmSrc() : ''
+  useEffect(() => () => {
+    // Only the owner may clear the shared handle: an unmount from the surface
+    // that never had the player must not leave the other one unreachable.
+    if (filmFrameOwner === surface) {
+      filmFrame = null
+      filmFrameOwner = ''
+    }
+  }, [surface])
+  if (!src || owner !== surface) return null
   const opacity = clamp01(filmOpacity(settings, video))
   return jsx(SandboxedFrame, {
     src,
@@ -917,16 +966,16 @@ function AuraFilm({ style }) {
       pointerEvents: 'auto',
       ...(style || {})
     },
-    ref: node => { filmFrame = node }
+    ref: node => {
+      if (node) {
+        filmFrame = node
+        filmFrameOwner = surface
+      } else if (filmFrameOwner === surface) {
+        filmFrame = null
+        filmFrameOwner = ''
+      }
+    }
   })
-}
-
-/** The player URL for the current source, or '' when there is nothing to show. */
-function filmSrc() {
-  const settings = $settings.get()
-  const url = settings.backdropMode === 'video' ? String(settings.videoUrl || '') : String(settings.audioUrl || '')
-  if (!url) return ''
-  return backdropSrc(url)
 }
 
 /** Opacity for the film surface: the video's own transparency, or the Aura
@@ -938,6 +987,80 @@ function filmOpacity(settings, video) {
     return Number(settings.videoOpacity) || 1
   }
   return Number(settings.opacity) || 0.5
+}
+
+/** The video-URL box: one controlled draft, one apply path.
+ *
+ *  Was: `defaultValue` plus a module-level `urlDraft` (empty until the user
+ *  typed), a blur handler that applied the field and an Apply button that read
+ *  the draft — so a click could submit '' or a stale value, and the blur fired
+ *  an apply just before the click's own.
+ */
+function VideoUrlBox({ settings, wide }) {
+  const saved = String((settings && settings.videoUrl) || '')
+  const [draft, setDraft] = useState(saved)
+  // The draft also lives in a ref: the apply path reads it imperatively, so it
+  // is correct even in the gap before a state update lands (and a host that
+  // batches renders can never make Apply send the previous value).
+  const draftRef = useRef(saved)
+  const lastSaved = useRef(saved)
+  useEffect(() => {
+    const next = String($settings.get().videoUrl || '')
+    if (next !== lastSaved.current) {
+      lastSaved.current = next
+      draftRef.current = next
+      setDraft(next)
+    }
+  }, [saved])
+  const type = value => {
+    const text = String(value == null ? '' : value)
+    draftRef.current = text
+    setDraft(text)
+  }
+  const apply = () => {
+    lastSaved.current = String($settings.get().videoUrl || '')
+    void applyUrlBox(String(draftRef.current == null ? '' : draftRef.current).trim())
+  }
+  const field = jsx('input', {
+    type: 'text',
+    value: draft == null ? '' : draft,
+    placeholder: wide ? 'https://youtube.com/watch?v=...' : 'Video or playlist link (.mp4/.m3u8 too)',
+    'aria-label': 'Video URL',
+    spellCheck: false,
+    style: wide
+      ? {
+          font: 'inherit',
+          fontSize: 11,
+          color: 'var(--ui-text-primary)',
+          background: 'var(--ui-bg)',
+          border: '1px solid var(--ui-stroke-secondary)',
+          borderRadius: 6,
+          padding: '3px 6px',
+          width: 260
+        }
+      : { font: 'inherit', fontSize: 11, width: 128 },
+    onChange: event => type(event && event.target ? event.target.value : ''),
+    onKeyDown: event => {
+      if (event && event.key === 'Enter') {
+        if (event.preventDefault) event.preventDefault()
+        apply()
+      }
+    }
+  })
+  return jsxs('div', {
+    style: { display: 'flex', alignItems: 'center', gap: 4 },
+    children: [
+      field,
+      jsx(Button, {
+        size: 'micro',
+        variant: 'ghost',
+        'aria-label': 'Apply video URL',
+        title: 'Apply video URL',
+        onClick: apply,
+        children: '⟳'
+      })
+    ]
+  })
 }
 
 function musicIsPlayingNow() {
@@ -1504,13 +1627,9 @@ async function poll() {
     const port = ok && Number.isFinite(status.port) ? status.port : null
     const mood = frame && typeof frame.mood === 'string' ? frame.mood : ''
     if (!ok && !error) error = 'Aura’s local server is starting…'
-
-    liveFrame = frame
-    syncFromServer(frame)
-    // [listen lane] One delivery path for the agent's "play this / mute the
-    // film": the server keeps the request, this consumes a new seq only.
-    handleAudioRequests(frame)
-    if (ok) await syncPlayerOwnership()
+    // Publish the live state FIRST: it is what every surface renders from, and a
+    // later side effect that throws (a window call, a message post) must never
+    // leave the plugin believing the server is down when it just answered.
     const key = [ok, port, capture, enabled, url, error, mood].join('|')
     if (key !== liveKey) {
       liveKey = key
@@ -1525,6 +1644,13 @@ async function poll() {
         at: Date.now()
       })
     }
+
+    liveFrame = frame
+    syncFromServer(frame)
+    // [listen lane] One delivery path for the agent's "play this / mute the
+    // film": the server keeps the request, this consumes a new seq only.
+    handleAudioRequests(frame)
+    if (ok) await syncPlayerOwnership()
     updateShow()
     syncBackdrop()
     syncPanel()
@@ -3968,6 +4094,7 @@ function AuraPane() {
   // 16:9 box we give it.
   const film = jsx(AuraFilm, {
     key: 'film',
+    surface: 'pane',
     style: { width: '100%', aspectRatio: '16 / 9', borderRadius: 12, overflow: 'hidden', background: '#000', flex: '0 0 auto' }
   })
   const theatre = jsx('div', {
@@ -4669,42 +4796,7 @@ function AuraQuickMenu() {
                     ]
                   })
                 ),
-                row(
-                  'Video URL',
-                  jsxs('div', {
-                    style: { display: 'flex', alignItems: 'center', gap: 4 },
-                    children: [
-                      jsx('input', {
-                        type: 'text',
-                        key: settings.videoUrl,
-                        defaultValue: settings.videoUrl,
-                        placeholder: 'Video or playlist link (.mp4/.m3u8 too)',
-                        'aria-label': 'Video URL',
-                        spellCheck: false,
-                        style: { ...inputStyle, width: 128 },
-                        onKeyDown: event => {
-                          if (event && event.key === 'Enter' && event.currentTarget) {
-                            event.currentTarget.blur()
-                          }
-                        },
-                        onChange: event => {
-                          urlDraft = event && event.target ? String(event.target.value) : ''
-                        },
-                        onBlur: event => {
-                          void applyUrlBox(event && event.target ? String(event.target.value) : '')
-                        }
-                      }),
-                      jsx(Button, {
-                        size: 'micro', variant: 'ghost', 'aria-label': 'Apply video URL',
-                        title: 'Apply video URL',
-                        onClick: () => {
-                          void applyUrlBox(urlDraft)
-                        },
-                        children: '⟳'
-                      })
-                    ]
-                  })
-                ),
+                row('Video URL', jsx(VideoUrlBox, { settings })),
                 isFrameBlocked(settings.videoUrl)
                   ? jsx('div', {
                     style: { padding: '2px 12px 6px', fontSize: 11, color: 'var(--ui-text-tertiary)', lineHeight: 1.4 },
@@ -5412,7 +5504,7 @@ function AuraPage() {
       boxShadow: 'inset 0 0 40px rgba(255,150,80,0.06), 0 10px 30px rgba(0,0,0,0.35)'
     },
     children: [
-      jsx(AuraFilm, { key: 'film', style: { position: 'absolute', inset: 0 } }),
+      jsx(AuraFilm, { key: 'film', surface: 'page', style: { position: 'absolute', inset: 0 } }),
       hint
       ? jsx('div', {
         key: 'hint',
@@ -5985,30 +6077,7 @@ function AuraSettings() {
             row(
               'Video URL',
               'Paste a YouTube link (https://youtube.com/watch?v=...), a direct video file (.mp4/.webm/.ogg) or any embeddable page. Leave empty for a hint.',
-              jsx('input', {
-                type: 'text',
-                key: settings.videoUrl,
-                defaultValue: settings.videoUrl,
-                placeholder: 'https://youtube.com/watch?v=...',
-                'aria-label': 'Video URL',
-                spellCheck: false,
-                style: {
-                  font: 'inherit',
-                  fontSize: 11,
-                  color: 'var(--ui-text-primary)',
-                  background: 'var(--ui-bg)',
-                  border: '1px solid var(--ui-stroke-secondary)',
-                  borderRadius: 6,
-                  padding: '3px 6px',
-                  width: 260
-                },
-                onKeyDown: event => {
-                  if (event && event.key === 'Enter' && event.currentTarget) event.currentTarget.blur()
-                },
-                onBlur: event => {
-                  void applyUrlBox(event && event.target ? String(event.target.value) : '')
-                }
-              })
+              jsx(VideoUrlBox, { settings, wide: true })
             ),
             row(
               'Video transparency',
@@ -6546,7 +6615,14 @@ export default {
     $pulse.set(0)
     pulseIndex = 0
     resetShow()
-      const settings = readSettings(ctx)
+    // A hot reload must not inherit "the pop-out owns the picture" — that flag
+    // suppresses every in-app surface, and the window that set it belonged to
+    // the previous instance. Same for the adopted frame handle.
+    desktopOwned = false
+    desktopPending = false
+    filmFrame = null
+    filmFrameOwner = ''
+    const settings = readSettings(ctx)
     $settings.set(settings)
     $live.set({ ...EMPTY_LIVE })
     $video.set({ ...EMPTY_VIDEO })
@@ -6726,6 +6802,25 @@ export {
 // driven through register()'s context, and are not part of the host contract.
 export const __test = {
   readPositions,
+  // The real poll tick, so a test can put the plugin in the state a live server
+  // produces (url + token) without faking the atom.
+  poll,
+  filmOwner,
+  filmSrc,
+  liveUrlForTest: () => liveUrl(),
+  filmGates: () => ({
+    closed: $settings.get().videoClosed === true,
+    desktop: Boolean(desktopOwned || desktopPending),
+    live: Boolean(liveUrl()),
+    pane: panelVisible(),
+    page: pageVisible(),
+    mode: $settings.get().backdropMode,
+    hasUrl: Boolean(String($settings.get().videoUrl || '').trim())
+  }),
+  liveForTest: () => $live.get(),
+  // The same callback React uses as the page stage ref, so a test can mount a
+  // stage exactly the way a real render does.
+  pageStageRef,
   shortLabel,
   videoQueue,
   applyVideoSource,
