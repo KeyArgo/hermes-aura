@@ -2947,15 +2947,20 @@ await recordAsync('display: the visualiser frame is never dimmed a second time',
   // its scrim for it, so the frame element must stay at full strength. Dimming
   // the frame too squared the setting (25% drew 6%) and dimmed the page chrome
   // the contract keeps legible.
-  const ctx = makeCtx({ enabled: true, backdropMode: 'aura', opacity: 0.25 })
+  // The music being on is what gives visualiser mode a surface at all: the Right
+  // panel is a video surface, so with the film closed the ONE frame lives on the
+  // audio seat (or the Aura page, which is mounted too).
+  const ctx = makeCtx({ enabled: true, backdropMode: 'aura', opacity: 0.25, audioUrl: 'https://example.test/music.mp3' })
   closePopout(ctx)
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
     await primeLive()
     globalThis.__sdkFrames.length = 0
-    const pane = ctx.contributions.find(c => c.area === 'panes')
-    assert.ok(pane, 'no pane contribution')
-    expandTree(pane.render())
+    assert.equal(ctx.contributions.find(c => c.area === 'panes'), undefined,
+      'the Right panel is contributed while the Aura visual is the backdrop')
+    const surfaces = ctx.contributions.filter(c => c.id === 'audio-surface' || c.id === 'aura-page')
+    assert.ok(surfaces.length, 'visualiser mode has no surface to draw the page on')
+    for (const surface of surfaces) expandTree(surface.render())
     const framed = globalThis.__sdkFrames.find(f => String(f.src || '').includes('overlay=1'))
     assert.ok(framed, `the visualiser was not framed: ${JSON.stringify(globalThis.__sdkFrames.map(f => f.src))}`)
     assert.equal(framed.style.opacity, 1,
