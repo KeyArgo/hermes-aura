@@ -6580,10 +6580,11 @@ function onPanelKeydown(event) {
  */
 /** Visualiser | Video. One at a time: picking either turns the other off, which
  *  is what the owner asked for instead of a Backdrop drop-down buried among
- *  unrelated rows. */
-function modeToggle(mode, compact) {
+ *  unrelated rows. `label` names the group for assistive tech; the page passes
+ *  "Mode", the A menu keeps "Aura mode". */
+function modeToggle(mode, compact, label) {
   compact = compact === true
-  const option = (value, label) =>
+  const option = (value, text) =>
     jsx('button', {
       type: 'button',
       'aria-pressed': mode === value ? 'true' : 'false',
@@ -6604,14 +6605,15 @@ function modeToggle(mode, compact) {
         cursor: mode === value ? 'default' : 'pointer',
         whiteSpace: 'nowrap'
       },
-      children: label
+      children: text
     })
   return jsx('div', {
     role: 'group',
-    'aria-label': 'Aura mode',
+    'aria-label': typeof label === 'string' && label ? label : 'Aura mode',
     style: {
       display: 'inline-flex', alignItems: 'center', gap: 4, padding: 3,
-      borderRadius: 999, background: 'var(--ui-surface-secondary, rgba(127,127,127,0.12))'
+      borderRadius: 999, background: 'var(--ui-surface-secondary, rgba(127,127,127,0.12))',
+      flexWrap: 'wrap', maxWidth: '100%', minWidth: 0
     },
     children: [option('aura', 'Visualizer'), option('video', 'Video')]
   })
@@ -8424,12 +8426,29 @@ function AuraPage() {
       jsxs('div', {
         key: 'status',
         className: 'aura-hero-status',
-        style: { display: 'flex', alignItems: 'center', gap: 10, flex: 'none' },
+        style: {
+          display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
+          gap: 10, flex: 'none', flexWrap: 'wrap', minWidth: 0
+        },
         children: [
           jsx('span', {
             key: 'flag',
             className: auraOn ? 'aura-pill is-on' : 'aura-pill',
             children: auraOn ? 'Aura on' : 'Aura off'
+          }),
+          // The page's one mode switch, right beside the pill: the same two
+          // options and the same door as the A menu. The page palette is
+          // remapped here because this row sits outside the setup card.
+          jsx('div', {
+            key: 'mode',
+            style: {
+              '--ui-text-secondary': '#ded4c8',
+              '--ui-stroke-secondary': 'rgba(255,255,255,0.16)',
+              '--ui-surface-secondary': 'rgba(255,255,255,0.06)',
+              '--ui-accent': '#ffbf8f',
+              display: 'flex', minWidth: 0, maxWidth: '100%'
+            },
+            children: modeToggle(settings.backdropMode, true, 'Mode')
           }),
           jsx(VersionChip, { key: 'build' })
         ]
@@ -8492,7 +8511,7 @@ function AuraPage() {
           jsx('span', { key: 'meta', className: 'aura-count', children: 'every switch Aura has' })
         ]
       }),
-      jsx(AuraSettings, { key: 'settings' })
+      jsx(AuraSettings, { key: 'settings', hideMode: true })
     ]
   })
 
@@ -8675,7 +8694,10 @@ function VersionChip(props) {
   })
 }
 
-function AuraSettings() {
+function AuraSettings(props) {
+  // The /aura page draws its own mode switch in the hero, so the setup card
+  // leaves that row out there and keeps it everywhere else.
+  const hideMode = Boolean(props && props.hideMode)
   const settings = useValue($settings)
   const live = useValue($live)
   const applied = useValue($themeApplied)
@@ -8746,14 +8768,16 @@ function AuraSettings() {
           })
         )
       }),
-      jsx('div', {
-        key: 'mode',
-        children: row(
-          'Mode',
-          'Visualizer: the audio-reactive visual behind the app. Video: a film you choose, in the right-hand pane. One at a time — switching either turns the other off.',
-          modeToggle(settings.backdropMode, true)
-        )
-      }),
+      hideMode
+        ? null
+        : jsx('div', {
+          key: 'mode',
+          children: row(
+            'Mode',
+            'Visualizer: the audio-reactive visual behind the app. Video: a film you choose, in the right-hand pane. One at a time — switching either turns the other off.',
+            modeToggle(settings.backdropMode, true)
+          )
+        }),
       settings.backdropMode === 'video'
         ? null
         : jsxs('div', {

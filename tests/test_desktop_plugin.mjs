@@ -1902,6 +1902,120 @@ record('dispose removes the page contributions and leaves no player behind', () 
   )
 })
 
+// ------------------------------------------------------------- scenario P2
+// The page's own mode switch: the hero carries the same two options as the A
+// menu, opening the same door, and it follows a change made anywhere else.
+
+const pm = makeCtx({ enabled: true, backdropMode: 'aura', videoUrl: '' })
+const disposePM = pluginModule.default.register(pm.ctx)
+await sleep(60)
+
+const pmPage = () => renderDeep(renderContribution(pm.contributions.find(c => c.area === 'routes')))
+const pmMatches = (tree, label) => {
+  const out = []
+  walk(tree, node => {
+    if (node.props && node.props['aria-label'] === label) out.push(node)
+  })
+  return out
+}
+const pmSwitch = () => pmMatches(pmPage(), 'Mode')[0] || null
+const pmButtons = group => {
+  const out = []
+  walk(group, node => {
+    if (node.type === 'button') out.push(node)
+  })
+  return out
+}
+const pmButton = (group, label) => pmButtons(group).find(node => texts(node) === label) || null
+const pmHero = () => {
+  let hero = null
+  walk(pmPage(), node => {
+    if (!hero && node.props && node.props.className === 'aura-hero-status') hero = node
+  })
+  return hero
+}
+
+record('the page carries a Visualizer | Video switch next to the Aura on pill', () => {
+  const hero = pmHero()
+  assert.ok(hero, 'the page hero has no status row')
+  const kids = Array.isArray(hero.props.children) ? hero.props.children : [hero.props.children]
+  const pillIndex = kids.findIndex(
+    kid => kid && kid.props && typeof kid.props.className === 'string' &&
+      kid.props.className.includes('aura-pill')
+  )
+  assert.ok(pillIndex >= 0, 'the hero has no Aura on/off pill')
+  assert.match(texts(kids[pillIndex]), /Aura on/, 'the pill is not the Aura on one')
+  const group = pmSwitch()
+  assert.ok(group, 'the page has no "Mode" switch')
+  assert.equal(group.props.role, 'group', 'the switch is not a group')
+  let right = false
+  walk(kids[pillIndex + 1], node => {
+    if (node.props && node.props['aria-label'] === 'Mode') right = true
+  })
+  assert.ok(right, 'the switch does not sit next to the Aura on/off pill')
+  // One switch, not two: the lower Mode row is gone.
+  assert.equal(pmMatches(pmPage(), 'Mode').length, 1, 'the page carries two mode switches')
+  assert.doesNotMatch(texts(pmPage()), /One at a time/, 'the lower Mode row is still on the page')
+  const buttons = pmButtons(group)
+  assert.deepEqual(buttons.map(node => texts(node)), ['Visualizer', 'Video'], 'the switch is not Visualizer | Video')
+  for (const button of buttons) {
+    assert.equal(button.props.type, 'button', 'a switch half is not a real button')
+    assert.notEqual(button.props.tabIndex, -1, 'a switch half is out of the tab order')
+  }
+})
+
+await recordAsync('clicking Video on the page switches the backdrop and marks it pressed', async () => {
+  const group = pmSwitch()
+  const video = pmButton(group, 'Video')
+  assert.ok(video, 'the page has no Video half')
+  video.props.onClick()
+  await sleep(40)
+  assert.equal(pm.storage.get('settings').backdropMode, 'video', 'Video did not switch the backdrop')
+  assert.ok(
+    pm.controls.some(patch => patch && patch.backdrop_mode === 'video'),
+    'the mode change never reached /control'
+  )
+  const after = pmSwitch()
+  assert.equal(pmButton(after, 'Video').props['aria-pressed'], 'true', 'Video is not marked pressed')
+  assert.equal(pmButton(after, 'Visualizer').props['aria-pressed'], 'false', 'Visualizer is still marked pressed')
+})
+
+await recordAsync('clicking Visualizer on the page goes back to the Aura visual', async () => {
+  const visual = pmButton(pmSwitch(), 'Visualizer')
+  assert.ok(visual, 'the page has no Visualizer half')
+  visual.props.onClick()
+  await sleep(40)
+  assert.equal(pm.storage.get('settings').backdropMode, 'aura', 'Visualizer did not switch the backdrop back')
+  const after = pmSwitch()
+  assert.equal(pmButton(after, 'Visualizer').props['aria-pressed'], 'true', 'Visualizer is not marked pressed')
+  assert.equal(pmButton(after, 'Video').props['aria-pressed'], 'false', 'Video is still marked pressed')
+})
+
+await recordAsync('the page switch follows a mode change made in the A menu', async () => {
+  const menu = renderDeep(renderContribution(pm.contributions.find(c => c.id === 'quick-menu')))
+  const menuGroup = pmMatches(menu, 'Aura mode')[0]
+  assert.ok(menuGroup, 'the A menu has no mode switch')
+  const menuVideo = pmButton(menuGroup, 'Video')
+  assert.ok(menuVideo, 'the A menu has no Video half')
+  menuVideo.props.onClick()
+  await sleep(40)
+  assert.equal(pm.storage.get('settings').backdropMode, 'video', 'the A menu did not switch the mode')
+  const after = pmSwitch()
+  assert.equal(pmButton(after, 'Video').props['aria-pressed'], 'true', 'the page did not follow the A menu')
+  assert.equal(pmButton(after, 'Visualizer').props['aria-pressed'], 'false', 'the page kept Visualizer pressed')
+})
+
+record('the switch is there with Aura off too', () => {
+  disposePM()
+  const off = makeCtx({ enabled: false, backdropMode: 'aura', videoUrl: '' })
+  const disposeOff = pluginModule.default.register(off.ctx)
+  const tree = renderDeep(renderContribution(off.contributions.find(c => c.area === 'routes')))
+  const group = pmMatches(tree, 'Mode')[0]
+  assert.ok(group, 'the switch vanished with Aura off')
+  assert.equal(pmButtons(group).length, 2, 'the switch lost a half with Aura off')
+  disposeOff()
+})
+
 // ------------------------------------------------------------- scenario Q
 // Aura off must mean nothing draws, page open or not.
 
