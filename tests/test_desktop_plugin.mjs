@@ -2134,6 +2134,27 @@ record('the video-mode quick menu labels the pane the Right panel', () => {
   assert.ok(findByAria(tree, 'Right panel (quick menu)'), 'the quick menu has no Right panel switch')
 })
 
+await recordAsync('the quick menu offers the Right panel and Visual behind the app in both modes', async () => {
+  // Hiding and bringing back the Right panel, and the full-window switch, are
+  // the two layout controls people reach for in either mode.
+  for (const backdropMode of ['aura', 'video']) {
+    const scenario = makeCtx({ enabled: true, backdropMode, panelEnabled: true,
+      videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
+    const dispose = pluginModule.default.register(scenario.ctx)
+    try {
+      await sleep(20)
+      const menu = scenario.contributions.find(c => c.id === 'quick-menu')
+      assert.ok(menu, `no quick menu in ${backdropMode} mode`)
+      const tree = renderContribution(menu)
+      assert.ok(findByAria(tree, 'Right panel (quick menu)'), `${backdropMode} mode: the quick menu has no Right panel switch`)
+      assert.ok(findByAria(tree, 'Visual behind the app (quick menu)'),
+        `${backdropMode} mode: the quick menu has no Visual behind the app switch`)
+    } finally {
+      dispose()
+    }
+  }
+})
+
 // ------------------------------------------------------------- scenario P
 // The Aura page (owner ask: an "Aura" row in the left sidebar opening a full
 // page). The page must show the film in a big frame, the whole setup and the

@@ -4985,6 +4985,24 @@ function AuraQuickMenu() {
               }
             })
           ),
+          // Layout controls for either mode: put the Right panel away or bring it
+          // back, and let the visual or the film fill the window.
+          row(
+            'Right panel',
+            jsx(Switch, {
+              checked: settings.panelEnabled !== false,
+              'aria-label': 'Right panel (quick menu)',
+              onCheckedChange: value => setPanelEnabled(value)
+            })
+          ),
+          row(
+            'Visual behind the app',
+            jsx(Switch, {
+              checked: settings.windowVisual === true,
+              'aria-label': 'Visual behind the app (quick menu)',
+              onCheckedChange: value => setWindowVisual(value)
+            })
+          ),
           settings.backdropMode === 'video'
             ? null
             : jsxs('div', {
@@ -5314,14 +5332,6 @@ function AuraQuickMenu() {
                       const to = parseClock(event.target ? event.target.value : '')
                       if (to != null) postToBackdrop({ cmd: 'seekTo', value: to })
                     }
-                  })
-                ),
-                row(
-                  'Right panel',
-                  jsx(Switch, {
-                    checked: settings.panelEnabled !== false,
-                    'aria-label': 'Right panel (quick menu)',
-                    onCheckedChange: value => setPanelEnabled(value)
                   })
                 ),
                 // Three surfaces, chosen on purpose: the Aura page, the small
