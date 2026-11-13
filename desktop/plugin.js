@@ -15,7 +15,7 @@
  *     theme,
  *   - an optional `THEMES_AREA` theme ('aura-live') the user must opt into,
  *   - "Visual behind the app": one fixed, click-through backdrop iframe at
- *     z-index -1 plus a single `#aura-glass` stylesheet that clears the app's
+ *     a single stylesheet that cleared the app's
  *     own big surfaces so the moving visual shows through. It appears only
  *     when Aura is enabled AND the user opted in (the windowVisual switch or
  *     the Aura Live theme) and a live URL exists. Turning the visual off,
@@ -44,7 +44,7 @@
  * the sidebar row, the palette command and the compact pane) was removed: the
  * backdrop and the Settings page are the product.
  *
- * Host safety: the backdrop iframe and the `#aura-glass` style — mounted only
+ * Host safety: the film frame and its stylesheet — mounted only
  * behind the opt-in above — are the only host DOM Aura touches; nothing is
  * injected while nothing is opted in, and the host `html`/`body`/root styles
  * are never written. All other appearance effects go through the SDK
@@ -63,6 +63,7 @@ import {
   $accentOverride,
   atom,
   Button,
+  COMPOSER_AREAS,
   host,
   PANES_AREA,
   Popover,
@@ -71,6 +72,7 @@ import {
   requestTheme,
   ROUTES_AREA,
   setAccentOverride,
+  SandboxedFrame,
   SETTINGS_PLUGINS_AREA,
   SIDEBAR_NAV_AREA,
   STATUSBAR_AREAS,
@@ -80,7 +82,7 @@ import {
   useTheme,
   useValue
 } from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'aura'
@@ -384,13 +386,15 @@ let pollDisposer = null
 let polling = false
 let liveFrame = null // latest /state frame — hot path, deliberately not an atom
 let liveKey = ''
-let backdropEl = null
+let filmFrame = null
 let backdropUrl = ''
+// The URL box's live text, so the Apply button never has to find its own input
+// in the DOM (see review 1: no app-markup queries from a plugin).
+let urlDraft = ''
 // What the backdrop page should be showing, independent of the server's port
 // and token: `videoUrl|reducedMotion|mode`. A key change reloads the frame; a
 // port/token change must not, or the film restarts on every server refresh.
 let backdropKey = ''
-let glassStyleEl = null
 let overrideActive = false
 let lastAccentHex = null
 let lastAccentAt = 0
@@ -696,116 +700,52 @@ function backdropSrc(url) {
   return `${url}${separator}${params.join('&')}`
 }
 
-// Background-only tokens (never ink: `--ui-base` is the text colour). Big
-// areas get the full glass; floating surfaces stay more solid so menus,
-// cards and bubbles remain readable over the visuals.
-const GLASS_AREAS = [
-  '--background',
-  '--sidebar',
-  '--ui-bg-chrome',
-  '--ui-bg-sidebar',
-  '--ui-bg-editor',
-  '--ui-bg-tertiary',
-  '--ui-chat-surface-background',
-  '--ui-sidebar-surface-background',
-  '--ui-editor-surface-background',
-  '--ui-terminal-surface-background',
-  '--ui-surface-background'
-]
-const GLASS_FLOATING = [
-  '--muted',
-  '--card',
-  '--popover',
-  '--ui-bg-card',
-  '--ui-bg-elevated',
-  '--ui-widget-surface-background',
-  '--ui-chat-bubble-background'
-]
 
-/** The browser-resolved colour of a token (handles var(), color-mix(), oklch()). */
-function resolvedColor(name) {
-  if (!doc || !doc.body || typeof getComputedStyle !== 'function') return ''
-  let probe = null
-  try {
-    probe = doc.createElement('div')
-    probe.style.position = 'absolute'
-    probe.style.width = '0'
-    probe.style.height = '0'
-    probe.style.visibility = 'hidden'
-    probe.style.backgroundColor = `var(${name})`
-    doc.body.appendChild(probe)
-    const value = String(getComputedStyle(probe).backgroundColor || '').trim()
-    return value && value !== 'rgba(0, 0, 0, 0)' && value !== 'transparent' ? value : ''
-  } catch {
-    return ''
-  } finally {
-    try {
-      if (probe) probe.remove()
-    } catch {
-      // detached already
-    }
-  }
-}
 
-// Panels stack (window bg under chrome under chat surface), so translucency
-// per layer compounds to near-solid. Instead the big areas go fully clear and
-// visibility is set in ONE place: the backdrop's opacity over the theme's own
-// solid background, painted on <html>. Floating surfaces stay mostly solid.
-function glassCss() {
-  const base = resolvedColor('--background')
-  let declarations = ''
-  for (const name of GLASS_AREAS) declarations += `${name}: transparent !important;`
-  for (const name of GLASS_FLOATING) {
-    const color = resolvedColor(name)
-    // !important: the theme writes these inline on <html>; a plain rule loses.
-    if (color) declarations += `${name}: color-mix(in srgb, ${color} 90%, transparent) !important;`
-  }
-  return [
-    base ? `html { background: ${base} !important; }` : '',
-    'body, #root, #app { background: transparent !important; }',
-    `:root { ${declarations} }`
-  ].filter(Boolean).join('\n')
-}
 
-function applyGlassStyle() {
-  if (!doc || !doc.head || typeof doc.head.appendChild !== 'function') return
-  // Measure the theme's own colours, not the previous glass.
-  if (glassStyleEl) removeGlassStyle()
-  glassStyleEl = doc.createElement('style')
-  glassStyleEl.setAttribute('id', 'aura-glass')
-  doc.head.appendChild(glassStyleEl)
-  glassStyleEl.textContent = glassCss()
-}
+// --------------------------------------------------------------- persistence
 
-function removeGlassStyle() {
-  if (!glassStyleEl) return
-  try {
-    glassStyleEl.remove()
-  } catch {
-    try {
-      if (glassStyleEl.parentNode) glassStyleEl.parentNode.removeChild(glassStyleEl)
-    } catch {
-      // detached already
-    }
-  }
-  glassStyleEl = null
-}
+/** Per-film bookmarks, persisted with the settings. Malformed entries are
+ *  dropped; anything under 5 s is noise from an autoplay that never started. */
+
+/** The bookmark for this film, or null. */
+
+/** Where this film should restart, or 0 for "from the beginning". */
+
+/** Record where a film is, at most every 5 s, so an interruption (another
+ *  plugin, a face, a source swap, the app closing) resumes in the right place.
+ *  `position` of 0 with `finished` clears the bookmark. */
+
+/** Flush the current position right now — used whenever playback is about to
+ *  be interrupted (closing, disabling, switching source, unloading), because a
+ *  bookmark that depends on the next 5 s tick is a bookmark that sometimes
+ *  never lands. */
+
+/** A saved source: `{ label, url }`, trimmed and length-capped, deduped by URL.
+ *  Anything malformed is dropped rather than thrown away wholesale, because
+ *  this list is persisted user data. */
+
+
+/** True when the URL is known to refuse framing (Plex/Netflix web apps etc.).
+ *  Direct media files are always framable, so they short-circuit. */
+
+/** Short human label for a URL: YouTube link -> "YouTube · title-ish id". */
+
+
+
+
+
+// Optional whole-window backdrop, enabled only by the user. In "aura" mode the
+// iframe points at the visualizer page on the local server (with its own
+// `overlay=1` / `reduced-motion=1` switches). In "video" mode it points at
+// web/player.html on the same origin, carrying the user's URL in `?url=`.
+// The server URL is absolute and tokenised, so the origin must be taken from
+// it — a bare `/player.html` would resolve against the Hermes app's origin.
 
 function removeBackdrop() {
-  if (backdropEl) {
-    try {
-      backdropEl.remove()
-    } catch {
-      try {
-        if (backdropEl.parentNode) backdropEl.parentNode.removeChild(backdropEl)
-      } catch {
-        // detached already
-      }
-    }
-  }
-  backdropEl = null
+  // The frame belongs to React (AuraFilm); unmounting the surface removes it.
+  filmFrame = null
   backdropUrl = ''
-  removeGlassStyle()
 }
 
 function liveUrl() {
@@ -919,139 +859,87 @@ function pageKey() {
  * decoration: it must never hold focus. Remember the last real field, and if
  * the frame ever takes focus, hand it straight back.
  */
-let lastCaretEl = null
-// A contenteditable can hold focus and still have no caret range; every key
-// then lands in nothing and the field looks dead. Remember the range too.
-let lastCaretRange = null
-
-const focusTrace = []
-
-function describeFocusable(node) {
-  if (!node) return '—'
-  if (node === backdropEl) return 'backdrop'
-  const tag = String(node.tagName || node.nodeName || 'node').toLowerCase()
-  const role = node.getAttribute ? node.getAttribute('role') : ''
-  const label = node.getAttribute ? (node.getAttribute('aria-label') || node.getAttribute('placeholder') || '') : ''
-  return `${tag}${role ? `[${role}]` : ''}${label ? ` ${String(label).slice(0, 18)}` : ''}`
-}
-
-// Keystrokes that reached the document while a text field had focus. Purely a
-// measurement: Aura never consumes or alters them (capture phase, no
-// preventDefault, no stopPropagation).
-let keysSeen = 0
-
-function countKey(event) {
-  if (!event || event.key === 'Shift' || event.key === 'Control' || event.key === 'Alt' || event.key === 'Meta') return
-  const active = doc && doc.activeElement
-  const field = active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT' ||
-    (active.getAttribute && active.getAttribute('contenteditable') === 'true'))
-  if (field) keysSeen += 1
-}
-
-function rememberCaret(event) {
-  const target = event && event.target
-  if (!target) return
-  focusTrace.push(describeFocusable(target))
-  if (focusTrace.length > 8) focusTrace.shift()
-  if (target === backdropEl) return
-  if (typeof target.focus === 'function') lastCaretEl = target
-  try {
-    const sel = doc.getSelection ? doc.getSelection() : null
-    lastCaretRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null
-  } catch {
-    lastCaretRange = null
-  }
-}
-
-function releaseBackdropFocus(event) {
-  const target = event && event.target
-  if (!target || target !== backdropEl) return
-  try {
-    backdropEl.blur()
-  } catch {
-    // a detached frame cannot be blurred; the retarget below still helps
-  }
-  const caret = lastCaretEl
-  lastCaretEl = null
-  if (caret && caret.isConnected !== false && typeof caret.focus === 'function') {
-    try {
-      caret.focus()
-      if (lastCaretRange) {
-        const sel = doc.getSelection ? doc.getSelection() : null
-        if (sel) {
-          sel.removeAllRanges()
-          sel.addRange(lastCaretRange)
-        }
-      }
-    } catch {
-      // the field went away while the film was starting
-    }
-  }
-}
-
 function mountBackdrop(url, opacity) {
+  // The frame is a SandboxedFrame rendered by React inside Aura's own surfaces
+  // (see AuraFilm). There is nothing to create and nothing to append: this
+  // function only remembers what the frame should show, so a source change
+  // re-points the one element instead of stacking a second player.
   const src = backdropSrc(url)
-  if (!backdropEl) {
-    if (!doc.body || typeof doc.body.appendChild !== 'function') return
-    backdropEl = doc.createElement('iframe')
-    backdropEl.setAttribute('aria-hidden', 'true')
-    backdropEl.setAttribute('tabindex', '-1')
-    backdropEl.setAttribute('title', 'Aura backdrop')
-    // Sandboxed, click-through decoration: same-origin is required because
-    // the page talks to its own 127.0.0.1 origin and the server sends no CORS
-    // headers; pointer-events stay off so nothing can be clicked through it.
-    backdropEl.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-downloads')
-    backdropEl.setAttribute('referrerpolicy', 'no-referrer')
-    backdropEl.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture')
-    backdropEl.setAttribute('allowfullscreen', '')
-    const style = backdropEl.style
-    style.position = 'fixed'
-    style.inset = '0'
-    style.width = '100vw'
-    style.height = '100vh'
-    style.border = '0'
-    style.pointerEvents = 'none'
-    style.zIndex = '-1'
-    style.background = 'transparent'
+  if (!src) return
+  if (backdropKey !== pageKey()) {
     backdropUrl = src
     backdropKey = pageKey()
-    backdropEl.src = src
-  } else if (backdropKey !== pageKey()) {
-    // Only re-point the frame when what it should SHOW changed (a new source,
-    // a gentle-motion flip). A refresh that swaps the server port or token
-    // leaves the page identity alone, so it must not restart the film.
-    backdropUrl = src
-    backdropKey = pageKey()
-    backdropEl.src = src
   }
-  backdropEl.style.opacity = String(clamp01(opacity))
-  // A stepped opacity is what reads as "weird dimming": ramp it. Only in the
-  // video/"always" case, because the "only while active" fade already owns its
-  // own timing and a CSS transition would fight it.
-  const settings = $settings.get()
-  backdropEl.style.transition = settings.backdropMode === 'video' && settings.showWhen === 'always' && !videoWindowOn() && !pageVisible()
-    ? 'opacity 900ms ease'
-    : ''
-  applyBackdropLayout()
-  if (backdropEl.parentNode !== doc.body) doc.body.appendChild(backdropEl)
-  // Glass clears the chat surfaces so the visual shows through: that is overlay
-  // work. A film playing in Aura's own pane must not wash the app while Aura is
-  // switched off.
-  const liveNow = $live.get()
-  const auraOn = liveNow.ok ? liveNow.enabled === true : settings.enabled
-  // Glass clears the chat surfaces so a full-bleed visual shows through. A film
-  // in Aura's own pane or page is not full-bleed, and an off Aura paints nothing.
-  const fullBleed = Boolean(settings.windowVisual || settings.audioUrl || knownTheme === THEME_NAME ||
-    (settings.backdropMode === 'video' && !panelVisible() && !pageVisible() && !videoWindowOn()))
-  if (auraOn && fullBleed) {
-    if (!glassStyleEl) applyGlassStyle()
-  } else if (glassStyleEl) {
-    removeGlassStyle()
-  }
+  void opacity
 }
 
 /** Is audio actually playing right now? The server's own reading: level over
  *  the music threshold and not flagged silent. */
+/** Hand the caret back to the chat after an Aura control takes it.
+ *
+ *  The SDK's own door: no DOM lookup, no saved selection, no `focusin` capture.
+ *  `null` addresses whichever surface the app's focus bus is routing to, and a
+ *  host without the verb simply does nothing.
+ */
+function returnFocusToComposer() {
+  try {
+    if (host && host.composer && typeof host.composer.focus === 'function') {
+      host.composer.focus(null)
+    }
+  } catch {
+    // a host without the verb is not an error
+  }
+}
+
+/** The film, drawn by the SDK's own sandboxed frame.
+ *
+ *  Was: a raw `<iframe>` created with `document.createElement` and appended to
+ *  the app's own body element, positioned fixed behind the whole window. That is
+ *  markup the plugin does not own, and the frame carried a hand-built `sandbox`
+ *  attribute the SDK is meant to arbitrate. Now the frame is a React element
+ *  from `@hermes/plugin-sdk`, mounted inside Aura's own pane/page/window; the
+ *  element it produces is adopted into `filmFrame` so the existing postMessage
+ *  transport keeps working unchanged.
+ */
+function AuraFilm({ style }) {
+  const settings = useValue($settings)
+  const video = useValue($video)
+  const src = filmSrc()
+  if (!src) return null
+  const opacity = clamp01(filmOpacity(settings, video))
+  return jsx(SandboxedFrame, {
+    src,
+    title: 'Aura film',
+    sandbox: 'allow-scripts allow-forms allow-downloads allow-presentation',
+    style: {
+      width: '100%', height: '100%', border: 0,
+      opacity,
+      pointerEvents: 'auto',
+      ...(style || {})
+    },
+    ref: node => { filmFrame = node }
+  })
+}
+
+/** The player URL for the current source, or '' when there is nothing to show. */
+function filmSrc() {
+  const settings = $settings.get()
+  const url = settings.backdropMode === 'video' ? String(settings.videoUrl || '') : String(settings.audioUrl || '')
+  if (!url) return ''
+  return backdropSrc(url)
+}
+
+/** Opacity for the film surface: the video's own transparency, or the Aura
+ *  backdrop's for the visualiser. Never above the user's saved setting. */
+function filmOpacity(settings, video) {
+  if (settings.backdropMode === 'video') {
+    const manual = Number(video && video.opacity)
+    if (Number.isFinite(manual)) return manual
+    return Number(settings.videoOpacity) || 1
+  }
+  return Number(settings.opacity) || 0.5
+}
+
 function musicIsPlayingNow() {
   const frame = liveFrame
   if (!frame) return false
@@ -1108,17 +996,17 @@ function effectiveVideoOpacity() {
  *  can call it every 250 ms and the backdrop follows the music. */
 function applyVideoOpacity() {
   const settings = $settings.get()
-  if (!backdropEl || settings.backdropMode !== 'video' || settings.showWhen !== 'always') return
+  if (!filmFrame || settings.backdropMode !== 'video' || settings.showWhen !== 'always') return
   // The page is a window, not a wash: the film is watched, not read through.
   if (pageVisible()) {
-    backdropEl.style.opacity = '1'
+    filmFrame.style.opacity = '1'
     return
   }
   if (videoWindowOn()) {
-    backdropEl.style.opacity = '1'
+    filmFrame.style.opacity = '1'
     return
   }
-  backdropEl.style.opacity = String(effectiveVideoOpacity())
+  filmFrame.style.opacity = String(effectiveVideoOpacity())
 }
 
 /** The backdrop's opacity for the current mode: the video player is a movie
@@ -1179,7 +1067,7 @@ function syncBackdrop() {
 }
 
 function applyShowOpacity() {
-  if (backdropEl) backdropEl.style.opacity = String(clamp01(showOpacity))
+  if (filmFrame) filmFrame.style.opacity = String(clamp01(showOpacity))
 }
 
 /** Walk the opacity to showTarget over <= 1.5 s (<= 200 ms under reduced
@@ -2063,7 +1951,7 @@ function setVideoOpacity(value) {
   const videoOpacity = clamp01(Number(value))
   writeSettings({ videoOpacity, videoOpacityAuto: false })
   applyVideoOpacity()
-  if (backdropEl) backdropEl.style.opacity = String(videoOpacity)
+  if (filmFrame) filmFrame.style.opacity = String(videoOpacity)
 }
 
 /** Back to the adaptive level (20% working / 30% with music / +3% per extra
@@ -2096,7 +1984,6 @@ function setVideoWindow(on) {
   writeSettings({ videoWindow: Boolean(on) })
   applyBackdropLayout()
   applyVideoOpacity()
-  positionVideoBar()
   syncVideoBar(true)
 }
 
@@ -2106,7 +1993,6 @@ function setVideoWindowCorner(corner) {
   const next = VIDEO_WINDOW_CORNER_OPTIONS.includes(corner) ? corner : VIDEO_WINDOW_DEFAULT_CORNER
   writeSettings({ videoWindowCorner: next })
   applyBackdropLayout()
-  positionVideoBar()
   syncVideoBar(true)
 }
 
@@ -2117,7 +2003,6 @@ function setVideoWindowSize(size) {
     : VIDEO_WINDOW_DEFAULT_SIZE
   writeSettings({ videoWindowSize: next })
   applyBackdropLayout()
-  positionVideoBar()
   syncVideoBar(true)
 }
 
@@ -2310,7 +2195,7 @@ function clearVideoRecents() {
 
 function postToBackdrop(message) {
   try {
-    const win = backdropEl && backdropEl.contentWindow
+    const win = filmFrame && filmFrame.contentWindow
     if (!win) return false
     win.postMessage({ aura: 'transport', ...message }, '*')
     return true
@@ -2413,7 +2298,7 @@ function readAudioSettings(raw) {
 /** Send one command to the audio channel in the backdrop document. */
 function audioCommand(message) {
   try {
-    const win = backdropEl && backdropEl.contentWindow
+    const win = filmFrame && filmFrame.contentWindow
     if (!win) return false
     win.postMessage({ aura: 'audio', ...message }, '*')
     lastAudioCommand = { ...message, at: Date.now() }
@@ -2740,8 +2625,8 @@ async function skipBlockedEpisode(reason) {
 
 /** player.html posts its transport state here (<= 4 Hz + on change). */
 function onBackdropMessage(event) {
-  if (disposed || !event || !backdropEl) return
-  if (event.source !== backdropEl.contentWindow) return
+  if (disposed || !event || !filmFrame) return
+  if (event.source !== filmFrame.contentWindow) return
   const data = event.data
   // [listen lane] The audio channel reports through the same bridge. Its own
   // mute/volume are never folded into the video's.
@@ -2795,6 +2680,51 @@ function onBackdropMessage(event) {
 }
 
 
+/** The transport strip, mounted in the composer's `underside` slot.
+ *
+ *  Was: a `position: fixed` bar appended to the app's body, kept above the
+ *  composer by scanning the app's text fields and measuring the lowest one. That is the app's composer markup, and
+ *  it moves whenever the composer is redesigned. The slot below the composer is
+ *  the sanctioned seat for exactly this kind of strip: the host places it, sizes
+ *  it and takes it away with the plugin.
+ */
+let videoBarSlot = null
+
+function AuraComposerStrip() {
+  const settings = useValue($settings)
+  const video = useValue($video)
+  const active = videoBarActive()
+  const ref = useRef(null)
+  useEffect(() => {
+    videoBarSlot = ref.current
+    if (active) {
+      try {
+        if (!videoBarEl) mountVideoBar(ref.current)
+        syncVideoBar(true)
+      } catch (cause) {
+        setError(`Aura could not draw the video controls (${String((cause && cause.message) || cause).slice(0, 80)}).`)
+      }
+    } else {
+      removeVideoBar()
+    }
+    return () => {
+      videoBarSlot = null
+      removeVideoBar()
+    }
+  }, [active])
+  useEffect(() => {
+    if (active) syncVideoBar()
+  })
+  void settings
+  void video
+  if (!active) return null
+  return jsx('div', {
+    ref,
+    className: 'aura-strip-slot',
+    style: { width: '100%', display: 'flex', justifyContent: 'center', padding: '2px 0' }
+  })
+}
+
 // ------------------------------------------------------ floating video bar
 // A transport pill at the bottom of the window. Plain DOM, like the dev
 // readout: the host offers no "floating anywhere" slot and a status-bar
@@ -2808,94 +2738,12 @@ let videoBarParts = null
 let videoBarHideTimer = null
 // Live drag of the watch window (grip on the strip). Timers/listeners are
 // host-owned or removed in removeVideoBar; the position is persisted on drop.
-let windowDrag = null
 
-function onWindowDragMove(event) {
-  if (!windowDrag || !backdropEl || !event) return
-  const width = videoWindowWidth()
-  const height = Math.round(width * 9 / 16)
-  const view = doc && doc.defaultView
-  const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
-  const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
-  const x = Math.min(Math.max(8, windowDrag.startX + (event.clientX - windowDrag.pointerX)), Math.max(8, vw - width - 8))
-  const y = Math.min(Math.max(8, windowDrag.startY + (event.clientY - windowDrag.pointerY)), Math.max(8, vh - height - 8))
-  windowDrag.x = x
-  windowDrag.y = y
-  backdropEl.style.left = `${x}px`
-  backdropEl.style.top = `${y}px`
-  if (videoBarEl) {
-    const barWidth = videoBarEl.getBoundingClientRect
-      ? (videoBarEl.getBoundingClientRect().width || 0)
-      : 0
-    videoBarEl.style.left = `${Math.round(x + (width - barWidth) / 2)}px`
-    videoBarEl.style.top = `${y + height + 8}px`
-  }
-}
-
-function endWindowDrag() {
-  if (!windowDrag) return
-  const { x, y } = windowDrag
-  windowDrag = null
-  if (doc) {
-    doc.removeEventListener('mousemove', onWindowDragMove)
-    doc.removeEventListener('mouseup', endWindowDrag)
-  }
-  // Remember it: this is the whole point of dragging.
-  writeSettings({ videoWindowCorner: 'free', videoWindowX: x, videoWindowY: y })
-  positionVideoBar()
-}
-
-function beginWindowDrag(event) {
-  if (!backdropEl || !event) return
-  try { event.preventDefault() } catch { /* synthetic */ }
-  // Dragging the grip while the film is a full-window backdrop is also how you
-  // "open a frame": grab it and it becomes a window you can drop anywhere.
-  if (!videoWindowOn()) {
-    writeSettings({ videoWindow: true, videoClosed: false })
-    applyBackdropLayout()
-  }
-  const style = backdropEl.style
-  const startX = parseFloat(style.left)
-  const startY = parseFloat(style.top)
-  windowDrag = {
-    pointerX: event.clientX,
-    pointerY: event.clientY,
-    startX: Number.isFinite(startX) ? startX : 24,
-    startY: Number.isFinite(startY) ? startY : 24,
-    x: 0,
-    y: 0
-  }
-  if (doc) {
-    doc.addEventListener('mousemove', onWindowDragMove, { passive: true })
-    doc.addEventListener('mouseup', endWindowDrag)
-  }
-}
 let volumePushedFor = ''
 // Where the movie was when we last saw it. Kept across a plugin remount so
 // switching to another plugin (Omniscience and friends) and back does not drop
 // you to the start of the film: the player is reloaded, then seeked to here.
 let resumeSavedAt = 0
-
-/** The chat composer's box, found by behaviour rather than by class name: the
- *  lowest wide text-entry field in the window. The strip parks itself just
- *  above it (owner ask: "just above the chat box"), and falls back to a safe
- *  bottom-left spot when the app's layout changes under us. */
-function composerRect() {
-  if (!doc || typeof doc.querySelectorAll !== 'function') return null
-  const view = doc.defaultView || globalThis
-  const height = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
-  const nodes = doc.querySelectorAll('textarea, [contenteditable="true"]')
-  let best = null
-  for (const node of nodes) {
-    if (!node || typeof node.getBoundingClientRect !== 'function') continue
-    const rect = node.getBoundingClientRect()
-    if (!rect || !rect.width || !rect.height) continue
-    if (rect.width < 160) continue
-    if (rect.top < height * 0.4) continue
-    if (!best || rect.top < best.top) best = rect
-  }
-  return best
-}
 
 // The watch window: instead of the film sitting behind the whole app at 20%,
 // it can live in its own real frame (PiP-style) so you can actually watch it
@@ -2942,143 +2790,10 @@ function videoWindowPoint(width) {
 }
 
 function applyBackdropLayout() {
-  if (!backdropEl) return
-  // Mid-drag the style is the truth; re-applying the saved point would fight it.
-  if (windowDrag) return
-  const style = backdropEl.style
-  const current = $settings.get()
-  // A popped-out OS window owns the picture: the in-app frame is parked, not
-  // shrunk into a corner. One film, one surface.
-  if (desktopOwned || desktopPending) {
-    style.display = 'none'
-    style.width = '0px'
-    style.height = '0px'
-    return
-  }
-  style.display = ''
-  // The full page's stage outranks everything: it is the one place the film is
-  // meant to be watched, and the page is only open while the user is there.
-  if (pageVisible() && current.backdropMode === 'video' && !current.videoClosed) {
-    const slot = pageVideoSlot()
-    if (slot) {
-      style.inset = 'auto'
-      style.left = `${Math.round(slot.left)}px`
-      style.top = `${Math.round(slot.top)}px`
-      style.width = `${Math.round(slot.width)}px`
-      style.height = `${Math.round(slot.height)}px`
-      style.right = 'auto'
-      style.bottom = 'auto'
-      style.borderRadius = '12px'
-      style.border = '0'
-      style.boxShadow = 'none'
-      style.overflow = 'hidden'
-      // Above the page's own content, below host popovers: a page frame, not an
-      // app-wide overlay. Still click-through; the page's controls are the remote.
-      style.zIndex = '1'
-      style.background = '#000'
-      return
-    }
-  }
-  // Docked panel: the film lives inside the panel's stage, not behind the app.
-  if (panelVisible() && current.backdropMode === 'video' && !current.videoClosed && !videoWindowOn()) {
-    const slot = panelVideoSlot()
-    if (slot) {
-      style.inset = 'auto'
-      style.left = `${Math.round(slot.left)}px`
-      style.top = `${Math.round(slot.top)}px`
-      style.width = `${Math.round(slot.width)}px`
-      style.height = `${Math.round(slot.height)}px`
-      style.right = 'auto'
-      style.bottom = 'auto'
-      style.borderRadius = '12px'
-      style.border = '0'
-      style.boxShadow = 'none'
-      style.overflow = 'hidden'
-      style.zIndex = '999991'
-      style.background = '#000'
-      return
-    }
-  }
-  if (videoWindowOn()) {
-    const width = videoWindowWidth()
-    const point = videoWindowPoint(width)
-    style.inset = 'auto'
-    style.left = `${point.x}px`
-    style.top = `${point.y}px`
-    style.right = 'auto'
-    style.bottom = 'auto'
-    style.width = `${width}px`
-    style.height = `${Math.round(width * 9 / 16)}px`
-    style.borderRadius = '12px'
-    style.border = '1px solid rgba(255,255,255,0.16)'
-    style.boxShadow = '0 14px 40px rgba(0,0,0,0.5)'
-    style.overflow = 'hidden'
-    // Above the app so the film is not read through by chat text, below the
-    // control strip. Still click-through: the strip is the remote.
-    style.zIndex = '999997'
-    style.background = '#000'
-  } else {
-    style.inset = '0'
-    style.left = '0'
-    style.right = 'auto'
-    style.bottom = 'auto'
-    style.width = '100vw'
-    style.height = '100vh'
-    style.borderRadius = '0'
-    style.border = '0'
-    style.boxShadow = 'none'
-    style.overflow = 'visible'
-    style.zIndex = '-1'
-    style.background = 'transparent'
-  }
-}
-
-function positionVideoBar() {
-  if (!videoBarEl) return
-  // Never reposition mid-drag: the 4 Hz tick would snap the frame back to the
-  // last saved spot while your mouse is still moving it.
-  if (windowDrag) return
-  const view = doc && doc.defaultView
-  const height = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
-  if (videoWindowOn()) {
-    // Centre the strip under the film, the way a player's controls sit centred
-    // under the picture — and keep it inside the viewport if the frame is
-    // dragged to an edge.
-    const width = videoWindowWidth()
-    const point = videoWindowPoint(width)
-    const frameHeight = Math.round(width * 9 / 16)
-    const view = doc && doc.defaultView
-    const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
-    const barWidth = videoBarEl.getBoundingClientRect
-      ? (videoBarEl.getBoundingClientRect().width || 0)
-      : 0
-    const centred = barWidth ? point.x + (width - barWidth) / 2 : point.x
-    const clamped = Math.min(Math.max(8, centred), Math.max(8, vw - barWidth - 8))
-    videoBarEl.style.left = `${Math.round(clamped)}px`
-    videoBarEl.style.right = 'auto'
-    // The two-row strip is taller than the old pill: keep its whole box inside
-    // the viewport instead of letting the bottom row fall off a short screen.
-    const barHeight = videoBarEl.getBoundingClientRect
-      ? (videoBarEl.getBoundingClientRect().height || 0)
-      : 0
-    let top = point.y + frameHeight + 8
-    if (barHeight && top + barHeight > height - 8) {
-      top = Math.max(8, height - barHeight - 8)
-    }
-    videoBarEl.style.top = `${Math.round(top)}px`
-    videoBarEl.style.bottom = 'auto'
-    return
-  }
-  videoBarEl.style.right = 'auto'
-  videoBarEl.style.top = 'auto'
-  const rect = composerRect()
-  if (rect) {
-    videoBarEl.style.left = `${Math.max(12, Math.round(rect.left))}px`
-    videoBarEl.style.bottom = `${Math.max(12, Math.round(height - rect.top + 10))}px`
-  } else {
-    videoBarEl.style.left = '24px'
-    videoBarEl.style.bottom = '150px'
-  }
+  // Retired with the body iframe: the film is a SandboxedFrame rendered inside
+  // Aura's own pane, page or watch window, and the host lays those out. Kept as
+  // a no-op because transport and lifecycle code calls it to mean "the surface
+  // changed" — that is React's job now.
 }
 
 function fmtClock(seconds) {
@@ -3132,8 +2847,10 @@ function videoBarButton(label, aria, cmd, value) {
   return el
 }
 
-function mountVideoBar() {
-  if (videoBarEl || !doc || !doc.body || typeof doc.createElement !== 'function') return
+function mountVideoBar(node) {
+  if (videoBarEl || !doc || typeof doc.createElement !== 'function') return
+  const slot = node || videoBarSlot
+  if (!slot) return
   const bar = doc.createElement('div')
   bar.setAttribute('role', 'toolbar')
   bar.setAttribute('aria-label', 'Aura video controls')
@@ -3141,16 +2858,18 @@ function mountVideoBar() {
     ? $settings.get().videoBarOpacity
     : VIDEO_BAR_OPACITY)
   Object.assign(bar.style, {
-    position: 'fixed', left: '24px', bottom: '140px', transform: 'none',
+    // In the composer's underside slot the host owns placement and width: no
+    // fixed coordinates, no z-index, nothing to position against the chat box.
+    position: 'relative', transform: 'none',
     display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '2px',
-    width: '340px', maxWidth: 'calc(100vw - 16px)', boxSizing: 'border-box',
+    width: '100%', maxWidth: '100%', boxSizing: 'border-box',
     padding: '5px 9px 6px', borderRadius: '14px',
     background: `rgba(12, 10, 22, ${barAlpha})`, color: '#fff',
     border: '1px solid rgba(255,255,255,0.14)',
     boxShadow: '0 8px 28px rgba(0,0,0,0.38)',
     backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
     font: '11px/1 system-ui, -apple-system, sans-serif',
-    zIndex: '999998', pointerEvents: 'auto', opacity: '1',
+    pointerEvents: 'auto', opacity: '1',
     WebkitAppRegion: 'no-drag',
     transition: 'opacity 220ms ease', userSelect: 'none'
   })
@@ -3250,7 +2969,6 @@ function mountVideoBar() {
     border: '1px solid rgba(255,255,255,0.22)', userSelect: 'none',
     color: 'inherit'
   })
-  grip.addEventListener('mousedown', event => beginWindowDrag(event))
 
   // Close: pauses and takes the film off screen; Settings/quick menu can
   // reopen it, and it resumes where it stopped.
@@ -3288,11 +3006,6 @@ function mountVideoBar() {
   }
   bar.appendChild(topRow)
   bar.appendChild(transportRow)
-  // Grabbing empty strip (not a button) also drags the window.
-  bar.addEventListener('mousedown', event => {
-    if (!event || event.target !== bar) return
-    beginWindowDrag(event)
-  })
   // Wheel over the strip = volume, the way every media player behaves. It is
   // the one gesture that is worth the surprise, and it only fires over the
   // pill, never over the chat.
@@ -3304,7 +3017,13 @@ function mountVideoBar() {
     showVideoBar()
   }, { passive: false })
 
-  doc.body.appendChild(bar)
+  // A click on one of our controls should hand the caret back to the chat when
+  // the click is done — through the SDK's verb, not by restoring a DOM range.
+  bar.addEventListener('click', () => {
+    setTimeout(returnFocusToComposer, 0)
+  })
+
+  slot.appendChild(bar)
   videoBarEl = bar
   videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill, title }
 }
@@ -3318,11 +3037,6 @@ function removeVideoBar() {
     doc.removeEventListener('mousemove', onVideoBarMouseMove)
     doc.removeEventListener('mousedown', onVideoBarMouseMove)
   }
-  if (windowDrag && doc) {
-    doc.removeEventListener('mousemove', onWindowDragMove)
-    doc.removeEventListener('mouseup', endWindowDrag)
-  }
-  windowDrag = null
   if (videoBarEl && videoBarEl.parentNode) videoBarEl.parentNode.removeChild(videoBarEl)
   videoBarEl = null
   videoBarParts = null
@@ -3772,9 +3486,7 @@ function ensurePanelStyle() {
 function removePanelStyle() {
   if (panelStyleEl && panelStyleEl.parentNode) panelStyleEl.parentNode.removeChild(panelStyleEl)
   panelStyleEl = null
-  if (doc && doc.body && doc.body.classList && typeof doc.body.classList.remove === 'function') {
-    // Host body styles are never written; nothing to undo. */
-  }
+  // Host body styles were never written, so there is nothing to undo.
 }
 
 /** YouTube artwork for a card; anything else gets a warm gradient block. */
@@ -3800,7 +3512,6 @@ function panelButton(label, aria, onClick, primary) {
 function mountPanelInto(hostNode) {
   if (!doc || !hostNode) return
   if (panelEl) removePanel()
-  if (!doc.body) return
   ensurePanelStyle()
 
   const panel = doc.createElement('div')
@@ -4133,6 +3844,9 @@ function syncPanel(force) {
     parts.hint.textContent = baseHint
     parts.hint.setAttribute('data-note', 'false')
   }
+  // When the SDK frame is showing the film, the stage box is just an empty
+  // 16:9 hole: the hint belongs to a stage with no picture in it.
+  if (parts.stage) parts.stage.style.display = filmFrame ? 'none' : ''
   parts.vol.value = String(Math.round(clamp01(settings.videoVolume) * 100))
 
   const queue = videoQueue().slice(0, PANEL_SCORE_MAX)
@@ -4249,6 +3963,13 @@ function AuraPane() {
   const settings = useValue($settings)
   if (settings.panelEnabled === false) return null
   const open = settings.panelSettingsOpen === true
+  // The film is an SDK SandboxedFrame inside this pane (review 3), above the
+  // DOM control panel. The host lays the pane out; the frame just fills the
+  // 16:9 box we give it.
+  const film = jsx(AuraFilm, {
+    key: 'film',
+    style: { width: '100%', aspectRatio: '16 / 9', borderRadius: 12, overflow: 'hidden', background: '#000', flex: '0 0 auto' }
+  })
   const theatre = jsx('div', {
     key: 'theatre',
     ref: panelHostRef,
@@ -4291,7 +4012,7 @@ function AuraPane() {
       height: '100%', minHeight: 0, overflowY: 'auto',
       display: 'flex', flexDirection: 'column'
     },
-    children: [theatre, settingsSection]
+    children: [film, theatre, settingsSection]
   })
 }
 
@@ -4340,7 +4061,6 @@ function syncVideoBar(force) {
   }
   const parts = videoBarParts
   if (!parts) return
-  positionVideoBar()
   const state = $video.get()
   const settings = $settings.get()
   const barAlpha = clamp01(Number.isFinite(settings.videoBarOpacity)
@@ -4350,12 +4070,12 @@ function syncVideoBar(force) {
 
   // A new player document starts at its own default volume: re-send ours
   // shortly after each (re)load so a source swap keeps the level.
-  if (backdropEl && backdropUrl !== volumePushedFor) {
+  if (filmFrame && backdropUrl !== volumePushedFor) {
     volumePushedFor = backdropUrl
     const forUrl = backdropUrl
     const resumeAt = resumeTargetFor($settings.get().videoUrl)
     const poke = () => {
-      if (disposed || !backdropEl || backdropUrl !== forUrl) return
+      if (disposed || !filmFrame || backdropUrl !== forUrl) return
       postToBackdrop({ cmd: 'volume', value: $settings.get().videoVolume })
       if (resumeAt > 0) {
         postToBackdrop({ cmd: 'seekTo', value: resumeAt })
@@ -4367,7 +4087,7 @@ function syncVideoBar(force) {
     // near the start a few seconds later, ask again — that is what "resume"
     // failing looked like from the outside.
     setTimeout(() => {
-      if (disposed || !backdropEl || backdropUrl !== forUrl || resumeAt <= 0) return
+      if (disposed || !filmFrame || backdropUrl !== forUrl || resumeAt <= 0) return
       if ($video.get().position < Math.max(5, resumeAt * 0.6)) poke()
     }, 3500)
   }
@@ -4502,226 +4222,14 @@ async function setAutoPreset(next) {
 // fires: hidden means zero DOM, zero timers, zero listeners beyond keydown.
 
 const DEV_STATS_REFRESH_MS = 100
-const DEV_STATS_ROWS = Object.freeze([
-  ['sessions', 'sessions'],
-  ['boost', 'boost'],
-  ['intensity', 'intensity'],
-  ['mood', 'mood'],
-  ['level', 'music level'],
-  ['silence', 'silence'],
-  ['fps', 'fps'],
-  ['preset', 'preset'],
-  // What last took focus: the composer going dead for no visible reason is
-  // otherwise unprovable after the fact.
-  ['focus', 'last focus'],
-  // Did the keyboard reach the app at all? A dead composer with this counting
-  // up is the host dropping keys; stuck at 0 is something above us holding them.
-  ['keys', 'keys seen']
-])
-
-let devStatsEl = null
-let devStatsValueEls = null
-let devStatsTimer = null
-let devFps = 0
-let devFpsLastSeq = null
-let devFpsLastAt = 0
-
-function buildDevStatsPanel() {
-  const panel = doc.createElement('div')
-  panel.setAttribute('id', 'aura-dev-stats')
-  panel.setAttribute('role', 'status')
-  panel.setAttribute('aria-label', 'Aura dev stats')
-  const style = panel.style
-  style.position = 'fixed'
-  style.right = '16px'
-  style.bottom = '16px'
-  style.width = '250px'
-  style.boxSizing = 'border-box'
-  style.zIndex = '999999'
-  style.pointerEvents = 'none'
-  style.padding = '8px 10px'
-  style.borderRadius = '8px'
-  style.border = '1px solid var(--ui-stroke-secondary, #2a2a33)'
-  style.background = 'color-mix(in srgb, var(--ui-bg-elevated, #0c0c11) 92%, #000)'
-  style.color = 'var(--ui-text-primary, #e2e2ea)'
-  style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, monospace'
-  style.fontSize = '11px'
-  style.lineHeight = '1.55'
-  style.fontVariantNumeric = 'tabular-nums'
-  style.boxShadow = '0 8px 28px rgba(0,0,0,0.35)'
-
-  const header = doc.createElement('div')
-  header.textContent = 'AURA · dev stats'
-  header.style.color = 'var(--ui-accent, #8f8fff)'
-  header.style.fontWeight = '700'
-  header.style.letterSpacing = '0.04em'
-  header.style.marginBottom = '4px'
-  panel.appendChild(header)
-
-  devStatsValueEls = {}
-  for (const [key, label] of DEV_STATS_ROWS) {
-    const row = doc.createElement('div')
-    row.style.display = 'flex'
-    row.style.justifyContent = 'space-between'
-    row.style.gap = '8px'
-    const keyEl = doc.createElement('span')
-    keyEl.textContent = label
-    keyEl.style.color = 'var(--ui-text-tertiary, #8a8a96)'
-    const valueEl = doc.createElement('span')
-    valueEl.textContent = '—'
-    valueEl.style.textAlign = 'right'
-    row.appendChild(keyEl)
-    row.appendChild(valueEl)
-    panel.appendChild(row)
-    devStatsValueEls[key] = valueEl
-  }
-
-  const hint = doc.createElement('div')
-  hint.textContent = 'Ctrl+Shift+A to close'
-  hint.style.color = 'var(--ui-text-tertiary, #8a8a96)'
-  hint.style.marginTop = '4px'
-  hint.style.fontSize = '10px'
-  panel.appendChild(hint)
-  return panel
-}
-
-/** Observed feature-frame rate: seq advances per /state poll are turned into
- *  an instantaneous fps and smoothed. Falls off to 0 when the stream stalls. */
-function devStatsFpsStep(frame) {
-  const seq = frame && Number.isFinite(frame.seq) ? frame.seq : null
-  const now = Date.now()
-  if (seq === null) {
-    devFps = 0
-    devFpsLastSeq = null
-    return
-  }
-  if (devFpsLastSeq === null) {
-    devFpsLastSeq = seq
-    devFpsLastAt = now
-    return
-  }
-  if (seq > devFpsLastSeq) {
-    const dt = now - devFpsLastAt
-    if (dt > 0) {
-      const inst = ((seq - devFpsLastSeq) * 1000) / dt
-      devFps = devFps > 0 ? devFps * 0.7 + inst * 0.3 : inst
-    }
-    devFpsLastSeq = seq
-    devFpsLastAt = now
-  } else if (now - devFpsLastAt > 1200) {
-    devFps = devFps < 0.1 ? 0 : devFps * 0.9
-  }
-}
-
-function devStatsTick() {
-  if (disposed || !devStatsEl || !devStatsValueEls) return
-  if (doc && doc.hidden) return
-  const frame = liveFrame || {}
-  const live = $live.get()
-  const settings = $settings.get()
-  devStatsFpsStep(frame)
-
-  const sessions = Number.isFinite(frame.sessions) ? String(frame.sessions) : '—'
-  const boost = Number.isFinite(frame.session_boost) ? `${frame.session_boost.toFixed(2)}x` : '—'
-  const serverIntensity = Number.isFinite(frame.intensity) ? clamp01(frame.intensity) : null
-  const intensity = serverIntensity === null
-    ? clamp01(settings.intensity)
-    : Math.min(clamp01(settings.intensity), serverIntensity)
-  const mood = (typeof live.mood === 'string' && live.mood)
-    || (typeof frame.mood === 'string' && frame.mood)
-    || '—'
-  const level = Number.isFinite(frame.level) ? clamp01(frame.level).toFixed(3) : '—'
-  const silence = frame.silence === true ? 'yes' : frame.silence === false ? 'no' : '—'
-  const fps = devFps > 0 ? devFps.toFixed(1) : '0.0'
-  const preset = typeof frame.preset === 'string' && frame.preset ? frame.preset : '—'
-  const focus = focusTrace.length ? focusTrace[focusTrace.length - 1] : '—'
-
-  const values = { sessions, boost, intensity: `${Math.round(intensity * 100)}%`, mood, level, silence, fps, preset, focus, keys: String(keysSeen) }
-  for (const [key] of DEV_STATS_ROWS) {
-    const el = devStatsValueEls[key]
-    const value = values[key]
-    if (el && el.textContent !== value) el.textContent = value
-  }
-}
-
-function clearDevStatsTimer() {
-  if (!devStatsTimer) return
-  const handle = devStatsTimer
-  devStatsTimer = null
-  try {
-    if (typeof handle === 'function') {
-      handle()
-      return
-    }
-    if (ctxRef && typeof ctxRef.clearInterval === 'function') {
-      ctxRef.clearInterval(handle)
-      return
-    }
-    if (typeof clearInterval === 'function') clearInterval(handle)
-  } catch {
-    // already cleared
-  }
-}
-
-function openDevStats() {
-  if (!doc || !doc.body || typeof doc.body.appendChild !== 'function' || devStatsEl) return
-  devFps = 0
-  devFpsLastSeq = null
-  devFpsLastAt = 0
-  devStatsEl = buildDevStatsPanel()
-  doc.body.appendChild(devStatsEl)
-  devStatsTick()
-  if (ctxRef && typeof ctxRef.setInterval === 'function') {
-    try {
-      devStatsTimer = ctxRef.setInterval(devStatsTick, DEV_STATS_REFRESH_MS)
-    } catch {
-      devStatsTimer = null
-    }
-  }
-  if (!devStatsTimer && typeof setInterval === 'function') {
-    devStatsTimer = setInterval(devStatsTick, DEV_STATS_REFRESH_MS)
-  }
-}
-
-function closeDevStats() {
-  clearDevStatsTimer()
-  if (devStatsEl) {
-    try {
-      devStatsEl.remove()
-    } catch {
-      try {
-        if (devStatsEl.parentNode) devStatsEl.parentNode.removeChild(devStatsEl)
-      } catch {
-        // detached already
-      }
-    }
-  }
-  devStatsEl = null
-  devStatsValueEls = null
-  devFps = 0
-  devFpsLastSeq = null
-  devFpsLastAt = 0
-}
-
-/** Ctrl+Shift+H: hide/show the panel. A keyboard escape hatch, because a
- *  click-swallowing overlay must never be the only way out. */
+/** Ctrl+Shift+H — show/hide Aura's own pane. Not a capture listener and not a
+ *  keyboard grab: it answers one exact chord, only while the host has focus,
+ *  and does nothing else. */
 function onPanelKeydown(event) {
   if (disposed || !event || event.defaultPrevented || event.repeat) return
   if (event.code !== 'KeyH' || !event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey) return
-  try { event.preventDefault() } catch { /* synthetic */ }
+  try { event.preventDefault() } catch { /* synthetic events in tests */ }
   setPanelEnabled($settings.get().panelEnabled === false)
-}
-
-function onDevStatsKeydown(event) {
-  if (disposed || !event || event.defaultPrevented || event.repeat) return
-  if (event.code !== 'KeyA' || !event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey) return
-  try {
-    event.preventDefault()
-  } catch {
-    // synthetic events in tests may not support it
-  }
-  if (devStatsEl) closeDevStats()
-  else openDevStats()
 }
 
 // ---------------------------------------------------------------------- UI
@@ -5179,6 +4687,9 @@ function AuraQuickMenu() {
                             event.currentTarget.blur()
                           }
                         },
+                        onChange: event => {
+                          urlDraft = event && event.target ? String(event.target.value) : ''
+                        },
                         onBlur: event => {
                           void applyUrlBox(event && event.target ? String(event.target.value) : '')
                         }
@@ -5187,10 +4698,7 @@ function AuraQuickMenu() {
                         size: 'micro', variant: 'ghost', 'aria-label': 'Apply video URL',
                         title: 'Apply video URL',
                         onClick: () => {
-                          const field = doc && typeof doc.querySelector === 'function'
-                            ? doc.querySelector('input[aria-label="Video URL"]')
-                            : null
-                          if (field && typeof field.value === 'string') void applyUrlBox(field.value)
+                          void applyUrlBox(urlDraft)
                         },
                         children: '⟳'
                       })
@@ -5867,25 +5375,11 @@ function AuraPage() {
   const state = useValue($video)
   const auraOn = live.ok ? live.enabled === true : settings.enabled
   const playing = state.playing === true
-  // The film is a fixed-position frame glued to this stage's rect, so the rect
-  // has to follow a scrolling page between poll ticks (4 Hz is a visible lag).
-  // React owns this listener: it goes away with the page.
   useEffect(() => {
     // Leaving the page throws away a half-typed add-source draft, so it can
     // never be added by accident from a later visit.
     return () => {
       pageSourceDraft = { url: '', name: '' }
-    }
-  }, [])
-  useEffect(() => {
-    const view = doc && doc.defaultView
-    if (!view || typeof view.addEventListener !== 'function') return undefined
-    const onMove = () => applyBackdropLayout()
-    view.addEventListener('scroll', onMove, true)
-    view.addEventListener('resize', onMove)
-    return () => {
-      view.removeEventListener('scroll', onMove, true)
-      view.removeEventListener('resize', onMove)
     }
   }, [])
   const duration = Number(state.duration) || 0
@@ -5917,7 +5411,9 @@ function AuraPage() {
       background: 'radial-gradient(circle at 50% 40%, #221a2e, #0d0a12 75%)',
       boxShadow: 'inset 0 0 40px rgba(255,150,80,0.06), 0 10px 30px rgba(0,0,0,0.35)'
     },
-    children: hint
+    children: [
+      jsx(AuraFilm, { key: 'film', style: { position: 'absolute', inset: 0 } }),
+      hint
       ? jsx('div', {
         key: 'hint',
         className: 'aura-hint',
@@ -5929,6 +5425,7 @@ function AuraPage() {
         children: hint
       })
       : null
+    ]
   })
 
   const scrub = jsxs('div', {
@@ -6154,16 +5651,10 @@ async function copyText(text) {
     }
   } catch { /* fall through to the textarea */ }
   try {
-    const area = document.createElement('textarea')
-    area.value = text
-    area.setAttribute('readonly', '')
-    area.style.position = 'fixed'
-    area.style.opacity = '0'
-    document.body.append(area)
-    area.select()
-    const ok = document.execCommand('copy')
-    area.remove()
-    return ok
+    const wrote = host && host.os && typeof host.os.writeClipboard === 'function'
+      ? await host.os.writeClipboard(text)
+      : false
+    return wrote === true
   } catch { return false }
 }
 
@@ -6991,7 +6482,6 @@ function teardown() {
       // one broken disposer must not strand the rest
     }
   }
-  closeDevStats()
   ctxRef = null
   liveFrame = null
   liveKey = ''
@@ -7056,8 +6546,7 @@ export default {
     $pulse.set(0)
     pulseIndex = 0
     resetShow()
-    closeDevStats()
-    const settings = readSettings(ctx)
+      const settings = readSettings(ctx)
     $settings.set(settings)
     $live.set({ ...EMPTY_LIVE })
     $video.set({ ...EMPTY_VIDEO })
@@ -7187,21 +6676,15 @@ export default {
       if (typeof globalThis !== 'undefined' && typeof globalThis.addEventListener === 'function') {
         track(ctx.addEventListener(globalThis, 'message', onBackdropMessage))
       }
-      // Hidden dev shortcut (Ctrl+Shift+A) for the stats overlay. The SDK
-      // disposer removes it on dispose, and the overlay itself is torn down
-      // by closeDevStats() in teardown().
       if (doc) {
-        doc.addEventListener('keydown', onDevStatsKeydown)
-        track(() => doc.removeEventListener('keydown', onDevStatsKeydown))
+        // The transport lives in the composer's underside slot (review 1).
+        track(ctx.register({
+          id: 'strip',
+          area: COMPOSER_AREAS.underside,
+          render: () => jsx(AuraComposerStrip, {})
+        }))
         doc.addEventListener('keydown', onPanelKeydown)
         track(() => doc.removeEventListener('keydown', onPanelKeydown))
-        // The backdrop frame must never keep the keyboard (see releaseBackdropFocus).
-        doc.addEventListener('keydown', countKey, true)
-        track(() => doc.removeEventListener('keydown', countKey, true))
-        doc.addEventListener('focusin', rememberCaret, true)
-        track(() => doc.removeEventListener('focusin', rememberCaret, true))
-        doc.addEventListener('focusin', releaseBackdropFocus, true)
-        track(() => doc.removeEventListener('focusin', releaseBackdropFocus, true))
       }
     }
 
@@ -7251,11 +6734,9 @@ export const __test = {
   panelVisible,
   // The backdrop focus guard: a film page that calls window.focus() must not
   // be able to keep the keyboard (owner: "keeps me from typing into hermes").
-  rememberCaret,
-  releaseBackdropFocus,
   // Tests hand in the frame they are working with; production sets it in
   // mountBackdrop.
-  setBackdropForTest: el => { backdropEl = el },
+  setBackdropForTest: el => { filmFrame = el },
   // Popping out must produce ONE surface, not two (owner: "there should be
   // one or the other").
   setDesktopWindow,
@@ -7264,5 +6745,4 @@ export const __test = {
   hiddenVideoIds,
   hideCurrentEpisode,
   managePlaylist,
-  keysSeenForTest: () => keysSeen
 }

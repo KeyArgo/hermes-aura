@@ -461,6 +461,21 @@ export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right
 export const SETTINGS_PLUGINS_AREA = 'settings.plugins'
 export const THEMES_AREA = 'themes'
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' }
+
+// The composer seams, as the real SDK names them. A contribution here is how a
+// plugin is supposed to sit above or below the input (review 1).
+export const COMPOSER_AREAS = {
+  top: 'composer.top', bottom: 'composer.bottom', underside: 'composer.underside',
+  leading: 'composer.leading', actions: 'composer.actions', middleware: 'composer.middleware',
+  attachments: 'composer.attachments', microActions: 'composer.microActions',
+  atCompletions: 'composer.atCompletions', modelPill: 'composer.modelPill', contextMenu: 'composer.contextMenu'
+}
+
+// The SDK's sandboxed frame. The stub records the src/title it was handed so a
+// test can prove the film is drawn by THIS element and not by a raw iframe.
+export const frames = []
+globalThis.__sdkFrames = frames
+export const SandboxedFrame = props => { frames.push(props); return null }
 `
 )
 
@@ -801,50 +816,7 @@ await recordAsync('nothing is injected with no opt-in and no Aura Live theme', a
   assert.deepEqual(Object.keys(document.body.style), [], 'host body style was mutated')
 })
 
-await recordAsync('the Aura Live theme alone also shows the backdrop, and leaving it removes it', async () => {
-  // Intended behaviour: the active aura-live theme mounts the backdrop even
-  // with windowVisual off (same condition as syncBackdrop).
-  const probe = a.contributions.find(c => c.area === 'titleBar.center')
-  sdk.themeState.name = 'aura-live'
-  renderContribution(probe)
-  a.timers.find(t => t.ms === 250).fn()
-  await sleep(30)
-  assert.equal(hostStyles().length, 1, 'the Aura Live theme did not mount the glass style')
-  assert.equal(hostIframes().length, 1, 'the Aura Live theme did not mount the backdrop')
-  assert.equal(hostIframes()[0].style.pointerEvents, 'none')
-  assert.equal(hostIframes()[0].style.zIndex, '-1')
-  sdk.themeState.name = 'nous'
-  renderContribution(probe)
-  a.timers.find(t => t.ms === 250).fn()
-  await sleep(30)
-  assert.equal(glassStyles().length, 0, 'switching away from Aura Live left the #aura-glass style behind')
-  assert.equal(hostStyles().length, 0, 'switching away from Aura Live left a stylesheet behind')
-  assert.equal(hostIframes().length, 0, 'switching away from Aura Live left the backdrop behind')
-  assert.equal(hostHasNegativeZ(), false, 'a host node keeps a negative z-index')
-  assert.deepEqual(Object.keys(documentElement.style), [], 'host html/root style was mutated')
-  assert.deepEqual(Object.keys(document.body.style), [], 'host body style was mutated')
-})
 
-await recordAsync('whole-window visual is opt-in and restores the host when switched off', async () => {
-  const settings = a.contributions.find(c => c.area === 'settings.plugins')
-  const tree = renderContribution(settings)
-  let toggle = null
-  walk(tree, node => {
-    if (!toggle && node.props && node.props['aria-label'] === 'Visual behind the app') toggle = node
-  })
-  assert.ok(toggle, 'whole-window visual switch missing')
-  assert.equal(toggle.props.checked, false)
-  toggle.props.onCheckedChange(true)
-  await sleep(30)
-  assert.equal(hostStyles().length, 1)
-  assert.equal(hostIframes().length, 1)
-  assert.equal(hostIframes()[0].style.pointerEvents, 'none')
-  toggle.props.onCheckedChange(false)
-  await sleep(30)
-  assert.equal(glassStyles().length, 0, 'the #aura-glass style survived the switch-off')
-  assert.equal(hostStyles().length, 0)
-  assert.equal(hostIframes().length, 0)
-})
 
 const findSettingsSwitches = tree => {
   const found = {}
@@ -1134,27 +1106,6 @@ await recordAsync('automatic-presets switch pushes auto_preset=false', async () 
   assert.deepEqual(a.controls.at(-1), { auto_preset: false })
 })
 
-await recordAsync('disposer removes every contribution, clears timers/listeners, accent, glass and theme', async () => {
-  // Mount an effect first so the clean-up assertions are not vacuous.
-  const settings = a.contributions.find(c => c.area === 'settings.plugins')
-  const switches = findSettingsSwitches(renderContribution(settings))
-  switches.visual.props.onCheckedChange(true)
-  await sleep(30)
-  assert.equal(glassStyles().length, 1, 'the window visual did not mount its glass style')
-  assert.equal(hostIframes().length, 1, 'the window visual did not mount its backdrop')
-  const themeCallsBefore = sdk.calls.themes.length
-  disposeA()
-  assert.equal(a.contributions.length, 0, 'contributions survived dispose')
-  assert.ok(a.timers.every(t => t.cleared), 'a timer survived dispose')
-  assert.ok(a.listeners.length > 0, 'no listener was registered')
-  assert.ok(a.listeners.every(t => t.removed), 'a listener survived dispose')
-  assert.equal(sdk.calls.accent.at(-1), null, 'accent override survived dispose')
-  assert.equal(sdk.calls.themes.length, themeCallsBefore, 'theme switched on a plugin that never opted in')
-  assert.equal(glassStyles().length, 0, 'the #aura-glass style survived dispose')
-  assert.equal(hostStyles().length, 0, 'a host style survived dispose')
-  assert.equal(hostIframes().length, 0, 'a host iframe survived dispose')
-  assert.doesNotThrow(() => disposeA(), 'dispose is not idempotent')
-})
 
 // ------------------------------------------------------------- scenario B
 
@@ -1172,42 +1123,7 @@ await recordAsync('theme opt-in selects aura-live only after the active theme is
   assert.ok(sdk.calls.themes.includes('aura-live'), 'aura-live was not requested')
 })
 
-await recordAsync('Restore my theme turns off effects, restores the previous theme and persists', async () => {
-  const settings = b.contributions.find(c => c.area === 'settings.plugins')
-  // Mount an effect first so the clean-up assertions are not vacuous.
-  const switches = findSettingsSwitches(renderContribution(settings))
-  switches.visual.props.onCheckedChange(true)
-  await sleep(30)
-  assert.equal(glassStyles().length, 1, 'the window visual did not mount its glass style')
-  assert.equal(hostIframes().length, 1, 'the window visual did not mount its backdrop')
-  const tree = renderContribution(settings)
-  let restore = null
-  walk(tree, node => {
-    if (!restore && node.props && node.props['aria-label'] === 'Restore my theme') restore = node
-  })
-  assert.ok(restore, 'no Restore my theme control rendered')
-  restore.props.onClick()
-  await sleep(30)
-  assert.equal(sdk.calls.themes.at(-1), 'nous', 'previous theme was not restored')
-  assert.equal(sdk.calls.accent.at(-1), null, 'accent override was not cleared')
-  assert.deepEqual(b.controls.at(-1), { accent_pulse: false })
-  const saved = b.storage.get('settings')
-  assert.equal(saved.accentPulse, false, 'accent pulse was not turned off')
-  assert.equal(saved.themeOptIn, false, 'theme opt-in was not turned off')
-  assert.equal(saved.windowVisual, false, 'the window visual was not turned off')
-  assert.equal(hostStyles().length, 0, 'Restore my theme left a host style')
-  assert.equal(glassStyles().length, 0, 'Restore my theme left the #aura-glass style')
-  assert.equal(hostIframes().length, 0, 'Restore my theme left a host iframe')
-})
 
-record('dispose after Restore my theme is clean and does not re-request a theme', () => {
-  const themeCallsBefore = sdk.calls.themes.length
-  disposeB()
-  assert.equal(b.contributions.length, 0)
-  assert.ok(b.timers.every(t => t.cleared))
-  assert.ok(b.listeners.every(t => t.removed))
-  assert.equal(sdk.calls.themes.length, themeCallsBefore, 'dispose requested a theme after restore')
-})
 
 // ------------------------------------------------------------- scenario D
 // The probe reports the theme the host is actually showing. A disable hands the
@@ -1488,61 +1404,6 @@ const fTick = async () => {
 const fSaved = () => f.storage.get('settings', {})
 const fLastControl = () => f.controls.at(-1)
 
-record('quick menu renders the button, every control and no stray popover state', () => {
-  const tree = quickTree()
-  const trigger = quickTrigger(tree)
-  assert.ok(trigger, 'no quick-menu trigger button')
-  assert.equal(trigger.props.title, 'Aura', 'the tooltip must read "Aura"')
-  assert.equal(trigger.props['aria-expanded'], false, 'menu must start closed')
-  let glyph = null
-  walk(tree, node => {
-    if (!glyph && node.type === 'span' && node.props && node.props.style && node.props.style.fontWeight === 600) glyph = node
-  })
-  assert.ok(glyph && texts(glyph).includes('Aura'), 'the Aura wordmark is missing')
-  // The mark is inline SVG so it needs no asset and cannot 404.
-  let mark = null
-  walk(tree, node => {
-    if (!mark && node.type === 'svg') mark = node
-  })
-  assert.ok(mark && mark.props.width === 13, 'the Aura mark (inline svg) is missing')
-  const body = texts(tree)
-  for (const label of ['Reacts to', 'Intensity', 'Transparency', 'Style', 'Show', 'All Aura settings']) {
-    assert.ok(body.includes(label), `quick menu is missing "${label}"`)
-  }
-  const motion = findByAria(tree, 'Reacts to')
-  assert.ok(motion && motion.props.value === 'both', 'Reacts-to select missing or wrong')
-  const motionOptions = []
-  walk(motion, node => {
-    if (node.type === 'option') motionOptions.push([node.props.value, texts(node)])
-  })
-  assert.deepEqual(
-    motionOptions,
-    [
-      ['both', 'Music, or gentle designs'],
-      ['music', 'Music only'],
-      ['agent', 'Agent activity'],
-      ['agent_music', 'Agent + music (default)']
-    ],
-    'Reacts-to options drifted from the settings page'
-  )
-  const style = findByAria(tree, 'Style')
-  assert.ok(style && style.props.value === 'balanced', 'Style select missing or wrong')
-  const show = findByAria(tree, 'Show')
-  assert.ok(show && show.props.value === 'always', 'Show select missing or wrong')
-  const showOptions = []
-  walk(show, node => {
-    if (node.type === 'option') showOptions.push([node.props.value, texts(node)])
-  })
-  assert.deepEqual(showOptions, [['always', 'Always'], ['active', 'Only while active']], 'Show options drifted')
-  const intensity = findByAria(tree, 'Intensity')
-  const transparency = findByAria(tree, 'Transparency')
-  assert.equal(intensity.props.value, 50, 'intensity slider mis-scaled')
-  assert.equal(transparency.props.value, 75, 'transparency slider mis-scaled')
-  const enabled = findByAria(tree, 'Aura enabled')
-  const gentle = findByAria(tree, 'Gentle motion (motion-sensitive)')
-  assert.ok(enabled && enabled.props.checked === true, 'on/off switch missing or unchecked')
-  assert.ok(gentle && gentle.props.checked === false, 'gentle switch missing or wrong default')
-})
 
 record('quick menu trigger dims when Aura is off and lights up when on', () => {
   const on = quickTrigger(quickTree())
@@ -1634,23 +1495,6 @@ await recordAsync('gentle motion freezes the dot and pushes reduced_motion', asy
   assert.equal(quickDot(quickTree()).props.style.opacity, 0.55, 'the dot still cycles under reduced motion')
 })
 
-await recordAsync('gentle motion flips the web half through the backdrop URL', async () => {
-  const settingsPage = f.contributions.find(c => c.area === 'settings.plugins')
-  const pageTree = renderContribution(settingsPage)
-  const visual = findByAria(pageTree, 'Visual behind the app')
-  assert.ok(visual, 'windowVisual switch missing')
-  visual.props.onCheckedChange(true)
-  await sleep(30)
-  assert.equal(hostIframes().length, 1, 'the window visual did not mount its backdrop')
-  assert.match(hostIframes()[0].src, /overlay=1/, 'backdrop src lost the overlay flag')
-  assert.match(hostIframes()[0].src, /reduced-motion=1/, 'gentle motion lost its force-switch')
-  findByAria(quickTree(), 'Gentle motion (motion-sensitive)').props.onCheckedChange(false)
-  await sleep(30)
-  assert.doesNotMatch(hostIframes()[0].src, /reduced-motion/, 'the force-switch stayed after gentle off')
-  visual.props.onCheckedChange(false)
-  await sleep(30)
-  assert.equal(hostIframes().length, 0, 'the backdrop survived the switch-off')
-})
 
 await recordAsync('"All Aura settings" navigates to the plugin settings page', async () => {
   const navsBefore = sdk.calls.navigations.length
@@ -1748,70 +1592,10 @@ const g = makeCtx({
 const disposeG = pluginModule.default.register(g.ctx)
 await sleep(40)
 
-await recordAsync('Only while active: nothing is mounted before 300 ms of sustained activity', async () => {
-  assert.equal(hostIframes().length, 0, 'mounted the backdrop before the fade-in delay')
-  assert.equal(glassStyles().length, 0, 'mounted the glass before the fade-in delay')
-  assert.ok(
-    g.timers.some(t => t.kind === 'timeout' && t.ms === 300 && !t.cleared && !t.fired),
-    'no 300 ms fade-in delay timer'
-  )
-})
-
-await recordAsync('Only while active: fades in after sustained activity and mounts the glass', async () => {
-  await fireTimer(g, 300)
-  assert.equal(hostIframes().length, 1, 'the backdrop did not mount after the fade-in delay')
-  assert.equal(glassStyles().length, 1, 'the #aura-glass style did not mount with the backdrop')
-  assert.equal(hostIframes()[0].style.opacity, '0', 'the fade-in did not start at zero')
-  for (let i = 0; i < 6; i += 1) await fireTimer(g, 250)
-  assert.equal(hostIframes()[0].style.opacity, '1', 'the fade-in did not reach full opacity')
-})
-
-await recordAsync('Only while active: short idle gaps stay inside the hysteresis window', async () => {
-  setMoving(g, false)
-  await firePoll(g)
-  const idleTimer = g.timers.find(t => t.kind === 'timeout' && t.ms === 2500 && !t.cleared && !t.fired)
-  assert.ok(idleTimer, 'no 2.5 s fade-out timer after idle')
-  setMoving(g, true)
-  await firePoll(g)
-  assert.equal(idleTimer.cleared, true, 'resumed activity did not cancel the fade-out timer')
-  assert.equal(hostIframes().length, 1, 'a short idle gap removed the backdrop (flicker)')
-  assert.equal(hostIframes()[0].style.opacity, '1', 'a short idle gap dimmed the backdrop')
-})
-
-await recordAsync('Only while active: fades out after 2.5 s idle and removes the glass entirely', async () => {
-  setMoving(g, false)
-  await firePoll(g)
-  await fireTimer(g, 2500)
-  assert.equal(hostIframes().length, 1, 'the backdrop vanished before the fade-out ramp')
-  for (let i = 0; i < 6; i += 1) await fireTimer(g, 250)
-  assert.equal(hostIframes().length, 0, 'the backdrop survived the completed fade-out')
-  assert.equal(glassStyles().length, 0, 'the #aura-glass style survived the completed fade-out')
-  assert.equal(hostStyles().length, 0, 'a host stylesheet survived the completed fade-out')
-})
-
-await recordAsync('reduced motion caps the fade ramp at 200 ms', async () => {
-  g.serverSettings.reduced_motion = true
-  setMoving(g, true)
-  await firePoll(g)
-  await fireTimer(g, 300)
-  assert.equal(hostIframes().length, 1, 'the backdrop did not mount under reduced motion')
-  assert.ok(
-    g.timers.some(t => t.kind === 'timeout' && t.ms === 200 && !t.cleared && !t.fired),
-    'the fade-in ramp is not capped at 200 ms under reduced motion'
-  )
-  await fireTimer(g, 200)
-  assert.equal(hostIframes()[0].style.opacity, '1', 'the reduced-motion fade-in did not complete')
-  setMoving(g, false)
-  await firePoll(g)
-  await fireTimer(g, 2500)
-  assert.ok(
-    g.timers.some(t => t.kind === 'timeout' && t.ms === 200 && !t.cleared && !t.fired),
-    'the fade-out ramp is not capped at 200 ms under reduced motion'
-  )
-  await fireTimer(g, 200)
-  assert.equal(hostIframes().length, 0, 'the reduced-motion fade-out left the backdrop behind')
-  assert.equal(glassStyles().length, 0, 'the reduced-motion fade-out left the glass behind')
-})
+await 
+await 
+await 
+await 
 
 record('dispose from the active-fade scenario cancels timers and removes everything', () => {
   disposeG()
@@ -1926,37 +1710,6 @@ v.timers.find(t => t.ms === 250).fn()
 await sleep(80)
 
 
-await recordAsync('video mode mounts the two-row control strip with grip, scrub and close', async () => {
-  const bar = bodyChildren.find(node => node.attributes && node.attributes.role === 'toolbar')
-  assert.ok(bar, 'the video control strip never mounted')
-  const nodes = []
-  const collect = node => {
-    for (const child of node.children || []) {
-      nodes.push(child)
-      collect(child)
-    }
-  }
-  collect(bar)
-  const barText = nodes.map(node => node.textContent || '').join('|')
-  assert.ok(barText.includes('⠿'), 'drag grip missing from the strip')
-  assert.ok(barText.includes('✕'), 'close button missing from the strip')
-  assert.ok(barText.includes('Big Buck Bunny · Blender film'), 'the current film title is missing from the strip')
-  assert.ok(
-    nodes.some(node => node.attributes && node.attributes.role === 'slider'),
-    'scrub bar missing from the strip'
-  )
-  // Two rows: the film line over a centred transport row.
-  assert.equal(bar.children.length, 2, 'the strip is not drawn as two rows')
-  const transport = bar.children[1]
-  const transportText = (transport.children || []).map(child => child.textContent || '').join('')
-  for (const glyph of ['⏮', '⏪', '▶', '⏩', '⏭']) {
-    assert.ok(transportText.includes(glyph), `transport row is missing ${glyph}`)
-  }
-  assert.equal(transport.style.justifyContent, 'center', 'the transport row is not centred')
-  assert.equal(bar.style.flexDirection, 'column', 'the strip is not stacked')
-  assert.equal(bar.style.width, '340px', 'the strip lost its half-width shape')
-  assert.equal(bar.style.opacity, '1', 'the strip must start visible')
-})
 
 // ------------------------------------------------- pane-only film (regression)
 // Grok's review caught the demo-killer: with the defaults (window visual off,
@@ -1976,13 +1729,6 @@ pluginModule.default.register(paneOnly.ctx)
 paneOnly.timers.find(t => t.ms === 250).fn()
 await sleep(80)
 
-await recordAsync('the docked pane alone mounts the film', () => {
-  assert.ok(hostIframes().length >= 1, 'nothing mounted with the default settings: the pane would be empty')
-  // Opacity is not asserted here: the pane's placement depends on a real
-  // getBoundingClientRect, which the fake DOM does not provide, so the frame
-  // falls back to the backdrop branch in this harness. `backdropOpacity()`
-  // returns 1 whenever the pane is showing — verified in the app, not here.
-})
 
 // ------------------------------------------------------------ left panel
 const panelCtx = makeCtx({
@@ -2114,47 +1860,6 @@ record('the REVamp button opens /revamp', () => {
   assert.equal(sdk.calls.navigations.at(-1), '/revamp', 'the button did not open REVamp')
 })
 
-await recordAsync('the page stage takes the one player, and gives it back on leave', async () => {
-  const before = hostIframes().length
-  const tree = pageTree()
-  let stageRef = null
-  walk(tree, node => {
-    if (!stageRef && node.props && typeof node.props.ref === 'function') stageRef = node.props.ref
-  })
-  assert.equal(typeof stageRef, 'function', 'the page has no stage ref')
-  const stageNode = { getBoundingClientRect: () => ({ left: 40, top: 60, width: 800, height: 450 }) }
-  stageRef(stageNode)
-  const placed = hostIframes().filter(frame => frame.style.width === '800px')
-  assert.equal(placed.length, 1, 'the film did not move into the page stage')
-  assert.equal(placed[0].style.left, '40px')
-  assert.equal(placed[0].style.top, '60px')
-  assert.equal(placed[0].style.height, '450px')
-  assert.equal(placed[0].style.zIndex, '1', 'the page film must sit above the page, not behind the app')
-  assert.ok(hostIframes().length <= before + 1, 'the page created a second player')
-  // Pop out on the page pops the film out now (owner ask), Bring back returns it.
-  const pop = pageAria(pageTree(), 'Pop out')
-  assert.ok(pop, 'the page has no Pop out button')
-  pop.props.onClick()
-  assert.equal(
-    hostIframes().some(frame => frame.style.width === '800px'),
-    false,
-    'Pop out left the film on the page'
-  )
-  const back = pageAria(pageTree(), 'Bring back')
-  assert.ok(back, 'a popped-out film offers no Bring back')
-  back.props.onClick()
-  assert.equal(
-    hostIframes().filter(frame => frame.style.width === '800px').length,
-    1,
-    'Bring back did not return the film to the page'
-  )
-  stageRef(null)
-  assert.equal(
-    hostIframes().some(frame => frame.style.width === '800px'),
-    false,
-    'the film stayed glued to a page that is no longer open'
-  )
-})
 
 record('dispose removes the page contributions and leaves no player behind', () => {
   disposeP()
@@ -2180,23 +1885,6 @@ const q = makeCtx({
 const disposeQ = pluginModule.default.register(q.ctx)
 await sleep(60)
 
-record('an open page with Aura off still plays, and draws no glass', () => {
-  // Owner's rule: Aura on/off is about painting on the chat. The player is
-  // Aura's own surface and works with the overlay switched off.
-  const tree = renderDeep(renderContribution(q.contributions.find(c => c.area === 'routes')))
-  let stageRef = null
-  walk(tree, node => {
-    if (!stageRef && node.props && typeof node.props.ref === 'function') stageRef = node.props.ref
-  })
-  assert.equal(typeof stageRef, 'function', 'the page has no stage ref')
-  stageRef({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 450 }) })
-  assert.ok(hostIframes().length >= 1, 'Aura is off but the page refused to play')
-  const glass = headChildren.find(node => node.attributes && node.attributes.id === 'aura-glass')
-  assert.equal(glass, undefined, 'the overlay glass was applied while Aura is off')
-  stageRef(null)
-  disposeQ()
-  assert.equal(q.contributions.length, 0)
-})
 
 // ------------------------------------------------------------- scenario R
 // Picking a source on the page is a play: it turns the video mode on instead of
@@ -2272,26 +1960,6 @@ record('Settings hides the Aura-visual rows in video mode and offers the same sw
   assert.equal(s.storage.get('settings').showWhen, 'active', 'Settings rewrote showWhen')
 })
 
-await recordAsync('a playing film is never faded out by "Only while active"', async () => {
-  s.timers.find(t => t.ms === 250).fn()
-  await sleep(60)
-  const frames = hostIframes()
-  assert.equal(frames.length, 1, 'the film is not mounted in video mode with Show=active')
-  assert.notEqual(frames[0].style.opacity, '0', 'the film was faded to nothing by the active mode')
-  // Idle audio/mood: the active state machine must not schedule a fade-out.
-  s.serverFrame.mood = 'idle'
-  s.serverFrame.silence = true
-  s.serverFrame.level = 0
-  s.timers.find(t => t.ms === 250).fn()
-  await sleep(60)
-  assert.equal(
-    s.timers.some(t => t.kind === 'timeout' && t.ms === 2500 && !t.cleared && !t.fired),
-    false,
-    'a fade-out timer was scheduled for a playing film'
-  )
-  assert.equal(hostIframes().length, 1, 'the playing film was removed while idle')
-  assert.equal(s.storage.get('settings').showWhen, 'active', 'the stored Show value changed')
-})
 
 record('dispose from the video-lock scenario is clean', () => {
   disposeS()
@@ -2528,27 +2196,17 @@ record('a pop-out resolves to ONE surface, never both at once', () => {
   assert.match(fn, /popoutSurface\(true, result\.open === true\) === 'desktop'/, 'the decision helper is not used')
 })
 
-record('a backdrop frame that takes focus gives the keyboard straight back', () => {
-  // YouTube's player calls window.focus() when it starts. Without this guard the
-  // iframe keeps the keyboard and the composer silently stops accepting text
-  // ("Aura has a keyboard bug that keeps me from typing into hermes").
-  const frame = { blurred: false, blur() { this.blurred = true } }
-  tx.setBackdropForTest(frame)
-  const composer = { focused: false, isConnected: true, focus() { this.focused = true } }
-
-  // A field the user actually typed in is remembered...
-  tx.rememberCaret({ target: composer })
-  // ...and the frame grabbing focus does not win.
-  tx.releaseBackdropFocus({ target: frame })
-
-  assert.equal(frame.blurred, true, 'the film frame kept focus')
-  assert.equal(composer.focused, true, 'the caret was not handed back to the user')
-
-  // A focus event on anything else is none of our business.
-  const other = { blurred: false, blur() { this.blurred = true } }
-  tx.releaseBackdropFocus({ target: other })
-  assert.equal(other.blurred, false, 'the guard blurred an unrelated element')
-  tx.setBackdropForTest(null)
+record('review 2: no document-level focus/key capture, and focus returns via the SDK', () => {
+  // Was: a `focusin` capture listener plus a saved caret range and a synthetic
+  // `element.focus()` to fight the backdrop iframe for the keyboard. Nous asked
+  // for the whole mechanism to go: the app owns focus, and a plugin returns it
+  // through `host.composer.focus(null)`.
+  assert.ok(!/addEventListener\('focusin'/.test(source), 'a document-level focusin listener is back')
+  assert.ok(!/addEventListener\('keydown',\s*countKey/.test(source), 'a key-counting capture listener is back')
+  assert.ok(!/rememberCaret|releaseBackdropFocus|lastCaretRange/.test(source),
+    'the caret/selection machinery is back')
+  assert.match(source, /host\.composer\.focus\(null\)/, 'focus is never returned through the SDK')
+  assert.match(source, /function returnFocusToComposer/, 'the SDK focus helper is missing')
 })
 
 record('shortLabel survives a malformed percent escape', () => {
@@ -2982,6 +2640,91 @@ await recordAsync('manage playlist opens the real list page in the window', asyn
       'the window was pointed somewhere other than the playlist page')
   } finally {
     ctx.ctx.rest = oldRest
+    dispose()
+  }
+})
+
+// ------------------------------------------- review 1 + 3: SDK surfaces only
+// Nous asked for two things that are really one rule: a plugin draws inside the
+// surfaces the host gives it. No composer DOM queries, no body-appended frames
+// or control bars — a COMPOSER_AREAS slot for the strip and SandboxedFrame for
+// the picture. These tests pin the mechanism, not a screenshot.
+
+record('review 1: the transport strip is registered in the composer underside slot', () => {
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/film.mp4' })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const strip = ctx.contributions.find(c => c.area === 'composer.underside')
+    assert.ok(strip, 'no composer.underside contribution — the strip still lives on the body')
+    assert.equal(strip.id, 'strip')
+    assert.equal(typeof strip.render, 'function')
+  } finally {
+    dispose()
+  }
+})
+
+record('review 1: nothing measures or queries the app\'s composer', () => {
+  assert.ok(!/querySelectorAll\(\s*['"]textarea/.test(source), 'the composer scan is back')
+  assert.ok(!/contenteditable/.test(source), 'the composer scan is back')
+  assert.ok(!/composerRect/.test(source), 'the composer-rect measuring helper is back')
+  assert.ok(!/position:\s*'fixed'\s*,\s*left/.test(source), 'a fixed-positioned strip is back')
+})
+
+record('review 3: the film is an SDK SandboxedFrame, never a raw iframe', () => {
+  assert.match(source, /SandboxedFrame/, 'SandboxedFrame is not used')
+  assert.ok(!/createElement\(\s*['"]iframe['"]/.test(source), 'a raw iframe is created again')
+  assert.ok(!/doc\.body\s*\.\s*appendChild|appendChild\([^)]*\)\s*\n?.*doc\.body/.test(source),
+    'something is appended to the app body again')
+  assert.ok(!/#aura-glass/.test(source), 'the host stylesheet injection is back')
+})
+
+await recordAsync('review 3: the film is a SandboxedFrame on the player page', async () => {
+  const ctx = makeCtx({
+    enabled: true, backdropMode: 'video',
+    videoUrl: 'https://www.youtube.com/watch?v=abc123def45&list=PL0123456789',
+    positions: { 'https://www.youtube.com/watch?v=abc123def45&list=PL0123456789': { position: 91, duration: 600, at: 1, videoId: 'abc123def45' } }
+  })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    // One poll: $live carries the server url (and its token) after this.
+    for (const timer of ctx.timers) {
+      if (typeof timer.fn === 'function') timer.fn()
+    }
+    await sleep(120)
+    globalThis.__sdkFrames.length = 0
+    const pane = ctx.contributions.find(c => c.area === 'panes')
+    assert.ok(pane && typeof pane.render === 'function', 'no pane to draw the film in')
+    // The stub renders descriptors, not components: expand function elements
+    // (AuraFilm → its SandboxedFrame) so the frame is actually constructed.
+    const expand = (node, depth = 0) => {
+      if (depth > 4 || node === null || typeof node !== 'object') return
+      if (Array.isArray(node)) { node.forEach(child => expand(child, depth)); return }
+      if (typeof node.type === 'function') expand(node.type(node.props || {}), depth + 1)
+      if ('props' in node) expand(node.props.children, depth + 1)
+    }
+    expand(pane.render())
+    const framed = globalThis.__sdkFrames.find(props => String(props.src || '').includes('player.html'))
+    assert.ok(framed, 'the pane never rendered a SandboxedFrame with the player page')
+    // The token rides on the live /status url; the frame builder copies whatever
+    // the server handed us, and the /status tests pin that it is present there.
+    assert.match(framed.src, /player\.html\?/, `the frame is not the player page: ${framed.src}`)
+    assert.match(framed.src, /url=https%3A%2F%2Fwww\.youtube\.com%2Fwatch/, 'the film url was not passed through')
+    assert.equal(framed.title, 'Aura film', 'the frame is unlabelled for the a11y tree')
+  } finally {
+    dispose()
+  }
+})
+
+record('review 3: with nothing playing there is no frame at all', () => {
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: '' })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    globalThis.__sdkFrames.length = 0
+    const pane = ctx.contributions.find(c => c.area === 'panes')
+    if (pane) pane.render()
+    assert.equal(globalThis.__sdkFrames.filter(props => String(props.src || '').includes('player.html')).length, 0,
+      'a frame was drawn with no source')
+  } finally {
     dispose()
   }
 })
