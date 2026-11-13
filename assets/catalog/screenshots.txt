@@ -1,3 +1,8 @@
 # Screenshots and animations for the catalog entry.
 # Paths are relative to the repository root and must exist at the pinned commit.
-docs/screenshots/aura-audio.gif      Aura's visualiser reacting to a beat (800 px, 6 fps, looped)
+docs/media/aura-demo.gif                        Film in the docked pane, then the visualiser filling the app behind the chat
+docs/media/aura-film.gif                        Picking a film from the shelf; it plays docked beside the chat
+docs/screenshots/desktop-film-pane.png          The film pane docked in Hermes Desktop
+docs/screenshots/desktop-film-shelf.png         The Aura page: shelf and film URL field
+docs/screenshots/desktop-visualiser-behind-chat.png  The visualiser behind a chat
+docs/screenshots/desktop-visualiser-full.png    The visualiser page following the agent's state
