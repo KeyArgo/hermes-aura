@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — a starter pack worth leaving on
+
+- **24 more starter films, chosen for the backdrop.** `STARTER_SOURCES` goes
+  from 8 to 32 entries: BBC Earth's ten-hour oceanscapes, eight hours of BBC
+  Earth Science, NASA+ and NASA Goddard films, Seán Doran's real-time ISS
+  remaster, two Monterey Bay Aquarium tanks, three cab rides, two city walks,
+  silent drone aerials, rain and fireplace beds, Blender's open movies and two
+  public-domain features served as direct mp4 from the Internet Archive. Every
+  entry carries a one-line note on who uploaded it and why framing it is
+  allowed; the YouTube ones were checked through oEmbed (200) and the direct
+  files through `HEAD` (200, `video/mp4`).
+- **Labels say how long the thing is** (`Open Ocean (10 h) · oceanscape`), since
+  a 12-hour single take and a 10-minute short are different products.
+- A new contract test parses the catalogue out of the source and asserts the
+  pack grew, that no URL or label repeats, and that every entry is a frameable
+  YouTube watch link or a direct media file. The two tests that hardcoded
+  "8 starters" now read the catalogue instead (`PANEL_SCORE_MAX` still caps the
+  A-menu card list at 12).
+
 ## Unreleased — quality review fixes
 
 - **The film frame is built from the live server again.** It was handed the

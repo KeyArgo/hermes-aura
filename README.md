@@ -121,7 +121,12 @@ streams audio from the backend, and that stream is what keeps capture awake on a
 - **One library, two pickers.** The source dropdowns in the A menu and in
   Settings list everything — saved playlists, your films, the starter pack and
   recents — grouped under `Playlists`, `Your films`, `Starters` and `Recent`. A
-  small **Edit sources…** link opens the Aura page, where editing lives.
+  small **Edit sources…** link opens the Aura page, where editing lives. The
+  starter pack is now a backdrop shelf as much as a film shelf: 32 entries,
+  half of them 2–12 hour single takes — BBC Earth oceanscapes, NASA and ISS
+  material, Monterey Bay Aquarium tanks, cab rides, city walks, silent drone
+  aerials, rain and fireplace beds — plus Blender's open movies (CC-BY) and two
+  public-domain features served straight from the Internet Archive.
 - **A film owns the screen.** While Backdrop is **Video player**, Style,
   Intensity, the Aura transparency and Gentle motion are greyed out (they only
   describe the Aura visual), and Show is forced to Always in effect: a playing
