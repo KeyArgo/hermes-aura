@@ -5083,6 +5083,62 @@ record('sidebar: switching it back on puts the row back and drops the menu link'
 
 disposeNav()
 
+// ------------------------------------------- one-click "Play a film"
+// Owner: playing a film from the status bar took three switches. One control
+// resumes the last film where it stopped (or starts the first pick), and it
+// puts Aura into video mode itself.
+
+const playLastUrl = 'https://example.com/last-night.mp4'
+const playCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'aura',
+  panelEnabled: false,
+  videoUrl: '',
+  videoRecent: [{ label: 'Last night', url: playLastUrl }],
+  videoPositions: { [playLastUrl]: { position: 1432, duration: 3600, at: 1 } }
+})
+const disposePlay = pluginModule.default.register(playCtx.ctx)
+await primeLive()
+pageStage(1200, 400)
+
+await recordAsync('play a film: the menu resumes the last film and switches to video mode', async () => {
+  const button = findByAria(renderContribution(playCtx.contributions.find(c => c.id === 'quick-menu')), 'Play a film')
+  assert.ok(button, 'the status-bar menu has no "Play a film"')
+  button.props.onClick()
+  await sleep(60)
+  const saved = playCtx.storage.get('settings')
+  assert.equal(saved.backdropMode, 'video', 'Play a film did not switch to video mode')
+  assert.equal(saved.videoUrl, playLastUrl, 'Play a film did not play the last film')
+  assert.equal(saved.videoClosed, false, 'Play a film left the film closed')
+  assert.equal(new URL(tx.filmSrc()).searchParams.get('resume'), '1432',
+    'the film did not resume where it stopped')
+})
+
+pageStage(null)
+disposePlay()
+
+const playFreshCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'aura',
+  panelEnabled: false,
+  videoUrl: ''
+})
+const disposePlayFresh = pluginModule.default.register(playFreshCtx.ctx)
+await primeLive()
+const firstStarterUrl = tx.videoQueue()[0].url
+
+await recordAsync('play a film: with nothing watched yet it starts the first pick', async () => {
+  const button = findByAria(renderContribution(playFreshCtx.contributions.find(c => c.id === 'quick-menu')), 'Play a film')
+  assert.ok(button, 'the status-bar menu has no "Play a film"')
+  button.props.onClick()
+  await sleep(60)
+  const saved = playFreshCtx.storage.get('settings')
+  assert.equal(saved.backdropMode, 'video', 'Play a film did not switch to video mode')
+  assert.equal(saved.videoUrl, firstStarterUrl, 'Play a film did not start the first pick')
+})
+
+disposePlayFresh()
+
 // --------------------------------------------------------------- reporting
 
 console.log(results.join('\n'))

@@ -2859,6 +2859,37 @@ function applyUrlBox(value) {
   return clean ? applyVideoSource(clean) : setVideoUrl('')
 }
 
+/** The film one click should start: the one on screen, else the one played
+ *  last, else the first pick. */
+function lastFilmUrl() {
+  const settings = $settings.get()
+  const current = String(settings.videoUrl || '').trim()
+  if (current) return current
+  const recent = Array.isArray(settings.videoRecent) ? settings.videoRecent : []
+  for (const item of recent) {
+    const url = item && typeof item.url === 'string' ? item.url.trim() : ''
+    if (url) return url
+  }
+  const first = STARTER_SOURCES[0]
+  return first && typeof first.url === 'string' ? first.url : ''
+}
+
+/** One click from the status bar: video mode, the film open, playing. The
+ *  bookmark travels with the source, so a film watched before continues where
+ *  it stopped. */
+async function playAFilm() {
+  if (!ctxRef || disposed) return ''
+  const url = lastFilmUrl()
+  if (!url) {
+    sayIt('No film to play yet — paste a link on the Aura page.')
+    return ''
+  }
+  await applyVideoSource(url)
+  // A film that is already loaded sits paused: start it instead of reloading.
+  postToBackdrop({ cmd: 'play' })
+  return url
+}
+
 /** Video transparency pinned by hand: turns the automatic 20/30% follow off. */
 function setVideoOpacity(value) {
   if (!ctxRef || disposed) return
@@ -6190,6 +6221,21 @@ function AuraQuickMenu() {
             key: 'mode',
             style: { display: 'flex', justifyContent: 'center', padding: '8px 12px 6px' },
             children: modeToggle(settings.backdropMode)
+          }),
+          // One click, both modes: the last film where it stopped, else the
+          // first pick. Anything that takes three switches is a wall.
+          jsx('div', {
+            key: 'play-film',
+            style: { padding: '0 12px 6px' },
+            children: jsx(Button, {
+              size: 'sm',
+              variant: 'default',
+              'aria-label': 'Play a film',
+              title: 'Play the last film where you stopped, or the first pick',
+              style: { width: '100%' },
+              onClick: () => { void playAFilm() },
+              children: 'Play a film'
+            })
           }),
           row(
             jsxs('span', {

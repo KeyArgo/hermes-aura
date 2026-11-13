@@ -294,7 +294,8 @@ a list. Nothing here touches YouTube's own playlists.
 
 ### The plugin surface
 
-- Status-bar **A** menu: play/pause, seek, volume, source picker, watch window,
+- Status-bar **A** menu: **Play a film** (the last one where you stopped, or the
+  first pick), play/pause, seek, volume, source picker, watch window,
   Aura panel.
 - A sidebar **Aura** page: the film, the transport and the full setup in one
   place.
