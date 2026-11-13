@@ -4021,6 +4021,384 @@ record('right panel: no fixed width wider than a 260px pane, and it wraps instea
   assert.equal(ctx.contributions.length, 0, 'a contribution survived dispose')
 })
 
+// --------------------------------------------------------------- subtitles
+// A CC switch. Off by default because YouTube decides on its own otherwise;
+// on, the page asks for captions in the embed and keeps asking the live player
+// (every new video in a playlist is a fresh captions context). The rules that
+// pick the query parts and the commands live in web/captions.js, so they run
+// here exactly as the page runs them, and the page's own wiring is checked
+// where it is written.
+
+const PAGE = path.join(ROOT, 'web', 'player.html')
+const pageSource = fs.readFileSync(PAGE, 'utf8')
+const captionsModule = (await import(pathToFileURL(path.join(ROOT, 'web', 'captions.js')).href)).default
+const pageFn = name => {
+  const match = new RegExp(`function ${name}\\(\\) \\{[\\s\\S]*?\\n  \\}`).exec(pageSource)
+  assert.ok(match, `web/player.html has no ${name}()`)
+  return match[0]
+}
+const CC_TRACKS = [
+  { languageCode: 'ar', displayName: 'Arabic' },
+  { languageCode: 'nl', displayName: 'Dutch' },
+  { languageCode: 'en-US', displayName: 'English (United States)' },
+  { languageCode: 'fr', displayName: 'French' },
+  { languageCode: 'de', displayName: 'German' },
+  { languageCode: 'iw', displayName: 'Hebrew' }
+]
+const ccInfo = (tracklist, current) => ({
+  event: 'apiInfoDelivery',
+  info: {
+    namespaces: ['captions'],
+    captions: {
+      options: ['reload', 'fontSize', 'track', 'tracklist'],
+      track: { languageCode: current || 'en-US', displayName: 'English (United States)' },
+      tracklist: tracklist || CC_TRACKS
+    }
+  }
+})
+
+record('subtitles: the embed asks YouTube for captions only when they are on', () => {
+  assert.deepEqual(captionsModule.embedParams({ on: false }), [],
+    'captions off still asked the embed for captions')
+  assert.deepEqual(captionsModule.embedParams({ on: true }), ['cc_load_policy=1'])
+  assert.deepEqual(captionsModule.embedParams({ on: true, lang: 'fr' }),
+    ['cc_load_policy=1', 'cc_lang_pref=fr'], 'the preferred language did not reach the embed')
+  assert.deepEqual(captionsModule.embedParams({ on: false, lang: 'fr' }), [],
+    'a language alone turned captions on')
+  assert.deepEqual(captionsModule.embedParams({ on: true, lang: 'fr; drop' }),
+    ['cc_load_policy=1'], 'a junk language code reached the query')
+})
+
+record('subtitles: on loads the captions module and picks a track, off unloads it', () => {
+  assert.deepEqual(captionsModule.commands({ on: true }), [{ func: 'loadModule', args: ['captions'] }])
+  assert.deepEqual(captionsModule.commands({ on: true, lang: 'de' }), [
+    { func: 'loadModule', args: ['captions'] },
+    { func: 'setOption', args: ['captions', 'track', { languageCode: 'de' }] }
+  ], 'a chosen language is not applied to the track')
+  assert.deepEqual(captionsModule.commands({ on: false, lang: 'de' }),
+    [{ func: 'unloadModule', args: ['captions'] }],
+    'off must unload the module and must not set a track')
+})
+
+record('subtitles: the language list comes from the player, defaulting to the machine then English', () => {
+  const found = captionsModule.tracksFrom(ccInfo().info)
+  assert.ok(found, 'the captions namespace was not read')
+  assert.deepEqual(found.tracks.map(track => track.code), ['ar', 'nl', 'en-US', 'fr', 'de', 'iw'])
+  assert.deepEqual(found.tracks.map(track => track.name)[2], 'English (United States)')
+  assert.equal(found.current, 'en-US', 'the playing track was not read')
+  assert.equal(captionsModule.tracksFrom({ namespaces: ['captions'] }), null,
+    'an empty captions namespace was reported as a list')
+  assert.equal(captionsModule.tracksFrom({ playerState: 1 }), null,
+    'a frame with no captions namespace produced a list')
+  assert.equal(captionsModule.pickTrack(found.tracks, 'de-DE'), 'de',
+    'a regional preference did not match its base language')
+  assert.equal(captionsModule.pickTrack(found.tracks, 'en-GB'), 'en-US',
+    'an English machine did not pick the English track')
+  assert.equal(captionsModule.pickTrack(found.tracks, 'es-ES'), 'en-US',
+    'a language this video does not have did not fall back to English')
+  assert.equal(captionsModule.pickTrack(found.tracks, ''), 'en-US')
+  assert.equal(captionsModule.pickTrack([], 'en'), '', 'an empty list picked a track')
+  assert.equal(captionsModule.hasCaptions(found.tracks), true)
+  assert.equal(captionsModule.hasCaptions([]), false, 'an empty tracklist claims subtitles')
+})
+
+record('subtitles: the page builds every embed through the one caption rule', () => {
+  assert.match(pageSource, /<script src="captions\.js"><\/script>/,
+    'the page does not load web/captions.js')
+  assert.match(pageSource, /AuraCaptions\.embedParams\(/,
+    'the embed query does not ask the caption rules for cc_load_policy')
+  assert.match(pageSource, /params\.get\('captions'\) === '1'/,
+    'the page does not read ?captions=1')
+  assert.match(pageSource, /params\.get\('cc_lang'\)/,
+    'the page does not read ?cc_lang=')
+  assert.match(pageSource, /captions: \{[\s\S]{0,400}?tracks:/,
+    'the page does not report its caption tracks back to the app')
+})
+
+record('subtitles: the page posts loadModule/unloadModule, and posts again for every new video', () => {
+  const scene = options => {
+    const sent = []
+    const pageCaptions = {
+      on: options.on, lang: options.lang || '', tracks: options.tracks || [],
+      current: '', known: true, appliedFor: ''
+    }
+    const state = { videoId: options.videoId || '' }
+    const build = new Function(
+      'captions', 'state', 'youtubeCommand', 'navigator', 'AuraCaptions', 'frame', 'kind',
+      `${pageFn('captionLanguage')}\n${pageFn('applyCaptions')}\n${pageFn('applyCaptionsForVideo')}\n` +
+      'return { applyCaptions: applyCaptions, forVideo: applyCaptionsForVideo, language: captionLanguage }'
+    )
+    const api = build(pageCaptions, state, (func, args) => sent.push({ func, args: args || [] }),
+      { language: options.machine || 'en-GB' }, captionsModule,
+      options.frame === false ? null : {}, options.kind || 'youtube')
+    return { sent, api, captions: pageCaptions, state }
+  }
+
+  const off = scene({ on: false, videoId: 'aaa' })
+  off.api.forVideo()
+  assert.deepEqual(off.sent, [{ func: 'unloadModule', args: ['captions'] }],
+    'captions off did not unload the module')
+  // Nothing new for the same video: the toggle already sent it once.
+  off.api.forVideo()
+  assert.equal(off.sent.length, 1, 'the same video was told again on every frame')
+
+  const on = scene({ on: true, videoId: 'aaa', tracks: CC_TRACKS })
+  on.api.forVideo()
+  assert.deepEqual(on.sent, [
+    { func: 'loadModule', args: ['captions'] },
+    { func: 'setOption', args: ['captions', 'track', { languageCode: 'en-US' }] }
+  ], 'captions on did not load the module and pick the machine language')
+  // A playlist moves to its next episode: YouTube resets captions per video.
+  on.state.videoId = 'bbb'
+  on.api.forVideo()
+  assert.equal(on.sent.length, 4, 'the commands were not re-sent for the new video')
+  assert.deepEqual(on.sent.slice(2), on.sent.slice(0, 2), 'the new video got different commands')
+
+  // A chosen language wins over the machine's.
+  const chosen = scene({ on: true, lang: 'fr', videoId: 'aaa', tracks: CC_TRACKS })
+  assert.equal(chosen.api.language(), 'fr', 'the chosen language was not used')
+})
+
+record('subtitles: a direct file switches its own text tracks between showing and hidden', () => {
+  const tracks = [
+    { language: 'en', label: 'English', mode: 'disabled' },
+    { language: 'fr', label: 'Français', mode: 'disabled' }
+  ]
+  const build = new Function('captions', 'AuraCaptions', 'video', 'navigator',
+    `${pageFn('applyVideoCaptions')}\nreturn applyVideoCaptions`)
+  const pageCaptions = { on: true, lang: '', tracks: [], current: '', known: false }
+  const run = build(pageCaptions, captionsModule, { textTracks: tracks }, { language: 'fr-FR' })
+  run()
+  assert.deepEqual(tracks.map(track => track.mode), ['hidden', 'showing'],
+    'the machine language track was not shown')
+  assert.equal(pageCaptions.current, 'fr')
+  assert.deepEqual(pageCaptions.tracks.map(track => track.code), ['en', 'fr'],
+    'a direct file did not report its own tracks')
+  pageCaptions.on = false
+  run()
+  assert.deepEqual(tracks.map(track => track.mode), ['hidden', 'hidden'],
+    'turning captions off left a track showing')
+})
+
+record('subtitles: off by default, and every stored value is validated', () => {
+  const fresh = makeCtx({ enabled: true })
+  const d1 = pluginModule.default.register(fresh.ctx)
+  assert.equal(pluginModule.wiringTest.settings.get().videoCaptions, false,
+    'captions must be off on a fresh install')
+  assert.equal(pluginModule.wiringTest.settings.get().videoCaptionLang, '')
+  d1()
+  const saved = makeCtx({ enabled: true, videoCaptions: true, videoCaptionLang: 'fr' })
+  const d2 = pluginModule.default.register(saved.ctx)
+  assert.equal(pluginModule.wiringTest.settings.get().videoCaptions, true,
+    'the saved switch did not come back')
+  assert.equal(pluginModule.wiringTest.settings.get().videoCaptionLang, 'fr',
+    'the saved language did not come back')
+  d2()
+  const junk = makeCtx({ enabled: true, videoCaptions: 'on', videoCaptionLang: 'fr; drop table' })
+  const d3 = pluginModule.default.register(junk.ctx)
+  assert.equal(pluginModule.wiringTest.settings.get().videoCaptions, false,
+    'a non-boolean switch was accepted')
+  assert.equal(pluginModule.wiringTest.settings.get().videoCaptionLang, '',
+    'a junk language code was accepted')
+  d3()
+})
+
+record('subtitles: the switch is remembered and reaches the player', () => {
+  const ctx = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: false,
+    videoUrl: 'https://www.youtube.com/watch?v=9FqwhW0B3tY'
+  })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const posts = []
+    tx.setBackdropForTest({ contentWindow: { postMessage: message => posts.push(message) } })
+    tx.setVideoCaptions(true)
+    assert.equal(ctx.storage.get('settings').videoCaptions, true, 'the switch was not persisted')
+    assert.deepEqual(posts[0], { aura: 'transport', cmd: 'captions', value: 1 },
+      'turning captions on did not reach the page')
+    tx.setVideoCaptions(false)
+    assert.equal(posts[posts.length - 1].value, 0, 'turning captions off did not reach the page')
+  } finally {
+    tx.setBackdropForTest(null)
+    dispose()
+  }
+})
+
+await recordAsync('subtitles: the player page is told to start with them on, and only then', async () => {
+  const off = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: false,
+    videoUrl: 'https://www.youtube.com/watch?v=9FqwhW0B3tY'
+  })
+  closePopout(off)
+  const d1 = pluginModule.default.register(off.ctx)
+  try {
+    await primeLive()
+    const src = new URL(tx.filmSrc())
+    assert.equal(src.searchParams.get('captions'), null, 'captions were requested while off')
+    assert.equal(src.searchParams.get('cc_lang'), null, 'a language was requested while off')
+  } finally {
+    d1()
+  }
+  const on = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: false,
+    videoUrl: 'https://www.youtube.com/watch?v=9FqwhW0B3tY',
+    videoCaptions: true, videoCaptionLang: 'fr'
+  })
+  closePopout(on)
+  const d2 = pluginModule.default.register(on.ctx)
+  try {
+    await primeLive()
+    const src = new URL(tx.filmSrc())
+    assert.equal(src.searchParams.get('captions'), '1', 'the page was not told captions are on')
+    assert.equal(src.searchParams.get('cc_lang'), 'fr', 'the chosen language did not reach the page')
+  } finally {
+    d2()
+  }
+})
+
+await recordAsync('subtitles: the agent\'s captions command turns them on, not just the page', async () => {
+  const ctx = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: false,
+    videoUrl: 'https://www.youtube.com/watch?v=9FqwhW0B3tY'
+  })
+  let commands = []
+  const original = ctx.ctx.rest
+  ctx.ctx.rest = async (route, options = {}) => {
+    if (route === '/player') return { ok: true, window: { open: false }, player: { desktop: false } }
+    if (route.startsWith('/player/commands?')) return { ok: true, head_seq: 1, commands }
+    if (route === '/player/report') return { ok: true }
+    return original(route, options)
+  }
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await pluginModule.wiringTest.sync()
+    commands = [{ seq: 2, cmd: 'captions', value: 1 }]
+    await pluginModule.wiringTest.sync()
+    assert.equal(pluginModule.wiringTest.settings.get().videoCaptions, true,
+      'the queued captions command did not turn the setting on')
+    commands = [{ seq: 3, cmd: 'captions', value: 0 }]
+    await pluginModule.wiringTest.sync()
+    assert.equal(pluginModule.wiringTest.settings.get().videoCaptions, false,
+      'the queued captions command did not turn the setting off')
+  } finally {
+    dispose()
+  }
+})
+
+record('subtitles: a video with several tracks offers a language list, and the choice sticks', () => {
+  const url = 'https://www.youtube.com/watch?v=9FqwhW0B3tY'
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', panelEnabled: false, videoUrl: url })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const frame = { contentWindow: { postMessage() {} } }
+    tx.setBackdropForTest(frame)
+    const listener = ctx.listeners.find(entry => entry.type === 'message' && !entry.removed)
+    assert.ok(listener, 'no message bridge listener')
+    listener.fn({
+      source: frame.contentWindow,
+      data: {
+        aura: 'video-state', url, kind: 'youtube', playing: true, position: 5,
+        duration: 2910, muted: true, title: 'Our Planet: High Seas',
+        videoId: '9FqwhW0B3tY', controllable: true,
+        captions: {
+          on: false, current: 'en-US', known: true,
+          tracks: [
+            { code: 'en-US', name: 'English (United States)' },
+            { code: 'fr', name: 'French' },
+            { code: 'de', name: 'German' }
+          ]
+        }
+      }
+    })
+    const menu = renderDeep(renderContribution(ctx.contributions.find(c => c.id === 'quick-menu')))
+    const select = findByAria(menu, 'Subtitle language')
+    assert.ok(select, 'the quick menu offers no language list')
+    assert.deepEqual(select.props.children.map(option => option.props.value), ['', 'en-US', 'fr', 'de'],
+      'the language list is not Automatic plus the video’s own tracks')
+    select.props.onChange({ target: { value: 'fr' } })
+    assert.equal(ctx.storage.get('settings').videoCaptionLang, 'fr',
+      'the chosen language was not remembered')
+    // The language list is only there when there is a choice to make.
+    listener.fn({
+      source: frame.contentWindow,
+      data: {
+        aura: 'video-state', url, kind: 'youtube', playing: true, position: 5,
+        duration: 2910, muted: true, title: 'Our Planet: High Seas',
+        videoId: '9FqwhW0B3tY', controllable: true,
+        captions: { on: false, current: '', known: true, tracks: [] }
+      }
+    })
+    const bare = renderDeep(renderContribution(ctx.contributions.find(c => c.id === 'quick-menu')))
+    assert.equal(findByAria(bare, 'Subtitle language'), null,
+      'a language list was offered for a video with no subtitles')
+  } finally {
+    tx.setBackdropForTest(null)
+    dispose()
+  }
+})
+
+record('subtitles: the strip has a CC button, and it is disabled when the video has none', () => {
+  const url = 'https://www.youtube.com/watch?v=9FqwhW0B3tY'
+  const ctx = makeCtx({
+    enabled: true, backdropMode: 'video', windowVisual: true, panelEnabled: false, videoUrl: url
+  })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const slot = document.createElement('div')
+    document.body.appendChild(slot)
+    const bar = tx.mountVideoBarForTest(slot)
+    assert.ok(bar, 'the strip did not mount')
+    const cc = findByLabel(bar, 'Subtitles (CC)')
+    assert.ok(cc, 'the strip has no CC button')
+    assert.equal(cc.textContent, 'CC')
+    for (const fn of cc.__handlers.click || []) fn({ preventDefault() {} })
+    assert.equal(ctx.storage.get('settings').videoCaptions, true, 'the CC button did not turn captions on')
+    tx.syncVideoBar(true)
+    assert.equal(cc.getAttribute('aria-pressed'), 'true', 'the CC button does not show it is on')
+    for (const fn of cc.__handlers.click || []) fn({ preventDefault() {} })
+    assert.equal(ctx.storage.get('settings').videoCaptions, false, 'the CC button did not turn captions off')
+
+    // A video with no captions: the button says so instead of pretending.
+    const frame = { contentWindow: { postMessage() {} } }
+    tx.setBackdropForTest(frame)
+    const listener = ctx.listeners.find(entry => entry.type === 'message' && !entry.removed)
+    listener.fn({
+      source: frame.contentWindow,
+      data: {
+        aura: 'video-state', url, kind: 'youtube', playing: true, position: 5,
+        duration: 300, muted: true, title: 'Forests from Above', videoId: 'EColTNIbOko',
+        controllable: true, captions: { on: false, current: '', known: true, tracks: [] }
+      }
+    })
+    tx.syncVideoBar(true)
+    assert.equal(cc.disabled, true, 'the CC button is live on a video with no subtitles')
+    assert.equal(cc.title, 'No subtitles for this video', `wrong tooltip: ${cc.title}`)
+    tx.setBackdropForTest(null)
+    tx.removeVideoBar()
+  } finally {
+    dispose()
+  }
+})
+
+record('subtitles: the Aura page and the panel carry the same CC control', () => {
+  const url = 'https://www.youtube.com/watch?v=9FqwhW0B3tY'
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: url })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const page = renderDeep(renderContribution(ctx.contributions.find(c => c.area === 'routes')))
+    assert.ok(findByAria(page, 'Subtitles (CC)'), 'the Aura page has no CC control')
+    const panel = layoutMountPanel(ctx)
+    const cc = findByLabel(panel, 'Subtitles (CC)')
+    assert.ok(cc, 'the panel has no CC control')
+    assert.equal(cc.textContent, 'CC')
+    for (const fn of cc.__handlers.click || []) fn({ preventDefault() {} })
+    assert.equal(ctx.storage.get('settings').videoCaptions, true,
+      'the panel CC did not turn captions on')
+  } finally {
+    dispose()
+  }
+})
+
 // --------------------------------------------------------------- reporting
 
 console.log(results.join('\n'))
