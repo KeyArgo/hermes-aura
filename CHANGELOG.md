@@ -14,7 +14,7 @@
 - A 346-title shelf in 11 categories on the Aura page, browsable offline and by the agent (`aura_watch action=browse`).
 - Quality control: an archive.org item's real files, switched in place at the same second, with a remembered auto/smallest/largest rule. YouTube reports "Auto (YouTube decides)" and is never forced.
 - Captions on every player surface, with the language list the video publishes (`aura_control action=captions`).
-- 32 starter films, each label carrying its length.
+- 52 starter films (was 8), each label carrying its length.
 - `aura_watch` saves, removes and lists the Aura library.
 - Readable chat text over a film: size, font and colour, through the host theme contract.
 - One-click Play a film, a Now playing block on the page, and a `Watching <title>` status-bar label.

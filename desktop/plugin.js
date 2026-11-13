@@ -1484,7 +1484,7 @@ function AuraAudioSeat() {
 
 
 // ------------------------------------------------- the floating watch window
-// "Pop out" in the owner's words: a small window that floats inside Hermes, so
+// A small window that floats inside Hermes, so
 // the film can be dragged over the work without leaving the app.
 //
 // It has to be our own box. A pane is a tile in the host's layout (the SDK's
