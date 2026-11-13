@@ -449,6 +449,11 @@ video player and the film is open, and it goes away on its own in the Aura
 visual mode (or when you close the film), coming back when video mode does. The
 **Right panel** switch in Settings means "show it in video mode".
 
+Music and radio do not depend on that panel. Their page lives in a hidden seat
+of Aura's own, so radio keeps playing in visualiser mode with no panel on screen
+— and when a panel, the page or the pop-out takes the film back, the music
+follows it instead of going silent.
+
 ### The audio path
 
 <p align="center"><img src="assets/audio-path.svg" alt="Audio path: system loopback, capture thread, /api/stream, Butterchurn, the screen" width="100%"></p>

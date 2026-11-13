@@ -7,6 +7,13 @@
   whenever music or radio has a source, even while the film is closed, and it is
   the visualiser page rather than a dead player. Before this, "stop the film,
   keep the radio" left `playAudioSource` posting into nothing.
+- **Radio survives the panel going away.** The Right panel is a video surface, so
+  in visualiser mode there is no panel to host the music's page. That page now
+  has a seat of its own — an always-registered, zero-size, `opacity: 0`
+  SandboxedFrame in the composer's underside slot (`filmOwner() === 'audio'`),
+  which renders only while no visible surface owns the film. One frame still,
+  never two: a panel, the page or the pop-out takes it back, and the music is
+  handed to the new page instead of falling silent.
 - **The desktop suites are back, and CI can no longer lose one.**
   `tests/test_listen_desktop.mjs` and `tests/test_fresh_install.mjs` had been
   crashing at import since the SandboxedFrame change (their SDK stubs lacked

@@ -1167,9 +1167,18 @@ function filmPageMode() {
 /** Which surface owns the one player right now, or '' when none may show it.
  *
  *  Precedence: the OS pop-out window wins (one film, one surface), then the
- *  page while it is open, then the docked pane. Nothing renders while the film
- *  is closed AND no music needs a page, while no local server is up (no token,
- *  no page), or when the mode wants a source the user has not chosen.
+ *  page while it is open, then the docked pane, then the audio seat. Nothing
+ *  renders while the film is closed AND no music needs a page, while no local
+ *  server is up (no token, no page), or when the mode wants a source the user
+ *  has not chosen.
+ *
+ *  The audio seat is last on purpose. The Right panel is a VIDEO surface
+ *  (panelModeAllows): in visualiser mode, with the film closed, or with the
+ *  panel switched off, there is no visible surface at all — and the music,
+ *  which lives inside this page (web/audio.js), then had no document and went
+ *  silent. `audio` is the always-registered, invisible seat that exists for
+ *  exactly that gap. It never competes with a visible surface: a page, pane or
+ *  window that appears takes the film back and the seat renders nothing.
  */
 function filmOwner() {
   const settings = $settings.get()
@@ -1181,7 +1190,17 @@ function filmOwner() {
   if (settings.videoWindow === true) return 'window'
   if (pageVisible()) return 'page'
   if (panelVisible()) return 'pane'
+  if (audioChannelLive()) return 'audio'
   return ''
+}
+
+/** The page the invisible audio seat loads: always the visualiser, whatever the
+ *  backdrop mode is. That is the page which carries web/audio.js, and a hidden
+ *  copy of player.html would start a film nobody can see. */
+function audioSeatSrc() {
+  const base = liveUrl()
+  if (!base || !audioChannelLive()) return ''
+  return backdropSrc(base, 'aura')
 }
 
 /** The player/visualiser URL for the owning surface, or '' when there is nothing
@@ -1204,7 +1223,9 @@ function AuraFilm({ surface, style }) {
   // Subscribed above so a server coming up (or a source/close change) re-renders
   // this element; the values themselves are read imperatively below.
   void live
-  const src = owner === surface ? filmSrc() : ''
+  // The audio seat is the one surface that does not draw the film: it is there
+  // to keep the music's page alive behind everything else.
+  const src = owner !== surface ? '' : (surface === 'audio' ? audioSeatSrc() : filmSrc())
   useEffect(() => () => {
     // Only the owner may clear the shared handle: an unmount from the surface
     // that never had the player must not leave the other one unreachable.
@@ -1229,11 +1250,70 @@ function AuraFilm({ surface, style }) {
       if (node) {
         filmFrame = node
         filmFrameOwner = surface
+        resumeAudioChannel(node)
       } else if (filmFrameOwner === surface) {
         filmFrame = null
         filmFrameOwner = ''
       }
     }
+  })
+}
+
+// Frames that have already had the music handed to them. A frame element is a
+// DOCUMENT: a surface change (visualiser -> pane, page -> watch window) mounts a
+// new one, and the old page's audio died with it — so the play the settings
+// remember is re-sent once per frame, never once per render.
+const audioResumedFrames = new WeakSet()
+
+/** Hand the remembered music to a frame that has just appeared.
+ *
+ *  Nothing else re-issues a play when the ONE frame moves, which is why the
+ *  music used to stop the moment a visible surface took the film back from the
+ *  audio seat. web/audio.js ignores a repeat of the stream it is already
+ *  playing, so sending it again is safe.
+ */
+function resumeAudioChannel(node) {
+  if (!node || audioResumedFrames.has(node)) return
+  audioResumedFrames.add(node)
+  const settings = $settings.get()
+  const url = String(settings.audioUrl || '').trim()
+  if (!url) return
+  // A frame mounted in this tick has no document yet: a message posted now is
+  // dropped, not queued. Send it once the page has had a moment to boot.
+  if (typeof setTimeout !== 'function') return
+  setTimeout(() => {
+    if (disposed || filmFrame !== node) return
+    audioCommand({ cmd: 'play', url, label: settings.audioLabel, volume: settings.audioVolume })
+  }, 600)
+}
+
+/** The audio channel's own seat.
+ *
+ *  The music/radio channel lives inside the page (web/audio.js), so it needs a
+ *  document of its own whenever no visible surface is showing one — in
+ *  visualiser mode the Right panel does not exist at all (owner: it is a video
+ *  surface), so radio played into nothing and went silent.
+ *
+ *  It sits in the composer's underside slot, the same chrome-free seam the
+ *  control strip uses, registered for the life of the plugin. It is invisible
+ *  rather than absent: `display: none` would tear the page down and stop the
+ *  music, while a zero-size box at opacity 0 keeps it playing. AuraFilm renders
+ *  nothing here the moment a visible surface owns the film, so this can never
+ *  become a second frame.
+ */
+function AuraAudioSeat() {
+  return jsx('div', {
+    key: 'audio-seat',
+    'data-aura-audio': '1',
+    'aria-hidden': 'true',
+    style: {
+      position: 'absolute', width: 0, height: 0, overflow: 'hidden',
+      opacity: 0, pointerEvents: 'none', border: 0
+    },
+    children: jsx(AuraFilm, {
+      surface: 'audio',
+      style: { width: '100%', height: '100%', border: 0, pointerEvents: 'none' }
+    })
   })
 }
 
@@ -3184,7 +3264,7 @@ function audioCommand(message) {
 }
 
 function audioUnavailable() {
-  setError('Music needs Aura’s visual or film on screen — turn on the window visual or open the film.')
+  setError('Music needs Aura’s local server — it is not reachable right now.')
 }
 
 /** Play a direct audio URL or radio stream on the audio channel.
@@ -8747,6 +8827,16 @@ export default {
           area: COMPOSER_AREAS.underside,
           render: () => jsx(AuraComposerStrip, {})
         }))
+        // …and so does the audio channel's own seat, registered for the whole
+        // life of the plugin and after the strip so the strip stays the slot's
+        // first contribution. It renders an invisible SandboxedFrame only while
+        // no visible surface owns the film (filmOwner() === 'audio'), which is
+        // how radio keeps playing in visualiser mode with no Right panel.
+        track(ctx.register({
+          id: 'audio-surface',
+          area: COMPOSER_AREAS.underside,
+          render: () => jsx(AuraAudioSeat, {})
+        }))
         doc.addEventListener('keydown', onPanelKeydown)
         track(() => doc.removeEventListener('keydown', onPanelKeydown))
       }
@@ -8810,6 +8900,7 @@ export const __test = {
     live: Boolean(liveUrl()),
     pane: panelVisible(),
     page: pageVisible(),
+    audio: audioChannelLive(),
     mode: $settings.get().backdropMode,
     hasUrl: Boolean(String($settings.get().videoUrl || '').trim())
   }),
