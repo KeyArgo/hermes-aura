@@ -242,7 +242,49 @@ const STARTER_SOURCES = Object.freeze([
   { label: 'Big Buck Bunny · Blender film', url: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' },
   { label: 'Ocean with David Attenborough · documentary', url: 'https://www.youtube.com/watch?v=ugJB5haR0SE' },
   { label: 'Wildlife Takeover: Chernobyl · documentary', url: 'https://www.youtube.com/watch?v=XaUNhqnpiOE' },
-  { label: 'Destination Wild: Wild Islands · documentary', url: 'https://www.youtube.com/watch?v=JMI_jWFLET0' }
+  { label: 'Destination Wild: Wild Islands · documentary', url: 'https://www.youtube.com/watch?v=JMI_jWFLET0' },
+  // The long, quiet half of the pack: things worth leaving running behind
+  // work. Every entry is the rights-holder's own upload and was checked with
+  // YouTube's oEmbed endpoint (200 = this video may be framed; 401/403/404 =
+  // it may not). Durations are the upload's own, from the same check.
+  //
+  // BBC Earth — the channel's own ambient oceanscape cuts, ten hours each.
+  { label: 'Open Ocean (10 h) · oceanscape', url: 'https://www.youtube.com/watch?v=AgpWX18dby4' },
+  { label: 'Deep Ocean (10 h) · oceanscape', url: 'https://www.youtube.com/watch?v=t_S_cN2re4g' },
+  { label: 'Frozen Seas (10 h) · oceanscape', url: 'https://www.youtube.com/watch?v=e4CQHzLAi8o' },
+  { label: 'Sea Forests (10 h) · oceanscape', url: 'https://www.youtube.com/watch?v=PC1XCR8r8sY' },
+  { label: 'Life Beneath the Waves (3 h) · documentary', url: 'https://www.youtube.com/watch?v=lbrYvBRs-r4' },
+  // BBC Earth Science — eight hours of its own space footage.
+  { label: 'Space & Our Universe (8 h) · documentary', url: 'https://www.youtube.com/watch?v=ZR1HI21eSM0' },
+  // NASA — NASA+ original documentary; NASA media is public domain.
+  { label: 'Cosmic Dawn · NASA documentary', url: 'https://www.youtube.com/watch?v=uSMGENDH_QI' },
+  // NASA Goddard — the Sun in ultra-HD, public-domain NASA footage.
+  { label: 'Thermonuclear Art: the Sun · film', url: 'https://www.youtube.com/watch?v=6tmbeLTHC_0' },
+  // Seán Doran — real-time ISS remaster, NASA imagery credited by the uploader.
+  { label: 'Ambient Earth · ISS remaster', url: 'https://www.youtube.com/watch?v=alJMoaKpV_E' },
+  // Monterey Bay Aquarium — the aquarium's own tank and kelp-cam recordings.
+  { label: 'Tropical Coral Reef (12 h) · aquarium', url: 'https://www.youtube.com/watch?v=g3PWYH1P7Oo' },
+  { label: 'Kelp Forest Cam (5 h) · aquarium', url: 'https://www.youtube.com/watch?v=uS-GSmzcWOk' },
+  // Blender Foundation / Blender Studio — open movies, CC-BY, studio upload.
+  { label: 'Cosmos Laundromat · Blender film', url: 'https://www.youtube.com/watch?v=Y-rmzh0PI3c' },
+  { label: 'Sprite Fright · Blender film', url: 'https://www.youtube.com/watch?v=_cMxraX_5RE' },
+  { label: 'Spring · Blender film', url: 'https://www.youtube.com/watch?v=WhWc3b3KhnY' },
+  // Rail Relaxation / RailCowGirl — cab views filmed and uploaded by them.
+  { label: 'Arlberg Railway (2 h) · cab ride', url: 'https://www.youtube.com/watch?v=hMw2SaXMR-U' },
+  { label: 'Marseille to Briançon (4 h) · cab ride', url: 'https://www.youtube.com/watch?v=64xeuXmv4MA' },
+  { label: 'Winter Night, Bergen Line (6 h) · cab ride', url: 'https://www.youtube.com/watch?v=iNRNgfS1p2M' },
+  // Prowalk Tours / WALKS and the CITY — their own walking footage, no talk.
+  { label: 'Rome on Foot (7 h) · city walk', url: 'https://www.youtube.com/watch?v=--v8TDp92Q0' },
+  { label: 'Manhattan After Dark (12 h) · city walk', url: 'https://www.youtube.com/watch?v=6y5CqAHxGX0' },
+  // Aerial Earth — drone aerials uploaded silent, so nothing competes with work.
+  { label: 'Forests from Above (10 h) · aerial', url: 'https://www.youtube.com/watch?v=EColTNIbOko' },
+  // Fireplace 10 Hours / Relaxing White Noise — their own fire and storm beds.
+  { label: 'Fireplace (10 h) · ambience', url: 'https://www.youtube.com/watch?v=cdKop6aixVE' },
+  { label: 'Thunder & Rain (10 h) · ambience', url: 'https://www.youtube.com/watch?v=nDq6TstdEi8' },
+  // Internet Archive — public-domain features, served as direct mp4 (checked:
+  // 200 with Content-Type video/mp4), so no embed rules apply at all.
+  { label: 'Nanook of the North (1922) · film', url: 'https://archive.org/download/nanookOfTheNorth1922/NanookOfTheNorth1922.mp4' },
+  { label: 'The General (1926) · film', url: 'https://archive.org/download/TheGeneralBusterKeaton1926/TheGeneral2.mp4' }
 ])
 
 // Sites that refuse to be framed: their web apps send X-Frame-Options /

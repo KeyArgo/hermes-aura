@@ -2088,6 +2088,76 @@ record('"Edit sources…" opens the Aura page from both menus', () => {
   disposeT()
 })
 
+// ------------------------------------------------------------ starters
+// The starter pack is the front door of the video backdrop, so it is checked
+// as data rather than by eye: the catalogue must have grown past its original
+// eight films, carry no duplicate URL or label, and every entry must be a URL
+// this player can actually frame (a YouTube watch link with an 11-character id,
+// or a direct media file). The entries are read out of the plugin source (the
+// literals ARE the shipped catalogue) and the count is also taken through
+// videoQueue(), the real path prev/next and the pickers walk.
+
+const starterBlock = (() => {
+  const start = source.indexOf('const STARTER_SOURCES = Object.freeze([')
+  assert.ok(start >= 0, 'STARTER_SOURCES is not in the plugin source any more')
+  const end = source.indexOf('\n])', start)
+  assert.ok(end > start, 'STARTER_SOURCES has no closing bracket')
+  return source.slice(start, end)
+})()
+
+const starterEntries = (() => {
+  const found = []
+  const entryRe = /\{\s*label:\s*'((?:[^'\\]|\\.)*)',\s*url:\s*'((?:[^'\\]|\\.)*)'\s*\}/g
+  for (const match of starterBlock.matchAll(entryRe)) found.push({ label: match[1], url: match[2] })
+  return found
+})()
+
+record('the starter pack grew, and every source is unique and well-formed', () => {
+  const queue = pluginModule.__test.videoQueue()
+  assert.ok(queue.length > 8,
+    `the starter pack was not expanded: videoQueue() still offers ${queue.length} sources`)
+  assert.ok(starterEntries.length >= 20,
+    `expected 20 or more starter sources, the array has ${starterEntries.length}`)
+
+  const urls = starterEntries.map(entry => entry.url)
+  const labels = starterEntries.map(entry => entry.label)
+  assert.equal(new Set(urls).size, urls.length, 'two starter entries share a URL')
+  assert.equal(new Set(labels).size, labels.length, 'two starter entries share a label')
+
+  for (const { label, url } of starterEntries) {
+    assert.ok(label.trim().length >= 3, `starter label is too short for ${url}`)
+    assert.doesNotMatch(url, /\s/, `starter url contains whitespace: ${url}`)
+    assert.doesNotMatch(url, /PLKcvhYw9tgjI/, `a real playlist id leaked into the pack: ${url}`)
+    let parsed = null
+    try {
+      parsed = new URL(url)
+    } catch {
+      parsed = null
+    }
+    assert.ok(parsed, `starter url is not absolute: ${url}`)
+    assert.equal(parsed.protocol, 'https:', `starter url is not https: ${url}`)
+    const host = parsed.hostname.replace(/^www\./, '')
+    if (host === 'youtube.com') {
+      assert.equal(parsed.pathname, '/watch', `starter YouTube url is not a watch link: ${url}`)
+      assert.match(parsed.searchParams.get('v') || '', /^[A-Za-z0-9_-]{11}$/,
+        `starter YouTube id is malformed: ${url}`)
+      assert.equal(parsed.searchParams.get('list'), null,
+        `a starter entry is a playlist, not a film: ${url}`)
+    } else {
+      assert.equal(host, 'archive.org', `unexpected starter host ${host}: ${url}`)
+      assert.match(parsed.pathname, /\.(mp4|webm|ogv|ogg|m4v|mov)$/,
+        `a direct starter source is not a media file: ${url}`)
+    }
+    assert.ok(queue.some(item => item.url === url),
+      `the queue drops this starter entry (duplicate or filtered): ${url}`)
+  }
+
+  const youtube = urls.filter(url => url.includes('youtube.com/watch'))
+  const direct = urls.filter(url => !url.includes('youtube.com/watch'))
+  assert.ok(youtube.length >= 15, `only ${youtube.length} YouTube starters`)
+  assert.ok(direct.length >= 1, 'the pack has no direct-file starter')
+})
+
 // ------------------------------------------------------------- scenario U
 // The Aura page's Library: add, rename, remove, hide starters, clear recents.
 
@@ -2170,7 +2240,8 @@ await recordAsync('a saved source can be renamed and removed', async () => {
 await recordAsync('starter films can be hidden and shown, recents cleared', async () => {
   uAria('Hide starter films').props.onClick()
   await sleep(30)
-  assert.equal(uSaved().videoHiddenStarters.length, 8, 'hide starters did not persist')
+  assert.equal(uSaved().videoHiddenStarters.length, starterEntries.length,
+    'hide starters did not persist every starter')
   assert.ok(uAria('Show starter films'), 'the page does not offer Show starters after hiding')
   uAria('Clear recents').props.onClick()
   await sleep(30)

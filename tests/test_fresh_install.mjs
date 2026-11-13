@@ -656,13 +656,14 @@ record('4. fresh install: the starter films are offered on the page and in the p
       chips.push(node.props['aria-label'])
     }
   })
-  assert.equal(chips.length, 8, `expected the 8 starter films on the page, got ${chips.length}: ${JSON.stringify(chips)}`)
+  assert.ok(chips.length >= 20, `expected the expanded starter pack on the page, got ${chips.length}: ${JSON.stringify(chips)}`)
   assert.ok(chips.includes('Play Sintel · Blender film'), 'Sintel is not offered on the page')
   assert.ok(chips.includes('Play Big Buck Bunny · Blender film'), 'Big Buck Bunny is not offered on the page')
 
   const hostNode = mountPane(freshA)
   const cards = panelCards(hostNode)
-  assert.equal(cards.length, 8, `expected 8 starter cards in the pane, got ${cards.length}`)
+  // The A menu's card list is capped at PANEL_SCORE_MAX (12) sources.
+  assert.equal(cards.length, Math.min(12, chips.length), `expected ${Math.min(12, chips.length)} starter cards in the pane, got ${cards.length}`)
   assert.ok(cards.some(card => cardTitle(card).includes('Sintel')), 'the pane card list has no Sintel')
   const kinds = domFindAll(hostNode, node => node.className === 'ap-kind').map(node => node.textContent)
   assert.ok(kinds.includes('youtube'), 'the pane does not label the starter cards as youtube sources')
