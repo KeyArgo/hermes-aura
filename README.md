@@ -19,6 +19,10 @@
 </p>
 
 <p align="center">
+  <img src="docs/media/aura-film.gif" width="100%" alt="Aura in Hermes Desktop: pick a film from the shelf and it plays docked beside the chat">
+</p>
+
+<p align="center">
   <img alt="140 MilkDrop presets" src="https://img.shields.io/badge/milkdrop%20presets-140-ec4899?style=flat-square">
   <img alt="no account, no uploads, no recording" src="https://img.shields.io/badge/privacy-no%20account%20%C2%B7%20no%20uploads-0d9488?style=flat-square">
   <img alt="plugin surface: desktop pane, page, status bar, tools" src="https://img.shields.io/badge/surfaces-pane%20%C2%B7%20page%20%C2%B7%20window%20%C2%B7%20tray-f59e0b?style=flat-square">
