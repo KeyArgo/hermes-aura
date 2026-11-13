@@ -672,6 +672,59 @@ await recordAsync('a film filling the window behind the panel is a wash, not a w
   }
 })
 
+// ================================================== 3. the paused bookmark
+// Without this every reload came back playing.
+
+record('readPositions keeps whether the film was paused', () => {
+  const out = tx.readPositions({
+    'https://example.test/a.mp4': { position: 42, duration: 600, at: 10, videoId: 'abc', paused: true },
+    'https://example.test/b.mp4': { position: 42, duration: 600, at: 10, videoId: 'abc', paused: 'yes' }
+  })
+  assert.equal(out['https://example.test/a.mp4'].paused, true, 'the paused flag was dropped on read')
+  assert.equal(out['https://example.test/b.mp4'].paused, false, 'a non-boolean paused value was kept')
+})
+
+await recordAsync('rememberPosition records paused, and the player URL carries it', async () => {
+  const bucket = videoMode({ filmFullWindow: false })
+  const dispose = pluginModule.default.register(bucket.ctx)
+  try {
+    await primeLive(bucket)
+    const other = 'https://example.test/paused.mp4'
+    tx.rememberPosition(other, 42, 600, false, '', true, true)
+    const saved = bucket.storage.get('settings').videoPositions[other]
+    assert.ok(saved, 'the bookmark was not written')
+    assert.equal(saved.paused, true, 'the bookmark did not record the pause')
+
+    // What the frame is handed for that film: the reload must come back paused.
+    atoms.settings.set({ ...atoms.settings.get(), videoUrl: other })
+    const src = tx.filmSrc()
+    const url = new URL(src)
+    assert.equal(url.searchParams.get('paused'), '1', 'the player URL dropped the paused state')
+    assert.equal(url.searchParams.get('resume'), '42', 'the player URL dropped the resume point')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('saveCurrentPosition takes the pause from what the player reported', async () => {
+  const bucket = videoMode({ filmFullWindow: false })
+  const dispose = pluginModule.default.register(bucket.ctx)
+  try {
+    await primeLive(bucket)
+    atoms.video.set({ ...atoms.video.get(), position: 90, duration: 600, playing: false })
+    tx.saveCurrentPosition()
+    assert.equal(bucket.storage.get('settings').videoPositions[VIDEO].paused, true,
+      'a paused film was flushed as playing')
+
+    atoms.video.set({ ...atoms.video.get(), playing: true })
+    tx.saveCurrentPosition()
+    assert.equal(bucket.storage.get('settings').videoPositions[VIDEO].paused, false,
+      'a playing film was flushed as paused')
+  } finally {
+    dispose()
+  }
+})
+
 // ==================================================== 5. the full-window host
 // A playing film fills the app window behind everything, even with the panel
 // open; the see-through controls are offered only there.

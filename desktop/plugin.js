@@ -671,7 +671,10 @@ function readPositions(raw) {
       at: Number.isFinite(at) ? at : 0,
       // Which episode of a playlist this is; the player needs it to resume
       // the right episode rather than the list's first one.
-      videoId
+      videoId,
+      // Whether the user had the film paused. Dropping this on read is what
+      // made every reload come back PLAYING over a deliberate pause.
+      paused: value.paused === true
     }
   }
   return out
@@ -695,7 +698,7 @@ function resumeTargetFor(url) {
 /** Record where a film is, at most every 5 s, so an interruption (another
  *  plugin, a face, a source swap, the app closing) resumes in the right place.
  *  `position` of 0 with `finished` clears the bookmark. */
-function rememberPosition(url, position, duration, finished, videoId, force) {
+function rememberPosition(url, position, duration, finished, videoId, force, paused) {
   const key = String(url || '').trim()
   if (!key || !/^https?:\/\//i.test(key)) return
   const settings = $settings.get()
@@ -719,7 +722,11 @@ function rememberPosition(url, position, duration, finished, videoId, force) {
     duration: Math.max(0, Math.floor(duration || 0)),
     at: now,
     // Which episode of a playlist this is, so a list resumes at the right one.
-    videoId: keepVideo
+    videoId: keepVideo,
+    // Whether the user had it paused. Without this, every reload — a source
+    // swap, a re-pointed frame, closing the app — brought the film back
+    // PLAYING, so a deliberate pause looked like it never stuck.
+    paused: paused === true
   }
   writeSettings({ videoPositions: map })
 }
@@ -732,7 +739,7 @@ function saveCurrentPosition() {
   const state = $video.get()
   const url = $settings.get().videoUrl
   if (!url || !(state.position >= 5)) return
-  rememberPosition(url, state.position, state.duration, false, state.videoId, true)
+  rememberPosition(url, state.position, state.duration, false, state.videoId, true, state.playing !== true)
 }
 
 /** A saved source: `{ label, url }`, trimmed and length-capped, deduped by URL.
@@ -2311,7 +2318,7 @@ function restoreDesktopPlayback(player) {
   const positions = { ...(settings.videoPositions || {}) }
   positions[url] = { position: Math.max(0, Number(player.position) || 0),
     duration: Math.max(0, Number(player.duration) || 0), at: Date.now(),
-    videoId: String(player.videoId || '') }
+    videoId: String(player.videoId || ''), paused: player.playing !== true }
   handoffPlayback = { url, position: positions[url].position, videoId: positions[url].videoId,
     paused: player.playing !== true }
   writeSettings({ videoUrl: url, videoPositions: positions, videoClosed: false, backdropMode: 'video' })
@@ -4332,7 +4339,7 @@ function onBackdropMessage(event) {
   noteFilmReady(data)
   if (typeof data.url === 'string' && data.url) {
     if (data.ended === true) rememberPosition(data.url, 0, duration, true, data.videoId)
-    else rememberPosition(data.url, position, duration, false, data.videoId)
+    else rememberPosition(data.url, position, duration, false, data.videoId, false, data.playing !== true)
   }
   // [listen lane] The film's mute is a setting the agent can set and the
   // player can change; keep the stored value honest across reloads.
@@ -10224,6 +10231,9 @@ export const __test = {
   videoCommand,
   playPauseIntent,
   syncPanel,
+  // Bookmarks: what the player remembers between reloads.
+  rememberPosition,
+  saveCurrentPosition,
   // The full-window host: the setting, the decision, the layout it applies and
   // the per-tick opacity writer that used to force the panel's film to 20%.
   filmOpen,
