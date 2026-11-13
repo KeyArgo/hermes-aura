@@ -577,6 +577,11 @@ const $build = atom(null)
 // is an Aura *server* older than this pane (Hermes keeps the old Python module in
 // memory across an update). The pane says so instead of looking broken.
 const $staleServer = atom(false)
+// The shelf catalogue (web/catalog.json via /catalog). One fetch per mount;
+// `loaded` is false until that fetch has succeeded, so a failed request is
+// retried on the next visit instead of being remembered as "no catalogue".
+const $catalog = atom({ loaded: false, error: '', items: [] })
+let catalogRequest = null
 let pulseIndex = 0
 
 // --------------------------------------------------------------- persistence
@@ -4314,7 +4319,8 @@ function uiCss() {
     @media (prefers-reduced-motion: reduce) {
       #aura-page .aura-card.is-active { animation: none; }
       #aura-page .aura-card, #aura-page .aura-btn, #aura-page .aura-chip,
-      #aura-page .aura-input { transition: none; }
+      #aura-page .aura-input, #aura-page .aura-shelf-card,
+      #aura-page .aura-shelf-note { transition: none; }
     }
     #aura-page .aura-card-main {
       display: flex; flex-direction: column; gap: 0; cursor: pointer;
@@ -4341,6 +4347,62 @@ function uiCss() {
     }
     #aura-page .aura-rename { flex: 1; font-size: 10.5px; padding: 4px 7px; }
     #aura-page .aura-empty { font-size: 11.5px; color: #bfb4a8; padding: 4px 2px; }
+    /* ---- the shelf -------------------------------------------------------
+       One horizontal strip per category. Every level is min-width: 0 and the
+       strip is the only thing that scrolls, so a narrow Hermes window gets a
+       sideways-scrolling row instead of a page that is wider than its pane. */
+    #aura-page .aura-shelf {
+      display: flex; flex-direction: column; gap: 12px;
+      min-width: 0; max-width: 100%;
+    }
+    #aura-page .aura-shelf-row {
+      display: flex; flex-direction: column; gap: 7px;
+      min-width: 0; max-width: 100%;
+    }
+    #aura-page .aura-shelf-search {
+      flex: 0 1 250px; min-width: 0; font-size: 11.5px; padding: 5px 9px;
+    }
+    #aura-page .aura-shelf-strip {
+      display: flex; gap: 10px; align-items: stretch;
+      overflow-x: auto; overflow-y: hidden;
+      max-width: 100%; min-width: 0;
+      padding: 2px 2px 8px;
+      scrollbar-width: thin; scroll-snap-type: x proximity;
+    }
+    #aura-page .aura-shelf-card, #aura-page .aura-shelf-slot {
+      flex: 0 0 184px; width: 184px; min-width: 0; max-width: 184px;
+      scroll-snap-align: start;
+    }
+    #aura-page .aura-shelf-card {
+      display: flex; flex-direction: column; gap: 5px;
+      padding: 10px 11px 9px; border-radius: 11px; cursor: pointer;
+      background: linear-gradient(180deg, rgba(24,19,28,0.94), rgba(18,14,24,0.94));
+      border: 1px solid rgba(255,255,255,0.09);
+      transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+    }
+    #aura-page .aura-shelf-card:hover { transform: translateY(-2px); border-color: rgba(255,190,140,0.4); }
+    #aura-page .aura-shelf-card.is-active {
+      border-color: rgba(255,170,120,0.6);
+      box-shadow: 0 0 0 1px rgba(255,170,120,0.22), 0 12px 36px rgba(255,120,60,0.24);
+    }
+    #aura-page .aura-shelf-title {
+      font-size: 11.5px; line-height: 1.35; color: #f6efe6; font-weight: 600;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden; overflow-wrap: anywhere;
+    }
+    #aura-page .aura-shelf-meta {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: #bfb4a8;
+    }
+    /* The one-line note: reserved so the card does not jump, and legible only
+       while the card is hovered or focused. */
+    #aura-page .aura-shelf-note {
+      font-size: 10.5px; line-height: 1.4; color: #cfc4b8;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      opacity: 0; transition: opacity 140ms ease;
+    }
+    #aura-page .aura-shelf-card:hover .aura-shelf-note,
+    #aura-page .aura-shelf-card:focus-visible .aura-shelf-note { opacity: 1; }
     /* The Settings component reads host theme tokens; remap them inside the
        page's dark glass so a light host theme cannot put dark text on it. */
     #aura-page .aura-setup, #aura-page .aura-revamp {
@@ -4359,6 +4421,11 @@ function uiCss() {
       #aura-page .aura-title { font-size: 22px; }
       #aura-page .aura-now-title { font-size: 18px; }
       #aura-page .aura-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+      /* Narrow: the row scrolls, each card gets smaller, nothing gets wider. */
+      #aura-page .aura-shelf-card, #aura-page .aura-shelf-slot {
+        flex-basis: 148px; width: 148px; max-width: 148px;
+      }
+      #aura-page .aura-shelf-search { flex: 1 1 100%; width: 100%; }
       #aura-page .aura-panel { padding: 13px 13px 15px; border-radius: 14px; }
     }
   `
@@ -6140,6 +6207,284 @@ function pageAddSource() {
   return saved
 }
 
+// ---- the shelf: the committed catalogue (web/catalog.json) ----------------
+// One fetch per page visit through the same ctx.rest door everything else uses.
+// Failure is not an error state the page shows: Picks and the saved library
+// still work, so the shelf simply stays absent.
+
+/** Seconds -> "1 h 32 min" / "47 min"; '' when the catalogue has no length. */
+function fmtLength(seconds) {
+  const total = Math.round(Number(seconds))
+  if (!Number.isFinite(total) || total <= 0) return ''
+  const minutes = Math.round(total / 60)
+  if (!minutes) return `${total} s`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  if (hours && rest) return `${hours} h ${rest} min`
+  if (hours) return `${hours} h`
+  return `${rest} min`
+}
+
+/** The catalogue rows as the shelf draws them, in the file's category order. */
+function catalogRows(items, query) {
+  const wanted = String(query || '').trim().toLowerCase()
+  const order = []
+  const byCategory = new Map()
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item || typeof item.url !== 'string' || typeof item.title !== 'string') continue
+    if (!item.category) continue
+    if (wanted) {
+      const haystack = `${item.title} ${item.note || ''} ${item.category}`.toLowerCase()
+      if (!haystack.includes(wanted)) continue
+    }
+    if (!byCategory.has(item.category)) {
+      byCategory.set(item.category, [])
+      order.push(item.category)
+    }
+    byCategory.get(item.category).push(item)
+  }
+  return order.map(category => ({
+    id: category,
+    title: category,
+    items: byCategory.get(category)
+  }))
+}
+
+/** The shelf's own search text. A module mirror (like pageSourceDraft) so the
+ *  commit path reads exactly what is on screen even before a re-render lands. */
+let catalogSearch = ''
+
+/** Load the catalogue once per page visit. A failed fetch leaves `loaded`
+ *  false, so the next visit tries again instead of remembering a bad day. */
+function loadCatalog() {
+  if (!ctxRef || disposed) return Promise.resolve()
+  if ($catalog.get().loaded) return Promise.resolve()
+  if (catalogRequest) return catalogRequest
+  catalogRequest = (async () => {
+    try {
+      const payload = await ctxRef.rest('/catalog', { timeoutMs: 8000 })
+      const raw = payload && Array.isArray(payload.items) ? payload.items : []
+      const seen = new Set()
+      const items = []
+      for (const entry of raw) {
+        if (!entry || typeof entry.url !== 'string' || typeof entry.title !== 'string') continue
+        if (!/^https?:\/\//i.test(entry.url) || !entry.title.trim() || !entry.category) continue
+        if (seen.has(entry.url)) continue
+        seen.add(entry.url)
+        items.push({
+          category: String(entry.category),
+          title: entry.title.trim(),
+          year: Number.isFinite(Number(entry.year)) ? Number(entry.year) : null,
+          url: entry.url.trim().slice(0, VIDEO_URL_MAX),
+          note: typeof entry.note === 'string' ? entry.note : '',
+          duration_s: Number.isFinite(Number(entry.duration_s)) && Number(entry.duration_s) > 0
+            ? Number(entry.duration_s)
+            : null
+        })
+      }
+      $catalog.set({ loaded: true, error: '', items })
+    } catch {
+      // Offline, old server, no catalogue: the page is still a working library.
+      $catalog.set({ loaded: false, error: 'catalogue unavailable', items: [] })
+    } finally {
+      catalogRequest = null
+    }
+  })()
+  return catalogRequest
+}
+
+/** One poster-less shelf card: title, year, length; the one-line note rides on
+ *  the hover/focus tooltip and in a line that only colours in on hover. */
+function PageCatalogCard(props) {
+  const item = props.item
+  const active = props.active === true
+  const length = fmtLength(item.duration_s)
+  const play = () => {
+    void playOnPage(item.url, item.title)
+  }
+  const meta = []
+  if (item.year) meta.push(jsx('span', { key: 'year', className: 'aura-shelf-year', children: String(item.year) }))
+  if (length) meta.push(jsx('span', { key: 'len', className: 'aura-shelf-len', children: length }))
+  return jsxs('div', {
+    className: active ? 'aura-shelf-card is-active' : 'aura-shelf-card',
+    style: { minWidth: 0 },
+    role: 'button',
+    tabIndex: 0,
+    'aria-label': `Play ${item.title}`,
+    title: item.note || item.title,
+    onClick: play,
+    onKeyDown: event => {
+      if (!event || (event.key !== 'Enter' && event.key !== ' ')) return
+      if (event.preventDefault) event.preventDefault()
+      play()
+    },
+    children: [
+      jsx('div', { key: 'title', className: 'aura-shelf-title', children: item.title }),
+      jsx('div', { key: 'meta', className: 'aura-shelf-meta', children: meta }),
+      jsx('div', { key: 'note', className: 'aura-shelf-note', children: item.note || '' })
+    ]
+  })
+}
+
+/** One horizontal row: a heading with its count, then a strip that scrolls
+ *  sideways instead of pushing the page wider than its column. */
+function PageShelfRow(props) {
+  const Card = props.card || PageCatalogCard
+  return jsxs('div', {
+    className: 'aura-shelf-row',
+    'data-category': props.id,
+    style: { minWidth: 0, maxWidth: '100%' },
+    children: [
+      jsxs('div', {
+        key: 'head',
+        className: 'aura-sec-head',
+        children: [
+          jsx('span', { key: 'label', className: 'aura-sec-label', children: props.title }),
+          jsx('span', { key: 'count', className: 'aura-count', children: String(props.items.length) }),
+          jsx('span', { key: 'space', style: { flex: 1 } }),
+          props.extra || null
+        ]
+      }),
+      jsx('div', {
+        key: 'strip',
+        className: 'aura-shelf-strip',
+        style: {
+          display: 'flex', gap: 10, overflowX: 'auto', overflowY: 'hidden',
+          maxWidth: '100%', minWidth: 0, paddingBottom: 6
+        },
+        children: props.items.map(item => jsx(Card, {
+          key: item.url,
+          item,
+          active: item.url === props.currentUrl
+        }))
+      })
+    ]
+  })
+}
+
+/** A Picks card: the starter pack keeps its poster, sized to the shelf strip. */
+function PagePickCard(props) {
+  const item = props.item
+  return jsx('div', {
+    className: 'aura-shelf-slot',
+    style: { minWidth: 0 },
+    children: jsx(PageSourceCard, {
+      item: { label: item.title, url: item.url },
+      kind: 'starter',
+      active: props.active === true
+    })
+  })
+}
+
+/** The shelf proper: Picks (the starter pack, first) then one row per catalogue
+ *  category, all filtered by one search box. */
+function PageShelf() {
+  const settings = useValue($settings)
+  const catalog = useValue($catalog)
+  const [, bumpSearch] = useState(0)
+  const query = catalogSearch
+  useEffect(() => {
+    void loadCatalog()
+  }, [])
+  const hidden = new Set(Array.isArray(settings.videoHiddenStarters) ? settings.videoHiddenStarters : [])
+  const picks = STARTER_SOURCES
+    .filter(item => !hidden.has(item.url))
+    .filter(item => !query || item.label.toLowerCase().includes(query.toLowerCase()))
+    .map(item => ({ label: item.label, url: item.url }))
+  const rows = catalogRows(catalog.items, query)
+  const onSearch = event => {
+    catalogSearch = String(event && event.target ? event.target.value : '')
+    bumpSearch(catalogSearch.length)
+  }
+  const startersHidden = Array.isArray(settings.videoHiddenStarters) &&
+    settings.videoHiddenStarters.length > 0
+  const pickToggle = jsx('button', {
+    key: 'starters-toggle',
+    type: 'button',
+    className: 'aura-chip',
+    'aria-label': startersHidden ? 'Show starter films' : 'Hide starter films',
+    onClick: () => setDemosHidden(!startersHidden),
+    children: startersHidden ? 'Show starters' : 'Hide starters'
+  })
+
+  const children = [
+    jsx('div', {
+      key: 'head',
+      className: 'aura-sec-head',
+      children: [
+        jsx('span', { key: 'label', className: 'aura-sec-label', children: 'Shelf' }),
+        jsx('span', {
+          key: 'count',
+          className: 'aura-count',
+          children: catalog.loaded ? `${catalog.items.length} titles` : 'Picks only'
+        }),
+        jsx('span', { key: 'space', style: { flex: 1 } }),
+        jsx('input', {
+          key: 'search',
+          type: 'text',
+          className: 'aura-input aura-shelf-search',
+          value: query,
+          placeholder: 'Search the catalogue',
+          'aria-label': 'Search the catalogue',
+          spellCheck: false,
+          onChange: onSearch
+        })
+      ]
+    }),
+    jsx(PageShelfRow, {
+      key: 'picks',
+      id: 'picks',
+      title: 'Picks',
+      card: PagePickCard,
+      items: picks.map(item => ({
+        title: item.label,
+        url: item.url,
+        category: 'Picks',
+        year: null,
+        duration_s: null,
+        note: item.label
+      })),
+      currentUrl: settings.videoUrl,
+      extra: pickToggle
+    })
+  ]
+
+  if (startersHidden && !picks.length && !query) {
+    children.push(jsx('div', {
+      key: 'picks-empty',
+      className: 'aura-empty',
+      children: 'The starter films are hidden. Show them again with the button above.'
+    }))
+  }
+
+  for (const row of rows) {
+    children.push(jsx(PageShelfRow, {
+      key: `row-${row.id}`,
+      id: row.id,
+      title: row.title,
+      items: row.items,
+      currentUrl: settings.videoUrl
+    }))
+  }
+
+  if (catalog.loaded && !rows.length) {
+    children.push(jsx('div', {
+      key: 'empty',
+      className: 'aura-empty',
+      children: query
+        ? `Nothing in the catalogue matches “${query}”.`
+        : 'The catalogue is empty.'
+    }))
+  }
+
+  return jsx('div', {
+    className: 'aura-shelf',
+    'aria-label': 'Shelf',
+    style: { display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0, maxWidth: '100%' },
+    children
+  })
+}
+
 /** One poster card: the card itself plays the source; saved entries also get
  *  an inline rename field and a Remove chip. */
 function PageSourceCard(props) {
@@ -6227,9 +6572,7 @@ function PageLibrary() {
   const settings = useValue($settings)
   const [draftUrl, setDraftUrl] = useState('')
   const [draftName, setDraftName] = useState('')
-  const groups = videoSourceGroups(settings)
-  const startersHidden = Array.isArray(settings.videoHiddenStarters) &&
-    settings.videoHiddenStarters.length > 0
+  const groups = videoSourceGroups(settings).filter(group => group.id !== 'starters')
   const submit = () => {
     if (!pageAddSource()) return
     setDraftUrl('')
@@ -6260,6 +6603,7 @@ function PageLibrary() {
           })
         ]
       }),
+      jsx(PageShelf, { key: 'shelf' }),
       jsxs('div', {
         key: 'add',
         className: 'aura-add',
@@ -6332,8 +6676,7 @@ function PageLibrary() {
         ]
       }),
       groups.map(group => {
-        const emptyStarters = group.id === 'starters' && group.items.length === 0
-        if (!group.items.length && !emptyStarters) return null
+        if (!group.items.length) return null
         return jsxs('div', {
           key: `group-${group.id}`,
           className: 'aura-group',
@@ -6345,16 +6688,6 @@ function PageLibrary() {
                 jsx('span', { key: 'label', className: 'aura-sec-label', children: group.label }),
                 jsx('span', { key: 'count', className: 'aura-count', children: String(group.items.length) }),
                 jsx('span', { key: 'space', style: { flex: 1 } }),
-                group.id === 'starters'
-                  ? jsx('button', {
-                    key: 'starters-toggle',
-                    type: 'button',
-                    className: 'aura-chip',
-                    'aria-label': startersHidden ? 'Show starter films' : 'Hide starter films',
-                    onClick: () => setDemosHidden(!startersHidden),
-                    children: startersHidden ? 'Show starters' : 'Hide starters'
-                  })
-                  : null,
                 group.id === 'recent'
                   ? jsx('button', {
                     key: 'clear',
@@ -6367,23 +6700,17 @@ function PageLibrary() {
                   : null
               ]
             }),
-            emptyStarters
-              ? jsx('div', {
-                key: 'empty',
-                className: 'aura-empty',
-                children: 'The starter films are hidden. Show them again with the button above.'
-              })
-              : jsx('div', {
-                key: 'grid',
-                className: 'aura-grid',
-                children: group.items.map(item => jsx(PageSourceCard, {
-                  key: item.url,
-                  item,
-                  kind: groupLabel(group),
-                  active: item.url === settings.videoUrl,
-                  saved: group.id === 'playlists' || group.id === 'films'
-                }))
-              })
+            jsx('div', {
+              key: 'grid',
+              className: 'aura-grid',
+              children: group.items.map(item => jsx(PageSourceCard, {
+                key: item.url,
+                item,
+                kind: groupLabel(group),
+                active: item.url === settings.videoUrl,
+                saved: group.id === 'playlists' || group.id === 'films'
+              }))
+            })
           ]
         })
       })
@@ -7948,6 +8275,11 @@ export default {
     $menuOpen.set(false)
     $pulse.set(0)
     pulseIndex = 0
+    // The shelf belongs to the instance that fetched it: a fresh context asks
+    // its own /catalog once, and a failed fetch is not inherited either.
+    $catalog.set({ loaded: false, error: '', items: [] })
+    catalogRequest = null
+    catalogSearch = ''
     resetShow()
     // A hot reload must not inherit "the pop-out owns the picture" — that flag
     // suppresses every in-app surface, and the window that set it belonged to
@@ -8185,6 +8517,13 @@ export const __test = {
   storedSourceTitle,
   nowPlaying,
   videoQueue,
+  // The shelf: pure helpers plus the atom and one-shot loader, so a test can
+  // prove the rows, the search and the play path without a browser.
+  fmtLength,
+  catalogRows,
+  loadCatalog,
+  catalogForTest: () => $catalog.get(),
+  setCatalogSearchForTest: value => { catalogSearch = String(value) },
   applyVideoSource,
   applyUrlBox,
   skipBlockedEpisode,

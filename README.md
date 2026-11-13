@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml"><img alt="CI: tests" src="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml/badge.svg?branch=main"></a>
-  <a href="TESTING.md"><img alt="621 tests passing" src="https://img.shields.io/badge/tests-621%20passing-2ea44f?style=flat-square"></a>
+  <a href="TESTING.md"><img alt="703 tests passing" src="https://img.shields.io/badge/tests-703%20passing-2ea44f?style=flat-square"></a>
   <a href="https://github.com/NousResearch/hermes-agent/pull/154027"><img alt="Hermes plugin catalog: in review" src="https://img.shields.io/badge/plugin%20catalog-in%20review-f59e0b?style=flat-square"></a>
   <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/license-MIT-2f6bff?style=flat-square"></a>
   <a href="https://github.com/NousResearch/hermes-agent"><img alt="Hermes Agent 0.22.5 or newer" src="https://img.shields.io/badge/Hermes%20Agent-%E2%89%A5%200.22.5-7c3aed?style=flat-square"></a>
@@ -219,6 +219,34 @@ a direct link). `action=play` accepts YouTube watch / `youtu.be` / shorts / embe
 / playlist links and direct `.mp4`, `.webm`, `.m3u8` and `.mov` files. The
 dashboard also exposes the same search as
 `GET /api/plugins/aura/search?q=…&limit=…`.
+
+### The shelf: 346 titles, on the page and by name
+
+The Aura page opens with **Picks** — the starter films — then one row per
+category: Deep sea & oceans, Nature & wildlife, Space & astronomy, Earth from
+above, Slow TV, Classic films, Classic cartoons, Anime, Open movies, Science &
+history docs and Ambience. Every row scrolls sideways, each card names the
+title, year and length and shows its one-line note on hover, and one click plays
+it through the same path a picked source takes. One search box filters every row
+at once. The catalogue is a committed file (`web/catalog.json`, built by
+`tools/build_catalog.py` from the verified rows) served by
+`GET /api/catalog`, so it works offline and nothing is fetched from YouTube or
+archive.org at runtime.
+
+Ask for one by name and Hermes browses the same list without touching the
+network:
+
+> **You:** find me a noir film
+> **Hermes:** Here are a few from Aura's catalogue — say the number:
+> 1. The Cabinet of Dr. Caligari (1920) · Classic films · archive.org/…
+> 2. Dr. Mabuse the Gambler (1922) · Classic films · archive.org/…
+> 3. Detour (1945) · Classic films · archive.org/…
+
+`aura_watch action=browse` takes an optional `category` and an optional `query`
+(words from a title or its description), returns up to ten matches (title, year,
+category, url) and lists the categories when given neither. It shows the
+numbered options and stops, exactly like `action=search`; the pick then plays
+through `action=play`.
 
 ### Keep your own list, by asking
 
@@ -487,9 +515,9 @@ node --test tests/test_desktop_plugin.mjs
 
 | Suite | Result at this commit |
 |---|---|
-| Python (capture, analysis, server, hooks, tools, radio, search) | **489 passed** |
-| Desktop contract (menu, pane, transport, resume, mode gating) | **132 passed, 0 failed** |
-| **Total** | **621 passed** |
+| Python (capture, analysis, server, hooks, tools, radio, search, catalogue) | **536 passed** |
+| Desktop contract (menu, pane, transport, resume, mode gating, shelf) | **167 passed, 0 failed** |
+| **Total** | **703 passed** |
 
 The end-to-end visualiser tests drive a real headless Chrome and measure the
 canvas. They skip themselves when the machine is too loaded to sample reliably

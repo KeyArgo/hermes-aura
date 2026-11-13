@@ -89,7 +89,9 @@ next episode, or another source picked, retitles it at once. A source Aura has
 not opened yet shows the title it already stores for it; the URL is never used
 as a title. Under the player:
 
-- **Library** — poster cards; add, rename, remove, hide starters, clear recents.
+- **Library** — Picks first, then one scrolling row per catalogue category; one
+  search box filters them all. Below that: add, rename, remove, hide starters,
+  clear recents.
 - **Playlist how-to** — the three steps above, in place.
 - **Settings** — every control Aura has.
 
