@@ -114,6 +114,15 @@ const VIDEO_OPACITY_PRESETS = Object.freeze([25, 50, 75, 100])
 const VIDEO_VOLUME = 0.7
 // How solid the floating strip is over the film.
 const VIDEO_BAR_OPACITY = 0.72
+// The control strip is the user's to place: a floating pill they drag anywhere,
+// remembered in settings. Placement is never measured from the app's layout —
+// nothing here reads the composer, a text field or any other app node.
+const VIDEO_BAR_WIDTH = 380
+// Fallback height while the strip has no layout yet (first paint, headless tests).
+const VIDEO_BAR_NOMINAL_HEIGHT = 62
+// Gap to the window edge, and the app's status bar kept clear along the bottom.
+const VIDEO_BAR_MARGIN = 16
+const VIDEO_BAR_STATUS_BAR = 32
 // Backdrop opacity changes are debounced: music must hold >1.2 s to brighten
 // it and silence >4 s to dim it, or level flicker made the window pulse.
 const MUSIC_ON_DELAY_MS = 1200
@@ -171,6 +180,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   // anything at or below it is history.
   audioRequestSeq: 0,
   videoBarOpacity: VIDEO_BAR_OPACITY,
+  // Where the user last dropped the control strip. null = the home corner
+  // (bottom-left, clear of the status bar).
+  videoBarX: null,
+  videoBarY: null,
   videoWindow: false,
   videoWindowSize: VIDEO_WINDOW_DEFAULT_SIZE,
   videoWindowCorner: VIDEO_WINDOW_DEFAULT_CORNER,
@@ -612,6 +625,10 @@ function readSettings(ctx) {
     if (typeof raw.videoOpacityAuto === 'boolean') out.videoOpacityAuto = raw.videoOpacityAuto
     if (Number.isFinite(raw.videoVolume)) out.videoVolume = clamp01(raw.videoVolume)
     if (typeof raw.videoBarOpacity === 'number' || Number.isFinite(raw.videoBarOpacity)) out.videoBarOpacity = clamp01(raw.videoBarOpacity)
+    // The strip's own position, in CSS px. Clamped to the viewport when used,
+    // so a saved point from a wider window is never off screen.
+    if (Number.isFinite(raw.videoBarX)) out.videoBarX = Math.round(raw.videoBarX)
+    if (Number.isFinite(raw.videoBarY)) out.videoBarY = Math.round(raw.videoBarY)
     if (typeof raw.videoWindow === 'boolean') out.videoWindow = raw.videoWindow
     if (typeof raw.videoWindowSize === 'string' && Object.prototype.hasOwnProperty.call(VIDEO_WINDOW_SIZES, raw.videoWindowSize)) {
       out.videoWindowSize = raw.videoWindowSize
@@ -2919,11 +2936,11 @@ function onBackdropMessage(event) {
 
 /** The transport strip, mounted in the composer's `underside` slot.
  *
- *  Was: a `position: fixed` bar appended to the app's body, kept above the
- *  composer by scanning the app's text fields and measuring the lowest one. That is the app's composer markup, and
- *  it moves whenever the composer is redesigned. The slot below the composer is
- *  the sanctioned seat for exactly this kind of strip: the host places it, sizes
- *  it and takes it away with the plugin.
+ *  The slot is the host's: it is where the strip is anchored in the tree, and it
+ *  goes away with the plugin. The strip inside it is `position: fixed` at the
+ *  point the user last dropped it (videoBarX / videoBarY), so the composer
+ *  growing, a panel opening or a long message wrapping cannot move it — and
+ *  nothing in the plugin ever measures the app's markup to place it.
  */
 let videoBarSlot = null
 
@@ -2963,18 +2980,20 @@ function AuraComposerStrip() {
 }
 
 // ------------------------------------------------------ floating video bar
-// A transport pill at the bottom of the window. Plain DOM, like the dev
-// readout: the host offers no "floating anywhere" slot and a status-bar
-// contribution cannot be pointer-interactive over the whole window. It fades
-// out after 3 s without mouse movement and returns on the next move, so it
-// never competes with the work behind it. Hidden entirely unless the video
-// backdrop is actually on screen.
+// A transport pill that floats over the app wherever the user drops it: the
+// host offers no "floating anywhere" slot, and a status-bar contribution cannot
+// be pointer-interactive over the whole window. It fades out after 3 s without
+// mouse movement and returns on the next move, so it never competes with the
+// work behind it. Hidden entirely unless the video backdrop is on screen.
 const VIDEO_BAR_IDLE_MS = 3000
 let videoBarEl = null
 let videoBarParts = null
 let videoBarHideTimer = null
-// Live drag of the watch window (grip on the strip). Timers/listeners are
-// host-owned or removed in removeVideoBar; the position is persisted on drop.
+// The nodes inside the strip that own their own press (buttons, the scrubber):
+// a drag that starts on one of them is that control's, not the strip's.
+let videoBarControls = new Set()
+// Live drag of the strip itself (grip or empty chrome). Listeners are ours and
+// are removed in removeVideoBar; the drop is persisted as videoBarX/videoBarY.
 
 let volumePushedFor = ''
 // Where the movie was when we last saw it. Kept across a plugin remount so
@@ -3050,6 +3069,162 @@ function parseClock(value) {
   return null
 }
 
+// ------------------------------------------------- where the strip sits
+// The strip floats over the app wherever the user left it. Its position comes
+// from settings alone: the plugin never measures the app's layout, so a new
+// panel, a growing composer or a wrapped chat message cannot move it.
+let videoBarDrag = null
+// The settings point currently applied, so the 4 Hz poll does not re-measure the
+// strip on every tick.
+let videoBarSeat = ''
+
+/** The strip's own size in CSS px. Only our node is measured. */
+function videoBarSize() {
+  const rect = videoBarEl && typeof videoBarEl.getBoundingClientRect === 'function'
+    ? videoBarEl.getBoundingClientRect()
+    : null
+  const width = rect && Number.isFinite(rect.width) && rect.width > 0 ? rect.width : VIDEO_BAR_WIDTH
+  const height = rect && Number.isFinite(rect.height) && rect.height > 0 ? rect.height : VIDEO_BAR_NOMINAL_HEIGHT
+  return { width, height }
+}
+
+function videoBarViewportSize() {
+  const view = doc && doc.defaultView
+  const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
+  const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
+  return { vw, vh }
+}
+
+/** A point that keeps the whole strip on screen, 16px clear of every edge. */
+function clampVideoBarPoint(x, y) {
+  const size = videoBarSize()
+  const { vw, vh } = videoBarViewportSize()
+  const maxX = Math.max(VIDEO_BAR_MARGIN, vw - size.width - VIDEO_BAR_MARGIN)
+  const maxY = Math.max(VIDEO_BAR_MARGIN, vh - size.height - VIDEO_BAR_MARGIN)
+  const px = Number.isFinite(x) ? x : VIDEO_BAR_MARGIN
+  const py = Number.isFinite(y) ? y : VIDEO_BAR_MARGIN
+  return {
+    x: Math.round(Math.min(maxX, Math.max(VIDEO_BAR_MARGIN, px))),
+    y: Math.round(Math.min(maxY, Math.max(VIDEO_BAR_MARGIN, py)))
+  }
+}
+
+/** Bottom-left, clear of the app's status bar: where the strip starts life and
+ *  where a double-click on the grip puts it back. */
+function videoBarHome() {
+  const size = videoBarSize()
+  const { vh } = videoBarViewportSize()
+  return clampVideoBarPoint(VIDEO_BAR_MARGIN, vh - size.height - VIDEO_BAR_MARGIN - VIDEO_BAR_STATUS_BAR)
+}
+
+/** The last point the user dropped the strip at, else the home corner. Always
+ *  clamped to the current viewport, so a resize can never strand it. */
+function videoBarPoint() {
+  if (videoBarDrag) return { x: videoBarDrag.x, y: videoBarDrag.y }
+  const settings = $settings.get()
+  if (Number.isFinite(settings.videoBarX) && Number.isFinite(settings.videoBarY)) {
+    return clampVideoBarPoint(settings.videoBarX, settings.videoBarY)
+  }
+  return videoBarHome()
+}
+
+/** Put the strip at a point. Placement only — no settings, no mode, no DOM
+ *  reads beyond the strip's own size. */
+function placeVideoBar(point) {
+  if (!videoBarEl || !videoBarEl.style) return point
+  videoBarEl.style.left = `${point.x}px`
+  videoBarEl.style.top = `${point.y}px`
+  return point
+}
+
+/** Re-apply the saved position (clamped). Called on mount and on every resize,
+ *  never on page/content changes. */
+function applyVideoBarPosition() {
+  const settings = $settings.get()
+  videoBarSeat = `${settings.videoBarX}:${settings.videoBarY}`
+  return placeVideoBar(videoBarPoint())
+}
+
+/** Reset to the home corner: the double-click on the grip. */
+function resetVideoBarPosition() {
+  if (!ctxRef || disposed) return
+  writeSettings({ videoBarX: null, videoBarY: null })
+  placeVideoBar(videoBarHome())
+  showVideoBar()
+}
+
+function onVideoBarResize() {
+  if (!videoBarEl || videoBarDrag) return
+  // Clamp on screen, but leave the stored point alone: a temporarily small
+  // window must not overwrite where the user wants it.
+  applyVideoBarPosition()
+}
+
+/** Is this node one of the strip's controls rather than empty strip chrome?
+ *  Only the strip's own nodes are walked — the app's DOM is never inspected. */
+function videoBarControlAt(node) {
+  let walk = node
+  while (walk && walk !== videoBarEl) {
+    if (videoBarControls.has(walk)) return true
+    walk = walk.parentNode
+  }
+  return false
+}
+
+function onVideoBarDragMove(event) {
+  if (!videoBarDrag || !videoBarEl) return
+  const pointerX = event && Number.isFinite(event.clientX) ? event.clientX : videoBarDrag.startX
+  const pointerY = event && Number.isFinite(event.clientY) ? event.clientY : videoBarDrag.startY
+  const point = clampVideoBarPoint(
+    videoBarDrag.originX + (pointerX - videoBarDrag.startX),
+    videoBarDrag.originY + (pointerY - videoBarDrag.startY)
+  )
+  videoBarDrag.x = point.x
+  videoBarDrag.y = point.y
+  placeVideoBar(point)
+  try { if (event && event.preventDefault) event.preventDefault() } catch { /* synthetic events */ }
+  showVideoBar()
+}
+
+function onVideoBarDragEnd() {
+  if (!videoBarDrag) return
+  const { x, y } = videoBarDrag
+  videoBarDrag = null
+  if (doc && typeof doc.removeEventListener === 'function') {
+    doc.removeEventListener('mousemove', onVideoBarDragMove)
+    doc.removeEventListener('mouseup', onVideoBarDragEnd)
+  }
+  if (videoBarEl && videoBarEl.style) videoBarEl.style.cursor = ''
+  placeVideoBar({ x, y })
+  if (!ctxRef || disposed) return
+  // A drag writes the strip's position and nothing else: no videoWindow, no
+  // backdropMode, no surface switch. The pop-out button is the only way out.
+  writeSettings({ videoBarX: x, videoBarY: y })
+}
+
+/** Start dragging the strip. The pointer's own press, the strip's own
+ *  position — nothing else is touched. */
+function startVideoBarDrag(event) {
+  if (!videoBarEl || videoBarDrag) return
+  if (event && Number.isFinite(event.button) && event.button !== 0) return
+  const origin = videoBarPoint()
+  videoBarDrag = {
+    startX: event && Number.isFinite(event.clientX) ? event.clientX : 0,
+    startY: event && Number.isFinite(event.clientY) ? event.clientY : 0,
+    originX: origin.x,
+    originY: origin.y,
+    x: origin.x,
+    y: origin.y
+  }
+  try { if (event && event.preventDefault) event.preventDefault() } catch { /* synthetic events */ }
+  if (doc && typeof doc.addEventListener === 'function') {
+    doc.addEventListener('mousemove', onVideoBarDragMove)
+    doc.addEventListener('mouseup', onVideoBarDragEnd)
+  }
+  if (videoBarEl.style) videoBarEl.style.cursor = 'grabbing'
+  showVideoBar()
+}
+
 function videoBarActive() {
   const settings = $settings.get()
   const live = $live.get()
@@ -3095,11 +3270,13 @@ function mountVideoBar(node) {
     ? $settings.get().videoBarOpacity
     : VIDEO_BAR_OPACITY)
   Object.assign(bar.style, {
-    // In the composer's underside slot the host owns placement and width: no
-    // fixed coordinates, no z-index, nothing to position against the chat box.
-    position: 'relative', transform: 'none',
+    // A floating pill at the user's own point. The coordinates come from
+    // videoBarX/videoBarY (settings), never from the app's layout: the strip
+    // does not care what the composer, the chat or a new panel is doing.
+    position: 'fixed', right: 'auto', bottom: 'auto', zIndex: '40',
     display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '2px',
-    width: '100%', maxWidth: '100%', boxSizing: 'border-box',
+    width: `${VIDEO_BAR_WIDTH}px`, maxWidth: `calc(100vw - ${VIDEO_BAR_MARGIN * 2}px)`,
+    boxSizing: 'border-box',
     padding: '5px 9px 6px', borderRadius: '14px',
     background: `rgba(12, 10, 22, ${barAlpha})`, color: '#fff',
     border: '1px solid rgba(255,255,255,0.14)',
@@ -3115,6 +3292,8 @@ function mountVideoBar(node) {
   if (doc && typeof doc.addEventListener === 'function') {
     doc.addEventListener('mousemove', onVideoBarMouseMove, { passive: true })
     doc.addEventListener('mousedown', onVideoBarMouseMove, { passive: true })
+    // A resize re-clamps the strip into the window. Nothing else moves it.
+    doc.addEventListener('resize', onVideoBarResize)
   }
 
   const prev = videoBarButton('⏮', 'Previous source', 'prev')
@@ -3213,12 +3392,14 @@ function mountVideoBar(node) {
     width: '1px', height: '16px', background: 'rgba(255,255,255,0.16)', margin: '0 3px'
   })
 
-  // Drag grip: the watch window goes wherever you drop it. Made obvious on
-  // purpose — the first version was a bare glyph nobody could find.
+  // Drag grip: the strip goes wherever you drop it. The grip moves the
+  // CONTROLS, never the film: popping out is the ⧉ button's job alone. Made
+  // obvious on purpose — the first version was a bare glyph nobody could find.
   const grip = doc.createElement('span')
   grip.textContent = '⠿'
-  grip.setAttribute('aria-label', 'Drag to move the watch window')
-  grip.title = 'Drag to move the watch window'
+  grip.setAttribute('role', 'button')
+  grip.setAttribute('aria-label', 'Drag to move the controls')
+  grip.title = 'Drag to move the controls (double-click to reset)'
   Object.assign(grip.style, {
     cursor: 'grab', fontSize: '12px', lineHeight: '1',
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -3226,6 +3407,11 @@ function mountVideoBar(node) {
     borderRadius: '6px', background: 'rgba(255,255,255,0.16)',
     border: '1px solid rgba(255,255,255,0.22)', userSelect: 'none',
     color: 'inherit'
+  })
+  grip.addEventListener('mousedown', event => startVideoBarDrag(event))
+  grip.addEventListener('dblclick', event => {
+    try { if (event && event.preventDefault) event.preventDefault() } catch { /* synthetic events */ }
+    resetVideoBarPosition()
   })
 
   // Close: pauses and takes the film off screen; Settings/quick menu can
@@ -3264,6 +3450,14 @@ function mountVideoBar(node) {
   }
   bar.appendChild(topRow)
   bar.appendChild(transportRow)
+  // Empty strip chrome (a gap, the title, the padding) drags the strip too; a
+  // press on one of the controls stays that control's. Only the strip's own
+  // nodes are consulted.
+  videoBarControls = new Set([prev, backMin, back, play, fwd, fwdMin, next, scrub, volume, inlineBtn, ownBtn, close])
+  bar.addEventListener('mousedown', event => {
+    if (videoBarControlAt(event && event.target)) return
+    startVideoBarDrag(event)
+  })
   // Wheel over the strip = volume, the way every media player behaves. It is
   // the one gesture that is worth the surprise, and it only fires over the
   // pill, never over the chat.
@@ -3283,6 +3477,8 @@ function mountVideoBar(node) {
 
   slot.appendChild(bar)
   videoBarEl = bar
+  // Where the user last dropped it (or the home corner), clamped on screen.
+  applyVideoBarPosition()
   videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, inlineBtn, ownBtn, scrub, fill, title }
 }
 
@@ -3291,13 +3487,20 @@ function removeVideoBar() {
     clearTimeout(videoBarHideTimer)
     videoBarHideTimer = null
   }
+  // A drag in flight dies with the strip: no listener may outlive it.
+  videoBarDrag = null
+  videoBarSeat = ''
   if (doc && typeof doc.removeEventListener === 'function') {
     doc.removeEventListener('mousemove', onVideoBarMouseMove)
     doc.removeEventListener('mousedown', onVideoBarMouseMove)
+    doc.removeEventListener('mousemove', onVideoBarDragMove)
+    doc.removeEventListener('mouseup', onVideoBarDragEnd)
+    doc.removeEventListener('resize', onVideoBarResize)
   }
   if (videoBarEl && videoBarEl.parentNode) videoBarEl.parentNode.removeChild(videoBarEl)
   videoBarEl = null
   videoBarParts = null
+  videoBarControls = new Set()
 }
 
 /** Reveal the bar and restart the idle countdown. Idle fades it to a ghost,
@@ -4340,6 +4543,12 @@ function syncVideoBar(force) {
     ? settings.videoBarOpacity
     : VIDEO_BAR_OPACITY)
   videoBarEl.style.background = `rgba(12, 10, 22, ${barAlpha})`
+  // The strip's seat is the user's saved point, re-clamped for the current
+  // window. It is never derived from the page, so a poll cannot move it — and
+  // once the seat is applied the poll does not even measure the strip.
+  if (!videoBarDrag && `${settings.videoBarX}:${settings.videoBarY}` !== videoBarSeat) {
+    applyVideoBarPosition()
+  }
 
   // A new player document starts at its own default volume: re-send ours
   // shortly after each (re)load so a source swap keeps the level.
@@ -7072,4 +7281,15 @@ export const __test = {
   hiddenVideoIds,
   hideCurrentEpisode,
   managePlaylist,
+  // The control strip: a test mounts it into a stand-in for the host slot and
+  // drives the drag the way a pointer would.
+  mountVideoBarForTest: node => {
+    mountVideoBar(node)
+    return videoBarEl
+  },
+  removeVideoBar,
+  videoBarElForTest: () => videoBarEl,
+  videoBarPointForTest: () => videoBarPoint(),
+  videoBarHomeForTest: () => videoBarHome(),
+  videoBarSizeForTest: () => videoBarSize(),
 }
