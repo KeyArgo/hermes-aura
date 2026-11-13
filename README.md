@@ -126,7 +126,9 @@ streams audio from the backend, and that stream is what keeps capture awake on a
   glass over a violet-to-ember gradient, scoped to `#aura-page`. It is the
   *same* player — the film moves into the page while it is open and goes back
   when you leave. **Pop out** floats it in a watch window you can drag anywhere;
-  **Bring back** returns it to the page.
+  **Bring back** returns it to the page. The sidebar row itself is optional —
+  **Show Aura in the sidebar** (Settings, on by default); with it off the page
+  stays, and the status-bar **A** menu gains **Open Aura page**.
 - **One library, two pickers.** The source dropdowns in the A menu and in
   Settings list everything — saved playlists, your films, the starter pack and
   recents — grouped under `Playlists`, `Your films`, `Starters` and `Recent`. A

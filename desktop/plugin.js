@@ -206,6 +206,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   // switch leaves only the tray.
   panelEnabled: true,
   panelCollapsed: false,
+  // The Aura page in the sidebar. Off is furniture, not function: the page
+  // itself stays registered and the status-bar menu carries the way in.
+  sidebarPage: true,
   // The pane's own settings drawer starts closed: the film is the reason the
   // pane exists, and every control is still one click away.
   panelSettingsOpen: false,
@@ -838,6 +841,7 @@ function readSettings(ctx) {
       out.videoCaptionLang = raw.videoCaptionLang.trim()
     }
     if (typeof raw.panelEnabled === 'boolean') out.panelEnabled = raw.panelEnabled
+    if (typeof raw.sidebarPage === 'boolean') out.sidebarPage = raw.sidebarPage
     if (typeof raw.panelCollapsed === 'boolean') out.panelCollapsed = raw.panelCollapsed
     if (typeof raw.panelSettingsOpen === 'boolean') out.panelSettingsOpen = raw.panelSettingsOpen
     // Readable: each choice is validated against its own list, so a stale
@@ -6701,7 +6705,26 @@ function AuraQuickMenu() {
                   style: { fontSize: 10, color: 'var(--ui-text-tertiary)' },
                   children: 'Aura'
                 }),
-
+              // With the sidebar row hidden the page needs a door of its own;
+              // with the row in place this link would just be a duplicate.
+              useHostNav && !sidebarPageWanted()
+                ? jsx(Button, {
+                  key: 'page',
+                  size: 'micro',
+                  variant: 'ghost',
+                  'aria-label': 'Open Aura page',
+                  title: 'Open the Aura page — the film, your sources and every switch',
+                  onClick: () => {
+                    setOpen(false)
+                    try {
+                      host.navigate('/aura')
+                    } catch {
+                      // older hosts without navigate
+                    }
+                  },
+                  children: 'Open Aura page'
+                })
+                : null
             ]
           })
         ]
@@ -6762,6 +6785,47 @@ function pageStageRef(node) {
   applyBackdropLayout()
   applyVideoOpacity()
   syncVideoBar(true)
+}
+
+/** Optional furniture: the /aura row in the sidebar. The page itself is always
+ *  registered — without the row the status-bar menu carries the way in. */
+let navRegistration = null
+
+function sidebarPageWanted() {
+  return Boolean(doc) && $settings.get().sidebarPage !== false
+}
+
+function disposeNavRegistration() {
+  if (!navRegistration) return
+  try {
+    navRegistration()
+  } catch {
+    // already removed
+  }
+  navRegistration = null
+}
+
+/** Keep the sidebar row in step with its setting, through the SDK's own
+ *  contribution/disposal — never the host's markup. */
+function syncSidebarNav() {
+  if (!ctxRef || disposed) return
+  if (!sidebarPageWanted()) {
+    disposeNavRegistration()
+    return
+  }
+  if (navRegistration) return
+  const off = ctxRef.register({
+    id: 'aura-nav',
+    area: SIDEBAR_NAV_AREA,
+    data: { path: '/aura', label: 'Aura', codicon: 'play-circle' }
+  })
+  navRegistration = typeof off === 'function' ? off : null
+}
+
+function setSidebarPage(on) {
+  if (!ctxRef || disposed) return
+  writeSettings({ sidebarPage: Boolean(on) })
+  syncSidebarNav()
 }
 
 // REVamp is the owner's Winamp-style audio player for Hermes. Aura hears
@@ -8554,6 +8618,18 @@ function AuraSettings() {
         )
       }),
       jsx('div', {
+        key: 'sidebar',
+        children: row(
+          'Show Aura in the sidebar',
+          'The Aura row in the sidebar. Off keeps the page: the Aura menu still opens it.',
+          jsx(Switch, {
+            checked: settings.sidebarPage !== false,
+            'aria-label': 'Show Aura in the sidebar',
+            onCheckedChange: value => setSidebarPage(value)
+          })
+        )
+      }),
+      jsx('div', {
         key: 'theme',
         children: row(
           'Use Aura theme',
@@ -8963,6 +9039,7 @@ function teardown() {
   watchFrameLive = null
   removeVideoBar()
   disposePaneRegistration()
+  disposeNavRegistration()
   removePanel()
   removeUiStyle()
   saveCurrentPosition()
@@ -9141,9 +9218,8 @@ export default {
     )
 
     // The full page: a sidebar row that opens the film, the whole setup and the
-    // REVamp hand-off in one place. Both contributions are plain registrations,
-    // tracked like every other one, so dispose takes the row and the route with
-    // it.
+    // REVamp hand-off in one place. The route is always registered; the row is
+    // optional furniture and comes and goes with its setting.
     track(
       ctx.register({
         id: 'aura-page',
@@ -9153,13 +9229,7 @@ export default {
         render: () => jsx(AuraPage, {})
       })
     )
-    track(
-      ctx.register({
-        id: 'aura-nav',
-        area: SIDEBAR_NAV_AREA,
-        data: { path: '/aura', label: 'Aura', codicon: 'play-circle' }
-      })
-    )
+    syncSidebarNav()
 
     // The theatre pane, docked to the right of the workspace. The host owns the
     // box and the width; we own nothing but the content. Registered ONLY while

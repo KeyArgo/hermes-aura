@@ -5030,6 +5030,59 @@ record('aura off: the control strip is there to play the film with', () => {
 
 disposeOffStrip()
 
+// ------------------------------------------- the sidebar row is optional
+// Owner: "there should be an option in there to remove the menu option and
+// only have in status tray". Off removes the sidebar row only: the page stays
+// registered, and the status-bar menu carries the way in.
+
+const navCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: false,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+const disposeNav = pluginModule.default.register(navCtx.ctx)
+await primeLive()
+
+const navRow = () => navCtx.contributions.find(c => c.area === 'sidebar.nav')
+const navPage = () => navCtx.contributions.find(c => c.area === 'routes')
+const navMenu = () => renderContribution(navCtx.contributions.find(c => c.id === 'quick-menu'))
+const navSettings = () => renderDeep(renderContribution(navCtx.contributions.find(c => c.area === 'settings.plugins')))
+const navSwitch = () => findSwitch(navSettings(), 'Show Aura in the sidebar')
+
+record('sidebar: the row is there by default and the menu adds no second way in', () => {
+  assert.ok(navRow(), 'the sidebar row is missing by default')
+  assert.ok(navPage(), 'the Aura page route is missing')
+  assert.equal(findByAria(navMenu(), 'Open Aura page'), null,
+    'the menu carries an Open Aura page link while the row is in the sidebar')
+})
+
+record('sidebar: switching it off removes the row and keeps the page reachable from the menu', () => {
+  const control = navSwitch()
+  assert.ok(control, 'Settings has no "Show Aura in the sidebar" switch')
+  control.props.onCheckedChange(false)
+  assert.equal(navCtx.storage.get('settings').sidebarPage, false, 'the choice was not remembered')
+  assert.equal(navRow(), undefined, 'the sidebar row survived the switch')
+  assert.ok(navPage(), 'switching the row off removed the page itself')
+  const link = findByAria(navMenu(), 'Open Aura page')
+  assert.ok(link, 'the menu has no way into the page while the row is hidden')
+  const before = sdk.calls.navigations.length
+  link.props.onClick()
+  assert.equal(sdk.calls.navigations.at(-1), '/aura', 'the menu link did not open the Aura page')
+  assert.equal(sdk.calls.navigations.length, before + 1)
+})
+
+record('sidebar: switching it back on puts the row back and drops the menu link', () => {
+  const control = navSwitch()
+  assert.ok(control, 'the switch vanished with its own row off')
+  control.props.onCheckedChange(true)
+  assert.ok(navRow(), 'the sidebar row did not come back')
+  assert.equal(findByAria(navMenu(), 'Open Aura page'), null,
+    'the menu kept its Open Aura page link after the row returned')
+})
+
+disposeNav()
+
 // --------------------------------------------------------------- reporting
 
 console.log(results.join('\n'))
