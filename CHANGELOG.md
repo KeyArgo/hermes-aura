@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased — the control strip, laid out for a film under your hands
+
+- **The strip reads top to bottom now.** The drag bar, a seek bar across the
+  full width of the strip, a thin row with elapsed on the left and time-left over
+  the film's length on the right, then one big row: Close (✕) at the far left,
+  previous, play/pause, next, volume, CC, and **Frame in Hermes** /
+  **Pop out to desktop** together on the right. Every control is a 36px target,
+  and the row wraps at narrow widths instead of overflowing. The old ±10 s /
+  ±1 min buttons are gone: the seek bar, the wheel and the arrow keys seek
+  faster than they did.
+- **Close is out of the drag's reach.** It sits at the far left of the bottom
+  row, with the drag bar and the whole seek bar between it and the grip, so a
+  press that starts on the grip can never land on it.
+- **See-through, and solid under your hands.** `videoBarOpacity` still drives
+  the strip's translucency (now 0.2–1, default 0.6 — Settings ▸ Controls
+  transparency), and the strip goes fully opaque while it is hovered or holds
+  the keyboard.
+- **Wheel and keyboard, like the volume.** The wheel seeks ±5 s over the seek
+  bar and changes the level ±5% over the volume; with the strip focused,
+  Left/Right seek ±5 s, Up/Down move the volume ±5%, Space plays or pauses, C
+  toggles captions and Escape gives the keyboard back to the chat. A key pressed
+  in the chat's own text box is never taken.
+
 ## Unreleased — the music outlives the film, and CI runs every desktop suite
 
 - **Closing the film no longer takes the music with it.** The audio channel

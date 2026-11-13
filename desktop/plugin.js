@@ -115,8 +115,18 @@ const VIDEO_OPACITY_PRESETS = Object.freeze([25, 50, 75, 100])
 // Movie volume. Persisted, re-sent to the player whenever it (re)loads, and
 // changed by the mouse wheel over the strip.
 const VIDEO_VOLUME = 0.7
-// How solid the floating strip is over the film.
-const VIDEO_BAR_OPACITY = 0.72
+// How solid the floating strip is over the film. The setting is translucent by
+// design — the film behind it is the point — and the strip goes fully opaque
+// while the pointer is over it or it holds the keyboard.
+const VIDEO_BAR_OPACITY = 0.6
+// Below 20% the controls stop being findable over a bright film.
+const VIDEO_BAR_OPACITY_MIN = 0.2
+// Wheel and keyboard steps, the same everywhere the film is driven from.
+const VIDEO_BAR_SEEK_STEP = 5
+const VIDEO_BAR_VOLUME_STEP = 0.05
+// The bottom row's hit target. The strip floats over the film, so a control you
+// have to aim at is a control you miss.
+const VIDEO_BAR_TARGET = 36
 // The control strip is the user's to place: a floating pill they drag anywhere,
 // remembered in settings. Placement is never measured from the app's layout —
 // nothing here reads the composer, a text field or any other app node.
@@ -461,6 +471,12 @@ const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value))
 const clamp01 = value => {
   const n = Number(value)
   return Number.isFinite(n) ? clamp(n, 0, 1) : 0
+}
+
+/** The control strip's own translucency: 0.2..1, never invisible. */
+const clampVideoBarOpacity = value => {
+  const n = Number(value)
+  return Number.isFinite(n) ? clamp(n, VIDEO_BAR_OPACITY_MIN, 1) : VIDEO_BAR_OPACITY
 }
 
 /** Normalise #rgb/#rrggbb/#rrggbbaa to a lowercase #rrggbb, or null. */
@@ -815,7 +831,7 @@ function readSettings(ctx) {
     if (Number.isFinite(raw.videoOpacity)) out.videoOpacity = clamp01(raw.videoOpacity)
     if (typeof raw.videoOpacityAuto === 'boolean') out.videoOpacityAuto = raw.videoOpacityAuto
     if (Number.isFinite(raw.videoVolume)) out.videoVolume = clamp01(raw.videoVolume)
-    if (typeof raw.videoBarOpacity === 'number' || Number.isFinite(raw.videoBarOpacity)) out.videoBarOpacity = clamp01(raw.videoBarOpacity)
+    if (typeof raw.videoBarOpacity === 'number' || Number.isFinite(raw.videoBarOpacity)) out.videoBarOpacity = clampVideoBarOpacity(raw.videoBarOpacity)
     // The strip's own position, in CSS px. Clamped to the viewport when used,
     // so a saved point from a wider window is never off screen.
     if (Number.isFinite(raw.videoBarX)) out.videoBarX = Math.round(raw.videoBarX)
@@ -2941,10 +2957,10 @@ function openVideo() {
   syncThemeForActivity()
 }
 
-/** How solid the floating strip is over the film. */
+/** How solid the floating strip is over the film (0.2..1). */
 function setVideoBarOpacity(value) {
   if (!ctxRef || disposed) return
-  writeSettings({ videoBarOpacity: clamp01(Number(value)) })
+  writeSettings({ videoBarOpacity: clampVideoBarOpacity(value) })
   syncVideoBar(true)
 }
 
@@ -4025,6 +4041,72 @@ function videoBarControlAt(node) {
   return false
 }
 
+/** Is `node` the strip itself, or inside it? Only our own subtree is walked. */
+function videoBarOwns(node) {
+  let walk = node
+  while (walk) {
+    if (walk === videoBarEl) return true
+    walk = walk.parentNode
+  }
+  return false
+}
+
+/** Is `node` inside `container`? Used to tell "the wheel is over the seek bar"
+ *  from "the wheel is over the volume", never to measure the app. */
+function videoBarWithin(node, container) {
+  if (!container) return false
+  let walk = node
+  while (walk && walk !== videoBarEl) {
+    if (walk === container) return true
+    walk = walk.parentNode
+  }
+  return false
+}
+
+// Fully opaque while the pointer is over the strip or it holds the keyboard;
+// the user's translucency setting otherwise.
+let videoBarSolid = false
+
+/** Paint the strip's background: the saved translucency, or solid on hover and
+ *  focus. Called on mount, on every settings change and on the two gestures. */
+function applyVideoBarAlpha() {
+  if (!videoBarEl || !videoBarEl.style) return
+  const settings = $settings.get()
+  const saved = Number.isFinite(settings.videoBarOpacity)
+    ? settings.videoBarOpacity
+    : VIDEO_BAR_OPACITY
+  const alpha = videoBarSolid ? 1 : clampVideoBarOpacity(saved)
+  const next = `rgba(12, 10, 22, ${alpha})`
+  // Assigning the same string 4×/s is wasted work on a bar that never changes.
+  if (videoBarEl.style.background !== next) videoBarEl.style.background = next
+}
+
+/** Keys the strip owns — and only while the strip itself has the focus. A key
+ *  pressed in the chat's composer or any other text field belongs to that
+ *  field: returning early leaves it untouched (no preventDefault). */
+function onVideoBarKeyDown(event) {
+  if (!event) return
+  const target = event.target
+  // Only our own nodes; the app's DOM is never searched.
+  if (!videoBarOwns(target)) return
+  const tag = String(target.tagName || '').toUpperCase()
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable === true) return
+  const key = String(event.key || '')
+  const volume = Number($settings.get().videoVolume) || 0
+  let handled = true
+  if (key === 'ArrowLeft') videoCommand('seek', -VIDEO_BAR_SEEK_STEP)
+  else if (key === 'ArrowRight') videoCommand('seek', VIDEO_BAR_SEEK_STEP)
+  else if (key === 'ArrowUp') setVideoVolume(clamp01(volume + VIDEO_BAR_VOLUME_STEP))
+  else if (key === 'ArrowDown') setVideoVolume(clamp01(volume - VIDEO_BAR_VOLUME_STEP))
+  else if (key === ' ' || key === 'Spacebar' || key === 'Space') videoCommand('toggle')
+  else if (key === 'c' || key === 'C') setVideoCaptions(!$settings.get().videoCaptions)
+  else if (key === 'Escape') returnFocusToComposer()
+  else handled = false
+  if (!handled) return
+  try { if (typeof event.preventDefault === 'function') event.preventDefault() } catch { /* synthetic events */ }
+  showVideoBar()
+}
+
 function onVideoBarDragMove(event) {
   if (!videoBarDrag || !videoBarEl) return
   const pointerX = event && Number.isFinite(event.clientX) ? event.clientX : videoBarDrag.startX
@@ -4096,11 +4178,14 @@ function videoBarButton(label, aria, cmd, value, onClick) {
   el.textContent = label
   el.setAttribute('aria-label', aria)
   el.title = aria
+  // A 36px target: the strip floats over the film, so the controls have to be
+  // big enough to hit without aiming.
   Object.assign(el.style, {
-    appearance: 'none', border: '0', borderRadius: '999px', cursor: 'pointer',
-    width: '24px', height: '24px', display: 'inline-flex',
-    alignItems: 'center', justifyContent: 'center',
-    background: 'transparent', color: 'inherit', font: 'inherit', fontSize: '12px',
+    appearance: 'none', border: '0', borderRadius: '10px', cursor: 'pointer',
+    width: `${VIDEO_BAR_TARGET}px`, height: `${VIDEO_BAR_TARGET}px`,
+    minWidth: `${VIDEO_BAR_TARGET}px`, flex: '0 0 auto',
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    background: 'transparent', color: 'inherit', font: 'inherit', fontSize: '15px',
     lineHeight: '1', padding: '0'
   })
   el.addEventListener('mouseenter', () => { el.style.background = 'rgba(255,255,255,0.14)' })
@@ -4121,7 +4206,7 @@ function mountVideoBar(node) {
   const bar = doc.createElement('div')
   bar.setAttribute('role', 'toolbar')
   bar.setAttribute('aria-label', 'Aura video controls')
-  const barAlpha = clamp01(Number.isFinite($settings.get().videoBarOpacity)
+  const barAlpha = clampVideoBarOpacity(Number.isFinite($settings.get().videoBarOpacity)
     ? $settings.get().videoBarOpacity
     : VIDEO_BAR_OPACITY)
   Object.assign(bar.style, {
@@ -4152,28 +4237,23 @@ function mountVideoBar(node) {
   }
 
   const prev = videoBarButton('⏮', 'Previous source', 'prev')
-  const back = videoBarButton('⏪', 'Back 10 seconds', 'seek', -10)
-  const backMin = videoBarButton('-1m', 'Back 1 minute', 'seek', -60)
   const play = videoBarButton('▶', 'Play', 'toggle')
-  const fwdMin = videoBarButton('+1m', 'Forward 1 minute', 'seek', 60)
-  const fwd = videoBarButton('⏩', 'Forward 10 seconds', 'seek', 10)
   const next = videoBarButton('⏭', 'Next source', 'next')
-  Object.assign(backMin.style, { width: 'auto', padding: '0 5px', fontSize: '11px' })
-  Object.assign(fwdMin.style, { width: 'auto', padding: '0 5px', fontSize: '11px' })
 
-  // A scrub bar: click anywhere on it to jump. This is the fine control the
-  // ±10s/±1m buttons cannot give — it moves you anywhere in the film in one
-  // click, and it is the fastest way to skip a long way in either direction.
+  // The seek bar: full width across the strip, so a film is navigable by eye.
+  // Click anywhere to jump; the wheel over it seeks 5 s a notch, and the arrow
+  // keys do the same while the strip holds the keyboard.
   const scrub = doc.createElement('div')
   scrub.setAttribute('role', 'slider')
   scrub.setAttribute('aria-label', 'Seek')
   Object.assign(scrub.style, {
-    flex: '1 1 60px', minWidth: '46px', height: '16px', display: 'flex', alignItems: 'center',
-    cursor: 'pointer'
+    // Strip-wide: the owner's "seek bar across the whole top".
+    flex: 'none', width: '100%', minWidth: '0', height: '20px',
+    display: 'flex', alignItems: 'center', cursor: 'pointer', boxSizing: 'border-box'
   })
   const track = doc.createElement('div')
   Object.assign(track.style, {
-    position: 'relative', width: '100%', height: '3px',
+    position: 'relative', width: '100%', height: '4px',
     borderRadius: '999px', background: 'rgba(255,255,255,0.24)', overflow: 'hidden'
   })
   const fill = doc.createElement('div')
@@ -4193,14 +4273,28 @@ function mountVideoBar(node) {
     showVideoBar()
   })
 
+  // Two clocks on their own thin row: where you are on the left, how much is
+  // left (and the whole length) on the right. Tabular figures so the numbers
+  // do not jitter as the film runs.
   const time = doc.createElement('span')
+  time.setAttribute('aria-label', 'Elapsed time')
   Object.assign(time.style, {
-    minWidth: '74px', textAlign: 'center', fontVariantNumeric: 'tabular-nums',
-    color: 'rgba(255,255,255,0.82)', fontSize: '11px'
+    flex: '1 1 0', minWidth: '0', textAlign: 'left', overflow: 'hidden',
+    whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
+    color: 'rgba(255,255,255,0.82)', fontSize: '10.5px'
+  })
+  const remaining = doc.createElement('span')
+  remaining.setAttribute('aria-label', 'Remaining and total time')
+  Object.assign(remaining.style, {
+    flex: '0 0 auto', textAlign: 'right', whiteSpace: 'nowrap',
+    fontVariantNumeric: 'tabular-nums',
+    color: 'rgba(255,255,255,0.68)', fontSize: '10.5px'
   })
 
   const volume = videoBarButton('🔊', 'Volume — scroll to change', 'volume')
-  Object.assign(volume.style, { width: 'auto', padding: '0 6px', fontSize: '12px' })
+  Object.assign(volume.style, {
+    width: 'auto', minWidth: `${VIDEO_BAR_TARGET}px`, padding: '0 8px', fontSize: '13px'
+  })
   volume.addEventListener('click', () => {
     const current = $settings.get().videoVolume
     setVideoVolume(current > 0 ? 0 : (VIDEO_VOLUME || 0.7))
@@ -4213,16 +4307,17 @@ function mountVideoBar(node) {
     setVideoCaptions(!$settings.get().videoCaptions)
   })
   Object.assign(cc.style, {
-    width: 'auto', minWidth: '26px', padding: '0 5px', fontSize: '10.5px',
+    width: 'auto', minWidth: `${VIDEO_BAR_TARGET}px`, padding: '0 6px', fontSize: '12px',
     fontWeight: '600', letterSpacing: '0.02em', border: '1px solid transparent',
-    borderRadius: '6px'
+    borderRadius: '8px'
   })
 
   // Two pop-out controls in the strip, worded exactly like the ones in the
   // quick menu, the panel and the page: "Frame in Hermes" (a toggle) and
   // "Pop out to desktop" (which reads "Bring back" while the OS window holds
-  // the film). Equal buttons in their own row: the strip is narrow, so a glyph
-  // pair was unreadable.
+  // the film). Both sit on the bottom row, together on the right: the strip is
+  // narrow, so a glyph pair was unreadable and a row of their own pushed the
+  // transport out of reach.
   const inlineBtn = doc.createElement('button')
   inlineBtn.type = 'button'
   inlineBtn.setAttribute('aria-label', FRAME_LABEL)
@@ -4241,13 +4336,16 @@ function mountVideoBar(node) {
   })
   for (const node of [inlineBtn, ownBtn]) {
     Object.assign(node.style, {
-      flex: '1 1 0', minWidth: '0', padding: '3px 6px', fontSize: '10.5px',
-      lineHeight: '1.2', cursor: 'pointer', borderRadius: '8px',
+      flex: '1 1 0', minWidth: '84px', minHeight: `${VIDEO_BAR_TARGET}px`,
+      padding: '4px 8px', fontSize: '10.5px', lineHeight: '1.2',
+      boxSizing: 'border-box', cursor: 'pointer', borderRadius: '10px',
       background: 'transparent', color: 'inherit',
       border: '1px solid rgba(255,255,255,0.16)',
       whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
     })
   }
+  // Both named buttons share the pair's line; the pair fills the row's width.
+  inlineBtn.style.marginLeft = 'auto'
   const windowBtn = inlineBtn
 
   // The current film's name, at the head of the top row: the strip is small,
@@ -4260,14 +4358,10 @@ function mountVideoBar(node) {
     color: 'rgba(255,255,255,0.88)'
   })
 
-  const sep = doc.createElement('span')
-  Object.assign(sep.style, {
-    width: '1px', height: '16px', background: 'rgba(255,255,255,0.16)', margin: '0 3px'
-  })
-
   // Drag grip: the strip goes wherever you drop it. The grip moves the
-  // CONTROLS, never the film: popping out is the ⧉ button's job alone. Made
-  // obvious on purpose — the first version was a bare glyph nobody could find.
+  // CONTROLS, never the film: popping out is the pop-out buttons' job alone.
+  // Made obvious on purpose — the first version was a bare glyph nobody could
+  // find.
   const grip = doc.createElement('span')
   grip.textContent = '⠿'
   grip.setAttribute('role', 'button')
@@ -4288,68 +4382,122 @@ function mountVideoBar(node) {
   })
 
   // Close: pauses and takes the film off screen; Settings/quick menu can
-  // reopen it, and it resumes where it stopped.
+  // reopen it, and it resumes where it stopped. It is the FIRST control of the
+  // bottom row, so the drag bar and the whole seek bar sit between it and the
+  // grip: a press that starts on the grip can never reach it.
   const close = doc.createElement('span')
   close.textContent = '✕'
   close.setAttribute('role', 'button')
   close.setAttribute('aria-label', 'Close video')
   close.title = 'Close video (resumes where it stopped)'
   Object.assign(close.style, {
-    cursor: 'pointer', fontSize: '12px', lineHeight: '1',
+    cursor: 'pointer', fontSize: '14px', lineHeight: '1',
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-    width: '20px', height: '22px', flex: 'none',
-    borderRadius: '6px', background: 'rgba(255,255,255,0.10)',
-    userSelect: 'none'
+    width: `${VIDEO_BAR_TARGET}px`, height: `${VIDEO_BAR_TARGET}px`,
+    minWidth: `${VIDEO_BAR_TARGET}px`, flex: '0 0 auto',
+    borderRadius: '10px', background: 'rgba(255,255,255,0.10)',
+    userSelect: 'none', boxSizing: 'border-box'
   })
   close.addEventListener('click', () => closeVideo())
 
-  // Three rows: the film's own line (grip, title, scrubber, clock, volume,
-  // close), a centred transport row, and the two named pop-out buttons. The
-  // strip stays a floating pill; the named buttons are the last row so neither
-  // of them ever squeezes the title or the scrubber.
-  const topRow = doc.createElement('div')
-  Object.assign(topRow.style, {
-    display: 'flex', alignItems: 'center', gap: '4px', minWidth: '0'
+  // Four rows, top to bottom (the owner's order): the drag bar, the seek bar
+  // across the whole strip, the clocks under it, then the big controls.
+  const dragRow = doc.createElement('div')
+  Object.assign(dragRow.style, {
+    display: 'flex', alignItems: 'center', gap: '8px', minWidth: '0',
+    width: '100%', boxSizing: 'border-box'
   })
-  for (const node of [grip, title, scrub, time, sep, volume, close]) {
-    topRow.appendChild(node)
-  }
-  const transportRow = doc.createElement('div')
-  Object.assign(transportRow.style, {
-    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '2px',
-    paddingTop: '3px', borderTop: '1px solid rgba(255,255,255,0.08)'
+  for (const node of [grip, title]) dragRow.appendChild(node)
+
+  const seekRow = doc.createElement('div')
+  Object.assign(seekRow.style, {
+    display: 'flex', alignItems: 'center', width: '100%', minWidth: '0',
+    boxSizing: 'border-box'
   })
-  for (const node of [prev, backMin, back, play, fwd, fwdMin, next, cc]) {
-    transportRow.appendChild(node)
-  }
-  const popoutRow = doc.createElement('div')
-  Object.assign(popoutRow.style, {
-    display: 'flex', alignItems: 'stretch', gap: '6px', minWidth: '0',
-    paddingTop: '3px', borderTop: '1px solid rgba(255,255,255,0.08)'
+  seekRow.appendChild(scrub)
+
+  const timeRow = doc.createElement('div')
+  Object.assign(timeRow.style, {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    gap: '8px', width: '100%', minWidth: '0', boxSizing: 'border-box'
   })
-  popoutRow.appendChild(inlineBtn)
-  popoutRow.appendChild(ownBtn)
-  bar.appendChild(topRow)
-  bar.appendChild(transportRow)
-  bar.appendChild(popoutRow)
+  for (const node of [time, remaining]) timeRow.appendChild(node)
+
+  // The bottom row wraps instead of overflowing: the transport takes the first
+  // line (Close at its far left), and the two named pop-out buttons take a line
+  // of their own inside the same row — together, right-aligned, never crushed
+  // into ellipsis. At 320px the whole row still fits the strip.
+  const bottomRow = doc.createElement('div')
+  Object.assign(bottomRow.style, {
+    display: 'flex', alignItems: 'center', gap: '4px',
+    flexWrap: 'wrap', minWidth: '0', width: '100%', boxSizing: 'border-box',
+    paddingTop: '4px', borderTop: '1px solid rgba(255,255,255,0.08)'
+  })
+  for (const node of [close, prev, play, next, volume, cc]) bottomRow.appendChild(node)
+  const popoutPair = doc.createElement('div')
+  Object.assign(popoutPair.style, {
+    display: 'flex', alignItems: 'stretch', gap: '6px',
+    // A full line of its own, so the pair never splits across two lines.
+    flex: '1 1 100%', minWidth: '0', boxSizing: 'border-box',
+    justifyContent: 'flex-end'
+  })
+  for (const node of [inlineBtn, ownBtn]) popoutPair.appendChild(node)
+  bottomRow.appendChild(popoutPair)
+
+  bar.appendChild(dragRow)
+  bar.appendChild(seekRow)
+  bar.appendChild(timeRow)
+  bar.appendChild(bottomRow)
   // Empty strip chrome (a gap, the title, the padding) drags the strip too; a
   // press on one of the controls stays that control's. Only the strip's own
   // nodes are consulted.
-  videoBarControls = new Set([prev, backMin, back, play, fwd, fwdMin, next, cc, scrub, volume, inlineBtn, ownBtn, close])
+  videoBarControls = new Set([grip, title, close, prev, play, next, cc, volume, inlineBtn, ownBtn, scrub, time, remaining])
   bar.addEventListener('mousedown', event => {
     if (videoBarControlAt(event && event.target)) return
     startVideoBarDrag(event)
   })
-  // Wheel over the strip = volume, the way every media player behaves. It is
-  // the one gesture that is worth the surprise, and it only fires over the
-  // pill, never over the chat.
+  // Wheel over the seek bar scrubs; over the volume (and anywhere else on the
+  // strip) it sets the level, the way every media player behaves. It only
+  // fires over the pill, never over the chat.
   bar.addEventListener('wheel', event => {
     if (!event) return
     try { event.preventDefault() } catch { /* synthetic events */ }
-    const step = event.deltaY < 0 ? 0.05 : -0.05
-    setVideoVolume(clamp01($settings.get().videoVolume + step))
+    const up = Number(event.deltaY) < 0
+    if (videoBarWithin(event.target, scrub)) {
+      videoCommand('seek', up ? VIDEO_BAR_SEEK_STEP : -VIDEO_BAR_SEEK_STEP)
+    } else {
+      setVideoVolume(clamp01($settings.get().videoVolume + (up ? VIDEO_BAR_VOLUME_STEP : -VIDEO_BAR_VOLUME_STEP)))
+    }
     showVideoBar()
   }, { passive: false })
+
+  // Keyboard: only while the strip itself holds the focus. A key pressed in the
+  // chat's composer never reaches this node, and the handler refuses text
+  // fields outright even if it did.
+  bar.setAttribute('tabindex', '0')
+  bar.tabIndex = 0
+  bar.addEventListener('keydown', onVideoBarKeyDown)
+
+  // Translucent at rest, solid under the pointer or while it has the keyboard.
+  // The focus pair is ours alone, captured on the strip's own node: a focus that
+  // lands on a control inside the strip still counts (Nous's rule bans a
+  // document-level capture listener, not this one).
+  bar.addEventListener('mouseenter', () => {
+    videoBarSolid = true
+    applyVideoBarAlpha()
+  })
+  bar.addEventListener('mouseleave', () => {
+    videoBarSolid = false
+    applyVideoBarAlpha()
+  })
+  bar.addEventListener('focus', () => {
+    videoBarSolid = true
+    applyVideoBarAlpha()
+  }, true)
+  bar.addEventListener('blur', () => {
+    videoBarSolid = false
+    applyVideoBarAlpha()
+  }, true)
 
   // A click on one of our controls should hand the caret back to the chat when
   // the click is done — through the SDK's verb, not by restoring a DOM range.
@@ -4361,7 +4509,11 @@ function mountVideoBar(node) {
   videoBarEl = bar
   // Where the user last dropped it (or the home corner), clamped on screen.
   applyVideoBarPosition()
-  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, inlineBtn, ownBtn, scrub, fill, title, cc }
+  videoBarParts = {
+    prev, play, next, time, remaining, volume, windowBtn, inlineBtn, ownBtn,
+    scrub, fill, title, cc, close, dragRow, seekRow, timeRow, bottomRow, popoutPair
+  }
+  applyVideoBarAlpha()
 }
 
 function removeVideoBar() {
@@ -4372,6 +4524,7 @@ function removeVideoBar() {
   // A drag in flight dies with the strip: no listener may outlive it.
   videoBarDrag = null
   videoBarSeat = ''
+  videoBarSolid = false
   if (doc && typeof doc.removeEventListener === 'function') {
     doc.removeEventListener('mousemove', onVideoBarMouseMove)
     doc.removeEventListener('mousedown', onVideoBarMouseMove)
@@ -5719,10 +5872,8 @@ function syncVideoBar(force) {
   if (!parts) return
   const state = $video.get()
   const settings = $settings.get()
-  const barAlpha = clamp01(Number.isFinite(settings.videoBarOpacity)
-    ? settings.videoBarOpacity
-    : VIDEO_BAR_OPACITY)
-  videoBarEl.style.background = `rgba(12, 10, 22, ${barAlpha})`
+  // Translucency: the saved setting, or fully solid while hovered/focused.
+  applyVideoBarAlpha()
   // The strip's seat is the user's saved point, re-clamped for the current
   // window. It is never derived from the page, so a poll cannot move it — and
   // once the seat is applied the poll does not even measure the strip.
@@ -5759,10 +5910,18 @@ function syncVideoBar(force) {
     parts.play.textContent = playGlyph
     parts.play.setAttribute('aria-label', state.playing ? 'Pause' : 'Play')
   }
+  // Two clocks: elapsed on the left, "−remaining / total" on the right.
+  const elapsed = state.duration ? fmtClock(state.position) : (state.kind ? 'live' : '—')
   const clock = state.duration
     ? `${fmtClock(state.position)} / ${fmtClock(state.duration)}`
-    : state.kind ? 'live' : '—'
-  if (parts.time.textContent !== clock) parts.time.textContent = clock
+    : elapsed
+  if (parts.time && parts.time.textContent !== elapsed) parts.time.textContent = elapsed
+  if (parts.remaining) {
+    const right = state.duration
+      ? `-${fmtClock(Math.max(0, state.duration - state.position))} / ${fmtClock(state.duration)}`
+      : elapsed
+    if (parts.remaining.textContent !== right) parts.remaining.textContent = right
+  }
   const progress = state.duration ? Math.min(1, Math.max(0, state.position / state.duration)) : 0
   const percentWidth = `${(progress * 100).toFixed(2)}%`
   if (parts.fill && parts.fill.style.width !== percentWidth) parts.fill.style.width = percentWidth
@@ -5857,7 +6016,8 @@ function syncVideoBar(force) {
     }
   }
   const controllable = state.controllable !== false
-  for (const node of [parts.back, parts.play, parts.fwd]) {
+  for (const node of [parts.prev, parts.play, parts.next]) {
+    if (!node) continue
     node.style.opacity = controllable ? '1' : '0.4'
     node.disabled = !controllable && state.kind === 'frame'
   }
@@ -8327,17 +8487,17 @@ function AuraSettings() {
                 style: { display: 'flex', alignItems: 'center', gap: 6 },
                 children: [
                   jsx('input', {
-                    type: 'range', min: 10, max: 100, step: 5,
-                    value: Math.round(clamp01(settings.videoBarOpacity) * 100),
+                    type: 'range', min: 20, max: 100, step: 5,
+                    value: Math.round(clampVideoBarOpacity(settings.videoBarOpacity) * 100),
                     'aria-label': 'Controls transparency',
                     style: { width: 140, accentColor: 'var(--ui-accent)' },
                     onChange: event => {
-                      setVideoBarOpacity(Number(event && event.target ? event.target.value : 72) / 100)
+                      setVideoBarOpacity(Number(event && event.target ? event.target.value : 60) / 100)
                     }
                   }),
                   jsx('span', {
                     style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30, textAlign: 'right' },
-                    children: `${Math.round(clamp01(settings.videoBarOpacity) * 100)}%`
+                    children: `${Math.round(clampVideoBarOpacity(settings.videoBarOpacity) * 100)}%`
                   })
                 ]
               })
@@ -9354,6 +9514,7 @@ export const __test = {
   videoBarPointForTest: () => videoBarPoint(),
   videoBarHomeForTest: () => videoBarHome(),
   videoBarSizeForTest: () => videoBarSize(),
+  setVideoBarOpacity,
   // [subtitles] The CC switch and what it reads, so a headless test can drive
   // the same writer every surface's button uses.
   setVideoCaptions,

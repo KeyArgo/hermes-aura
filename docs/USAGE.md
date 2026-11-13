@@ -60,15 +60,33 @@ remembered for every film after it.
 By voice: *“turn the subtitles on”* → the agent calls `aura_control` with
 `action=captions`, `captions=on` (or `off`), and the same switch is applied.
 
-## Move the controls
+## The control strip
 
-The transport strip floats over the app. Drag it by the ⠿ grip — or by any empty
-part of the strip — and it stays where you dropped it, in every mode: dragging
-the strip never pops the film out or changes a mode. **Double-click the grip** to
-send it back to the bottom-left corner. A resize keeps it inside the window.
+The transport strip floats over the app, top to bottom: the **drag bar**, a
+**seek bar across the whole strip**, the **clocks** (elapsed on the left,
+time left and the film's length on the right), then the **big row of controls**.
 
-Only the ⧉ button (in the strip, or on the page) pops the film out. Nothing else
-moves it between surfaces.
+- **Drag bar.** Drag it by the ⠿ grip — or by any empty part of the strip — and
+  it stays where you dropped it, in every mode: dragging never pops the film out
+  and never changes a mode. **Double-click the grip** to send it back to the
+  bottom-left corner. A resize keeps it inside the window.
+- **The bottom row.** Close (**✕**, far left, below the seek bar and the clocks
+  so a drag can never land on it), previous, play/pause, next, volume, **CC**,
+  and on the right **Frame in Hermes** and **Pop out to desktop** together. Every
+  control is a 36px target; on a narrow window the row wraps instead of
+  overflowing.
+- **See-through.** The strip is translucent so the film reads through it, and
+  fully solid while the pointer is over it or it holds the keyboard. Settings ▸
+  Plugins ▸ Aura ▸ **Controls transparency** sets the level (20–100%).
+- **Wheel.** Over the seek bar it seeks 5 seconds a notch; over the volume it
+  changes the level 5% a notch.
+- **Keyboard.** Tab to the strip, then **Left/Right** seek ±5 s, **Up/Down**
+  change the volume ±5%, **Space** plays or pauses, **C** toggles captions, and
+  **Esc** hands the keyboard back to the chat. While you are typing in the chat
+  the strip never takes a key.
+
+Only **Frame in Hermes** and **Pop out to desktop** (in the strip, on the page or
+in the panel) move the film between surfaces. Nothing else does.
 
 ## Add a YouTube playlist
 
