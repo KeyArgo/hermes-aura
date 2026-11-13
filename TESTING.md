@@ -2,15 +2,15 @@
 
 One line: how to run each suite, the counts measured at this commit, and what CI runs.
 
-Applies to Aura 1.0.0 · revised 2026-11-11
+Applies to Aura 1.0.0 · revised 2026-11-13
 
 ## Measured at this commit
 
 | Suite | Command | Result |
 |---|---|---|
-| Python | `python3 -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration` | **489 passed** |
-| Desktop contract | `node --test tests/test_desktop_plugin.mjs` | **132 passed, 0 failed** |
-| **Total** | both of the above | **621 passed** |
+| Python | `python3 -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration` | **536 passed** |
+| Desktop contract | `node --test tests/test_desktop_plugin.mjs` | **167 passed, 0 failed** |
+| **Total** | both of the above | **703 passed** |
 
 The README badge counts this total. CI runs the same two commands.
 
@@ -25,7 +25,7 @@ progress dots. Add `-o addopts=""` to see the final summary line:
 
 ```bash
 python3 -m pytest tests -q -o addopts="" -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration
-# 489 passed
+# 528 passed
 ```
 
 Covers capture backends and the idle gate, the FFT and feature extractor, the

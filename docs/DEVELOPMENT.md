@@ -86,6 +86,7 @@ disappears.
 | `tools/record_demo.py` | Record a visual demo. |
 | `tools/probe_all_presets.py`, `tools/score_presets.mjs` | Preset catalogue probes. |
 | `tools/build_presets_catalog.mjs` | Rebuild `web/presets.json`. |
+| `tools/build_catalog.py` | Rebuild `web/catalog.json` from `.catalog-source.tsv` (HEADs archive.org to retire multi-gigabyte masters). |
 | `tools/stamp_build.py` | Write `BUILD_INFO.json` (gitignored) for the version stamp. |
 
 Some tools need `websocket-client` and Pillow in the system Python; the plugin

@@ -93,7 +93,8 @@ class _Config:
 _CFG = _Config()
 _CTX: Any = None
 _ACTIONS = ("on", "off", "status", "intensity", "preset", "mood",
-            "pause", "resume", "next", "prev", "seek", "popout", "popout_inline", "popin")
+            "pause", "resume", "next", "prev", "seek", "captions",
+            "popout", "popout_inline", "popin")
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +484,10 @@ def _player_snapshot() -> dict:
         snapshot["player"] = player.get("player") if isinstance(player.get("player"), dict) else {}
         if "seq" in player:
             snapshot["command_seq"] = player.get("seq")
+        # [savelist lane] The desktop reports the owner's saved library with
+        # its player report; ``None`` means it has not reported one yet.
+        library = player.get("library")
+        snapshot["library"] = library if isinstance(library, list) else None
     window = _get("/api/window")
     if isinstance(window, dict) and window:
         snapshot["window"] = window
@@ -509,7 +514,11 @@ def _action_transport(action: str, args: dict, extra: dict | None = None,
         return {"ok": False, "error": (result or {}).get("error", "command_rejected"),
                 "command": action}
     payload = {"ok": True, "command": action, "seq": result.get("seq"), "delivery": "queued"}
-    payload.update(_player_snapshot())
+    snapshot = _player_snapshot()
+    # The saved library is not player state: it would only bloat every
+    # transport result. action=save/remove/list read it for themselves.
+    snapshot.pop("library", None)
+    payload.update(snapshot)
     player = payload.get("player")
     if isinstance(player, dict):
         # The player reports on its next tick; the status call a moment later
@@ -518,6 +527,30 @@ def _action_transport(action: str, args: dict, extra: dict | None = None,
             payload["applied"] = player["applied"]
         if isinstance(player.get("last_command"), str) and player["last_command"]:
             payload["last_command"] = player["last_command"]
+    return payload
+
+
+def _action_captions(args: dict) -> dict:
+    """Turn the film's subtitles on or off (action=captions).
+
+    The switch is queued like every other transport verb, so it reaches
+    whichever player owns the picture — the in-app frame or its own window —
+    and the desktop half remembers the choice for the next film.
+    """
+    raw = args.get("captions")
+    if isinstance(raw, bool):
+        on = raw
+    elif isinstance(raw, str) and raw.strip().lower() in ("on", "off", "true", "false", "1", "0"):
+        on = raw.strip().lower() in ("on", "true", "1")
+    else:
+        return {"ok": False, "error": "captions needs on or off",
+                "allowed_actions": list(_ACTIONS),
+                "hint": "Send {\"action\": \"captions\", \"captions\": \"on\"} or \"off\"."}
+    payload = _action_transport("captions", {"captions": raw}, extra={"value": 1 if on else 0})
+    if payload.get("ok") is True:
+        payload["captions"] = on
+        payload["hint"] = ("Subtitles on." if on
+                           else "Subtitles off. Subtitles burned into the picture cannot be turned off.")
     return payload
 
 
@@ -714,6 +747,8 @@ def _tool_aura_control(args: dict, **kw) -> str:
             payload = _action_mood(args)
         elif action in ("pause", "resume", "next", "prev", "seek"):
             payload = _action_transport("play" if action == "resume" else action, args)
+        elif action == "captions":
+            payload = _action_captions(args)
         elif action == "popout":
             payload = _action_popout(args)
         elif action == "popout_inline":
@@ -733,7 +768,9 @@ SCHEMA_AURA_CONTROL = {
         "the server is running, its port, capture backend, current mood and "
         "intensity, a redacted URL, and what the film is doing (film.player: url, "
         "title, playing, position, duration; film.window: open). action=on/off "
-        "toggles Aura; intensity sets the 0..1 cap; preset picks a visualizer "
+        "toggles Aura; intensity sets reaction strength 0..1 (0 = no audio "
+        "reaction, 1 = full; a new install starts at 0.25); preset picks a "
+        "visualizer "
         "preset (null = server default); mood sets the agent mood (idle, thinking, "
         "tool, approval, error, streaming, done). Transport of the active player "
         "(in-app or its own window): action=pause, resume, next, prev, or seek "
@@ -744,7 +781,10 @@ SCHEMA_AURA_CONTROL = {
         "the floating window inside Hermes, and action=popin closes either; "
         "optional url and position choose what to open. Use these when the user "
         "says 'pause', 'next episode', 'play the octopus documentary' or 'put it "
-        "on my other screen'. Returns JSON. Never blocks the turn; if the server "
+        "on my other screen'. action=captions turns the film's subtitles on or off "
+        "(captions: on|off) — the choice is remembered and applies to whichever "
+        "player owns the picture; subtitles burned into the picture cannot be "
+        "turned off. Returns JSON. Never blocks the turn; if the server "
         "is not running it says so plainly."
     ),
     "parameters": {
@@ -759,7 +799,7 @@ SCHEMA_AURA_CONTROL = {
                 "type": "number",
                 "minimum": 0.0,
                 "maximum": 1.0,
-                "description": "for intensity: cap 0..1",
+                "description": "for intensity: reaction strength 0..1, where 0 draws no audio reaction",
             },
             "preset": {
                 "type": ["string", "null"],
@@ -775,6 +815,11 @@ SCHEMA_AURA_CONTROL = {
                 "minimum": 0.0,
                 "description": "for seek: absolute position in seconds; for "
                                "popout: where the window should start",
+            },
+            "captions": {
+                "type": "string",
+                "enum": ["on", "off"],
+                "description": "for captions: turn the film's subtitles on or off",
             },
             "url": {
                 "type": "string",
@@ -1059,12 +1104,157 @@ SCHEMA_AURA_LISTEN = {
 # only tells it what to load.
 # ---------------------------------------------------------------------------
 
-_WATCH_ACTIONS = ("search", "play", "now")
+_WATCH_ACTIONS = ("search", "browse", "play", "now", "save", "remove", "list")
 _WATCH_SEARCH_LIMIT = 10
+_WATCH_BROWSE_LIMIT = 10
+#: The committed shelf catalogue. Browsing is offline and instant: the file is
+#: generated by tools/build_catalog.py, so no network call is made or needed.
+_CATALOG_FILE = Path(__file__).resolve().parent / "web" / "catalog.json"
+_CATALOG_ROWS: list[dict] | None = None
 
 
 def _watch_error(message: str) -> dict:
     return {"ok": False, "error": message, "allowed_actions": list(_WATCH_ACTIONS)}
+
+
+def _catalog_rows() -> list[dict]:
+    """The shelf catalogue as clean rows; ``[]`` when the file is unusable."""
+    global _CATALOG_ROWS
+    if _CATALOG_ROWS is not None:
+        return _CATALOG_ROWS
+    rows: list[dict] = []
+    try:
+        data = json.loads(_CATALOG_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        data = []
+    for entry in data if isinstance(data, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        title = entry.get("title")
+        url = entry.get("url")
+        category = entry.get("category")
+        if not (isinstance(title, str) and title.strip()):
+            continue
+        if not (isinstance(url, str) and url.startswith(("https://", "http://"))):
+            continue
+        if not (isinstance(category, str) and category.strip()):
+            continue
+        year = entry.get("year")
+        rows.append({
+            "title": title.strip(),
+            "year": year if isinstance(year, int) and not isinstance(year, bool) else None,
+            "category": category.strip(),
+            "url": url,
+            "note": entry.get("note") if isinstance(entry.get("note"), str) else "",
+            "duration_s": entry.get("duration_s") if isinstance(entry.get("duration_s"), int)
+            and not isinstance(entry.get("duration_s"), bool) else None,
+        })
+    _CATALOG_ROWS = rows
+    return rows
+
+
+def _catalog_categories(rows: list[dict]) -> list[dict]:
+    """Category names in catalogue order, each with how many titles it holds."""
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["category"]] = counts.get(row["category"], 0) + 1
+    return [{"category": name, "count": count} for name, count in counts.items()]
+
+
+def _catalog_category_matches(row_category: str, wanted: str) -> bool:
+    """Case-insensitive category match that accepts a loose word ("space")."""
+    have = row_category.casefold()
+    want = wanted.casefold()
+    return have == want or want in have or have in want
+
+
+def _catalog_browse(args: dict) -> dict:
+    """Search the committed catalogue by category and/or free text.
+
+    No network and nothing plays: this is how the agent answers "find me a noir
+    film" or "some anime" from the same 346 verified titles the shelf shows.
+    """
+    raw_category = args.get("category")
+    raw_query = args.get("query", args.get("q"))
+    if raw_category is not None and not isinstance(raw_category, str):
+        return _watch_error("category must be a string")
+    if raw_query is not None and not isinstance(raw_query, str):
+        return _watch_error("query must be a string")
+    category = (raw_category or "").strip()
+    query = (raw_query or "").strip()
+    rows = _catalog_rows()
+    if not rows:
+        return {
+            "ok": False,
+            "error": "catalog_unavailable",
+            "hint": ("The Aura catalogue is not installed, so there is nothing to browse. "
+                     "action=search still searches YouTube."),
+            "items": [],
+            "text": "",
+        }
+    if not category and not query:
+        categories = _catalog_categories(rows)
+        return {
+            "ok": True,
+            "count": len(rows),
+            "categories": categories,
+            "items": [],
+            "text": "\n".join(f"{c['category']} ({c['count']})" for c in categories),
+            "hint": ("Browse the Aura catalogue by passing category= (one of the names above) "
+                     "and/or query= (words from a title or its description)."),
+        }
+
+    terms = [term for term in query.casefold().split() if term]
+    scored = []
+    for index, row in enumerate(rows):
+        if category and not _catalog_category_matches(row["category"], category):
+            continue
+        if terms:
+            title = row["title"].casefold()
+            rest = " ".join((row["note"], row["category"])).casefold()
+            score = sum(3 if term in title else 1 for term in terms if term in title or term in rest)
+            if score == 0:
+                continue
+        else:
+            score = 0
+        scored.append((score, index, row))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    matches = scored[:_WATCH_BROWSE_LIMIT]
+
+    items = [{
+        "n": position + 1,
+        "title": row["title"],
+        "year": row["year"],
+        "category": row["category"],
+        "url": row["url"],
+    } for position, (_score, _index, row) in enumerate(matches)]
+    if not items:
+        return {
+            "ok": True,
+            "count": 0,
+            "items": [],
+            "text": "",
+            "hint": ("Nothing in the Aura catalogue matches. Try a broader query, or "
+                     "action=browse with no arguments to see the categories; "
+                     "action=search searches YouTube instead."),
+        }
+    lines = []
+    for item in items:
+        bits = [f"{item['n']}. {item['title']}"]
+        if item["year"]:
+            bits.append(f"({item['year']})")
+        bits.append(f"· {item['category']} · {item['url']}")
+        lines.append(" ".join(bits))
+    return {
+        "ok": True,
+        "count": len(items),
+        "category": category or None,
+        "query": query or None,
+        "items": items,
+        "text": "\n".join(lines),
+        "next": ("Show the user these numbered options and WAIT for their pick. Then call "
+                 "action=play with that option's url and its title as the label."),
+    }
 
 
 def _format_options(items: list[dict]) -> str:
@@ -1160,6 +1350,252 @@ def _action_watch_play(args: dict) -> dict:
     return payload
 
 
+# ---------------------------------------------------------------------------
+# [savelist lane] the owner's own Aura library — save, remove, list
+#
+# YouTube's own playlists are off-limits; this is the saved list the desktop
+# writes into its settings (``videoPlaylists`` / ``videoSources``), the same one
+# the Library's Add and Remove buttons edit. The agent never touches settings
+# itself: it queues one command on the player queue and the desktop's own
+# helpers write it, so the page updates live and there is one owner of truth.
+# ---------------------------------------------------------------------------
+
+_WATCH_LIBRARY_LIMIT = 200
+
+
+def _watch_kind(checked: dict) -> str:
+    """Which saved list a playable url belongs in.
+
+    A YouTube ``/playlist`` link is a playlist; a single video or a direct
+    media file is a film — exactly the split the desktop's Add button makes
+    (``isPlaylistUrl``), so the two cannot drift apart.
+    """
+    url = str(checked.get("url") or "")
+    if "/playlist" in url and "list=" in url:
+        return "playlist"
+    return "film"
+
+
+def _watch_library(snapshot: dict) -> list | None:
+    """The reported library as clean rows, or ``None`` when not reported."""
+    library = snapshot.get("library")
+    if not isinstance(library, list):
+        return None
+    rows = []
+    for row in library[:_WATCH_LIBRARY_LIMIT]:
+        if isinstance(row, dict) and str(row.get("url") or "").strip():
+            rows.append({"label": str(row.get("label") or row["url"]),
+                         "url": str(row["url"]),
+                         "kind": str(row.get("kind") or "film")})
+    return rows
+
+
+def _watch_row_line(index: int, row: dict) -> str:
+    return f"{index}. {row['label']} · {row['kind']} · {row['url']}"
+
+
+def _watch_match(rows: list, args: dict) -> dict:
+    """Resolve the one saved row the owner means.
+
+    ``url`` wins when given; otherwise the label must match exactly (ignoring
+    case) or by one unique partial match. Anything ambiguous answers with every
+    candidate and changes nothing — a wrong film must never be dropped.
+    """
+    raw_url = args.get("url")
+    if isinstance(raw_url, str) and raw_url.strip():
+        target = raw_url.strip()
+        if _search is not None:
+            checked = _search.check_play_url(target)
+            if checked.get("ok"):
+                target = str(checked.get("url") or target)
+        for row in rows:
+            if row["url"] == target:
+                return {"ok": True, "row": row}
+        return {"ok": False, "error": "not_in_library", "matches": [],
+                "text": f"{target} is not in your Aura library."}
+    raw_label = args.get("label")
+    if not isinstance(raw_label, str) or not raw_label.strip():
+        return {"ok": False, "error": "remove needs a url or a label",
+                "matches": [],
+                "text": "Tell me which one: its link, or the title as it appears "
+                        "in your list."}
+    wanted = raw_label.strip().lower()
+    exact = [row for row in rows if row["label"].strip().lower() == wanted]
+    hits = exact or [row for row in rows if wanted in row["label"].lower()]
+    if len(hits) == 1:
+        return {"ok": True, "row": hits[0]}
+    if not hits:
+        return {"ok": False, "error": "not_in_library", "matches": [],
+                "text": f'Nothing in your Aura library is called "{raw_label.strip()}".'}
+    return {"ok": False, "error": "ambiguous", "matches": hits,
+            "text": ("That matches more than one saved item, so nothing was "
+                     "removed:\n"
+                     + "\n".join(_watch_row_line(n + 1, row)
+                                 for n, row in enumerate(hits)))}
+
+
+def _action_watch_save(args: dict) -> dict:
+    """Add the given url (or what is playing) to the owner's saved library."""
+    snapshot = _player_snapshot()
+    player_raw = snapshot.get("player")
+    player: dict = player_raw if isinstance(player_raw, dict) else {}
+    if _search is None:
+        return _watch_error("search module unavailable")
+    raw = args.get("url")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        playing = player.get("url")
+        if not isinstance(playing, str) or not playing.strip():
+            return _watch_error(
+                "nothing is playing to save — name the film's link, or play it "
+                "first")
+        raw = playing
+    checked = _search.check_play_url(raw)
+    if not checked.get("ok"):
+        return _watch_error(str(checked.get("error") or "that url cannot be saved"))
+    url = str(checked.get("url") or "")
+    label = args.get("label")
+    if not isinstance(label, str) or not label.strip():
+        # Default to the title the player already knows, so the owner's list
+        # reads like their list instead of a wall of urls.
+        known = player.get("label") or player.get("title") or ""
+        label = str(known).strip()
+    else:
+        label = label.strip()
+    label = label[:200]
+    extra: dict = {"url": url}
+    if label:
+        extra["label"] = label
+    try:
+        _ensure()  # Aura starts on first use; a stopped server is started here.
+    except Exception:  # noqa: BLE001 - _request below reports honestly
+        pass
+    payload = _action_transport(
+        "save", args, extra=extra,
+        hint=("Aura's server is not running. Aura starts on first use: turn it on "
+              "with aura_control action=on, then call action=save again."),
+    )
+    if payload.get("ok") is not True:
+        return payload
+    kind = _watch_kind(checked)
+    saved = _watch_library(snapshot)
+    already = bool(saved) and any(row["url"] == url for row in saved)
+    horizon = "playlists" if kind == "playlist" else "films"
+    payload.update({
+        "saved": True,
+        "url": url,
+        "label": label or url,
+        "kind": kind,
+        "already_in_library": already,
+        "text": (f"Saved to your Aura library ({horizon}): "
+                 f"{label or url}"),
+        "note": ("Queued for the desktop, which writes it into your saved "
+                 f"{horizon} on its next poll (~0.25 s) and the Library page "
+                 "updates live."),
+    })
+    return payload
+
+
+def _action_watch_remove(args: dict) -> dict:
+    """Remove one saved item, chosen by url or by its title."""
+    snapshot = _player_snapshot()
+    if not snapshot:
+        return {
+            "ok": False,
+            "running": False,
+            "playing": False,
+            "error": "server not running",
+            "hint": ("Aura's server is not running. It starts on first use — turn "
+                     "it on with aura_control action=on, then ask again."),
+        }
+    rows = _watch_library(snapshot)
+    if rows is None:
+        return {
+            "ok": False,
+            "error": "library_not_reported",
+            "matches": [],
+            "text": "Your Aura library is not reported yet.",
+            "note": ("Your Aura library is not reported yet — the desktop sends it "
+                     "with its player report, so Aura's page in Hermes Desktop has "
+                     "to poll once (or the app was just started). Try again in a "
+                     "moment, or call action=list to check."),
+        }
+    match = _watch_match(rows, args)
+    if not match.get("ok"):
+        payload = {"ok": False, "error": match.get("error"),
+                   "matches": match.get("matches") or [],
+                   "text": match.get("text", "")}
+        if payload["matches"]:
+            payload["text_lines"] = [_watch_row_line(n + 1, row)
+                                     for n, row in enumerate(payload["matches"])]
+            payload["note"] = ("Nothing was removed. Ask the owner which one, or "
+                               "call action=remove again with that item's url.")
+        return payload
+    row = match["row"]
+    try:
+        _ensure()
+    except Exception:  # noqa: BLE001
+        pass
+    extra = {"url": row["url"], "label": row["label"]}
+    payload = _action_transport(
+        "remove", args, extra=extra,
+        hint=("Aura's server is not running. Aura starts on first use: turn it on "
+              "with aura_control action=on, then call action=remove again."),
+    )
+    if payload.get("ok") is not True:
+        return payload
+    payload.update({
+        "removed": True,
+        "url": row["url"],
+        "label": row["label"],
+        "kind": row["kind"],
+        "text": f"Removed from your Aura library: {row['label']}",
+        "note": ("Queued for the desktop, which writes the change on its next "
+                 "poll (~0.25 s)."),
+    })
+    return payload
+
+
+def _action_watch_list() -> dict:
+    """The owner's saved library, as the desktop last reported it."""
+    snapshot = _player_snapshot()
+    if not snapshot:
+        return {
+            "ok": False,
+            "running": False,
+            "error": "server not running",
+            "hint": ("Aura's server is not running. It starts on first use — turn "
+                     "it on with aura_control action=on, then ask again."),
+        }
+    rows = _watch_library(snapshot)
+    if rows is None:
+        return {
+            "ok": True,
+            "reported": False,
+            "count": 0,
+            "items": [],
+            "text": "",
+            "note": ("Your Aura library is not reported yet — the desktop sends "
+                     "it with its player report, so Aura's page in Hermes Desktop "
+                     "has to poll once. Nothing is assumed about what you saved."),
+        }
+    items = [dict(row, n=index + 1) for index, row in enumerate(rows)]
+    playlist_count = sum(1 for row in rows if row["kind"] == "playlist")
+    film_count = len(rows) - playlist_count
+    payload = {
+        "ok": True,
+        "reported": True,
+        "count": len(items),
+        "playlists": playlist_count,
+        "films": film_count,
+        "items": items,
+        "text": "\n".join(_watch_row_line(item["n"], item) for item in items),
+    }
+    if not items:
+        payload["text"] = ""
+        payload["note"] = "Your Aura library is empty — nothing saved yet."
+    return payload
+
+
 def _action_watch_now() -> dict:
     snapshot = _player_snapshot()
     if not snapshot:
@@ -1197,8 +1633,16 @@ def _tool_aura_watch(args: dict, **kw) -> str:
             return _dump(_watch_error(f"unknown action {action!r}"))
         if action == "search":
             payload = _action_watch_search(args)
+        elif action == "browse":
+            payload = _catalog_browse(args)
         elif action == "play":
             payload = _action_watch_play(args)
+        elif action == "save":
+            payload = _action_watch_save(args)
+        elif action == "remove":
+            payload = _action_watch_remove(args)
+        elif action == "list":
+            payload = _action_watch_list()
         else:  # now
             payload = _action_watch_now()
         return _dump(payload)
@@ -1218,8 +1662,29 @@ SCHEMA_AURA_WATCH = {
         "non-YouTube sources you may use your own web search and pass the direct "
         "link to action=play. action=play accepts YouTube watch/youtu.be/shorts/"
         "embed/playlist links and direct .mp4/.webm/.m3u8/.mov files. action=now "
-        "reports what is playing. Returns JSON. Nothing is ever autoplayed, and "
-        "if Aura's server is not running it says so plainly."
+        "reports what is playing. "
+        "THE AURA CATALOGUE (346 verified films, documentaries and ambience "
+        "titles, grouped into categories): action=browse searches it offline — "
+        "category (optional, e.g. 'Anime' or 'Slow TV') and query (optional, words "
+        "from a title or its description, e.g. 'noir', 'octopus', 'space') return "
+        "up to 10 matches with title, year, category and url; with neither it "
+        "lists the categories. Use it for 'find me a noir film' or 'some anime' "
+        "before searching YouTube, show the numbered matches and wait for a pick, "
+        "then call action=play with that url and title. "
+        "THE USER'S OWN SAVED LIBRARY (Aura's list, not YouTube's): action=save "
+        "adds a film to it — 'save this' means the film playing now (url may be "
+        "left out), 'add the octopus one to my list' means that option's url plus "
+        "its title as the label; a playlist link is saved as a playlist, anything "
+        "else as a film, and the same url is never saved twice. action=list "
+        "answers 'what's on my list?' with every saved item (label, url, kind). "
+        "action=remove takes a url or a title, e.g. 'remove Nosferatu': an exact "
+        "or unique case-insensitive match is removed, and if the title matches "
+        "more than one saved item it returns the matches and changes NOTHING — "
+        "ask the user which one. A title that was never saved changes nothing "
+        "either. action=list and action=remove read the library the desktop "
+        "reports; if it has not reported one yet they say so instead of guessing. "
+        "Returns JSON. Nothing is ever autoplayed, and if Aura's server is not "
+        "running it says so plainly."
     ),
     "parameters": {
         "type": "object",
@@ -1227,8 +1692,24 @@ SCHEMA_AURA_WATCH = {
             "action": {
                 "type": "string",
                 "enum": list(_WATCH_ACTIONS),
-                "description": "search to offer choices; play to start the chosen "
-                               "one; now to ask what is playing (default search).",
+                "description": "search to offer choices from YouTube; browse to "
+                               "search Aura's own 346-title catalogue by category "
+                               "and/or query; play to start the chosen one; now "
+                               "to ask what is playing; save/remove to change the "
+                               "user's saved Aura library; list to read it "
+                               "(default search).",
+            },
+            "category": {
+                "type": "string",
+                "description": "for browse: a catalogue category, e.g. 'Anime', "
+                               "'Classic films', 'Slow TV', 'Deep sea & oceans' "
+                               "(leave out to search every category)",
+            },
+            "query": {
+                "type": "string",
+                "description": "for browse: words from a title or its one-line "
+                               "description, e.g. 'noir', 'octopus', 'space'; for "
+                               "search it is accepted as an alias of q",
             },
             "q": {
                 "type": "string",
@@ -1243,12 +1724,16 @@ SCHEMA_AURA_WATCH = {
             },
             "url": {
                 "type": "string",
-                "description": "for play: the chosen option's url (or a direct link "
-                               "the user gave you)",
+                "description": "for play/save: the chosen option's url (or a direct "
+                               "link the user gave you); for save it may be left "
+                               "out to save what is playing now; for remove it "
+                               "names the saved item",
             },
             "label": {
                 "type": "string",
-                "description": "for play: the title to show in Aura",
+                "description": "for play/save: the title to show in Aura (save "
+                               "defaults to the playing film's title); for remove: "
+                               "the saved item's title",
             },
         },
         "required": ["action"],

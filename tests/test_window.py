@@ -109,6 +109,18 @@ def test_player_url_carries_desktop_auth_and_position():
     assert "ticket=s3cret" in url
 
 
+def test_player_url_carries_the_caption_switch():
+    # The popped-out window is a player surface too: it must start with the
+    # owner's caption choice, not with YouTube's default.
+    off = window.player_url(4567, "s3cret", "https://youtu.be/abc")
+    assert "captions=" not in off and "cc_lang=" not in off
+    on = window.player_url(4567, "s3cret", "https://youtu.be/abc", captions=True, lang="fr")
+    assert "captions=1" in on
+    assert "cc_lang=fr" in on
+    junk = window.player_url(4567, "s3cret", "https://youtu.be/abc", captions=True, lang="fr; drop")
+    assert "cc_lang=" not in junk
+
+
 def test_open_window_builds_an_app_window_on_the_player(popen):
     result = window.open_window(4567, "tok", "https://example.test/film.mp4", 12.0)
     assert result["open"] is True and result["already"] is False

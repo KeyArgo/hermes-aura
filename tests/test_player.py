@@ -123,6 +123,61 @@ def test_player_page_without_any_token_is_refused(live):
 
 
 # ---------------------------------------------------------------------------
+# subtitles (CC)
+# ---------------------------------------------------------------------------
+
+def test_player_page_has_one_caption_rule_and_no_hand_written_query():
+    # The embed query and the toggle commands are decided in web/captions.js so
+    # the page cannot drift from the thing the tests exercise. cc_load_policy and
+    # loadModule/unloadModule therefore appear nowhere in the page itself.
+    root = Path(__file__).resolve().parents[1]
+    page = (root / "web" / "player.html").read_text()
+    assert '<script src="captions.js"></script>' in page
+    assert "AuraCaptions.embedParams(" in page
+    assert "AuraCaptions.commands(" in page
+    assert "cc_load_policy" not in page, "the page hand-writes the caption query"
+    assert "loadModule" not in page and "unloadModule" not in page, \
+        "the page hand-writes the caption commands"
+    rule = (root / "web" / "captions.js").read_text()
+    assert "cc_load_policy" in rule and "loadModule" in rule and "unloadModule" in rule
+
+
+def test_captions_rule_file_is_served(live):
+    # The page loads it by relative path; an unlisted file is a 404, so the
+    # static whitelist is part of the feature.
+    port = live["port"]
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request("GET", "/captions.js")
+    resp = conn.getresponse()
+    body = resp.read().decode("utf-8")
+    conn.close()
+    assert resp.status == 200
+    assert "text/javascript" in (resp.getheader("Content-Type") or "")
+    assert "AuraCaptions" in body
+
+
+def test_command_queue_carries_the_captions_switch(live):
+    port, token = live["port"], live["token"]
+    status, body = call(port, "POST", "/api/player/command", token,
+                        {"cmd": "captions", "value": 1})
+    assert status == 200 and body["ok"] is True
+    _s, listing = call(port, "GET", "/api/player/commands?after=0", token)
+    assert listing["commands"][-1]["cmd"] == "captions"
+    assert listing["commands"][-1]["value"] == 1
+    # A language travels with it, validated as a language code.
+    status, _body = call(port, "POST", "/api/player/command", token,
+                         {"cmd": "captions", "value": 1, "lang": "fr"})
+    assert status == 200
+    _s, listing = call(port, "GET", f"/api/player/commands?after={body['seq']}", token)
+    assert listing["commands"][-1]["lang"] == "fr"
+    status, _body = call(port, "POST", "/api/player/command", token,
+                         {"cmd": "captions", "value": 1, "lang": "fr; drop"})
+    assert status == 200
+    _s, listing = call(port, "GET", "/api/player/commands?after=0", token)
+    assert "lang" not in listing["commands"][-1], "a junk language code was queued"
+
+
+# ---------------------------------------------------------------------------
 # the command queue
 # ---------------------------------------------------------------------------
 
@@ -168,6 +223,8 @@ def test_commands_query_without_token_is_refused(live):
     {"cmd": "seek", "value": "soon"},
     {"cmd": "volume"},
     {"cmd": "load"},
+    {"cmd": "save"},
+    {"cmd": "remove"},
     {},
 ])
 def test_bad_commands_are_rejected(live, body):
@@ -175,6 +232,53 @@ def test_bad_commands_are_rejected(live, body):
                            live["token"], body)
     assert status == 400
     assert payload["ok"] is False
+
+
+def test_library_commands_are_queued_with_their_url(live):
+    """[savelist lane] save/remove reach the desktop on the same queue."""
+    token, port = live["token"], live["port"]
+    _s, saved = call(port, "POST", "/api/player/command", token,
+                     {"cmd": "save", "url": "https://example.test/octopus.mp4",
+                      "label": "Secrets of the Octopus"})
+    assert saved["ok"] is True
+    _s, removed = call(port, "POST", "/api/player/command", token,
+                       {"cmd": "remove", "url": "https://example.test/octopus.mp4"})
+    assert removed["ok"] is True
+    assert removed["seq"] > saved["seq"]
+    _s, queued = call(port, "GET", f"/api/player/commands?after={saved['seq'] - 1}&token={token}")
+    assert [(c["cmd"], c.get("url")) for c in queued["commands"]] == [
+        ("save", "https://example.test/octopus.mp4"),
+        ("remove", "https://example.test/octopus.mp4"),
+    ]
+    assert queued["commands"][0]["label"] == "Secrets of the Octopus"
+
+
+def test_a_reported_library_is_readable_and_sanitised(live):
+    """[savelist lane] the desktop's saved list rides the player report."""
+    port, token = live["port"], live["token"]
+    status, _body = call(port, "POST", "/api/player/report", token, {
+        "library": [
+            {"label": "Full octopus documentaries", "kind": "playlist",
+             "url": "https://www.youtube.com/playlist?list=PLabcdefghijklmnop"},
+            {"label": "  ", "url": "https://example.test/octopus.mp4"},
+            {"label": "no url"},
+            "junk",
+        ]})
+    assert status == 200
+    status, body = call(port, "GET", "/api/player", token)
+    assert status == 200
+    assert body["library"] == [
+        {"label": "Full octopus documentaries", "kind": "playlist",
+         "url": "https://www.youtube.com/playlist?list=PLabcdefghijklmnop"},
+        # A missing label falls back to the url; a missing kind is a film.
+        {"label": "https://example.test/octopus.mp4", "kind": "film",
+         "url": "https://example.test/octopus.mp4"},
+    ]
+
+
+def test_no_library_before_the_first_report(live):
+    _s, body = call(live["port"], "GET", "/api/player", live["token"])
+    assert body["library"] is None
 
 
 def test_volume_is_clamped(live):

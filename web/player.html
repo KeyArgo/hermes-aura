@@ -30,6 +30,9 @@
 <!-- [listen lane] The audio channel (music/radio) lives beside the film, not
      inside it: one <audio> element with its own volume, so the video can be
      muted while the music keeps playing. -->
+<!-- [subtitles] The captions rules (embed query + live player commands) are one
+     small file so the page and its contract test run the same logic. -->
+<script src="captions.js"></script>
 <script src="audio.js"></script>
 <script>
 (function () {
@@ -54,11 +57,32 @@
   var hint = document.getElementById('hint')
   var host = window.parent && window.parent !== window ? window.parent : null
 
+  // A page served by a server older than this file has no captions.js. Degrade
+  // to "no caption support" — never fail to boot the film over it.
+  var AuraCaptions = window.AuraCaptions || {
+    embedParams: function () { return [] },
+    commands: function () { return [] },
+    language: function (value) { return typeof value === 'string' ? value.trim() : '' },
+    normaliseTracks: function () { return [] },
+    tracksFrom: function () { return null },
+    pickTrack: function () { return '' },
+    hasCaptions: function () { return false }
+  }
+
   var frame = null       // the YouTube iframe, when there is one
   var video = null       // the native <video>, when there is one
   var kind = 'frame'     // 'youtube' | 'playlist' | 'video' | 'frame'
+  // [subtitles] Captions are a per-video thing: YouTube keeps them per player
+  // document, so the choice is re-applied whenever the video changes. `known`
+  // says whether the player has answered yet — until it has, the app leaves the
+  // CC button alone instead of calling a captioned film "no subtitles".
+  var captions = {
+    on: params.get('captions') === '1',
+    lang: AuraCaptions.language(params.get('cc_lang') || ''),
+    tracks: [], current: '', known: false, appliedFor: ''
+  }
   var state = {
-    playing: false, position: 0, duration: 0, muted: muted, title: '',
+    playing: false, position: 0, duration: 0, muted: muted, title: '', author: '',
     volume: 0.7, ended: false, videoId: '', blocked: false
   }
   var lastPost = 0
@@ -123,10 +147,23 @@
         duration: state.duration,
         muted: state.muted,
         title: state.title,
+        // The channel, when the player knows one. The host shows it under the
+        // title on the Aura page; a direct file has none.
+        author: state.author,
         volume: state.volume,
         ended: state.ended,
         videoId: state.videoId,
         blocked: state.blocked,
+        // [subtitles] What the player says about captions: the tracks it has,
+        // which one is playing, and whether it has answered at all. The app
+        // disables the CC button only on a real "no tracks" answer.
+        captions: {
+          on: captions.on,
+          lang: captions.lang,
+          current: captions.current,
+          known: captions.known,
+          tracks: captions.tracks
+        },
         controllable: kind !== 'frame'
       }, '*')
     } catch (err) { /* the host may be gone */ }
@@ -158,6 +195,14 @@
       kind = 'youtube'
     }
     if (muted) query.push('mute=1')
+    // [subtitles] Captions are the viewer's choice, so the embed asks for them
+    // only when they are on — and asks in the machine's language unless the
+    // viewer picked one. The rules live in web/captions.js.
+    var ccParts = AuraCaptions.embedParams({
+      on: captions.on,
+      lang: captions.lang || (navigator.language || '')
+    })
+    for (var i = 0; i < ccParts.length; i++) query.push(ccParts[i])
     var src = list
       ? (id
         ? 'https://www.youtube.com/embed/' + id + '?' + query.join('&')
@@ -191,6 +236,77 @@
     } catch (err) { /* not ready */ }
   }
 
+  // --- captions -----------------------------------------------------------
+  // [subtitles] Captions belong to the video, not to the page: YouTube keeps
+  // the choice per player document and quietly resets it when a playlist moves
+  // on, so the same commands are re-applied for every video id.
+
+  // The language to ask for: the viewer's choice, else the machine's own,
+  // else English. web/captions.js owns that order.
+  function captionLanguage() {
+    return captions.lang || AuraCaptions.pickTrack(captions.tracks, navigator.language || 'en')
+  }
+
+  // Say what the live player should be doing about captions right now.
+  function applyCaptions() {
+    if (!frame || (kind !== 'youtube' && kind !== 'playlist')) return false
+    var plan = AuraCaptions.commands({ on: captions.on, lang: captionLanguage() })
+    for (var i = 0; i < plan.length; i++) youtubeCommand(plan[i].func, plan[i].args)
+    captions.appliedFor = state.videoId || '*'
+    return true
+  }
+
+  // Re-apply only when the video actually changed: YouTube forgets captions
+  // per video, and a page that stopped asking is a page whose switch looks
+  // broken on the next episode.
+  function applyCaptionsForVideo() {
+    var id = state.videoId || '*'
+    if (id === captions.appliedFor) return false
+    // The previous episode's list is the best guess there is until the player
+    // publishes this video's own captions module (a playlist of one series
+    // shares its languages); the tracks are replaced the moment it does.
+    return applyCaptions()
+  }
+
+  // A direct file carries its own text tracks; there the switch is a mode.
+  function applyVideoCaptions() {
+    if (!video || !video.textTracks) return false
+    var i
+    var list = []
+    for (i = 0; i < video.textTracks.length; i++) {
+      var entry = video.textTracks[i]
+      list.push({
+        languageCode: entry.language || '',
+        label: entry.label || '',
+        kind: entry.kind || ''
+      })
+    }
+    captions.tracks = AuraCaptions.normaliseTracks(list)
+    captions.known = true
+    var pick = captions.on
+      ? AuraCaptions.pickTrack(captions.tracks, captions.lang || (navigator.language || 'en'))
+      : ''
+    var base = pick ? pick.split('-')[0] : ''
+    for (i = 0; i < video.textTracks.length; i++) {
+      var cue = video.textTracks[i]
+      var code = AuraCaptions.language(cue.language || '')
+      var showing = Boolean(base) && (code === pick || (code && code.split('-')[0] === base))
+      cue.mode = showing ? 'showing' : 'hidden'
+    }
+    captions.current = pick
+    return true
+  }
+
+  // The switch itself, whatever asked for it (the app's button or the agent).
+  function setCaptions(on, lang) {
+    captions.on = Boolean(on)
+    if (typeof lang === 'string') captions.lang = AuraCaptions.language(lang)
+    captions.appliedFor = ''
+    if (kind === 'video') applyVideoCaptions()
+    else applyCaptions()
+    postState(true)
+  }
+
   // --- native <video> -----------------------------------------------------
   function addVideo(src) {
     var el = document.createElement('video')
@@ -221,11 +337,24 @@
     })
     el.addEventListener('loadedmetadata', function () {
       state.duration = isFinite(el.duration) ? el.duration : 0
+      // [subtitles] Its tracks are known once the metadata is: apply the
+      // switch before the first frame is drawn, not after a click.
+      applyVideoCaptions()
       postState(true)
     })
     stage.appendChild(el)
     video = el
     kind = 'video'
+    // A direct file carries no metadata feed, so its own file name is the
+    // title the host shows. The URL itself is never printed.
+    if (!state.title) {
+      try {
+        var fileName = decodeURIComponent(
+          src.split('?')[0].split('#')[0].split('/').filter(Boolean).pop() || ''
+        )
+        if (fileName) state.title = fileName
+      } catch (err) { /* a malformed escape is not worth a title */ }
+    }
   }
 
   function addUnknownFrame(src) {
@@ -246,6 +375,19 @@
       if (typeof data === 'string') {
         try { data = JSON.parse(data) } catch (err) { return }
       }
+      // [subtitles] The player publishes its captions module on its own:
+      // namespaces + the tracklist + the track that is playing. That list is
+      // the language menu, and its absence is the honest "no subtitles" answer
+      // (ambient uploads never send it).
+      if (data && data.event === 'apiInfoDelivery' && data.info) {
+        var found = AuraCaptions.tracksFrom(data.info)
+        if (found) {
+          captions.tracks = found.tracks
+          if (found.current) captions.current = found.current
+          captions.known = true
+          postState(true)
+        }
+      }
       if (data && data.event === 'infoDelivery' && data.info) {
         var info = data.info
         if (typeof info.playerState === 'number') {
@@ -260,11 +402,18 @@
         if (info.videoData && typeof info.videoData.title === 'string') {
           state.title = info.videoData.title
         }
+        // getVideoData() also names the channel; the Aura page shows it under
+        // the title. Nothing is fetched from YouTube for this.
+        if (info.videoData && typeof info.videoData.author === 'string') {
+          state.author = info.videoData.author
+        }
         // Which episode of a playlist is playing — the bookmark needs this to
         // resume the right one, not just the list.
         if (info.videoData && typeof info.videoData.video_id === 'string') {
           state.videoId = info.videoData.video_id
         }
+        // [subtitles] A new video is a new captions context.
+        applyCaptionsForVideo()
         postState(false)
       }
       return
@@ -276,6 +425,14 @@
 
     var cmd = data.cmd
     var value = data.value
+
+    // [subtitles] The CC switch is its own verb: it means the same thing to a
+    // YouTube player and to a direct file, so it is handled before the
+    // per-kind transport branches.
+    if (cmd === 'captions') {
+      setCaptions(value === 1 || value === true || value === 'on', data.lang)
+      return
+    }
 
     if (kind === 'video' && video) {
       if (cmd === 'play') video.play().catch(function () {})
@@ -377,7 +534,10 @@
           duration: state.duration,
           volume: state.volume,
           last_command: lastCommand,
-          applied: lastApplied
+          applied: lastApplied,
+          // [subtitles] The window is a player too: the app reads this back so
+          // its own switch never disagrees with what is on screen.
+          captions: captions.on
         })
       }).catch(function () { /* the server may be restarting */ })
       if (state.title) document.title = state.title + ' — Aura'
@@ -403,6 +563,10 @@
     var next = new URLSearchParams()
     next.set('desktop', '1')
     next.set('url', String(url || ''))
+    // [subtitles] A new film in the same window keeps the viewer's caption
+    // choice: the page is replaced, so it has to be told again.
+    if (captions.on) next.set('captions', '1')
+    if (captions.lang) next.set('cc_lang', captions.lang)
     try {
       sessionStorage.setItem('auraCommandCursor', String(commandCursor))
       next.set('resumeCommands', '1')
@@ -441,6 +605,14 @@
     if (name === 'load') { markCommand(name, true); desktopLoad(command.url); return }
     if (name === 'seek') { markCommand(name, true); desktopSeek(command.value); return }
     if (name === 'volume') { markCommand(name, true); desktopVolume(command.value); return }
+    if (name === 'captions') {
+      // [subtitles] The OS window owns the picture here, so the switch is
+      // applied in this page and reported back to the app.
+      markCommand(name, true)
+      setCaptions(command.value === 1 || command.value === true, command.lang)
+      reportDesktop(true)
+      return
+    }
     if (name === 'next' || name === 'prev') {
       var canSkip = (kind === 'youtube' || kind === 'playlist') && frame
       markCommand(name, canSkip)
@@ -528,6 +700,26 @@
   postState(true)
   if (desktopMode) startDesktopMode()
   setInterval(function () { postState(false) }, 250)
+  // [subtitles] The embed already asks for captions (web/captions.js built the
+  // query), but a player that is not ready yet ignores commands: keep
+  // re-applying for the first few seconds, and stop as soon as the player has
+  // published its captions module.
+  var captionPokes = 0
+  var captionPoke = setInterval(function () {
+    if (kind !== 'youtube' && kind !== 'playlist') { clearInterval(captionPoke); return }
+    if (captions.known || captionPokes >= 10) { clearInterval(captionPoke); return }
+    captionPokes += 1
+    captions.appliedFor = ''
+    applyCaptionsForVideo()
+  }, 1000)
+  // No captions module after twelve seconds of playing means the video has no
+  // subtitles (ambient uploads never publish one). Saying so is what lets the
+  // CC button show as disabled with "No subtitles for this video".
+  setTimeout(function () {
+    if (captions.known || (kind !== 'youtube' && kind !== 'playlist')) return
+    captions.known = true
+    postState(true)
+  }, 12000)
   // The resume nudge: every half second until the film actually sits at the
   // saved point (or 20 s of trying), so an interruption always lands right.
   setInterval(function () { maybeResume(state.position) }, 500)

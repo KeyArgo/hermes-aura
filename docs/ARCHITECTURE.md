@@ -2,7 +2,7 @@
 
 One line: the components, the audio and control data flow, and where Aura keeps its files.
 
-Applies to Aura 1.0.0 · revised 2026-11-11
+Applies to Aura 1.0.0 · revised 2026-11-13
 
 Aura is four layers that can be read one at a time. The Python core does capture,
 analysis and HTTP; the browser page draws; the desktop half renders Hermes UI;
@@ -101,5 +101,6 @@ Nothing else is written. Audio samples stay in memory.
 | `desktop/plugin.js` | Hermes Desktop half: status menu, pane, page, window, backdrop, audio channel. |
 | `web/aura.js` | Visualiser, preset catalogue, mood rendering, WebSocket client. |
 | `web/player.html`, `web/audio.js` | Film stage and the separate audio channel. |
+| `web/catalog.json` | The shelf catalogue (346 verified titles), built by `tools/build_catalog.py`. |
 
 Back to [docs/README.md](README.md).

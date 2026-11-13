@@ -88,7 +88,8 @@ def find_browser() -> Optional[str]:
 
 
 def player_url(port: int, token: Optional[str], url: str, position: float = 0.0,
-               video_id: str = "", paused: bool = False) -> str:
+               video_id: str = "", paused: bool = False,
+               captions: bool = False, lang: str = "") -> str:
     """The exact page the window opens, with the same auth the player already uses."""
     query: Dict[str, str] = {"desktop": "1", "url": str(url or "")}
     if token:
@@ -97,6 +98,13 @@ def player_url(port: int, token: Optional[str], url: str, position: float = 0.0,
         query["paused"] = "1"
     if re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id or ""):
         query["video"] = video_id
+    # [subtitles] The window is a player surface: it starts with the owner's
+    # caption choice. Only a real language tag is forwarded.
+    if captions:
+        query["captions"] = "1"
+        code = str(lang or "").strip()
+        if re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?", code):
+            query["cc_lang"] = code
     try:
         start = float(position or 0.0)
     except (TypeError, ValueError):
@@ -275,7 +283,8 @@ def open_page(url: str, title: str = "") -> Dict[str, Any]:
 
 def open_window(port: int, token: Optional[str], url: str,
                 position: float = 0.0, label: str = "", video_id: str = "",
-                paused: bool = False) -> Dict[str, Any]:
+                paused: bool = False, captions: bool = False,
+                lang: str = "") -> Dict[str, Any]:
     """Open the window (or report the one already open). Raises WindowError."""
     global _proc, _film_url
     with _lock:
@@ -293,7 +302,8 @@ def open_window(port: int, token: Optional[str], url: str,
         except OSError as exc:
             raise WindowError(f"could not create the window profile: {exc}") from exc
         ticket = issue_ticket(token) if token else ""
-        target = player_url(port, ticket, url, position, video_id, paused)
+        target = player_url(port, ticket, url, position, video_id, paused,
+                            captions=captions, lang=lang)
         args: List[str] = [
             browser, f"--app={target}", f"--user-data-dir={profile}",
             f"--window-size={WINDOW_SIZE[0]},{WINDOW_SIZE[1]}",

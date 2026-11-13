@@ -43,6 +43,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -138,7 +139,7 @@ function renderContribution(contribution) {
   return typeof element.type === 'function' ? element.type(element.props) : element
 }
 
-function makeCtx(settings) {
+function makeCtx(settings, catalog) {
   const contributions = []
   const timers = []
   const controls = []
@@ -157,8 +158,8 @@ function makeCtx(settings) {
   const serverSettings = {
     motion: settings && typeof settings.motion === 'string' ? settings.motion : 'agent_music',
     behavior: settings && typeof settings.behavior === 'string' ? settings.behavior : 'balanced',
-    intensity: settings && Number.isFinite(settings.intensity) ? settings.intensity : 0.5,
-    opacity: settings && Number.isFinite(settings.opacity) ? settings.opacity : 0.35,
+    intensity: settings && Number.isFinite(settings.intensity) ? settings.intensity : 0.25,
+    opacity: settings && Number.isFinite(settings.opacity) ? settings.opacity : 0.25,
     reduced_motion: settings && typeof settings.reducedMotion === 'boolean' ? settings.reducedMotion : false
   }
   const serverFrame = {
@@ -281,6 +282,12 @@ function makeCtx(settings) {
           channel: 'dev',
           dirty: false
         }
+      }
+      if (route === '/catalog') {
+        // Only the shelf scenarios hand in a catalogue; everywhere else the
+        // route is as absent as it is on an old server, so the page must cope.
+        if (!catalog) throw new Error('unexpected route /catalog')
+        return catalog
       }
       throw new Error(`unexpected route ${route}`)
     }
@@ -540,10 +547,20 @@ function makeChildList(children) {
     }
   }
 }
+// The strip's own document-level gestures (drag move/up, resize) are attached
+// to the document, exactly as a floating control has to: a drag that leaves the
+// strip still has to follow the pointer. Recorded here so a test can fire them.
+const docHandlers = new Map()
+function fireDoc(type, event = {}) {
+  for (const fn of [...(docHandlers.get(type) || [])]) fn(event)
+}
+const docListeners = type => (docHandlers.get(type) || []).length
 globalThis.document = {
   hidden: false,
   visibilityState: 'visible',
   documentElement,
+  // A settable viewport, so clamping can be exercised at more than one size.
+  defaultView: { innerWidth: 1400, innerHeight: 900 },
   head: makeChildList(headChildren),
   body: makeChildList(bodyChildren),
   createElement(tagName) {
@@ -598,8 +615,15 @@ globalThis.document = {
     createdElements.push(node)
     return node
   },
-  addEventListener() {},
-  removeEventListener() {}
+  addEventListener(type, fn) {
+    const list = docHandlers.get(type) || []
+    list.push(fn)
+    docHandlers.set(type, list)
+  },
+  removeEventListener(type, fn) {
+    const list = docHandlers.get(type) || []
+    docHandlers.set(type, list.filter(entry => entry !== fn))
+  }
 }
 const FAKE_VARS = {
   '--ui-accent': '#8b7cff',
@@ -1347,8 +1371,9 @@ await recordAsync('accent pulse and Aura Live are off by default', async () => {
   assert.equal(hostStyles().length, 0)
   assert.equal(hostIframes().length, 0)
 
-  // Desktop defaults for a new user: agent_music, balanced, 0.35 opacity,
-  // "Show: Always". Saved settings keep their own values (covered elsewhere).
+  // Desktop defaults for a new user: agent_music, balanced, 25% intensity and
+  // 25% opacity, "Show: Always". Saved settings keep their own values (covered
+  // elsewhere).
   const motion = findSwitch(tree, 'Motion source')
   assert.equal(motion.props.value, 'agent_music', 'motion default is not agent_music')
   const behavior = (() => {
@@ -1366,7 +1391,7 @@ await recordAsync('accent pulse and Aura Live are off by default', async () => {
     })
     return found
   })()
-  assert.equal(opacity.props.value, 35, 'opacity default is not 0.35')
+  assert.equal(opacity.props.value, 25, 'opacity default is not 25%')
   const show = (() => {
     let found = null
     walk(tree, node => {
@@ -1382,7 +1407,7 @@ await recordAsync('accent pulse and Aura Live are off by default', async () => {
     })
     return found
   })()
-  assert.equal(intensity.props.value, 0.5, 'intensity default is not 0.5')
+  assert.equal(intensity.props.value, 0.25, 'intensity default is not 0.25')
 })
 
 record('dispose from the defaults scenario is clean', () => {
@@ -1467,7 +1492,8 @@ await recordAsync('the quick menu on/off switch drives /control, storage and the
   const dot = quickDot(quickTree())
   assert.equal(dot.props.style.opacity, 0, 'the dot keeps breathing while Aura is off')
   const dim = quickTrigger(quickTree())
-  assert.match(dim.props.style.color, /--ui-text-tertiary/, 'trigger does not dim when off')
+  assert.match(dim.props.style.color, /--ui-text-primary/,
+    'the trigger is not full contrast while Aura is off')
   const back = findByAria(quickTree(), 'Aura enabled')
   back.props.onCheckedChange(true)
   await sleep(30)
@@ -1875,7 +1901,8 @@ record('the page renders the player, the setup and the REVamp card', () => {
     'Seek',
     'Film volume',
     'Film URL',
-    'Pop out'
+    'Frame in Hermes',
+    'Pop out to desktop'
   ]) {
     assert.ok(pageAria(tree, label), `the page is missing "${label}"`)
   }
@@ -2088,6 +2115,80 @@ record('"Edit sources…" opens the Aura page from both menus', () => {
   disposeT()
 })
 
+// ------------------------------------------------------------ starters
+// The starter pack is the front door of the video backdrop, so it is checked
+// as data rather than by eye: the catalogue must have grown past its original
+// eight films, carry no duplicate URL or label, and every entry must be a URL
+// this player can actually frame (a YouTube watch link with an 11-character id,
+// or a direct media file). The entries are read out of the plugin source (the
+// literals ARE the shipped catalogue) and the count is also taken through
+// videoQueue(), the real path prev/next and the pickers walk.
+
+const starterBlock = (() => {
+  const start = source.indexOf('const STARTER_SOURCES = Object.freeze([')
+  assert.ok(start >= 0, 'STARTER_SOURCES is not in the plugin source any more')
+  const end = source.indexOf('\n])', start)
+  assert.ok(end > start, 'STARTER_SOURCES has no closing bracket')
+  return source.slice(start, end)
+})()
+
+const starterEntries = (() => {
+  const found = []
+  const entryRe = /\{\s*label:\s*'((?:[^'\\]|\\.)*)',\s*url:\s*'((?:[^'\\]|\\.)*)'\s*\}/g
+  for (const match of starterBlock.matchAll(entryRe)) found.push({ label: match[1], url: match[2] })
+  return found
+})()
+
+record('the starter pack grew, and every source is unique and well-formed', () => {
+  const queue = pluginModule.__test.videoQueue()
+  assert.ok(queue.length > 8,
+    `the starter pack was not expanded: videoQueue() still offers ${queue.length} sources`)
+  assert.ok(starterEntries.length >= 20,
+    `expected 20 or more starter sources, the array has ${starterEntries.length}`)
+
+  const urls = starterEntries.map(entry => entry.url)
+  const labels = starterEntries.map(entry => entry.label)
+  assert.equal(new Set(urls).size, urls.length, 'two starter entries share a URL')
+  assert.equal(new Set(labels).size, labels.length, 'two starter entries share a label')
+
+  for (const { label, url } of starterEntries) {
+    assert.ok(label.trim().length >= 3, `starter label is too short for ${url}`)
+    assert.doesNotMatch(url, /\s/, `starter url contains whitespace: ${url}`)
+    // The owner's own playlist must never ship. Only a hash of its id prefix is
+    // kept here, so this guard cannot leak the id it guards.
+    const listId = (url.match(/[?&]list=([\w-]+)/) || [])[1] || ''
+    assert.notEqual(createHash('sha256').update(listId.slice(0, 13)).digest('hex'), 'e5ae157250010ee61f730d5febabf21442331cd454557858b3f37493a8d3863a',
+      `a real playlist id leaked into the pack: ${url}`)
+    let parsed = null
+    try {
+      parsed = new URL(url)
+    } catch {
+      parsed = null
+    }
+    assert.ok(parsed, `starter url is not absolute: ${url}`)
+    assert.equal(parsed.protocol, 'https:', `starter url is not https: ${url}`)
+    const host = parsed.hostname.replace(/^www\./, '')
+    if (host === 'youtube.com') {
+      assert.equal(parsed.pathname, '/watch', `starter YouTube url is not a watch link: ${url}`)
+      assert.match(parsed.searchParams.get('v') || '', /^[A-Za-z0-9_-]{11}$/,
+        `starter YouTube id is malformed: ${url}`)
+      assert.equal(parsed.searchParams.get('list'), null,
+        `a starter entry is a playlist, not a film: ${url}`)
+    } else {
+      assert.equal(host, 'archive.org', `unexpected starter host ${host}: ${url}`)
+      assert.match(parsed.pathname, /\.(mp4|webm|ogv|ogg|m4v|mov)$/,
+        `a direct starter source is not a media file: ${url}`)
+    }
+    assert.ok(queue.some(item => item.url === url),
+      `the queue drops this starter entry (duplicate or filtered): ${url}`)
+  }
+
+  const youtube = urls.filter(url => url.includes('youtube.com/watch'))
+  const direct = urls.filter(url => !url.includes('youtube.com/watch'))
+  assert.ok(youtube.length >= 15, `only ${youtube.length} YouTube starters`)
+  assert.ok(direct.length >= 1, 'the pack has no direct-file starter')
+})
+
 // ------------------------------------------------------------- scenario U
 // The Aura page's Library: add, rename, remove, hide starters, clear recents.
 
@@ -2170,7 +2271,8 @@ await recordAsync('a saved source can be renamed and removed', async () => {
 await recordAsync('starter films can be hidden and shown, recents cleared', async () => {
   uAria('Hide starter films').props.onClick()
   await sleep(30)
-  assert.equal(uSaved().videoHiddenStarters.length, 8, 'hide starters did not persist')
+  assert.equal(uSaved().videoHiddenStarters.length, starterEntries.length,
+    'hide starters did not persist every starter')
   assert.ok(uAria('Show starter films'), 'the page does not offer Show starters after hiding')
   uAria('Clear recents').props.onClick()
   await sleep(30)
@@ -2522,7 +2624,71 @@ await recordAsync('player coordinator reports, consumes commands, and restores a
   dispose()
 })
 
-await recordAsync('page buttons: Pop out floats inside Hermes, Own window opens the OS window', async () => {
+await recordAsync('savelist: save/remove commands write the library, the report carries it', async () => {
+  const url = 'https://example.test/octopus.mp4'
+  const x = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: url })
+  const reports = []
+  let head = 0
+  let queue = []
+  const original = x.ctx.rest
+  x.ctx.rest = async (route, options = {}) => {
+    if (route === '/player') return { ok: true, window: { open: false }, player: {} }
+    if (route.startsWith('/player/commands?')) return { ok: true, head_seq: head, commands: queue }
+    if (route === '/player/report') {
+      reports.push(options.body || {})
+      return { ok: true }
+    }
+    return original(route, options)
+  }
+  const dispose = pluginModule.default.register(x.ctx)
+  const sync = () => pluginModule.wiringTest.sync()
+  const stored = () => x.storage.get('settings') || {}
+  await sync() // first poll only takes the cursor
+
+  // A save queued by aura_watch lands in the saved films, once, with its label.
+  head = 1
+  queue = [{ seq: 1, cmd: 'save', url, label: 'Secrets of the Octopus' }]
+  await sync()
+  assert.deepEqual((stored().videoSources || []).map(item => [item.label, item.url]),
+    [['Secrets of the Octopus', url]], 'the save did not reach the saved films')
+
+  // The library travels with the player report, so action=list can read it.
+  const reported = reports[reports.length - 1] || {}
+  assert.ok(Array.isArray(reported.library), 'the player report has no library field')
+  assert.deepEqual(reported.library.map(item => [item.label, item.url, item.kind]),
+    [['Secrets of the Octopus', url, 'film']],
+    'the report does not carry the saved film')
+
+  // Saving the same film again does not file a second copy.
+  head = 2
+  queue = [{ seq: 2, cmd: 'save', url, label: 'Secrets of the Octopus' }]
+  await sync()
+  assert.equal((stored().videoSources || []).length, 1,
+    `a duplicate save made ${(stored().videoSources || []).length} copies`)
+
+  // Remove by label: the desktop resolves the one saved film and drops it.
+  head = 3
+  queue = [{ seq: 3, cmd: 'remove', label: 'secrets of the octopus' }]
+  await sync()
+  assert.deepEqual((stored().videoSources || []).map(item => item.url), [],
+    'remove by label left the film in the library')
+  const after = reports[reports.length - 1] || {}
+  assert.deepEqual(after.library || [], [],
+    'the report still lists the film that was just removed')
+
+  // An ambiguous label removes nothing: a wrong film must never be dropped.
+  queue = [{ seq: 4, cmd: 'save', url: 'https://example.test/octopus-two.mp4', label: 'Octopus Two' },
+    { seq: 5, cmd: 'save', url: 'https://example.test/octopus-three.mp4', label: 'Octopus Three' },
+    { seq: 6, cmd: 'remove', label: 'octopus' }]
+  head = 6
+  await sync()
+  assert.deepEqual((stored().videoSources || []).map(item => item.url),
+    ['https://example.test/octopus-three.mp4', 'https://example.test/octopus-two.mp4'],
+    'an ambiguous label removed something anyway')
+  dispose()
+})
+
+await recordAsync('page buttons: Frame in Hermes floats inside Hermes, Pop out to desktop opens the OS window', async () => {
   const x = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/one.mp4' })
   const calls = []
   const frames = []
@@ -2541,19 +2707,19 @@ await recordAsync('page buttons: Pop out floats inside Hermes, Own window opens 
   await sleep(40)
   const route = x.contributions.find(c => c.area === 'routes')
   const tree = renderDeep(renderContribution(route))
-  // "Pop out": the floating pane appears, and no OS window is asked for.
-  pageAria(tree, 'Pop out').props.onClick()
+  // "Frame in Hermes": the floating pane appears, and no OS window is asked for.
+  pageAria(tree, 'Frame in Hermes').props.onClick()
   await sleep(40)
-  assert.ok(!calls.includes('/window/open'), 'Pop out opened an OS window')
-  assert.ok(x.contributions.find(c => c.id === 'watch'), 'Pop out did not register the floating pane')
+  assert.ok(!calls.includes('/window/open'), 'Frame in Hermes opened an OS window')
+  assert.ok(x.contributions.find(c => c.id === 'watch'), 'Frame in Hermes did not register the floating pane')
   assert.equal(x.storage.get('settings').videoWindow, true, 'the floating window was not remembered')
 
-  // "Own window": now the OS window, and the floating pane goes away.
+  // "Pop out to desktop": now the OS window, and the floating pane goes away.
   const tree2 = renderDeep(renderContribution(route))
-  pageAria(tree2, 'Own window').props.onClick()
+  pageAria(tree2, 'Pop out to desktop').props.onClick()
   await sleep(60)
-  assert.ok(calls.includes('/window/open'), 'Own window did not ask the server for a window')
-  assert.ok(!x.contributions.find(c => c.id === 'watch'), 'the floating pane survived Own window')
+  assert.ok(calls.includes('/window/open'), 'Pop out to desktop did not ask the server for a window')
+  assert.ok(!x.contributions.find(c => c.id === 'watch'), 'the floating pane survived Pop out to desktop')
   assert.notEqual((x.storage.get('settings') || {}).videoWindow, true, 'the floating window stayed on')
   dispose()
   void frames
@@ -2572,7 +2738,7 @@ await recordAsync('page buttons: Pop out floats inside Hermes, Own window opens 
   const disposeY = pluginModule.default.register(y.ctx)
   await sleep(40)
   const routeY = y.contributions.find(c => c.area === 'routes')
-  pageAria(renderDeep(renderContribution(routeY)), 'Own window').props.onClick()
+  pageAria(renderDeep(renderContribution(routeY)), 'Pop out to desktop').props.onClick()
   await sleep(60)
   // A never-set key is absent, not false: what matters is that the floating
   // surface was not switched on by a failed OS window.
@@ -2750,7 +2916,10 @@ record('review 1: nothing measures or queries the app\'s composer', () => {
   assert.ok(!/querySelectorAll\(\s*['"]textarea/.test(source), 'the composer scan is back')
   assert.ok(!/contenteditable/.test(source), 'the composer scan is back')
   assert.ok(!/composerRect/.test(source), 'the composer-rect measuring helper is back')
-  assert.ok(!/position:\s*'fixed'\s*,\s*left/.test(source), 'a fixed-positioned strip is back')
+  // The strip floats over the app (owner: it must sit where it was dropped), but
+  // its coordinates are the user's own — never derived from the app's markup.
+  assert.ok(!/elementsFromPoint|elementFromPoint/.test(source), 'the strip measures the app again')
+  assert.match(source, /videoBarX/, 'the strip has no saved position of its own')
 })
 
 record('review 3: the film is an SDK SandboxedFrame, never a raw iframe', () => {
@@ -2806,6 +2975,50 @@ await recordAsync('quality: Aura (visualiser) mode frames the local visualiser, 
     assert.equal(url.searchParams.get('overlay'), '1', 'the visualiser frame is not overlay mode')
   } finally {
     dispose()
+  }
+})
+
+await recordAsync('display: the visualiser frame is never dimmed a second time', async () => {
+  // CONTRACT.md §9.2: the PAGE applies opacity to its own canvas and compensates
+  // its scrim for it, so the frame element must stay at full strength. Dimming
+  // the frame too squared the setting (25% drew 6%) and dimmed the page chrome
+  // the contract keeps legible.
+  const ctx = makeCtx({ enabled: true, backdropMode: 'aura', opacity: 0.25 })
+  closePopout(ctx)
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await primeLive()
+    globalThis.__sdkFrames.length = 0
+    const pane = ctx.contributions.find(c => c.area === 'panes')
+    assert.ok(pane, 'no pane contribution')
+    expandTree(pane.render())
+    const framed = globalThis.__sdkFrames.find(f => String(f.src || '').includes('overlay=1'))
+    assert.ok(framed, `the visualiser was not framed: ${JSON.stringify(globalThis.__sdkFrames.map(f => f.src))}`)
+    assert.equal(framed.style.opacity, 1,
+      'the frame carries the user opacity on top of the page, which applies it again (0.25 drew 0.0625)')
+  } finally {
+    dispose()
+  }
+  // A film is a different surface: the player page has no opacity of its own, so
+  // the frame keeps carrying the video's adaptive transparency.
+  const film = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true,
+    videoUrl: 'https://example.test/film.mp4'
+  })
+  closePopout(film)
+  const disposeFilm = pluginModule.default.register(film.ctx)
+  try {
+    await primeLive()
+    globalThis.__sdkFrames.length = 0
+    const pane = film.contributions.find(c => c.area === 'panes')
+    assert.ok(pane, 'no pane contribution')
+    expandTree(pane.render())
+    const framed = globalThis.__sdkFrames.find(f => String(f.src || '').includes('/player.html'))
+    assert.ok(framed, 'the film was not framed')
+    assert.ok(Number(framed.style.opacity) > 0 && Number(framed.style.opacity) < 1,
+      'the film lost its adaptive transparency: ' + framed.style.opacity)
+  } finally {
+    disposeFilm()
   }
 })
 
@@ -3063,6 +3276,1350 @@ await recordAsync('a stale backend is named, not left looking broken', async () 
     await tx.refreshVersion()
     await sleep(20)
     assert.equal(tx.staleServerForTest(), false, 'a current server still looked stale')
+  } finally {
+    dispose()
+  }
+})
+
+// ------------------------------------- lane strip-drag: the strip is the user's
+// Two bugs, one cause: the transport strip was not the user's to place. The ⠿
+// grip popped the film out into window mode (older code called
+// writeSettings({ videoWindow: true }) from the drag), and the strip parked
+// itself by scanning the app's composer, so a new panel with text inputs shoved
+// it up over the chat. Now: a drag moves the strip and nothing else, the
+// position is the user's (videoBarX / videoBarY), and no app markup is read.
+
+const stripSettingsOf = ctx => ctx.storage.get('settings') || {}
+// The strip is a singleton (one transport, one player); the host slot it lives
+// in is the one React hands the plugin, stood in for here by a plain div.
+const stripSlot = document.createElement('div')
+document.body.appendChild(stripSlot)
+const mountStrip = () => {
+  const bar = tx.mountVideoBarForTest(stripSlot)
+  assert.ok(bar, 'the strip did not mount')
+  return bar
+}
+const stripEvent = (node, x, y) => ({
+  button: 0, clientX: x, clientY: y, target: node,
+  preventDefault() {}, stopPropagation() {}
+})
+const pressOn = (node, x, y) => {
+  const event = stripEvent(node, x, y)
+  for (const fn of node.__handlers.mousedown || []) fn(event)
+}
+// A press that lands on a control inside the strip: the bar's own handler is
+// what runs, so the "is this empty chrome?" test sees the real target.
+const pressBarTargeting = (bar, target, x, y) => {
+  const event = stripEvent(target, x, y)
+  for (const fn of bar.__handlers.mousedown || []) fn(event)
+}
+const movePointer = (x, y) => fireDoc('mousemove', stripEvent(null, x, y))
+const dropPointer = (x, y) => fireDoc('mouseup', stripEvent(null, x, y))
+const resetGrip = grip => {
+  for (const fn of grip.__handlers.dblclick || []) fn({ preventDefault() {} })
+}
+
+const dragScenario = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  windowVisual: true,
+  panelEnabled: false,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+pluginModule.default.register(dragScenario.ctx)
+dragScenario.timers.find(t => t.ms === 250).fn()
+await sleep(40)
+
+record('strip-drag: dragging the grip moves the strip and leaves every mode alone', () => {
+  const bar = mountStrip()
+  const settingsAtom = pluginModule.wiringTest.settings
+  const before = { ...settingsAtom.get() }
+  assert.equal(before.videoWindow, false, 'the film was already in window mode')
+  const home = tx.videoBarPointForTest()
+  const grip = findByLabel(bar, 'Drag to move the controls')
+  assert.ok(grip, 'the grip has no drag handle')
+  pressOn(grip, 120, 300)
+  movePointer(200, 260)
+  dropPointer(200, 260)
+  const after = { ...settingsAtom.get() }
+  assert.equal(after.videoWindow, false, 'dragging the grip popped the film into window mode')
+  assert.equal(tx.videoBarElForTest().style.left, `${home.x + 80}px`, 'the strip did not move right')
+  assert.equal(tx.videoBarElForTest().style.top, `${home.y - 40}px`, 'the strip did not move up')
+  // A drag writes the position and NOTHING else.
+  const changed = Object.keys(after).filter(key => after[key] !== before[key]).sort()
+  assert.deepEqual(changed, ['videoBarX', 'videoBarY'], `a drag changed other settings: ${changed.join(', ')}`)
+  assert.equal(stripSettingsOf(dragScenario).videoBarX, home.x + 80, 'the drop did not reach storage')
+})
+
+record('strip-drag: the same drag in window mode keeps the film in window mode', () => {
+  // "Every mode": with the film in its own floating window the grip still drags
+  // the controls only — it must not slam the film in or out of the window.
+  tx.setVideoWindow(true)
+  try {
+    assert.equal(stripSettingsOf(dragScenario).videoWindow, true, 'the film did not go to window mode')
+    const bar = tx.videoBarElForTest()
+    const grip = findByLabel(bar, 'Drag to move the controls')
+    const before = tx.videoBarPointForTest()
+    pressOn(grip, 60, 60)
+    movePointer(100, 90)
+    dropPointer(100, 90)
+    assert.equal(stripSettingsOf(dragScenario).videoWindow, true, 'a drag took the film out of its window')
+    assert.notEqual(tx.videoBarPointForTest().x, before.x, 'the strip did not move in window mode')
+  } finally {
+    tx.setVideoWindow(false)
+  }
+})
+
+record('strip-drag: the Frame in Hermes button is the only thing that pops the film out', () => {
+  const bar = tx.videoBarElForTest()
+  const popOut = findByLabel(bar, 'Frame in Hermes')
+  assert.ok(popOut, 'the strip has no Frame in Hermes button')
+  for (const fn of popOut.__handlers.click || []) fn({ preventDefault() {} })
+  assert.equal(stripSettingsOf(dragScenario).videoWindow, true, 'the pop-out button no longer pops out')
+  const before = tx.videoBarPointForTest()
+  const grip = findByLabel(bar, 'Drag to move the controls')
+  pressOn(grip, 300, 120)
+  movePointer(340, 150)
+  dropPointer(340, 150)
+  assert.equal(stripSettingsOf(dragScenario).videoWindow, true, 'a drag after popping out slammed the film back in')
+  assert.notEqual(tx.videoBarPointForTest().x, before.x, 'the strip did not move while popped out')
+  tx.setVideoWindow(false)
+})
+
+record('strip-drag: empty strip area drags too, and the controls never do', () => {
+  const bar = tx.videoBarElForTest()
+  const before = tx.videoBarPointForTest()
+  pressOn(bar, 40, 40)
+  movePointer(80, 20)
+  dropPointer(80, 20)
+  const after = tx.videoBarPointForTest()
+  assert.equal(after.x, before.x + 40, 'the empty strip area did not drag')
+  assert.equal(after.y, before.y - 20, 'the empty strip area did not drag')
+  assert.equal(stripSettingsOf(dragScenario).videoWindow, false, 'the empty-area drag changed the mode')
+
+  // A press that lands on Play (or the scrubber) belongs to that control.
+  const play = findByLabel(bar, 'Play')
+  pressBarTargeting(bar, play, 10, 10)
+  movePointer(400, 400)
+  dropPointer(400, 400)
+  assert.equal(tx.videoBarPointForTest().x, after.x, 'pressing a control started a drag')
+})
+
+record('strip-drag: a new panel with text inputs does not move the strip', () => {
+  const bar = tx.videoBarElForTest()
+  const left = bar.style.left
+  const top = bar.style.top
+  // The app grows a panel with an input and a rich-text box, exactly the shape
+  // the old composer scan was looking for.
+  const textarea = document.createElement('textarea')
+  document.body.appendChild(textarea)
+  const editable = document.createElement('div')
+  editable.setAttribute('contenteditable', 'true')
+  document.body.appendChild(editable)
+  dragScenario.timers.find(t => t.ms === 250).fn()
+  assert.equal(bar.style.left, left, 'the strip jumped sideways when a text field appeared')
+  assert.equal(bar.style.top, top, 'the strip jumped up over the chat when a text field appeared')
+  // Nothing in the plugin reads the app's composer at all.
+  assert.ok(!/composerRect/.test(source), 'the composer-rect measuring helper is back')
+  assert.ok(!/querySelectorAll\(\s*['"]textarea/.test(source), 'the composer scan is back')
+  assert.ok(!/contenteditable/.test(source), 'the composer scan is back')
+  assert.match(source, /videoBarX/, 'the strip has no saved position of its own')
+})
+
+record('strip-drag: the dropped position is remembered, and double-click resets it', () => {
+  const dropped = tx.videoBarPointForTest()
+  const saved = stripSettingsOf(dragScenario)
+  assert.equal(saved.videoBarX, dropped.x, 'the drop did not persist')
+  assert.equal(saved.videoBarY, dropped.y, 'the drop did not persist')
+  // A remount (another plugin, a restart) comes back where it was dropped.
+  tx.removeVideoBar()
+  const bar = mountStrip()
+  assert.equal(bar.style.left, `${saved.videoBarX}px`, 'the strip forgot its position on remount')
+  assert.equal(bar.style.top, `${saved.videoBarY}px`, 'the strip forgot its position on remount')
+
+  const grip = findByLabel(bar, 'Drag to move the controls')
+  assert.ok(grip, 'the grip vanished')
+  assert.equal(grip.title, 'Drag to move the controls (double-click to reset)',
+    'the grip tooltip does not say how to reset')
+  resetGrip(grip)
+  const home = tx.videoBarHomeForTest()
+  assert.equal(stripSettingsOf(dragScenario).videoBarX, null, 'the reset did not clear the saved x')
+  assert.equal(stripSettingsOf(dragScenario).videoBarY, null, 'the reset did not clear the saved y')
+  assert.equal(bar.style.left, `${home.x}px`, 'the reset did not put the strip back')
+  assert.equal(bar.style.top, `${home.y}px`, 'the reset did not put the strip back')
+  assert.equal(home.x, 16, 'the home corner is not 16px from the left edge')
+})
+
+record('strip-drag: the strip stays inside the window at drop and on resize', () => {
+  const bar = tx.videoBarElForTest()
+  const size = tx.videoBarSizeForTest()
+  const view = document.defaultView
+  view.innerWidth = 640
+  view.innerHeight = 480
+  fireDoc('resize')
+  assert.equal(bar.style.left, '16px', 'a resize left the strip outside the window')
+  assert.ok(parseInt(bar.style.top, 10) + size.height <= 480 - 16, 'the strip hangs off the bottom after a resize')
+
+  // Drag past the right and bottom edges: the drop clamps, it does not park the
+  // strip off screen for the next start.
+  const grip = findByLabel(bar, 'Drag to move the controls')
+  pressOn(grip, 20, 20)
+  movePointer(5000, 5000)
+  dropPointer(5000, 5000)
+  const maxX = 640 - size.width - 16
+  const maxY = 480 - size.height - 16
+  assert.equal(tx.videoBarPointForTest().x, maxX, 'the drop was not clamped to the right edge')
+  assert.equal(tx.videoBarPointForTest().y, maxY, 'the drop was not clamped to the bottom edge')
+  assert.equal(stripSettingsOf(dragScenario).videoBarX, maxX, 'the saved position is off screen')
+
+  // And past the top-left corner.
+  pressOn(grip, 20, 20)
+  movePointer(-5000, -5000)
+  dropPointer(-5000, -5000)
+  assert.equal(tx.videoBarPointForTest().x, 16, 'the drop was not clamped to the left edge')
+  assert.equal(tx.videoBarPointForTest().y, 16, 'the drop was not clamped to the top edge')
+
+  // A temporarily smaller window does not destroy the saved position.
+  const savedX = stripSettingsOf(dragScenario).videoBarX
+  view.innerWidth = 520
+  view.innerHeight = 420
+  fireDoc('resize')
+  assert.ok(parseInt(bar.style.left, 10) + size.width <= 520 - 16, 'the strip stayed off screen after a shrink')
+  assert.ok(parseInt(bar.style.top, 10) + size.height <= 420 - 16, 'the strip stayed off screen after a shrink')
+  assert.equal(stripSettingsOf(dragScenario).videoBarX, savedX, 'a resize rewrote the stored position')
+
+  view.innerWidth = 1400
+  view.innerHeight = 900
+  fireDoc('resize')
+  tx.removeVideoBar()
+  assert.equal(docListeners('mousemove'), 0, 'the drag listeners outlived the strip')
+  assert.equal(docListeners('resize'), 0, 'the resize listener outlived the strip')
+})
+
+// ------------------------------------------------------------- scenario NP
+// Now playing (owner ask): whatever film plays — starter, any YouTube video or
+// playlist item, direct file — says its title, and its channel when the player
+// knows it, on the Aura page next to the big player, large and clear. The
+// status-bar item that carries the "A" is bold and full contrast, accent while
+// Aura is active, and includes the same "Watching …" line.
+
+const npUrl = 'https://www.youtube.com/watch?v=JK9x0zqldsE'
+// The host window is a browser, so `message` events have a real target. The
+// plugin registers its bridge through that target; give Node the same door.
+if (typeof globalThis.addEventListener !== 'function') globalThis.addEventListener = () => {}
+
+// Aura off: the status-bar item must stay bold and full contrast (the faint
+// tertiary token is what made it unreadable). Registered and disposed on its
+// own — the module is single-instance, so two live instances would fight.
+const byClass = (tree, className) => {
+  let found = null
+  walk(tree, node => {
+    if (!found && node.props && node.props.className === className) found = node
+  })
+  return found
+}
+
+record('status bar: with Aura off the label stays bold and full contrast', () => {
+  const off = makeCtx({ enabled: false, backdropMode: 'video', videoUrl: npUrl })
+  const disposeOff = pluginModule.default.register(off.ctx)
+  try {
+    const menu = () => renderContribution(off.contributions.find(c => c.id === 'quick-menu'))
+    const trigger = quickTrigger(menu())
+    assert.ok(trigger, 'the status-bar trigger vanished while Aura is off')
+    assert.ok(Number(trigger.props.style.fontWeight) >= 600, 'the off label is not bold')
+    assert.match(trigger.props.style.color, /--ui-text-primary/,
+      `the off label is not full contrast: ${trigger.props.style.color}`)
+    const watching = byClass(menu(), 'aura-status-title')
+    assert.ok(watching, 'the watching label is missing while Aura is off')
+    assert.ok(Number(watching.props.style.fontWeight) >= 600, 'the watching label is not bold')
+    assert.match(watching.props.style.color, /--ui-text-primary/,
+      'the watching label is not full contrast')
+  } finally {
+    disposeOff()
+  }
+})
+
+const np = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: npUrl, panelEnabled: false })
+const disposeNP = pluginModule.default.register(np.ctx)
+
+const npPage = () => renderDeep(renderContribution(np.contributions.find(c => c.area === 'routes')))
+const npMenu = () => renderContribution(np.contributions.find(c => c.id === 'quick-menu'))
+const nowTitle = () => {
+  const block = byClass(npPage(), 'aura-now-title')
+  assert.ok(block, 'the Aura page has no now-playing title')
+  return texts(block)
+}
+const nowChannel = () => {
+  const block = byClass(npPage(), 'aura-now-channel')
+  return block ? texts(block) : ''
+}
+const playerMessage = data => {
+  const listener = np.listeners.find(entry => entry.type === 'message' && !entry.removed)
+  assert.ok(listener, 'no message bridge listener')
+  listener.fn({ source: npFrame.contentWindow, data })
+}
+const npFrame = { contentWindow: { postMessage() {} } }
+tx.setBackdropForTest(npFrame)
+
+record('now playing: the page names the source before the player reports', () => {
+  // The stored title for the source, never the raw URL.
+  assert.match(nowTitle(), /Nosferatu \(1922\)/, `wrong idle title: ${nowTitle()}`)
+  const body = texts(byClass(npPage(), 'aura-now'))
+  assert.ok(!body.includes('youtube.com/watch'), 'the page shows the URL as a title')
+})
+
+record('now playing: the player title and channel land on the page', () => {
+  playerMessage({
+    aura: 'video-state', url: npUrl, kind: 'youtube', playing: true, position: 12,
+    duration: 5400, muted: true, title: 'Nosferatu (1922) full film',
+    author: 'Internet Archive', videoId: 'JK9x0zqldsE', controllable: true
+  })
+  assert.equal(nowTitle(), 'Nosferatu (1922) full film', 'the reported title did not reach the page')
+  assert.equal(nowChannel(), 'Internet Archive', 'the channel did not reach the page')
+})
+
+record('now playing: a playlist moving to the next item updates the page', () => {
+  playerMessage({
+    aura: 'video-state', url: npUrl, kind: 'playlist', playing: true, position: 4,
+    duration: 600, muted: true, title: 'The Cabinet of Dr. Caligari (1920)',
+    author: 'Silent Film Archive', videoId: 'ZqB2l4V6a1c', controllable: true
+  })
+  assert.equal(nowTitle(), 'The Cabinet of Dr. Caligari (1920)', 'the next episode did not replace the title')
+  assert.equal(nowChannel(), 'Silent Film Archive', 'the next episode did not replace the channel')
+})
+
+await recordAsync('now playing: a source change shows the new source, not the last film', async () => {
+  await tx.applyVideoSource('https://www.youtube.com/watch?v=R6MlUcmOul8')
+  await sleep(30)
+  assert.match(nowTitle(), /Tears of Steel/, `the previous film is still named: ${nowTitle()}`)
+  assert.equal(nowChannel(), '', 'the old channel survived the source change')
+})
+
+record('status bar: the label is bold, full contrast, and names the film', () => {
+  const trigger = quickTrigger(npMenu())
+  assert.ok(trigger, 'the status-bar trigger vanished')
+  assert.ok(Number(trigger.props.style.fontWeight) >= 600, 'the status-bar label is not bold')
+  assert.match(trigger.props.style.color, /--ui-accent/, 'an active Aura label is not accent-coloured')
+  const word = (() => {
+    let found = null
+    walk(trigger, node => {
+      if (!found && (node.key === 'word' || (node.props && node.props.key === 'word'))) found = node
+    })
+    return found
+  })()
+  assert.ok(word, 'the Aura wordmark is missing')
+  // The mark and word sit in one bold wrapper that inherits the trigger colour.
+  const markWrap = (() => {
+    let found = null
+    walk(trigger, node => {
+      if (!found && node.props && node.props.style && node.props.style.fontSize === 12 && node.props.style.fontWeight) {
+        found = node
+      }
+    })
+    return found
+  })()
+  assert.ok(markWrap, 'the mark wrapper is missing')
+  assert.ok(Number(markWrap.props.style.fontWeight) >= 600, 'the wordmark is not bold')
+  assert.equal(markWrap.props.style.color, 'inherit', 'the wordmark does not follow the trigger colour')
+  assert.ok(!/tertiary/.test(String(word.props.style.color || '')),
+    'the wordmark is drawn in the faint tertiary token')
+  assert.match(texts(npMenu()), /Watching/, 'the status bar does not say what is being watched')
+  assert.match(texts(npMenu()), /Tears of Steel/, 'the status-bar label does not name the film')
+})
+
+record('dispose from the now-playing scenario is clean', () => {
+  tx.setBackdropForTest(null)
+  disposeNP()
+  assert.equal(np.contributions.length, 0, 'a contribution survived dispose')
+  assert.ok(np.listeners.every(entry => entry.removed), 'a listener survived dispose')
+})
+
+// ------------------------------------------------------------ readable text
+// Owner ask: "change the font and color of the hermes chat text so we can make
+// it much easier to read". The only supported door is the host theme contract —
+// typography (baseSize/fontSans/fontUrl) and colours (foreground/
+// mutedForeground) on Aura's OWN contributed theme. Nothing here may restyle
+// host markup, so the DOM checks below are part of the scenario, not an aside.
+
+sdk.themeState.name = 'nous'
+const rd = makeCtx({ enabled: true, themeOptIn: false })
+const disposeRd = pluginModule.default.register(rd.ctx)
+// Snapshotted AFTER register: mounting the plugin may legitimately style its
+// own surface. What must not change is anything the Readable controls do.
+const rdHead = headChildren.length
+const rdBody = bodyChildren.length
+// The app always mounts the theme probe; its first report is what lets the
+// plugin remember which theme it owes the user back.
+renderContribution(rd.contributions.find(c => c.area === 'titleBar.center'))
+
+const rdTheme = () => {
+  const found = rd.contributions.filter(c => c.area === 'themes')
+  assert.equal(found.length, 1, `expected exactly one contributed theme, found ${found.length}`)
+  return found[0].data
+}
+const rdPage = () => renderContribution(rd.contributions.find(c => c.area === 'settings.plugins'))
+const rdControl = label => {
+  const node = findSwitch(rdPage(), label)
+  assert.ok(node, `no Readable control labelled "${label}"`)
+  return node
+}
+// Relative luminance, so "easy to read over a film" is measured, not asserted
+// by vibes: the readable inks are the ones that stay bright on a dark surface.
+const luminance = hex => {
+  const channels = [1, 3, 5].map(at => parseInt(String(hex).slice(at, at + 2), 16) / 255)
+    .map(v => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+}
+
+const baseDarkInk = rdTheme().darkColors.foreground
+const basePrimary = rdTheme().colors.primary
+
+record('readable: off by default, so the contributed theme carries no readable overrides', () => {
+  const theme = rdTheme()
+  assert.equal(theme.typography.baseSize, undefined, 'a base size was painted with Readable off')
+  assert.equal(theme.typography.fontUrl, undefined, 'a font stylesheet was fetched with Readable off')
+  assert.equal(rdControl('Readable text').props.checked, false, 'Readable is on by default')
+  for (const label of ['Readable text size S', 'Readable text size L']) {
+    assert.equal(rdControl(label).props.disabled, true, `${label} is live while Readable is off`)
+  }
+  for (const label of ['Readable text font', 'Readable text colour']) {
+    assert.equal(rdControl(label).props.disabled, true, `${label} is live while Readable is off`)
+  }
+})
+
+record('readable: turning it on persists the choice and asks for the Aura theme', () => {
+  const before = sdk.calls.themes.length
+  rdControl('Readable text').props.onCheckedChange(true)
+  assert.equal(rd.storage.get('settings').readable, true, 'Readable was not persisted')
+  assert.ok(sdk.calls.themes.slice(before).includes('aura-live'),
+    'turning Readable on did not request the Aura theme')
+  assert.equal(rd.contributions.filter(c => c.area === 'themes').length, 1,
+    'the theme was contributed twice instead of updated in place')
+  for (const label of ['Readable text font', 'Readable text colour']) {
+    assert.equal(rdControl(label).props.disabled, false, `${label} stayed disabled with Readable on`)
+  }
+})
+
+record('readable: the readable theme survives an idle window, because it is not a skin', () => {
+  // "Keep my theme when idle" is on by default and normally hands the user's
+  // own theme back whenever no film or visual is showing. Readable must outlive
+  // that, or the text reverts the moment the film ends.
+  assert.equal(rd.storage.get('settings').readable, true, 'Readable is not on at this point')
+  const idle = rdControl('Keep my theme when idle')
+  const before = sdk.calls.themes.length
+  idle.props.onCheckedChange(true)
+  assert.equal(sdk.calls.themes.length, before,
+    'the readable theme was handed back while Aura had nothing on screen')
+})
+
+record('readable: S/M/L/XL each paint a larger typography.baseSize and lineHeight', () => {
+  const painted = {}
+  for (const size of ['s', 'm', 'l', 'xl']) {
+    rdControl(`Readable text size ${size.toUpperCase()}`).props.onClick()
+    const theme = rdTheme()
+    assert.equal(rd.storage.get('settings').readableSize, size, `${size} was not persisted`)
+    assert.match(String(theme.typography.baseSize), /^[\d.]+rem$/, `${size} painted no base size`)
+    assert.match(String(theme.typography.lineHeight), /^[\d.]+$/, `${size} painted no line height`)
+    painted[size] = parseFloat(theme.typography.baseSize)
+  }
+  assert.ok(painted.s < painted.m && painted.m < painted.l && painted.l < painted.xl,
+    `the four sizes are not ordered: ${JSON.stringify(painted)}`)
+})
+
+record('readable: each font sets typography.fontSans, with a CDN URL only where a webfont is needed', () => {
+  const expected = {
+    system: /system-ui/,
+    atkinson: /Atkinson Hyperlegible/,
+    inter: /Inter/,
+    mono: /mono/i
+  }
+  for (const [font, pattern] of Object.entries(expected)) {
+    rdControl('Readable text font').props.onChange({ target: { value: font } })
+    const theme = rdTheme()
+    assert.equal(rd.storage.get('settings').readableFont, font, `${font} was not persisted`)
+    assert.match(String(theme.typography.fontSans), pattern, `${font} did not reach fontSans`)
+    if (font === 'system' || font === 'mono') {
+      assert.equal(theme.typography.fontUrl, undefined,
+        `${font} ships with the system: it must not fetch a stylesheet`)
+    } else {
+      assert.match(String(theme.typography.fontUrl), /^https:\/\/fonts\.(bunny|googleapis)\.net\//,
+        `${font} is not served by a well-known font CDN`)
+    }
+  }
+})
+
+record('readable: each text colour sets foreground and mutedForeground on both palettes', () => {
+  const seen = {}
+  for (const ink of ['white', 'warm', 'yellow']) {
+    rdControl('Readable text colour').props.onChange({ target: { value: ink } })
+    const theme = rdTheme()
+    assert.equal(rd.storage.get('settings').readableInk, ink, `${ink} was not persisted`)
+    for (const key of ['foreground', 'mutedForeground']) {
+      assert.match(String(theme.colors[key]), /^#[0-9a-f]{6}$/i, `light ${key} is not a hex colour`)
+      assert.match(String(theme.darkColors[key]), /^#[0-9a-f]{6}$/i, `dark ${key} is not a hex colour`)
+    }
+    assert.ok(luminance(theme.darkColors.foreground) > 0.5,
+      `${ink} is not bright enough to read over a film: ${theme.darkColors.foreground}`)
+    seen[ink] = theme.darkColors.foreground
+  }
+  assert.equal(new Set(Object.values(seen)).size, 3,
+    `the three inks are not distinct: ${JSON.stringify(seen)}`)
+  assert.equal(rdTheme().colors.primary, basePrimary,
+    'Readable changed the palette: it must only move text tokens')
+  assert.notEqual(seen.white, baseDarkInk, 'the White ink is the palette default, so nothing changed')
+})
+
+record('readable: the group points at Hermes own chat font setting', () => {
+  const tree = rdPage()
+  assert.ok(texts(tree).includes('Readable'), 'no Readable group on the settings page')
+  const link = findSwitch(tree, 'Open Hermes chat font setting')
+  assert.ok(link, 'no jump to the Hermes chat font setting')
+  link.props.onClick()
+  assert.equal(sdk.calls.navigations.at(-1), '/settings?tab=config:appearance',
+    'the link does not open Appearance, where Hermes keeps its chat font')
+})
+
+record('readable: turning it off restores the previous theme and drops every override', () => {
+  sdk.themeState.name = 'aura-live'          // the host is wearing it, as after an opt-in
+  rdControl('Readable text').props.onCheckedChange(false)
+  assert.equal(rd.storage.get('settings').readable, false, 'Readable was not turned off')
+  assert.equal(sdk.calls.themes.at(-1), 'nous', 'the previous theme was not handed back')
+  const theme = rdTheme()
+  assert.equal(theme.typography.baseSize, undefined, 'the readable size survived the switch-off')
+  assert.equal(theme.typography.fontUrl, undefined, 'the font stylesheet survived the switch-off')
+  assert.equal(theme.darkColors.foreground, baseDarkInk, 'the readable ink survived the switch-off')
+})
+
+record('readable: nothing was written to the host DOM', () => {
+  assert.equal(headChildren.length, rdHead, 'a node was appended to the host head')
+  assert.equal(bodyChildren.length, rdBody, 'a node was appended to the host body')
+  assert.deepEqual(Object.keys(documentElement.style), [], 'host html/root style was mutated')
+  assert.deepEqual(Object.keys(document.body.style), [], 'host body style was mutated')
+})
+
+record('dispose from the readable scenario is clean', () => {
+  disposeRd()
+  assert.equal(rd.contributions.length, 0, 'a contribution survived dispose')
+})
+
+// ------------------------------------------------------ narrow-surface layout
+// Owner screenshots: the quick menu's bottom row overflowed its right edge, and
+// the docked pane squashed its play button, spread its volume slider past the
+// card and clipped film titles to "Yo...". These tests pin the rule for both
+// boxes: nothing may be wider than the box it sits in, and the two pop-out
+// buttons say the same words on every surface.
+
+// Each scenario below registers its own context: registering replaces the
+// plugin's global settings, so a shared one would leak between tests.
+
+const layoutVideo = extra => makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: true,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ',
+  ...extra
+})
+const layoutMenuOf = ctx => renderContribution(ctx.contributions.find(c => c.id === 'quick-menu'))
+const layoutPageOf = ctx => renderDeep(renderContribution(ctx.contributions.find(c => c.area === 'routes')))
+const layoutMountPanel = ctx => {
+  // Two panes share the "panes" area (the player panel and the floating watch
+  // window), so pick the one that carries the settings drawer.
+  const panes = ctx.contributions.filter(c => c.area === 'panes')
+  assert.ok(panes.length, 'the docked pane is not registered')
+  let ref = null
+  for (const pane of panes) {
+    const tree = renderContribution(pane)
+    let isPanel = false
+    let candidate = null
+    walk(tree, node => {
+      if (node.props && node.props['aria-label'] === 'Aura settings') isPanel = true
+      if (!candidate && node.props && node.props.key === 'theatre') candidate = node.props.ref
+    })
+    if (isPanel && candidate) { ref = candidate; break }
+  }
+  assert.equal(typeof ref, 'function', 'the pane has no theatre ref')
+  const host = document.createElement('div')
+  ref(host)
+  const panel = host.children.find(node => node.attributes && node.attributes.id === 'aura-panel')
+  assert.ok(panel, 'the panel did not mount')
+  return panel
+}
+const layoutDescendants = (node, out = []) => {
+  if (!node || typeof node !== 'object') return out
+  out.push(node)
+  for (const child of node.children || []) layoutDescendants(child, out)
+  return out
+}
+const layoutPx = value => {
+  const match = /^(-?\d+(?:\.\d+)?)px$/.exec(String(value == null ? '' : value).trim())
+  return match ? Number(match[1]) : null
+}
+// A one-class-per-rule stylesheet, so the declarations a class gives an element
+// can be read straight out of the text (the fake DOM has no cascade).
+const layoutRules = css => {
+  const rules = new Map()
+  const re = /([.#][a-z0-9-]+)\s*\{([^}]*)\}/gi
+  let match = re.exec(css)
+  while (match) {
+    const decls = {}
+    for (const part of match[2].split(';')) {
+      const at = part.indexOf(':')
+      if (at < 0) continue
+      const name = part.slice(0, at).trim()
+      if (name) decls[name] = part.slice(at + 1).trim()
+    }
+    rules.set(match[1].toLowerCase(), decls)
+    match = re.exec(css)
+  }
+  return rules
+}
+
+record('quick menu: every row fits the menu, and no control is wider than it', () => {
+  const width = tx.quickMenuWidth
+  assert.ok(Number.isFinite(width) && width > 0, 'the quick menu has no declared width')
+  // The popover is given that width (the SDK stub drops PopoverContent's style,
+  // so the source is what says so).
+  assert.match(source, /minWidth: QUICK_MENU_WIDTH,\s*width: QUICK_MENU_WIDTH/,
+    'the popover is not laid out at QUICK_MENU_WIDTH')
+  const ctx = layoutVideo({ panelEnabled: false })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const tree = layoutMenuOf(ctx)
+    let rows = 0
+    walk(tree, node => {
+      const style = (node.props && node.props.style) || {}
+      for (const key of ['width', 'minWidth']) {
+        const value = layoutPx(style[key])
+        if (value != null) {
+          assert.ok(value <= width, `a quick-menu control is ${value}px wide inside a ${width}px menu`)
+        }
+      }
+      if (style.justifyContent === 'space-between' && style.flexWrap === 'wrap') {
+        rows += 1
+        const children = Array.isArray(node.props && node.props.children)
+          ? node.props.children
+          : [node.props && node.props.children]
+        const label = children[0] && children[0].props && children[0].props.style
+        const control = children[1] && children[1].props && children[1].props.style
+        assert.ok(label, 'a quick-menu row has no label box')
+        assert.equal(label.minWidth, 0, 'a row label cannot shrink inside the menu')
+        assert.equal(label.overflow, 'hidden', 'a row label cannot ellipsis')
+        assert.equal(label.textOverflow, 'ellipsis', 'a row label has no ellipsis')
+        assert.ok(control, 'a quick-menu row has no control box')
+        assert.equal(control.minWidth, 0, 'a row control cannot shrink inside the menu')
+      }
+    })
+    assert.ok(rows >= 6, `only ${rows} quick-menu rows are shrinkable; the rows are not all fixed`)
+    const frame = findByAria(tree, 'Frame in Hermes')
+    const pop = findByAria(tree, 'Pop out to desktop')
+    assert.ok(frame, 'the quick menu has no Frame in Hermes button')
+    assert.ok(pop, 'the quick menu has no Pop out to desktop button')
+    for (const node of [frame, pop]) {
+      assert.equal(node.props.style.flex, '1 1 0', 'the two pop-out buttons are not equal width')
+      assert.equal(node.props.style.minWidth, 0, 'a pop-out button cannot shrink')
+    }
+  } finally {
+    dispose()
+  }
+})
+
+record('skipped episodes: no row at zero, a "Show all N again" row at two', () => {
+  const empty = layoutVideo({ panelEnabled: false })
+  const disposeEmpty = pluginModule.default.register(empty.ctx)
+  try {
+    assert.ok(!texts(layoutMenuOf(empty)).includes('Skipped episodes'),
+      'the skipped-episodes row is shown at zero')
+  } finally {
+    disposeEmpty()
+  }
+
+  const two = layoutVideo({ panelEnabled: false, videoHiddenIds: ['aaaaaaaaaaa', 'bbbbbbbbbbb'] })
+  const disposeTwo = pluginModule.default.register(two.ctx)
+  try {
+    const tree = layoutMenuOf(two)
+    assert.ok(texts(tree).includes('Skipped episodes'), 'the skipped-episodes row is missing at two')
+    assert.ok(!texts(tree).includes('Hidden episodes'), 'the old "Hidden episodes" words are back')
+    assert.ok(texts(tree).includes('Show all 2 again'), 'the row does not offer "Show all 2 again"')
+    const button = findByAria(tree, 'Show all 2 skipped episodes again')
+    assert.ok(button, 'the skipped-episodes button has no label of its own')
+    assert.equal(button.props.title, 'Episodes you hid from your playlists. Aura skips them.',
+      'the skipped-episodes tooltip does not explain itself')
+    button.props.onClick()
+    assert.deepEqual(two.storage.get('settings').videoHiddenIds, [], 'show all again did not clear the list')
+  } finally {
+    disposeTwo()
+  }
+})
+
+await recordAsync('the two pop-out buttons: same words, same jobs, on every surface', async () => {
+  const ctx = makeCtx({
+    enabled: true,
+    backdropMode: 'video',
+    panelEnabled: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  await sleep(40)
+  try {
+    const words = ['Frame in Hermes', 'Pop out to desktop']
+    const menu = renderContribution(ctx.contributions.find(c => c.id === 'quick-menu'))
+    const page = layoutPageOf(ctx)
+    for (const label of words) {
+      assert.ok(findByAria(menu, label), `the quick menu has no "${label}" button`)
+      assert.ok(pageAria(page, label), `the Aura page has no "${label}" button`)
+    }
+    // The panel and the strip build DOM, not descriptors.
+    const panelButtons = () => layoutDescendants(layoutMountPanel(ctx)).filter(node => node.className === 'ap-popout')
+    const panelWords = panelButtons().map(node => node.getAttribute('aria-label')).sort()
+    assert.deepEqual(panelWords, [...words].sort(), 'the right panel does not carry both pop-out buttons')
+    const strip = tx.videoBarElForTest() || tx.mountVideoBarForTest(document.createElement('div'))
+    for (const label of words) assert.ok(findByLabel(strip, label), `the control strip has no "${label}" button`)
+
+    // Frame in Hermes toggles the in-app frame and never opens an OS window.
+    const opened = ctx.requests.filter(entry => entry.route === '/window/open').length
+    const frameBtn = panelButtons().find(node => node.className === 'ap-popout')
+    for (const fn of frameBtn.__handlers.click || []) fn({ preventDefault() {} })
+    assert.equal(pluginModule.wiringTest.settings.get().videoWindow, true,
+      'Frame in Hermes did not switch the in-app frame on')
+    assert.equal(ctx.requests.filter(entry => entry.route === '/window/open').length, opened,
+      'Frame in Hermes opened a desktop window')
+    const pressed = panelButtons().find(node => node.getAttribute('aria-label') === 'Frame in Hermes')
+    assert.equal(pressed.getAttribute('aria-pressed'), 'true', 'the frame toggle is not pressed when it is on')
+
+    // Pop out to desktop asks the server for the OS window, and then reads
+    // "Bring back" — the only button that says those words.
+    const ownBtn = panelButtons().find(node => node.getAttribute('aria-label') === 'Pop out to desktop')
+    assert.ok(ownBtn, 'the panel lost its Pop out to desktop button')
+    for (const fn of ownBtn.__handlers.click || []) fn({ preventDefault() {} })
+    await sleep(60)
+    assert.ok(ctx.requests.filter(entry => entry.route === '/window/open').length > opened,
+      'Pop out to desktop did not ask the server for a window')
+    const back = panelButtons().find(node => node.getAttribute('aria-label') === 'Bring back')
+    assert.ok(back, 'an open desktop window does not read "Bring back"')
+    assert.equal(back.textContent, 'Bring back', 'the desktop button text did not follow its state')
+  } finally {
+    tx.setVideoWindow(false)
+    await tx.setOwnWindow(false)
+    dispose()
+  }
+})
+
+record('right panel: no fixed width wider than a 260px pane, and it wraps instead', () => {
+  const ctx = layoutVideo({})
+  const dispose = pluginModule.default.register(ctx.ctx)
+  const panel = layoutMountPanel(ctx)
+  const css = (panelStyles()[panelStyles().length - 1] || {}).textContent || ''
+  assert.ok(css.includes('.ap-card'), 'the panel stylesheet is empty')
+  // Every fixed px width in the panel's own stylesheet fits the narrowest pane
+  // under test: the layout flexes, it does not assume 320px.
+  const narrowest = 260
+  for (const match of css.matchAll(/(?:^|;|\{)\s*(min-width|max-width|width)\s*:\s*(\d+(?:\.\d+)?)px/g)) {
+    assert.ok(Number(match[2]) <= narrowest,
+      `.${match[1]}: ${match[2]}px is wider than a ${narrowest}px pane`)
+  }
+  const rules = layoutRules(css)
+  assert.ok(rules.has('.ap-transport'), 'no transport rule')
+  assert.match(rules.get('.ap-transport')['flex-wrap'] || '', /wrap/, 'the transport row cannot wrap')
+  assert.match(rules.get('.ap-transport')['justify-content'] || '', /space-evenly/,
+    'the transport buttons are not evenly spaced')
+  assert.match(rules.get('.ap-volume')['max-width'] || '', /100%/, 'the volume slider is not contained')
+  assert.equal(rules.get('.ap-volume')['min-width'], '0', 'the volume slider cannot shrink')
+  assert.match(rules.get('.ap-field')['flex-wrap'] || '', /wrap/, 'the see-through row cannot wrap')
+  assert.match(rules.get('.ap-pills')['flex-wrap'] || '', /wrap/, 'the see-through presets cannot wrap')
+  assert.equal(rules.get('.ap-card')['flex-direction'], 'column', 'the film card is not stacked')
+  assert.match(rules.get('.ap-thumb').width || '', /100%/, 'the thumbnail is not card-wide')
+  assert.match(rules.get('.ap-title')['-webkit-line-clamp'] || '', /2/, 'the film title is not clamped to 2 lines')
+
+  // At each width, no child of the panel asks for more than the panel has.
+  for (const width of [260, 320, 400]) {
+    panel.style.width = `${width}px`
+    for (const node of layoutDescendants(panel)) {
+      for (const key of ['width', 'minWidth']) {
+        const value = layoutPx(node.style && node.style[key])
+        if (value != null) {
+          assert.ok(value <= width, `a panel child is ${value}px wide inside a ${width}px pane`)
+        }
+      }
+      const className = String(node.className || '').split(/\s+/).filter(Boolean)
+      for (const name of className) {
+        const rule = rules.get(`.${name}`)
+        if (!rule) continue
+        for (const key of ['width', 'min-width']) {
+          const value = layoutPx(rule[key])
+          if (value != null) {
+            assert.ok(value <= width, `.${name} is ${value}px wide inside a ${width}px pane`)
+          }
+        }
+      }
+    }
+  }
+
+  // The five see-through choices are all there, and the card puts its title
+  // under the thumbnail rather than beside it.
+  const pills = layoutDescendants(panel).filter(node => node.className === 'ap-pill')
+  assert.deepEqual(pills.map(node => node.textContent), ['Auto', '25%', '50%', '75%', '100%'])
+  const card = layoutDescendants(panel).find(node => node.className === 'ap-card')
+  assert.ok(card, 'the panel has no film card')
+  assert.ok(card.children[0].className === 'ap-thumb', 'the thumbnail is not the card’s first block')
+  assert.ok(card.children[1] && card.children[1].className === 'ap-meta', 'the card has no title block')
+  assert.equal(layoutDescendants(card).find(node => node.className === 'ap-title') !== undefined, true,
+    'the card has no title')
+
+  // The transport row's five buttons fit side by side at the narrowest width:
+  // five 28px minimums plus four 4px gaps against the pane's inner width.
+  const inner = narrowest - 2 * 14 - 2 * 12
+  const transportButtons = layoutDescendants(panel)
+    .filter(node => node.tagName === 'BUTTON' && node.parentNode && node.parentNode.className === 'ap-transport')
+  assert.equal(transportButtons.length, 5, 'the transport row does not have five buttons')
+  const needed = 5 * 28 + 4 * 4
+  assert.ok(needed <= inner, `the transport buttons need ${needed}px inside ${inner}px`)
+  dispose()
+  assert.equal(ctx.contributions.length, 0, 'a contribution survived dispose')
+})
+
+// --------------------------------------------------------------- the shelf
+// The catalogue is a committed file (web/catalog.json); the shelf draws one
+// horizontally scrolling row per category, Picks (STARTER_SOURCES) first, and
+// one click plays a title through the same applyVideoSource path a starter uses.
+
+const CATALOG = JSON.parse(fs.readFileSync(path.join(ROOT, 'web', 'catalog.json'), 'utf8'))
+const CATALOG_CATEGORIES = [...new Set(CATALOG.map(item => item.category))]
+
+const sh = makeCtx(
+  { enabled: true, backdropMode: 'aura', videoUrl: '' },
+  { ok: true, count: CATALOG.length, items: CATALOG }
+)
+const disposeSh = pluginModule.default.register(sh.ctx)
+// Prime the mount once: the fetch is asynchronous, so the first render is the
+// one that starts it and the next one sees the catalogue.
+renderDeep(renderContribution(sh.contributions.find(c => c.area === 'routes')))
+await sleep(120)
+const shPage = () => renderDeep(renderContribution(sh.contributions.find(c => c.area === 'routes')))
+const shelfRowsOf = tree => {
+  const rows = []
+  walk(tree, node => {
+    if (node.props && typeof node.props['data-category'] === 'string') rows.push(node)
+  })
+  return rows
+}
+const stripOf = row => row.props.children[1]
+
+record('shelf: one row per catalogue category, Picks first, each row titled and counted', () => {
+  const rows = shelfRowsOf(shPage())
+  assert.deepEqual(
+    rows.map(row => row.props['data-category']),
+    ['picks', ...CATALOG_CATEGORIES],
+    'the shelf does not draw Picks plus one row per category, in catalogue order'
+  )
+  const picksCount = rows[0]
+  assert.equal(texts(picksCount.props.children[0].props.children[0]), 'Picks')
+  assert.equal(
+    texts(picksCount.props.children[0].props.children[1]),
+    String(starterEntries.length),
+    'the Picks row does not hold the whole starter pack'
+  )
+  CATALOG_CATEGORIES.forEach((category, index) => {
+    const row = rows[index + 1]
+    const expected = CATALOG.filter(item => item.category === category)
+    assert.equal(texts(row.props.children[0].props.children[0]), category, 'the row is not titled with its category')
+    assert.equal(texts(row.props.children[0].props.children[1]), String(expected.length),
+      `the ${category} row does not show its count`)
+    assert.equal(stripOf(row).props.children.length, expected.length,
+      `the ${category} row does not hold every title`)
+  })
+})
+
+record('shelf: a card is poster-less and carries title, year, length and its note', () => {
+  const tree = shPage()
+  const item = CATALOG.find(entry => entry.year && entry.duration_s)
+  assert.ok(item, 'the catalogue has no title with a year and a length to check')
+  const card = pageAria(tree, `Play ${item.title}`)
+  assert.ok(card, 'no shelf card for a catalogue title')
+  assert.equal(card.props.title, item.note, 'the one-line note is not on the hover title')
+  const classes = []
+  const pictures = []
+  walk(card, node => {
+    if (node.props && node.props.className) classes.push(node.props.className)
+    if (node.props && node.props.style && node.props.style.backgroundImage) pictures.push(node)
+  })
+  assert.ok(classes.includes('aura-shelf-title'), 'the card has no title block')
+  assert.ok(classes.includes('aura-shelf-meta'), 'the card has no year/length line')
+  assert.ok(classes.includes('aura-shelf-note'), 'the card has no note line')
+  assert.equal(pictures.length, 0, 'a catalogue card grew a poster')
+  const body = texts(card)
+  assert.match(body, new RegExp(String(item.year)), 'the year is missing from the card')
+  assert.match(body, new RegExp(tx.fmtLength(item.duration_s).replace(/ /g, '\\s+')),
+    'the length is missing from the card')
+  assert.ok(body.includes(item.title), 'the title is missing from the card')
+})
+
+record('shelf: lengths read as hours and minutes, and unknown lengths say nothing', () => {
+  assert.equal(tx.fmtLength(0), '')
+  assert.equal(tx.fmtLength(null), '')
+  assert.equal(tx.fmtLength(95), '2 min')
+  assert.equal(tx.fmtLength(2700), '45 min')
+  assert.equal(tx.fmtLength(3600), '1 h')
+  assert.equal(tx.fmtLength(5520), '1 h 32 min')
+})
+
+await recordAsync('shelf: clicking a catalogue card plays it exactly like a starter', async () => {
+  const item = CATALOG.find(entry => entry.category === 'Anime')
+  assert.ok(item, 'the Anime row is empty')
+  const card = pageAria(shPage(), `Play ${item.title}`)
+  assert.ok(card, 'no card to click')
+  card.props.onClick()
+  await sleep(150)
+  const saved = sh.storage.get('settings') || {}
+  assert.equal(saved.videoUrl, item.url, 'the clicked title was not applied')
+  assert.equal(saved.backdropMode, 'video', 'the shelf did not switch to video mode')
+  assert.ok(sh.controls.some(patch => patch && patch.backdrop_mode === 'video'),
+    'the mode change never reached /control')
+  assert.ok((saved.videoRecent || []).some(row => row.url === item.url),
+    'the played title did not join the queue like a picked source')
+})
+
+record('shelf: one search box filters every row, and clearing it restores them', () => {
+  const box = pageAria(shPage(), 'Search the catalogue')
+  assert.ok(box, 'the shelf has no search box')
+  box.props.onChange({ target: { value: 'Mobile Suit' } })
+  const filtered = shPage()
+  const rows = shelfRowsOf(filtered)
+  assert.ok(rows.length >= 2, 'the query hid every row instead of filtering them')
+  assert.ok(rows.length < CATALOG_CATEGORIES.length + 1, 'the query did not hide any row')
+  for (const row of rows) {
+    for (const card of stripOf(row).props.children) {
+      assert.match(card.props['aria-label'], /Mobile Suit/i,
+        `a card that does not match the query survived in ${row.props['data-category']}`)
+    }
+  }
+  assert.equal(pageAria(filtered, 'Search the catalogue').props.value, 'Mobile Suit',
+    'the search box does not show what was typed')
+
+  // A starter-only phrase keeps the catalogue empty but leaves its Picks.
+  pageAria(filtered, 'Search the catalogue').props.onChange({ target: { value: '· Blender film' } })
+  const picksOnly = shPage()
+  assert.deepEqual(shelfRowsOf(picksOnly).map(row => row.props['data-category']), ['picks'])
+  assert.ok(stripOf(shelfRowsOf(picksOnly)[0]).props.children.length >= 3,
+    'the search did not keep the matching Picks')
+
+  pageAria(picksOnly, 'Search the catalogue').props.onChange({ target: { value: '' } })
+  assert.equal(shelfRowsOf(shPage()).length, CATALOG_CATEGORIES.length + 1,
+    'clearing the search did not restore every row')
+})
+
+record('shelf: the catalogue is fetched once per mount, not once per render', () => {
+  const calls = sh.requests.filter(request => request.route === '/catalog')
+  assert.equal(calls.length, 1, `the page asked for /catalog ${calls.length} times`)
+})
+
+record('shelf: rows scroll sideways and shrink on a narrow window, never widen the page', () => {
+  assert.match(source, /\.aura-shelf-strip\s*\{[^}]*overflow-x:\s*auto/,
+    'the shelf strip does not scroll horizontally')
+  assert.match(source, /\.aura-shelf-strip\s*\{[^}]*max-width:\s*100%/,
+    'the shelf strip has no width ceiling')
+  assert.match(source, /@media \(max-width: 760px\)[\s\S]*?\.aura-shelf-card, #aura-page \.aura-shelf-slot \{\s*flex-basis: 148px/,
+    'narrow windows do not shrink the shelf cards')
+  const row = shelfRowsOf(shPage()).find(entry => entry.props['data-category'] === 'Anime')
+  assert.ok(row, 'the Anime row is missing')
+  assert.equal(stripOf(row).props.style.overflowX, 'auto', 'the rendered strip is not a horizontal scroller')
+  for (const card of stripOf(row).props.children) {
+    assert.equal(card.props.style && card.props.style.width, undefined,
+      'a shelf card sets its own pixel width inline, which no media query can undo')
+  }
+})
+
+// An old server (or no network) has no /catalog at all: the page must still be
+// the working library it was, with Picks and the saved lists only.
+const shDown = makeCtx({ enabled: true, backdropMode: 'aura', videoUrl: '' })
+const disposeShDown = pluginModule.default.register(shDown.ctx)
+await sleep(80)
+
+record('shelf: with no catalogue the page still offers Picks and the saved library', () => {
+  const tree = renderDeep(renderContribution(shDown.contributions.find(c => c.area === 'routes')))
+  const rows = shelfRowsOf(tree)
+  assert.deepEqual(rows.map(row => row.props['data-category']), ['picks'],
+    'a failed /catalog left rows behind')
+  assert.equal(stripOf(rows[0]).props.children.length, starterEntries.length,
+    'the Picks row is empty after a failed fetch')
+  assert.ok(pageAria(tree, 'Play Sintel · Blender film'), 'Picks are not playable after a failed fetch')
+  assert.match(texts(tree), /How to add a YouTube playlist/, 'the library half disappeared with the catalogue')
+})
+disposeShDown()
+disposeSh()
+
+// --------------------------------------------------------------- subtitles
+// A CC switch. Off by default because YouTube decides on its own otherwise;
+// on, the page asks for captions in the embed and keeps asking the live player
+// (every new video in a playlist is a fresh captions context). The rules that
+// pick the query parts and the commands live in web/captions.js, so they run
+// here exactly as the page runs them, and the page's own wiring is checked
+// where it is written.
+
+const PAGE = path.join(ROOT, 'web', 'player.html')
+const pageSource = fs.readFileSync(PAGE, 'utf8')
+const captionsModule = (await import(pathToFileURL(path.join(ROOT, 'web', 'captions.js')).href)).default
+const pageFn = name => {
+  const match = new RegExp(`function ${name}\\(\\) \\{[\\s\\S]*?\\n  \\}`).exec(pageSource)
+  assert.ok(match, `web/player.html has no ${name}()`)
+  return match[0]
+}
+const CC_TRACKS = [
+  { languageCode: 'ar', displayName: 'Arabic' },
+  { languageCode: 'nl', displayName: 'Dutch' },
+  { languageCode: 'en-US', displayName: 'English (United States)' },
+  { languageCode: 'fr', displayName: 'French' },
+  { languageCode: 'de', displayName: 'German' },
+  { languageCode: 'iw', displayName: 'Hebrew' }
+]
+const ccInfo = (tracklist, current) => ({
+  event: 'apiInfoDelivery',
+  info: {
+    namespaces: ['captions'],
+    captions: {
+      options: ['reload', 'fontSize', 'track', 'tracklist'],
+      track: { languageCode: current || 'en-US', displayName: 'English (United States)' },
+      tracklist: tracklist || CC_TRACKS
+    }
+  }
+})
+
+record('subtitles: the embed asks YouTube for captions only when they are on', () => {
+  assert.deepEqual(captionsModule.embedParams({ on: false }), [],
+    'captions off still asked the embed for captions')
+  assert.deepEqual(captionsModule.embedParams({ on: true }), ['cc_load_policy=1'])
+  assert.deepEqual(captionsModule.embedParams({ on: true, lang: 'fr' }),
+    ['cc_load_policy=1', 'cc_lang_pref=fr'], 'the preferred language did not reach the embed')
+  assert.deepEqual(captionsModule.embedParams({ on: false, lang: 'fr' }), [],
+    'a language alone turned captions on')
+  assert.deepEqual(captionsModule.embedParams({ on: true, lang: 'fr; drop' }),
+    ['cc_load_policy=1'], 'a junk language code reached the query')
+})
+
+record('subtitles: on loads the captions module and picks a track, off unloads it', () => {
+  assert.deepEqual(captionsModule.commands({ on: true }), [{ func: 'loadModule', args: ['captions'] }])
+  assert.deepEqual(captionsModule.commands({ on: true, lang: 'de' }), [
+    { func: 'loadModule', args: ['captions'] },
+    { func: 'setOption', args: ['captions', 'track', { languageCode: 'de' }] }
+  ], 'a chosen language is not applied to the track')
+  assert.deepEqual(captionsModule.commands({ on: false, lang: 'de' }),
+    [{ func: 'unloadModule', args: ['captions'] }],
+    'off must unload the module and must not set a track')
+})
+
+record('subtitles: the language list comes from the player, defaulting to the machine then English', () => {
+  const found = captionsModule.tracksFrom(ccInfo().info)
+  assert.ok(found, 'the captions namespace was not read')
+  assert.deepEqual(found.tracks.map(track => track.code), ['ar', 'nl', 'en-US', 'fr', 'de', 'iw'])
+  assert.deepEqual(found.tracks.map(track => track.name)[2], 'English (United States)')
+  assert.equal(found.current, 'en-US', 'the playing track was not read')
+  assert.equal(captionsModule.tracksFrom({ namespaces: ['captions'] }), null,
+    'an empty captions namespace was reported as a list')
+  assert.equal(captionsModule.tracksFrom({ playerState: 1 }), null,
+    'a frame with no captions namespace produced a list')
+  assert.equal(captionsModule.pickTrack(found.tracks, 'de-DE'), 'de',
+    'a regional preference did not match its base language')
+  assert.equal(captionsModule.pickTrack(found.tracks, 'en-GB'), 'en-US',
+    'an English machine did not pick the English track')
+  assert.equal(captionsModule.pickTrack(found.tracks, 'es-ES'), 'en-US',
+    'a language this video does not have did not fall back to English')
+  assert.equal(captionsModule.pickTrack(found.tracks, ''), 'en-US')
+  assert.equal(captionsModule.pickTrack([], 'en'), '', 'an empty list picked a track')
+  assert.equal(captionsModule.hasCaptions(found.tracks), true)
+  assert.equal(captionsModule.hasCaptions([]), false, 'an empty tracklist claims subtitles')
+})
+
+record('subtitles: the page builds every embed through the one caption rule', () => {
+  assert.match(pageSource, /<script src="captions\.js"><\/script>/,
+    'the page does not load web/captions.js')
+  assert.match(pageSource, /AuraCaptions\.embedParams\(/,
+    'the embed query does not ask the caption rules for cc_load_policy')
+  assert.match(pageSource, /params\.get\('captions'\) === '1'/,
+    'the page does not read ?captions=1')
+  assert.match(pageSource, /params\.get\('cc_lang'\)/,
+    'the page does not read ?cc_lang=')
+  assert.match(pageSource, /captions: \{[\s\S]{0,400}?tracks:/,
+    'the page does not report its caption tracks back to the app')
+})
+
+record('subtitles: the page posts loadModule/unloadModule, and posts again for every new video', () => {
+  const scene = options => {
+    const sent = []
+    const pageCaptions = {
+      on: options.on, lang: options.lang || '', tracks: options.tracks || [],
+      current: '', known: true, appliedFor: ''
+    }
+    const state = { videoId: options.videoId || '' }
+    const build = new Function(
+      'captions', 'state', 'youtubeCommand', 'navigator', 'AuraCaptions', 'frame', 'kind',
+      `${pageFn('captionLanguage')}\n${pageFn('applyCaptions')}\n${pageFn('applyCaptionsForVideo')}\n` +
+      'return { applyCaptions: applyCaptions, forVideo: applyCaptionsForVideo, language: captionLanguage }'
+    )
+    const api = build(pageCaptions, state, (func, args) => sent.push({ func, args: args || [] }),
+      { language: options.machine || 'en-GB' }, captionsModule,
+      options.frame === false ? null : {}, options.kind || 'youtube')
+    return { sent, api, captions: pageCaptions, state }
+  }
+
+  const off = scene({ on: false, videoId: 'aaa' })
+  off.api.forVideo()
+  assert.deepEqual(off.sent, [{ func: 'unloadModule', args: ['captions'] }],
+    'captions off did not unload the module')
+  // Nothing new for the same video: the toggle already sent it once.
+  off.api.forVideo()
+  assert.equal(off.sent.length, 1, 'the same video was told again on every frame')
+
+  const on = scene({ on: true, videoId: 'aaa', tracks: CC_TRACKS })
+  on.api.forVideo()
+  assert.deepEqual(on.sent, [
+    { func: 'loadModule', args: ['captions'] },
+    { func: 'setOption', args: ['captions', 'track', { languageCode: 'en-US' }] }
+  ], 'captions on did not load the module and pick the machine language')
+  // A playlist moves to its next episode: YouTube resets captions per video.
+  on.state.videoId = 'bbb'
+  on.api.forVideo()
+  assert.equal(on.sent.length, 4, 'the commands were not re-sent for the new video')
+  assert.deepEqual(on.sent.slice(2), on.sent.slice(0, 2), 'the new video got different commands')
+
+  // A chosen language wins over the machine's.
+  const chosen = scene({ on: true, lang: 'fr', videoId: 'aaa', tracks: CC_TRACKS })
+  assert.equal(chosen.api.language(), 'fr', 'the chosen language was not used')
+})
+
+record('subtitles: a direct file switches its own text tracks between showing and hidden', () => {
+  const tracks = [
+    { language: 'en', label: 'English', mode: 'disabled' },
+    { language: 'fr', label: 'Français', mode: 'disabled' }
+  ]
+  const build = new Function('captions', 'AuraCaptions', 'video', 'navigator',
+    `${pageFn('applyVideoCaptions')}\nreturn applyVideoCaptions`)
+  const pageCaptions = { on: true, lang: '', tracks: [], current: '', known: false }
+  const run = build(pageCaptions, captionsModule, { textTracks: tracks }, { language: 'fr-FR' })
+  run()
+  assert.deepEqual(tracks.map(track => track.mode), ['hidden', 'showing'],
+    'the machine language track was not shown')
+  assert.equal(pageCaptions.current, 'fr')
+  assert.deepEqual(pageCaptions.tracks.map(track => track.code), ['en', 'fr'],
+    'a direct file did not report its own tracks')
+  pageCaptions.on = false
+  run()
+  assert.deepEqual(tracks.map(track => track.mode), ['hidden', 'hidden'],
+    'turning captions off left a track showing')
+})
+
+record('subtitles: off by default, and every stored value is validated', () => {
+  const fresh = makeCtx({ enabled: true })
+  const d1 = pluginModule.default.register(fresh.ctx)
+  assert.equal(pluginModule.wiringTest.settings.get().videoCaptions, false,
+    'captions must be off on a fresh install')
+  assert.equal(pluginModule.wiringTest.settings.get().videoCaptionLang, '')
+  d1()
+  const saved = makeCtx({ enabled: true, videoCaptions: true, videoCaptionLang: 'fr' })
+  const d2 = pluginModule.default.register(saved.ctx)
+  assert.equal(pluginModule.wiringTest.settings.get().videoCaptions, true,
+    'the saved switch did not come back')
+  assert.equal(pluginModule.wiringTest.settings.get().videoCaptionLang, 'fr',
+    'the saved language did not come back')
+  d2()
+  const junk = makeCtx({ enabled: true, videoCaptions: 'on', videoCaptionLang: 'fr; drop table' })
+  const d3 = pluginModule.default.register(junk.ctx)
+  assert.equal(pluginModule.wiringTest.settings.get().videoCaptions, false,
+    'a non-boolean switch was accepted')
+  assert.equal(pluginModule.wiringTest.settings.get().videoCaptionLang, '',
+    'a junk language code was accepted')
+  d3()
+})
+
+record('subtitles: the switch is remembered and reaches the player', () => {
+  const ctx = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: false,
+    videoUrl: 'https://www.youtube.com/watch?v=9FqwhW0B3tY'
+  })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const posts = []
+    tx.setBackdropForTest({ contentWindow: { postMessage: message => posts.push(message) } })
+    tx.setVideoCaptions(true)
+    assert.equal(ctx.storage.get('settings').videoCaptions, true, 'the switch was not persisted')
+    assert.deepEqual(posts[0], { aura: 'transport', cmd: 'captions', value: 1 },
+      'turning captions on did not reach the page')
+    tx.setVideoCaptions(false)
+    assert.equal(posts[posts.length - 1].value, 0, 'turning captions off did not reach the page')
+  } finally {
+    tx.setBackdropForTest(null)
+    dispose()
+  }
+})
+
+await recordAsync('subtitles: the player page is told to start with them on, and only then', async () => {
+  const off = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: false,
+    videoUrl: 'https://www.youtube.com/watch?v=9FqwhW0B3tY'
+  })
+  closePopout(off)
+  const d1 = pluginModule.default.register(off.ctx)
+  try {
+    await primeLive()
+    const src = new URL(tx.filmSrc())
+    assert.equal(src.searchParams.get('captions'), null, 'captions were requested while off')
+    assert.equal(src.searchParams.get('cc_lang'), null, 'a language was requested while off')
+  } finally {
+    d1()
+  }
+  const on = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: false,
+    videoUrl: 'https://www.youtube.com/watch?v=9FqwhW0B3tY',
+    videoCaptions: true, videoCaptionLang: 'fr'
+  })
+  closePopout(on)
+  const d2 = pluginModule.default.register(on.ctx)
+  try {
+    await primeLive()
+    const src = new URL(tx.filmSrc())
+    assert.equal(src.searchParams.get('captions'), '1', 'the page was not told captions are on')
+    assert.equal(src.searchParams.get('cc_lang'), 'fr', 'the chosen language did not reach the page')
+  } finally {
+    d2()
+  }
+})
+
+await recordAsync('subtitles: the agent\'s captions command turns them on, not just the page', async () => {
+  const ctx = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: false,
+    videoUrl: 'https://www.youtube.com/watch?v=9FqwhW0B3tY'
+  })
+  let commands = []
+  const original = ctx.ctx.rest
+  ctx.ctx.rest = async (route, options = {}) => {
+    if (route === '/player') return { ok: true, window: { open: false }, player: { desktop: false } }
+    if (route.startsWith('/player/commands?')) return { ok: true, head_seq: 1, commands }
+    if (route === '/player/report') return { ok: true }
+    return original(route, options)
+  }
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await pluginModule.wiringTest.sync()
+    commands = [{ seq: 2, cmd: 'captions', value: 1 }]
+    await pluginModule.wiringTest.sync()
+    assert.equal(pluginModule.wiringTest.settings.get().videoCaptions, true,
+      'the queued captions command did not turn the setting on')
+    commands = [{ seq: 3, cmd: 'captions', value: 0 }]
+    await pluginModule.wiringTest.sync()
+    assert.equal(pluginModule.wiringTest.settings.get().videoCaptions, false,
+      'the queued captions command did not turn the setting off')
+  } finally {
+    dispose()
+  }
+})
+
+record('subtitles: a video with several tracks offers a language list, and the choice sticks', () => {
+  const url = 'https://www.youtube.com/watch?v=9FqwhW0B3tY'
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', panelEnabled: false, videoUrl: url })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const frame = { contentWindow: { postMessage() {} } }
+    tx.setBackdropForTest(frame)
+    const listener = ctx.listeners.find(entry => entry.type === 'message' && !entry.removed)
+    assert.ok(listener, 'no message bridge listener')
+    listener.fn({
+      source: frame.contentWindow,
+      data: {
+        aura: 'video-state', url, kind: 'youtube', playing: true, position: 5,
+        duration: 2910, muted: true, title: 'Our Planet: High Seas',
+        videoId: '9FqwhW0B3tY', controllable: true,
+        captions: {
+          on: false, current: 'en-US', known: true,
+          tracks: [
+            { code: 'en-US', name: 'English (United States)' },
+            { code: 'fr', name: 'French' },
+            { code: 'de', name: 'German' }
+          ]
+        }
+      }
+    })
+    const menu = renderDeep(renderContribution(ctx.contributions.find(c => c.id === 'quick-menu')))
+    const select = findByAria(menu, 'Subtitle language')
+    assert.ok(select, 'the quick menu offers no language list')
+    assert.deepEqual(select.props.children.map(option => option.props.value), ['', 'en-US', 'fr', 'de'],
+      'the language list is not Automatic plus the video’s own tracks')
+    select.props.onChange({ target: { value: 'fr' } })
+    assert.equal(ctx.storage.get('settings').videoCaptionLang, 'fr',
+      'the chosen language was not remembered')
+    // The language list is only there when there is a choice to make.
+    listener.fn({
+      source: frame.contentWindow,
+      data: {
+        aura: 'video-state', url, kind: 'youtube', playing: true, position: 5,
+        duration: 2910, muted: true, title: 'Our Planet: High Seas',
+        videoId: '9FqwhW0B3tY', controllable: true,
+        captions: { on: false, current: '', known: true, tracks: [] }
+      }
+    })
+    const bare = renderDeep(renderContribution(ctx.contributions.find(c => c.id === 'quick-menu')))
+    assert.equal(findByAria(bare, 'Subtitle language'), null,
+      'a language list was offered for a video with no subtitles')
+  } finally {
+    tx.setBackdropForTest(null)
+    dispose()
+  }
+})
+
+record('subtitles: the strip has a CC button, and it is disabled when the video has none', () => {
+  const url = 'https://www.youtube.com/watch?v=9FqwhW0B3tY'
+  const ctx = makeCtx({
+    enabled: true, backdropMode: 'video', windowVisual: true, panelEnabled: false, videoUrl: url
+  })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const slot = document.createElement('div')
+    document.body.appendChild(slot)
+    const bar = tx.mountVideoBarForTest(slot)
+    assert.ok(bar, 'the strip did not mount')
+    const cc = findByLabel(bar, 'Subtitles (CC)')
+    assert.ok(cc, 'the strip has no CC button')
+    assert.equal(cc.textContent, 'CC')
+    for (const fn of cc.__handlers.click || []) fn({ preventDefault() {} })
+    assert.equal(ctx.storage.get('settings').videoCaptions, true, 'the CC button did not turn captions on')
+    tx.syncVideoBar(true)
+    assert.equal(cc.getAttribute('aria-pressed'), 'true', 'the CC button does not show it is on')
+    for (const fn of cc.__handlers.click || []) fn({ preventDefault() {} })
+    assert.equal(ctx.storage.get('settings').videoCaptions, false, 'the CC button did not turn captions off')
+
+    // A video with no captions: the button says so instead of pretending.
+    const frame = { contentWindow: { postMessage() {} } }
+    tx.setBackdropForTest(frame)
+    const listener = ctx.listeners.find(entry => entry.type === 'message' && !entry.removed)
+    listener.fn({
+      source: frame.contentWindow,
+      data: {
+        aura: 'video-state', url, kind: 'youtube', playing: true, position: 5,
+        duration: 300, muted: true, title: 'Forests from Above', videoId: 'EColTNIbOko',
+        controllable: true, captions: { on: false, current: '', known: true, tracks: [] }
+      }
+    })
+    tx.syncVideoBar(true)
+    assert.equal(cc.disabled, true, 'the CC button is live on a video with no subtitles')
+    assert.equal(cc.title, 'No subtitles for this video', `wrong tooltip: ${cc.title}`)
+    tx.setBackdropForTest(null)
+    tx.removeVideoBar()
+  } finally {
+    dispose()
+  }
+})
+
+record('subtitles: the Aura page and the panel carry the same CC control', () => {
+  const url = 'https://www.youtube.com/watch?v=9FqwhW0B3tY'
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: url })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const page = renderDeep(renderContribution(ctx.contributions.find(c => c.area === 'routes')))
+    assert.ok(findByAria(page, 'Subtitles (CC)'), 'the Aura page has no CC control')
+    const panel = layoutMountPanel(ctx)
+    const cc = findByLabel(panel, 'Subtitles (CC)')
+    assert.ok(cc, 'the panel has no CC control')
+    assert.equal(cc.textContent, 'CC')
+    for (const fn of cc.__handlers.click || []) fn({ preventDefault() {} })
+    assert.equal(ctx.storage.get('settings').videoCaptions, true,
+      'the panel CC did not turn captions on')
   } finally {
     dispose()
   }

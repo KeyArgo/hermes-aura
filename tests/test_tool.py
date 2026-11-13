@@ -400,6 +400,22 @@ def test_transport_actions_queue_the_right_command(plugin, monkeypatch, action, 
     assert payload["window"]["open"] is True
 
 
+def test_captions_action_queues_the_switch(plugin, monkeypatch):
+    p, _ = plugin
+    http = FilmHTTP()
+    monkeypatch.setattr(p, "_request", http)
+    on = _call(p, {"action": "captions", "captions": "on"})
+    assert on["ok"] is True and on["command"] == "captions"
+    assert ("POST", "/api/player/command", {"cmd": "captions", "value": 1}) in http.calls
+    off = _call(p, {"action": "captions", "captions": "off"})
+    assert off["ok"] is True
+    assert ("POST", "/api/player/command", {"cmd": "captions", "value": 0}) in http.calls
+    # Anything else is refused rather than guessed at.
+    for bad in ({}, {"captions": "maybe"}, {"captions": 2}):
+        payload = _call(p, {"action": "captions", **bad})
+        assert payload["ok"] is False, f"{bad} was accepted as a caption switch"
+
+
 def test_seek_carries_an_absolute_position(plugin, monkeypatch):
     p, _ = plugin
     http = FilmHTTP()

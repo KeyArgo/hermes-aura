@@ -14,6 +14,9 @@
  *     motion / accent-follow / window visual / theme controls, and Restore my
  *     theme,
  *   - an optional `THEMES_AREA` theme ('aura-live') the user must opt into,
+ *   - the same theme carrying the "Readable" choices (text size, face and ink) —
+ *     bigger, higher-contrast chat text over a film, changed by re-registering
+ *     the theme's typography/colour tokens, never by styling host markup,
  *   - "Visual behind the app": one fixed, click-through backdrop iframe at
  *     a single stylesheet that cleared the app's
  *     own big surfaces so the moving visual shows through. It appears only
@@ -114,6 +117,15 @@ const VIDEO_OPACITY_PRESETS = Object.freeze([25, 50, 75, 100])
 const VIDEO_VOLUME = 0.7
 // How solid the floating strip is over the film.
 const VIDEO_BAR_OPACITY = 0.72
+// The control strip is the user's to place: a floating pill they drag anywhere,
+// remembered in settings. Placement is never measured from the app's layout —
+// nothing here reads the composer, a text field or any other app node.
+const VIDEO_BAR_WIDTH = 380
+// Fallback height while the strip has no layout yet (first paint, headless tests).
+const VIDEO_BAR_NOMINAL_HEIGHT = 90
+// Gap to the window edge, and the app's status bar kept clear along the bottom.
+const VIDEO_BAR_MARGIN = 16
+const VIDEO_BAR_STATUS_BAR = 32
 // Backdrop opacity changes are debounced: music must hold >1.2 s to brighten
 // it and silence >4 s to dim it, or level flicker made the window pulse.
 const MUSIC_ON_DELAY_MS = 1200
@@ -140,8 +152,10 @@ const VIDEO_WINDOW_DEFAULT_SIZE = 'medium'
 
 const DEFAULT_SETTINGS = Object.freeze({
   enabled: true,
-  intensity: 0.5,
-  opacity: 0.35,
+  // First-run only: a quarter reaction and a quarter opacity, so a new install
+  // starts as a quiet wash behind the work. Saved settings keep their own values.
+  intensity: 0.25,
+  opacity: 0.25,
   behavior: 'balanced',
   moodReactive: true,
   accentPulse: false,
@@ -167,10 +181,19 @@ const DEFAULT_SETTINGS = Object.freeze({
   audioLabel: '',
   audioVolume: 0.7,
   videoMuted: false,
+  // [subtitles] Captions are off unless asked for: YouTube picks for itself
+  // otherwise. The language is the viewer's own choice from the list the
+  // player publishes; empty means "the machine's language, then English".
+  videoCaptions: false,
+  videoCaptionLang: '',
   // Highest audio_request seq this install has consumed. A new seq plays;
   // anything at or below it is history.
   audioRequestSeq: 0,
   videoBarOpacity: VIDEO_BAR_OPACITY,
+  // Where the user last dropped the control strip. null = the home corner
+  // (bottom-left, clear of the status bar).
+  videoBarX: null,
+  videoBarY: null,
   videoWindow: false,
   videoWindowSize: VIDEO_WINDOW_DEFAULT_SIZE,
   videoWindowCorner: VIDEO_WINDOW_DEFAULT_CORNER,
@@ -195,7 +218,60 @@ const DEFAULT_SETTINGS = Object.freeze({
   videoHiddenIds: [],
   // Per-film bookmarks: { [url]: { position, duration, at } }. This is what
   // makes an interrupted movie pick up where it stopped, days later.
-  videoPositions: {}
+  videoPositions: {},
+  // Readable: bigger, higher-contrast chat text over a film. The choices live
+  // in Aura's own contributed theme (typography + foreground tokens), so they
+  // are exactly what the host paints — never a stylesheet over app markup.
+  readable: false,
+  readableSize: 'l',
+  readableFont: 'atkinson',
+  readableInk: 'white'
+})
+
+// ---- Readable: chat text you can read over a film -------------------------
+// The host theme contract is the SUPPORTED door for how text looks
+// (DesktopTheme.typography + colors.foreground / mutedForeground). Every choice
+// below becomes a token on Aura's contributed theme; the host paints it. This
+// file never styles host markup to get there.
+const READABLE_SIZES = Object.freeze(['s', 'm', 'l', 'xl'])
+const READABLE_SIZE_LABELS = Object.freeze({ s: 'S', m: 'M', l: 'L', xl: 'XL' })
+// The host's own root size is 1rem (`--dt-base-size` in styles.css), so M is
+// exactly what the app already uses: turning Readable on never shrinks text.
+const READABLE_BASE_SIZES = Object.freeze({ s: '0.9375rem', m: '1rem', l: '1.125rem', xl: '1.25rem' })
+// More leading as the size grows: a bigger face on the same 1.5 crams the
+// lines together, which is the opposite of the point.
+const READABLE_LINE_HEIGHTS = Object.freeze({ s: '1.5', m: '1.6', l: '1.65', xl: '1.7' })
+const READABLE_FONTS = Object.freeze(['system', 'atkinson', 'inter', 'mono'])
+const READABLE_FONT_LABELS = Object.freeze({
+  system: 'System', atkinson: 'Atkinson Hyperlegible', inter: 'Inter', mono: 'Mono'
+})
+const READABLE_FONT_STACKS = Object.freeze({
+  // The host's own stack, so "System" means "what you already had".
+  system: 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+  // Designed by the Braille Institute for low vision: the reason this group exists.
+  atkinson: '"Atkinson Hyperlegible", "Atkinson Hyperlegible Next", system-ui, sans-serif',
+  inter: 'Inter, system-ui, sans-serif',
+  mono: 'ui-monospace, SFMono-Regular, Menlo, "DejaVu Sans Mono", monospace'
+})
+// A webfont may only come from a well-known font CDN — the host injects this
+// stylesheet itself and Aura fetches nothing. Both URLs below were fetched and
+// returned 200 with the right @font-face on 2026-11-13. System and Mono ship
+// with the machine, so they carry no URL at all.
+const READABLE_FONT_URLS = Object.freeze({
+  atkinson: 'https://fonts.bunny.net/css?family=atkinson-hyperlegible:400,700',
+  inter: 'https://fonts.bunny.net/css?family=inter:400,500,600,700'
+})
+const READABLE_INKS = Object.freeze(['white', 'warm', 'yellow'])
+const READABLE_INK_LABELS = Object.freeze({
+  white: 'White', warm: 'Warm', yellow: 'High-contrast yellow'
+})
+// [foreground, mutedForeground] per palette. The dark pair is the one that
+// matters over a film; the light pair keeps the same hue usable in daylight
+// instead of dropping white text on a pale surface.
+const READABLE_INK_COLORS = Object.freeze({
+  white: Object.freeze({ dark: ['#ffffff', '#d5d2e8'], light: ['#15131f', '#5b5572'] }),
+  warm: Object.freeze({ dark: ['#ffe9c8', '#d8c2a2'], light: ['#2a1f13', '#6b5a48'] }),
+  yellow: Object.freeze({ dark: ['#ffe600', '#f2d95a'], light: ['#3a3000', '#6b5a00'] })
 })
 
 // The plugin's own entry inside Settings ▸ Plugins (same shape the host's
@@ -242,7 +318,79 @@ const STARTER_SOURCES = Object.freeze([
   { label: 'Big Buck Bunny · Blender film', url: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' },
   { label: 'Ocean with David Attenborough · documentary', url: 'https://www.youtube.com/watch?v=ugJB5haR0SE' },
   { label: 'Wildlife Takeover: Chernobyl · documentary', url: 'https://www.youtube.com/watch?v=XaUNhqnpiOE' },
-  { label: 'Destination Wild: Wild Islands · documentary', url: 'https://www.youtube.com/watch?v=JMI_jWFLET0' }
+  { label: 'Destination Wild: Wild Islands · documentary', url: 'https://www.youtube.com/watch?v=JMI_jWFLET0' },
+  // The long, quiet half of the pack: things worth leaving running behind
+  // work. Every entry is the rights-holder's own upload and was checked with
+  // YouTube's oEmbed endpoint (200 = this video may be framed; 401/403/404 =
+  // it may not). Durations are the upload's own, from the same check.
+  //
+  // BBC Earth — the channel's own ambient oceanscape cuts, ten hours each.
+  { label: 'Open Ocean (10 h) · oceanscape', url: 'https://www.youtube.com/watch?v=AgpWX18dby4' },
+  { label: 'Deep Ocean (10 h) · oceanscape', url: 'https://www.youtube.com/watch?v=t_S_cN2re4g' },
+  { label: 'Frozen Seas (10 h) · oceanscape', url: 'https://www.youtube.com/watch?v=e4CQHzLAi8o' },
+  { label: 'Sea Forests (10 h) · oceanscape', url: 'https://www.youtube.com/watch?v=PC1XCR8r8sY' },
+  { label: 'Life Beneath the Waves (3 h) · documentary', url: 'https://www.youtube.com/watch?v=lbrYvBRs-r4' },
+  // BBC Earth Science — eight hours of its own space footage.
+  { label: 'Space & Our Universe (8 h) · documentary', url: 'https://www.youtube.com/watch?v=ZR1HI21eSM0' },
+  // NASA — NASA+ original documentary; NASA media is public domain.
+  { label: 'Cosmic Dawn · NASA documentary', url: 'https://www.youtube.com/watch?v=uSMGENDH_QI' },
+  // NASA Goddard — the Sun in ultra-HD, public-domain NASA footage.
+  { label: 'Thermonuclear Art: the Sun · film', url: 'https://www.youtube.com/watch?v=6tmbeLTHC_0' },
+  // Seán Doran — real-time ISS remaster, NASA imagery credited by the uploader.
+  { label: 'Ambient Earth · ISS remaster', url: 'https://www.youtube.com/watch?v=alJMoaKpV_E' },
+  // Monterey Bay Aquarium — the aquarium's own tank and kelp-cam recordings.
+  { label: 'Tropical Coral Reef (12 h) · aquarium', url: 'https://www.youtube.com/watch?v=g3PWYH1P7Oo' },
+  { label: 'Kelp Forest Cam (5 h) · aquarium', url: 'https://www.youtube.com/watch?v=uS-GSmzcWOk' },
+  // Blender Foundation / Blender Studio — open movies, CC-BY, studio upload.
+  { label: 'Cosmos Laundromat · Blender film', url: 'https://www.youtube.com/watch?v=Y-rmzh0PI3c' },
+  { label: 'Sprite Fright · Blender film', url: 'https://www.youtube.com/watch?v=_cMxraX_5RE' },
+  { label: 'Spring · Blender film', url: 'https://www.youtube.com/watch?v=WhWc3b3KhnY' },
+  // Rail Relaxation / RailCowGirl — cab views filmed and uploaded by them.
+  { label: 'Arlberg Railway (2 h) · cab ride', url: 'https://www.youtube.com/watch?v=hMw2SaXMR-U' },
+  { label: 'Marseille to Briançon (4 h) · cab ride', url: 'https://www.youtube.com/watch?v=64xeuXmv4MA' },
+  { label: 'Winter Night, Bergen Line (6 h) · cab ride', url: 'https://www.youtube.com/watch?v=iNRNgfS1p2M' },
+  // Prowalk Tours / WALKS and the CITY — their own walking footage, no talk.
+  { label: 'Rome on Foot (7 h) · city walk', url: 'https://www.youtube.com/watch?v=--v8TDp92Q0' },
+  { label: 'Manhattan After Dark (12 h) · city walk', url: 'https://www.youtube.com/watch?v=6y5CqAHxGX0' },
+  // Aerial Earth — drone aerials uploaded silent, so nothing competes with work.
+  { label: 'Forests from Above (10 h) · aerial', url: 'https://www.youtube.com/watch?v=EColTNIbOko' },
+  // Fireplace 10 Hours / Relaxing White Noise — their own fire and storm beds.
+  { label: 'Fireplace (10 h) · ambience', url: 'https://www.youtube.com/watch?v=cdKop6aixVE' },
+  { label: 'Thunder & Rain (10 h) · ambience', url: 'https://www.youtube.com/watch?v=nDq6TstdEi8' },
+  // Internet Archive — public-domain features, served as direct mp4 (checked:
+  // 200 with Content-Type video/mp4), so no embed rules apply at all.
+  { label: 'Nanook of the North (1922) · film', url: 'https://archive.org/download/nanookOfTheNorth1922/NanookOfTheNorth1922.mp4' },
+  { label: 'The General (1926) · film', url: 'https://archive.org/download/TheGeneralBusterKeaton1926/TheGeneral2.mp4' },
+  // Added by hand 2026-11-13: each checked with oEmbed (200) and yt-dlp
+  // (playable_in_embed true, age_limit 0). Official channel uploads or
+  // public-domain films only.
+  // BBC Earth — official uploads; Blue Planet II's deep-sea hour leads.
+  { label: 'Blue Planet II: The Deep (67 min) · documentary', url: 'https://www.youtube.com/watch?v=EF8C4v7JIbA' },
+  { label: 'Blue Planet II in 4K (67 min) · documentary', url: 'https://www.youtube.com/watch?v=fPzadO3WXdk' },
+  { label: 'Wild China (98 min) · documentary', url: 'https://www.youtube.com/watch?v=2PjosQxTv1A' },
+  { label: 'Wildlife with Attenborough (4 h) · documentary', url: 'https://www.youtube.com/watch?v=asaBsrIJ25c' },
+  { label: 'The Wild Side of Our Planet (3 h) · documentary', url: 'https://www.youtube.com/watch?v=E5fofNAbm78' },
+  // Netflix — released Our Planet free on its own YouTube channel.
+  { label: 'Our Planet: High Seas (49 min) · documentary', url: 'https://www.youtube.com/watch?v=9FqwhW0B3tY' },
+  { label: 'Our Planet: Forests (48 min) · documentary', url: 'https://www.youtube.com/watch?v=JkaxUblCGz0' },
+  { label: 'Our Planet: Jungles (51 min) · documentary', url: 'https://www.youtube.com/watch?v=um2Q9aUecy0' },
+  { label: 'Our Planet: Fresh Water (49 min) · documentary', url: 'https://www.youtube.com/watch?v=R2DU85qLfJQ' },
+  { label: 'Our Planet: Coastal Seas (50 min) · documentary', url: 'https://www.youtube.com/watch?v=r9PeYPHdpNo' },
+  // National Geographic / HISTORY — official uploads.
+  { label: 'Giants of the Deep (38 min) · documentary', url: 'https://www.youtube.com/watch?v=OwsSVq1AmVE' },
+  { label: 'America\'s National Parks (3.7 h) · documentary', url: 'https://www.youtube.com/watch?v=r10g5gERB04' },
+  { label: 'Inside the Mariana Trench (44 min) · documentary', url: 'https://www.youtube.com/watch?v=ZC0DxdjTjT8' },
+  // HOME (2009) — released free by its producers for anyone to watch.
+  { label: 'HOME (93 min) · documentary', url: 'https://www.youtube.com/watch?v=QjhX5aOYyJs' },
+  // Sen — its own 24/7 live 4K camera on the ISS.
+  { label: 'Earth from the ISS (live) · space', url: 'https://www.youtube.com/watch?v=fO9e9jnhYK8' },
+  // NRK released Bergensbanen minute by minute under CC BY.
+  { label: 'Bergen to Oslo by train (7 h) · cab ride', url: 'https://www.youtube.com/watch?v=fCD2Rs_wUtM' },
+  // Public-domain features.
+  { label: 'Metropolis (1927) · film', url: 'https://www.youtube.com/watch?v=enwB5zZfaV4' },
+  { label: 'His Girl Friday (1940) · film', url: 'https://www.youtube.com/watch?v=kmYcT5gT6a4' },
+  { label: 'Charade (1963) · film', url: 'https://www.youtube.com/watch?v=4G1PNO41Di8' },
+  { label: 'The Last Man on Earth (1964) · film', url: 'https://www.youtube.com/watch?v=Nn1zUV_zQMQ' }
 ])
 
 // Sites that refuse to be framed: their web apps send X-Frame-Options /
@@ -256,12 +404,20 @@ const FRAME_BLOCKED_HOSTS = Object.freeze([
 ])
 const MEDIA_FILE_RE = /\.(mp4|webm|ogg|ogv|m4v|mov|m3u8)(?:[?#]|$)/i
 
-// Transport state reported up by web/player.html at <= 4 Hz.
+// Transport state reported up by web/player.html at <= 4 Hz. `author` is the
+// channel the YouTube player reports through getVideoData(); it is empty for a
+// direct file and for a source the player has not described yet.
 const EMPTY_VIDEO = Object.freeze({
   kind: '', playing: false, position: 0, duration: 0, muted: true,
-  title: '', controllable: false, reportedAt: 0
+  title: '', author: '', controllable: false, reportedAt: 0,
+  // [subtitles] What the player says about its captions: {on, lang, current,
+  // known, tracks:[{code, name}]}. null until it has said anything.
+  captions: null
 })
 const VIDEO_URL_MAX = 2048
+// [subtitles] A caption language tag the player (and YouTube) will accept.
+// Anything else is dropped: it ends up in a query string and a third party.
+const CAPTION_LANG_RE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/
 
 const BEHAVIORS = ['calm', 'balanced', 'intense']
 const BEHAVIOR_LABELS = { calm: 'Calm', balanced: 'Balanced', intense: 'Intense' }
@@ -432,6 +588,11 @@ const $build = atom(null)
 // is an Aura *server* older than this pane (Hermes keeps the old Python module in
 // memory across an update). The pane says so instead of looking broken.
 const $staleServer = atom(false)
+// The shelf catalogue (web/catalog.json via /catalog). One fetch per mount;
+// `loaded` is false until that fetch has succeeded, so a failed request is
+// retried on the next visit instead of being remembered as "no catalogue".
+const $catalog = atom({ loaded: false, error: '', items: [] })
+let catalogRequest = null
 let pulseIndex = 0
 
 // --------------------------------------------------------------- persistence
@@ -577,6 +738,49 @@ function shortLabel(url) {
   return file && file !== host ? host + ' / ' + decoded.slice(0, 40) : host
 }
 
+/** The title Aura already stores for a source URL, or ''. Sources the user
+ *  added, saved playlists, the starter pack and recents all carry a label;
+ *  shortLabel() is the last resort. A source picked from the starter pack also
+ *  lands in recents with the generic shortLabel, so a real label always wins.
+ *  Used so the page can name a film the instant a source is picked, before the
+ *  player has reported anything. */
+function storedSourceTitle(url) {
+  const clean = typeof url === 'string' ? url.trim() : ''
+  if (!clean) return ''
+  const generic = shortLabel(clean)
+  const settings = $settings.get()
+  const lists = [
+    ...(Array.isArray(settings.videoSources) ? settings.videoSources : []),
+    ...(Array.isArray(settings.videoPlaylists) ? settings.videoPlaylists : []),
+    ...STARTER_SOURCES,
+    ...(Array.isArray(settings.videoRecent) ? settings.videoRecent : [])
+  ]
+  for (const item of lists) {
+    if (!item || item.url !== clean) continue
+    const label = typeof item.label === 'string' ? item.label.trim() : ''
+    if (label && label !== generic) return label
+  }
+  return generic
+}
+
+/** What is playing, for the page and the status bar: the player's own title and
+ *  channel when it has reported them (getVideoData() through the existing
+ *  backdrop bridge), else the title already stored for the current source.
+ *  Nothing here fetches, and no URL leaves the app. */
+function nowPlaying(settings, video) {
+  const state = video && typeof video === 'object' ? video : {}
+  const played = typeof state.title === 'string' ? state.title.trim() : ''
+  const channel = typeof state.author === 'string' ? state.author.trim() : ''
+  const url = settings && typeof settings.videoUrl === 'string' ? settings.videoUrl.trim() : ''
+  return {
+    title: played || storedSourceTitle(url),
+    // A stored source label says nothing about who made it, so a channel only
+    // travels with the player's own title.
+    channel: played ? channel : '',
+    url
+  }
+}
+
 function readSettings(ctx) {
   const out = { ...DEFAULT_SETTINGS }
   let raw = null
@@ -612,6 +816,10 @@ function readSettings(ctx) {
     if (typeof raw.videoOpacityAuto === 'boolean') out.videoOpacityAuto = raw.videoOpacityAuto
     if (Number.isFinite(raw.videoVolume)) out.videoVolume = clamp01(raw.videoVolume)
     if (typeof raw.videoBarOpacity === 'number' || Number.isFinite(raw.videoBarOpacity)) out.videoBarOpacity = clamp01(raw.videoBarOpacity)
+    // The strip's own position, in CSS px. Clamped to the viewport when used,
+    // so a saved point from a wider window is never off screen.
+    if (Number.isFinite(raw.videoBarX)) out.videoBarX = Math.round(raw.videoBarX)
+    if (Number.isFinite(raw.videoBarY)) out.videoBarY = Math.round(raw.videoBarY)
     if (typeof raw.videoWindow === 'boolean') out.videoWindow = raw.videoWindow
     if (typeof raw.videoWindowSize === 'string' && Object.prototype.hasOwnProperty.call(VIDEO_WINDOW_SIZES, raw.videoWindowSize)) {
       out.videoWindowSize = raw.videoWindowSize
@@ -623,14 +831,32 @@ function readSettings(ctx) {
     if (Number.isFinite(raw.videoWindowX)) out.videoWindowX = Math.round(raw.videoWindowX)
     if (Number.isFinite(raw.videoWindowY)) out.videoWindowY = Math.round(raw.videoWindowY)
     if (typeof raw.videoClosed === 'boolean') out.videoClosed = raw.videoClosed
+    // [subtitles] A boolean and a language tag, each validated on its own so a
+    // stale or hand-edited config can never reach the embed query.
+    if (typeof raw.videoCaptions === 'boolean') out.videoCaptions = raw.videoCaptions
+    if (typeof raw.videoCaptionLang === 'string' && CAPTION_LANG_RE.test(raw.videoCaptionLang.trim())) {
+      out.videoCaptionLang = raw.videoCaptionLang.trim()
+    }
     if (typeof raw.panelEnabled === 'boolean') out.panelEnabled = raw.panelEnabled
     if (typeof raw.panelCollapsed === 'boolean') out.panelCollapsed = raw.panelCollapsed
     if (typeof raw.panelSettingsOpen === 'boolean') out.panelSettingsOpen = raw.panelSettingsOpen
+    // Readable: each choice is validated against its own list, so a stale
+    // storage value can never become a token the host cannot paint.
+    if (typeof raw.readable === 'boolean') out.readable = raw.readable
+    if (typeof raw.readableSize === 'string' && READABLE_SIZES.includes(raw.readableSize)) {
+      out.readableSize = raw.readableSize
+    }
+    if (typeof raw.readableFont === 'string' && READABLE_FONTS.includes(raw.readableFont)) {
+      out.readableFont = raw.readableFont
+    }
+    if (typeof raw.readableInk === 'string' && READABLE_INKS.includes(raw.readableInk)) {
+      out.readableInk = raw.readableInk
+    }
     out.videoSources = readSourceList(raw.videoSources)
     out.videoRecent = readSourceList(raw.videoRecent)
     out.videoPlaylists = readSourceList(raw.videoPlaylists)
     out.videoHiddenStarters = Array.isArray(raw.videoHiddenStarters)
-      ? raw.videoHiddenStarters.filter(item => typeof item === 'string').slice(0, 40)
+      ? raw.videoHiddenStarters.filter(item => typeof item === 'string').slice(0, 1000)
       : []
     out.videoHiddenIds = Array.isArray(raw.videoHiddenIds)
       ? raw.videoHiddenIds.filter(item => typeof item === 'string').slice(0, 500)
@@ -665,16 +891,20 @@ function setError(message) {
   setLive({ error: typeof message === 'string' ? message : '' })
 }
 
-// Optional whole-window backdrop, enabled only by the user. In "aura" mode the
-// iframe points at the visualizer page on the local server (with its own
+// Optional whole-window page, enabled only by the user. In "aura" mode the
+// frame points at the visualizer page on the local server (with its own
 // `overlay=1` / `reduced-motion=1` switches). In "video" mode it points at
 // web/player.html on the same origin, carrying the user's URL in `?url=`.
 // The server URL is absolute and tokenised, so the origin must be taken from
 // it — a bare `/player.html` would resolve against the Hermes app's origin.
-function backdropSrc(url) {
+// `mode` overrides the stored backdrop mode for the audio-only page (see
+// filmPageMode): the visualiser is what hosts the audio channel when no film is
+// on screen.
+function backdropSrc(url, mode) {
   if (!url) return ''
   const settings = $settings.get()
-  if (settings.backdropMode === 'video') {
+  const pageMode = mode || settings.backdropMode
+  if (pageMode === 'video') {
     const base = url.split('?')[0].replace(/\/+$/, '')
     const videoUrl = typeof settings.videoUrl === 'string' ? settings.videoUrl.trim() : ''
     const urlParams = new URL(url, 'http://dummy.test').searchParams
@@ -693,6 +923,13 @@ function backdropSrc(url) {
     // [listen lane] A muted film must come back muted: the music channel is
     // what the user hears while it is.
     if (settings.videoMuted) query.append('mute', '1')
+    // [subtitles] The page asks the embed for captions only when the viewer
+    // wants them, and in the language they chose (the page falls back to the
+    // machine's own language when none is set).
+    if (settings.videoCaptions) query.append('captions', '1')
+    if (settings.videoCaptions && CAPTION_LANG_RE.test(settings.videoCaptionLang || '')) {
+      query.append('cc_lang', settings.videoCaptionLang)
+    }
     return `${base}/player.html?${query.toString()}`
   }
   const params = ['overlay=1']
@@ -767,10 +1004,10 @@ function showEligible() {
   // backdrop/theme/accent paths below require `enabled`.
   // The full page is the same kind of surface, for the same reason.
   const pageFilm = pageVisible() && Boolean(settings.videoUrl) && !settings.videoClosed
-  // [finding 4] The audio channel lives inside this same backdrop document.
-  // Without this a default install (window visual off, no theme) mounted no
-  // page, so playAudioSource posted into nothing and "playing" was a lie.
-  const audio = Boolean(settings.audioUrl)
+  // [finding 4] The audio channel lives inside this same page. Without this a
+  // default install (window visual off, no theme) mounted nothing, so
+  // playAudioSource posted into nothing and "playing" was a lie.
+  const audio = audioChannelLive()
   // A pane or page film is Aura's own surface and needs no overlay permission;
   // everything else is the overlay and does.
   const overlay = Boolean(audio || knownTheme === THEME_NAME || settings.windowVisual)
@@ -864,8 +1101,10 @@ function mountBackdrop(url, opacity) {
   // The frame is a SandboxedFrame rendered by React inside Aura's own surfaces
   // (see AuraFilm). There is nothing to create and nothing to append: this
   // function only remembers what the frame should show, so a source change
-  // re-points the one element instead of stacking a second player.
-  const src = backdropSrc(url)
+  // re-points the one element instead of stacking a second player. filmSrc() is
+  // the same page the element will load, audio-only fallback included.
+  const src = filmSrc()
+  void url
   if (!src) return
   if (backdropKey !== pageKey()) {
     backdropUrl = src
@@ -907,19 +1146,41 @@ function returnFocusToComposer() {
  */
 let filmFrameOwner = ''
 
+/** Does the audio channel have a source of its own? The music/radio channel
+ *  lives in the page's `web/audio.js`, so while it has a source SOMETHING has to
+ *  be framed for it to play in — even when the film is closed. */
+function audioChannelLive() {
+  const settings = $settings.get()
+  return Boolean(String(settings.audioUrl || '').trim())
+}
+
+/** Which page the one frame shows, or '' when nothing may be framed at all.
+ *
+ *  Aura mode always shows the visualiser. Video mode shows the film while it is
+ *  open, and falls back to the visualiser while it is closed but the music is
+ *  not: `player.html` with no film would be a dead black box, while the
+ *  visualiser page hosts the same audio channel AND draws the beat.
+ */
+function filmPageMode() {
+  const settings = $settings.get()
+  if (settings.backdropMode !== 'video') return 'aura'
+  const videoUrl = String(settings.videoUrl || '').trim()
+  if (videoUrl && settings.videoClosed !== true) return 'video'
+  return audioChannelLive() ? 'aura' : ''
+}
+
 /** Which surface owns the one player right now, or '' when none may show it.
  *
  *  Precedence: the OS pop-out window wins (one film, one surface), then the
  *  page while it is open, then the docked pane. Nothing renders while the film
- *  is closed, while no local server is up (no token, no page), or when the mode
- *  wants a source the user has not chosen.
+ *  is closed AND no music needs a page, while no local server is up (no token,
+ *  no page), or when the mode wants a source the user has not chosen.
  */
 function filmOwner() {
   const settings = $settings.get()
-  if (settings.videoClosed === true) return ''
   if (desktopOwned || desktopPending) return ''
   if (!liveUrl()) return ''
-  if (settings.backdropMode === 'video' && !String(settings.videoUrl || '').trim()) return ''
+  if (!filmPageMode()) return ''
   // The floating watch window is a surface the user opened on purpose: it takes
   // the film with it and parks the pane/page (one film, one surface).
   if (settings.videoWindow === true) return 'window'
@@ -933,15 +1194,11 @@ function filmOwner() {
  *  film's own link: `backdropSrc` turns the server url into
  *  `<origin>/player.html?url=…&token=…`. */
 function filmSrc() {
-  const settings = $settings.get()
   const base = liveUrl()
   if (!base) return ''
-  if (settings.backdropMode === 'video') {
-    if (settings.videoClosed === true) return ''
-    if (!String(settings.videoUrl || '').trim()) return ''
-    return backdropSrc(base)
-  }
-  return backdropSrc(base)
+  const mode = filmPageMode()
+  if (!mode) return ''
+  return backdropSrc(base, mode)
 }
 
 function AuraFilm({ surface, style }) {
@@ -1065,15 +1322,19 @@ function AuraWatchWindow() {
   })
 }
 
-/** Opacity for the film surface: the video's own transparency, or the Aura
- *  backdrop's for the visualiser. Never above the user's saved setting. */
+/** Opacity for the film surface: the video player's own transparency. The
+ *  visualiser needs none — its page applies the user's opacity itself. */
 function filmOpacity(settings, video) {
-  if (settings.backdropMode === 'video') {
-    const manual = Number(video && video.opacity)
-    if (Number.isFinite(manual)) return manual
-    return Number(settings.videoOpacity) || 1
-  }
-  return Number(settings.opacity) || 0.5
+  // The visualiser page owns its own opacity, and it is the page in aura mode
+  // and in the audio-only fallback alike (filmPageMode). It dims the canvas and
+  // compensates its scrim from the same setting (CONTRACT.md §9.2). Dimming the
+  // frame as well applied the setting twice — 25% drew 6% — and dimmed the page
+  // chrome the contract keeps legible. The frame carries only the fade
+  // machine's factor.
+  if (filmPageMode() !== 'video') return 1
+  const manual = Number(video && video.opacity)
+  if (Number.isFinite(manual)) return manual
+  return Number(settings.videoOpacity) || 1
 }
 
 /** The video-URL box: one controlled draft, one apply path.
@@ -1432,6 +1693,10 @@ let desktopOwned = false
 // until we know whether a real window opened ("one or the other").
 let desktopPending = false
 let playerCursor = null
+// [savelist lane] Its own cursor for save/remove, so the library follows the
+// agent even while the OS window holds playback and this half stops polling
+// for transport commands.
+let libraryCursor = null
 let playerReportAt = 0
 let playerReportKey = ''
 let lastDesktopPlayer = null
@@ -1453,9 +1718,21 @@ async function syncPlayerOwnership() {
       postToBackdrop({ cmd: 'pause' })
       if (player.desktop === true) {
         lastDesktopPlayer = player
-        $video.set({ ...$video.get(), ...player, reportedAt: Date.now() })
+        // [subtitles] The window is the player while it is open: its caption
+        // report is what is on screen, so the app's switch follows it instead
+        // of disagreeing with the picture.
+        const windowCaptions = typeof player.captions === 'boolean' ? player.captions : null
+        $video.set({ ...$video.get(), ...player, captions: $video.get().captions, reportedAt: Date.now() })
+        if (windowCaptions !== null && windowCaptions !== $settings.get().videoCaptions) {
+          writeSettings({ videoCaptions: windowCaptions })
+          syncVideoBar(true)
+          syncPanel(true)
+        }
       }
       playerCursor = null
+      // The saved library is this half's own settings, so save/remove still
+      // land while the OS window owns the picture.
+      await applyLibraryCommands()
       return
     }
     if (desktopOwned) {
@@ -1467,15 +1744,22 @@ async function syncPlayerOwnership() {
       playerCursor = null
     }
     if (playerCursor !== null && Number.isSafeInteger(snapshot.seq) && snapshot.seq < playerCursor) playerCursor = null
+    // Library first, so this tick's report already describes the list after a
+    // save/remove the agent queued.
+    await applyLibraryCommands()
     const settings = $settings.get()
     const video = $video.get()
     const report = {
       desktop: false, url: settings.videoUrl || '', kind: video.kind || '',
       title: video.title || '', videoId: video.videoId || '',
       playing: video.playing === true, position: Number(video.position) || 0,
-      duration: Number(video.duration) || 0, volume: Number(settings.videoVolume) || 0
+      duration: Number(video.duration) || 0, volume: Number(settings.videoVolume) || 0,
+      // [savelist lane] What the owner has saved, so aura_watch action=list can
+      // answer "what's on my list?" with the real list.
+      library: libraryReport()
     }
-    const key = JSON.stringify([report.url, report.kind, report.title, report.videoId, report.playing, report.volume])
+    const key = JSON.stringify([report.url, report.kind, report.title, report.videoId,
+      report.playing, report.volume, report.library])
     if (Date.now() - playerReportAt >= 1000 || key !== playerReportKey) {
       await ctxRef.rest('/player/report', { method: 'POST', body: report, timeoutMs: 3000 })
       playerReportAt = Date.now()
@@ -1487,6 +1771,16 @@ async function syncPlayerOwnership() {
     for (const command of payload.commands) {
       if (!command || !Number.isSafeInteger(command.seq) || command.seq <= playerCursor) continue
       playerCursor = command.seq
+      // Library commands belong to applyLibraryCommands() below: they edit
+      // settings, not the player, and keeping them out of this chain is what
+      // stops a save from being mistaken for a transport verb.
+      if (command.cmd === 'save' || command.cmd === 'remove') continue
+      // [subtitles] The CC switch is the owner's choice, not just a verb for
+      // the page: applying it through the one writer is what remembers it.
+      if (command.cmd === 'captions') {
+        setVideoCaptions(command.value === 1 || command.value === true, command.lang)
+        continue
+      }
       if (command.cmd === 'load') await playOnPage(command.url, command.label)
       else if (command.cmd === 'watch_window') {
         if (command.url) await playOnPage(command.url, command.label)
@@ -1518,14 +1812,41 @@ function restoreDesktopPlayback(player) {
 }
 let handoffPlayback = null
 
-/** Labels for the two pop-out controls. Each one names its own surface, and
- *  each becomes "Bring back" while ITS surface holds the film. */
-function inlineLabel() {
-  return videoWindowOn() ? 'Bring back' : 'Pop out'
+/** The two pop-out controls, in the same words on every surface (quick menu,
+ *  right panel, Aura page, control strip).
+ *
+ *  "Frame in Hermes" is a toggle: its pressed state says the in-app frame holds
+ *  the film. "Pop out to desktop" becomes "Bring back" only while the OS window
+ *  holds it — one control per surface, never one button doing both jobs. */
+const FRAME_LABEL = 'Frame in Hermes'
+const POPOUT_LABEL = 'Pop out to desktop'
+const BRING_BACK_LABEL = 'Bring back'
+
+// One style for the two pop-out buttons wherever they are laid out side by
+// side: equal widths, allowed to shrink, and their own text clipped instead of
+// the box's edge.
+const POPOUT_BUTTON_STYLE = Object.freeze({
+  flex: '1 1 0',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap'
+})
+
+function frameLabel() {
+  return FRAME_LABEL
 }
 
-function ownLabel() {
-  return desktopOwned || desktopPending ? 'Bring back' : 'Own window'
+function framePressed() {
+  return videoWindowOn() === true
+}
+
+function popoutLabel() {
+  return desktopOwned || desktopPending ? BRING_BACK_LABEL : POPOUT_LABEL
+}
+
+function popoutPressed() {
+  return desktopOwned || desktopPending
 }
 
 /** "Pop out": the floating watch window INSIDE Hermes, and nothing else.
@@ -1622,8 +1943,12 @@ async function openDesktopWindow() {
     position: Number.isFinite(video.position) ? Math.max(0, video.position) : 0,
     label: typeof video.title === 'string' ? video.title : '',
     videoId: typeof video.videoId === 'string' ? video.videoId : '',
-    playing: video.playing === true
+    playing: video.playing === true,
+    // [subtitles] The OS window is a player surface: it opens with the same
+    // caption choice the in-app player had.
+    captions: settings.videoCaptions === true
   }
+  if (CAPTION_LANG_RE.test(settings.videoCaptionLang || '')) body.lang = settings.videoCaptionLang
   try {
     const result = await ctxRef.rest('/window/open', { method: 'POST', body, timeoutMs: 15000 })
     if (result && result.ok === true) {
@@ -1932,11 +2257,15 @@ function auraShowingSomething() {
 function syncThemeForActivity() {
   const settings = $settings.get()
   if (!settings.themeOptIn) return
-  if (settings.themeIdleRestore !== false && !auraShowingSomething()) {
+  // Readable is a readability setting, not a skin. Handing the user's theme
+  // back whenever nothing is showing would undo the larger, higher-contrast
+  // text the moment the film ends — exactly when they go back to reading chat.
+  const readable = settings.readable === true
+  if (!readable && settings.themeIdleRestore !== false && !auraShowingSomething()) {
     restoreTheme()
     return
   }
-  if (auraShowingSomething() && !$themeApplied.get()) applyThemeIfOptedIn()
+  if ((readable || auraShowingSomething()) && !$themeApplied.get()) applyThemeIfOptedIn()
 }
 
 /** The probe reports the active skin. A user skin change drops our retint so
@@ -1964,8 +2293,13 @@ function onThemeName(name) {
 }
 
 function setThemeOptIn(on) {
-  writeSettings({ themeOptIn: Boolean(on) })
-  if (on) applyThemeIfOptedIn()
+  // Turning Aura's theme off turns Readable off with it: the readable text is
+  // that theme's typography, so a switch that says "off" while the text stays
+  // changed would be lying. Switching it on leaves Readable exactly as it was.
+  const optIn = Boolean(on)
+  writeSettings(optIn ? { themeOptIn: true } : { themeOptIn: false, readable: false })
+  contributeAuraTheme()
+  if (optIn) applyThemeIfOptedIn()
   else restoreTheme()
 }
 
@@ -1988,7 +2322,8 @@ async function setWindowVisual(on) {
  *  removes every effect Aura may have applied. The plugin stays mounted. */
 async function restoreMyTheme() {
   if (!ctxRef || disposed) return
-  writeSettings({ accentPulse: false, themeOptIn: false, windowVisual: false })
+  writeSettings({ accentPulse: false, themeOptIn: false, windowVisual: false, readable: false })
+  contributeAuraTheme()
   resetShow()
   removeBackdrop()
   clearAccent(true)
@@ -2099,6 +2434,15 @@ async function setVideoUrl(next) {
   saveCurrentPosition()
   if (!skippingEpisode) autoSkipCount = 0
   writeSettings({ videoUrl })
+  // A new source has a new title and channel: drop the last film's now, so the
+  // page can never label the next film with the previous one's name while the
+  // new player is still starting. The volume is the user's, not the film's.
+  const keptVolume = Number($video.get().volume)
+  $video.set({
+    ...EMPTY_VIDEO,
+    ...(Number.isFinite(keptVolume) ? { volume: keptVolume } : {}),
+    reportedAt: Date.now()
+  })
   resetShow()
   removeBackdrop()
   if ($settings.get().showWhen === 'always') syncBackdrop()
@@ -2404,6 +2748,91 @@ function addVideoSource(url, name) {
   return true
 }
 
+/** The owner's saved library as the player report carries it: saved playlists
+ *  first, then saved films, each with the label the Library shows. One entry
+ *  per url. aura_watch action=list reads this straight back, so the agent
+ *  answers with the owner's real list instead of guessing at it. */
+function libraryReport() {
+  const settings = $settings.get()
+  const rows = (list, kind) => (Array.isArray(list) ? list : [])
+    .map(item => {
+      const url = item && typeof item.url === 'string' ? item.url.trim() : ''
+      if (!url) return null
+      const label = String((item && item.label) || shortLabel(url)).trim().slice(0, 120)
+      return { label: label || shortLabel(url), url: url.slice(0, VIDEO_URL_MAX), kind }
+    })
+    .filter(Boolean)
+  const seen = new Set()
+  return [...rows(settings.videoPlaylists, 'playlist'), ...rows(settings.videoSources, 'film')]
+    .filter(row => (seen.has(row.url) ? false : seen.add(row.url)))
+}
+
+/** The one saved source whose title is *name* (ignoring case), or ''. Two
+ *  matches answer '' — a wrong film must never be removed on a guess. */
+function savedSourceByLabel(name) {
+  const wanted = String(name || '').trim().toLowerCase()
+  if (!wanted) return ''
+  const settings = $settings.get()
+  const lists = [
+    ...(Array.isArray(settings.videoPlaylists) ? settings.videoPlaylists : []),
+    ...(Array.isArray(settings.videoSources) ? settings.videoSources : [])
+  ]
+  const urls = [...new Set(lists
+    .filter(item => item && String(item.label || '').trim().toLowerCase() === wanted)
+    .map(item => String(item.url || '').trim())
+    .filter(Boolean))]
+  return urls.length === 1 ? urls[0] : ''
+}
+
+/** Apply one save/remove command from Hermes through the same helpers the
+ *  Library's Add/Remove buttons use, so the page updates live and there is a
+ *  single writer of the saved lists. Returns true when the command was ours. */
+function applyLibraryCommand(command) {
+  if (!command || typeof command.cmd !== 'string') return false
+  if (command.cmd === 'save') {
+    const url = String(command.url || '').trim()
+    if (!url) return false
+    // addVideoSource replaces a same-url entry instead of adding a second one,
+    // so a repeated save is a no-op on the list itself.
+    addVideoSource(url, command.label)
+    note('Saved to your Aura library', 4000)
+    return true
+  }
+  if (command.cmd === 'remove') {
+    const url = String(command.url || '').trim() || savedSourceByLabel(command.label)
+    if (!url) {
+      note('That film is not in your Aura library', 4000)
+      return true
+    }
+    removeVideoSource(url)
+    note('Removed from your Aura library', 4000)
+    return true
+  }
+  return false
+}
+
+/** Poll the queue for save/remove only. Kept apart from the transport poll so
+ *  the library still follows the agent while the OS window owns playback (that
+ *  page has no library of its own and ignores these commands). */
+async function applyLibraryCommands() {
+  if (!ctxRef || disposed) return
+  try {
+    const payload = await ctxRef.rest(
+      '/player/commands?after=' + (libraryCursor === null ? 0 : libraryCursor),
+      { timeoutMs: 3000 })
+    if (!payload || payload.ok !== true || !Array.isArray(payload.commands)) return
+    if (libraryCursor === null) {
+      libraryCursor = Number.isSafeInteger(payload.head_seq) ? payload.head_seq : 0
+      return
+    }
+    for (const command of payload.commands) {
+      if (!command || !Number.isSafeInteger(command.seq) || command.seq <= libraryCursor) continue
+      libraryCursor = command.seq
+      applyLibraryCommand(command)
+    }
+  } catch { /* offline poll: the next tick retries, nothing is claimed */ }
+}
+
 /** Rename a saved source everywhere it is remembered (playlists, films,
  *  recents) so no list keeps calling it by the old name. */
 function renameVideoSource(url, name) {
@@ -2616,6 +3045,104 @@ function setVideoMuted(muted) {
   postToBackdrop({ cmd: videoMuted ? 'mute' : 'unmute' })
   $video.set({ ...$video.get(), muted: videoMuted, reportedAt: Date.now() })
   syncVideoBar(true)
+}
+
+// [subtitles] Captions: one switch, one language list ----------------------
+// The player owns the truth about WHICH tracks a video has (YouTube publishes
+// them; a direct file carries them as textTracks). The settings own the
+// choice. A CC button reads both, and it is disabled only when the player has
+// actually said "no tracks" — never because the answer has not arrived yet.
+
+/** What the player last said about this video's captions, made safe. */
+function captionInfo() {
+  const settings = $settings.get()
+  const reported = $video.get().captions
+  const tracks = reported && Array.isArray(reported.tracks)
+    ? reported.tracks
+      .filter(track => track && typeof track.code === 'string' && CAPTION_LANG_RE.test(track.code))
+      .slice(0, 60)
+      .map(track => ({
+        code: track.code,
+        name: typeof track.name === 'string' && track.name ? track.name.slice(0, 80) : track.code
+      }))
+    : []
+  const known = Boolean(reported && reported.known === true)
+  return {
+    on: settings.videoCaptions === true,
+    lang: settings.videoCaptionLang || '',
+    current: reported && typeof reported.current === 'string' ? reported.current : '',
+    tracks,
+    known,
+    // A video without captions is still "available" until the player says
+    // otherwise: a button that flickers to disabled on every load is worse
+    // than one that says so once it knows.
+    available: !known || tracks.length > 0
+  }
+}
+
+/** What the CC button will do — or why it cannot. */
+function captionTooltip(info) {
+  const detail = info || captionInfo()
+  if (!detail.available) return 'No subtitles for this video'
+  return detail.on ? 'Subtitles on — click to turn off' : 'Show subtitles (CC)'
+}
+
+/** Send the caption switch to whichever player owns the picture. An empty
+ *  language means "the page decides": it has the tracks and the machine's
+ *  language, and only it knows which track to show. */
+function sendCaptionsToPlayer(on, lang) {
+  const body = { cmd: 'captions', value: on ? 1 : 0 }
+  if (CAPTION_LANG_RE.test(lang || '')) body.lang = lang
+  if (desktopOwned && ctxRef) {
+    // The OS window owns the picture: it is driven through the server queue,
+    // exactly like the transport, so one film never listens on two surfaces.
+    void ctxRef.rest('/player/command', { method: 'POST', body, timeoutMs: 4000 })
+      .catch(() => setError('Aura could not reach the film window.'))
+    return true
+  }
+  return postToBackdrop(body)
+}
+
+/** The CC switch. Persisted: "I read subtitles" outlives any one film. */
+function setVideoCaptions(on, lang) {
+  const videoCaptions = Boolean(on)
+  const patch = { videoCaptions }
+  const code = typeof lang === 'string' ? lang.trim() : ''
+  if (CAPTION_LANG_RE.test(code)) patch.videoCaptionLang = code
+  writeSettings(patch)
+  const reported = $video.get().captions || {}
+  $video.set({ ...$video.get(), captions: { ...reported, on: videoCaptions }, reportedAt: Date.now() })
+  sendCaptionsToPlayer(videoCaptions, $settings.get().videoCaptionLang)
+  syncVideoBar(true)
+  syncPanel(true)
+}
+
+/** Choose a caption language from the player's own list. */
+function setVideoCaptionLang(code) {
+  const raw = String(code || '').trim()
+  const videoCaptionLang = CAPTION_LANG_RE.test(raw) ? raw : ''
+  writeSettings({ videoCaptionLang })
+  // A language only means something while captions are on; choosing one with
+  // them off just remembers it for the next time they are turned on.
+  if ($settings.get().videoCaptions) sendCaptionsToPlayer(true, videoCaptionLang)
+  syncVideoBar(true)
+  syncPanel(true)
+}
+
+/** The language choices worth offering: Automatic, then the player's own
+ *  tracks. Empty list when the video has no captions. */
+function captionLanguageChoices(info) {
+  const detail = info || captionInfo()
+  if (!detail.available) return []
+  return [{ value: '', label: 'Automatic' }].concat(
+    detail.tracks.map(track => ({ value: track.code, label: track.name }))
+  )
+}
+
+/** The language a select should show: the viewer's choice, else Automatic. */
+function captionLanguageValue(info) {
+  const detail = info || captionInfo()
+  return detail.lang
 }
 
 /**
@@ -2909,8 +3436,20 @@ function onBackdropMessage(event) {
     duration,
     muted: data.muted !== false,
     title: typeof data.title === 'string' ? data.title.slice(0, 120) : '',
+    author: typeof data.author === 'string' ? data.author.slice(0, 120) : '',
     videoId: typeof data.videoId === 'string' ? data.videoId : '',
     blocked: data.blocked === true,
+    // [subtitles] The player's own answer about this video's captions: the
+    // tracks it has, which one is playing, and whether it has answered at all.
+    captions: data.captions && typeof data.captions === 'object'
+      ? {
+        on: data.captions.on === true,
+        lang: typeof data.captions.lang === 'string' ? data.captions.lang : '',
+        current: typeof data.captions.current === 'string' ? data.captions.current.slice(0, 20) : '',
+        known: data.captions.known === true,
+        tracks: Array.isArray(data.captions.tracks) ? data.captions.tracks.slice(0, 60) : []
+      }
+      : $video.get().captions,
     controllable: data.controllable === true,
     reportedAt: Date.now()
   })
@@ -2919,11 +3458,11 @@ function onBackdropMessage(event) {
 
 /** The transport strip, mounted in the composer's `underside` slot.
  *
- *  Was: a `position: fixed` bar appended to the app's body, kept above the
- *  composer by scanning the app's text fields and measuring the lowest one. That is the app's composer markup, and
- *  it moves whenever the composer is redesigned. The slot below the composer is
- *  the sanctioned seat for exactly this kind of strip: the host places it, sizes
- *  it and takes it away with the plugin.
+ *  The slot is the host's: it is where the strip is anchored in the tree, and it
+ *  goes away with the plugin. The strip inside it is `position: fixed` at the
+ *  point the user last dropped it (videoBarX / videoBarY), so the composer
+ *  growing, a panel opening or a long message wrapping cannot move it — and
+ *  nothing in the plugin ever measures the app's markup to place it.
  */
 let videoBarSlot = null
 
@@ -2963,18 +3502,20 @@ function AuraComposerStrip() {
 }
 
 // ------------------------------------------------------ floating video bar
-// A transport pill at the bottom of the window. Plain DOM, like the dev
-// readout: the host offers no "floating anywhere" slot and a status-bar
-// contribution cannot be pointer-interactive over the whole window. It fades
-// out after 3 s without mouse movement and returns on the next move, so it
-// never competes with the work behind it. Hidden entirely unless the video
-// backdrop is actually on screen.
+// A transport pill that floats over the app wherever the user drops it: the
+// host offers no "floating anywhere" slot, and a status-bar contribution cannot
+// be pointer-interactive over the whole window. It fades out after 3 s without
+// mouse movement and returns on the next move, so it never competes with the
+// work behind it. Hidden entirely unless the video backdrop is on screen.
 const VIDEO_BAR_IDLE_MS = 3000
 let videoBarEl = null
 let videoBarParts = null
 let videoBarHideTimer = null
-// Live drag of the watch window (grip on the strip). Timers/listeners are
-// host-owned or removed in removeVideoBar; the position is persisted on drop.
+// The nodes inside the strip that own their own press (buttons, the scrubber):
+// a drag that starts on one of them is that control's, not the strip's.
+let videoBarControls = new Set()
+// Live drag of the strip itself (grip or empty chrome). Listeners are ours and
+// are removed in removeVideoBar; the drop is persisted as videoBarX/videoBarY.
 
 let volumePushedFor = ''
 // Where the movie was when we last saw it. Kept across a plugin remount so
@@ -3050,6 +3591,162 @@ function parseClock(value) {
   return null
 }
 
+// ------------------------------------------------- where the strip sits
+// The strip floats over the app wherever the user left it. Its position comes
+// from settings alone: the plugin never measures the app's layout, so a new
+// panel, a growing composer or a wrapped chat message cannot move it.
+let videoBarDrag = null
+// The settings point currently applied, so the 4 Hz poll does not re-measure the
+// strip on every tick.
+let videoBarSeat = ''
+
+/** The strip's own size in CSS px. Only our node is measured. */
+function videoBarSize() {
+  const rect = videoBarEl && typeof videoBarEl.getBoundingClientRect === 'function'
+    ? videoBarEl.getBoundingClientRect()
+    : null
+  const width = rect && Number.isFinite(rect.width) && rect.width > 0 ? rect.width : VIDEO_BAR_WIDTH
+  const height = rect && Number.isFinite(rect.height) && rect.height > 0 ? rect.height : VIDEO_BAR_NOMINAL_HEIGHT
+  return { width, height }
+}
+
+function videoBarViewportSize() {
+  const view = doc && doc.defaultView
+  const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
+  const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
+  return { vw, vh }
+}
+
+/** A point that keeps the whole strip on screen, 16px clear of every edge. */
+function clampVideoBarPoint(x, y) {
+  const size = videoBarSize()
+  const { vw, vh } = videoBarViewportSize()
+  const maxX = Math.max(VIDEO_BAR_MARGIN, vw - size.width - VIDEO_BAR_MARGIN)
+  const maxY = Math.max(VIDEO_BAR_MARGIN, vh - size.height - VIDEO_BAR_MARGIN)
+  const px = Number.isFinite(x) ? x : VIDEO_BAR_MARGIN
+  const py = Number.isFinite(y) ? y : VIDEO_BAR_MARGIN
+  return {
+    x: Math.round(Math.min(maxX, Math.max(VIDEO_BAR_MARGIN, px))),
+    y: Math.round(Math.min(maxY, Math.max(VIDEO_BAR_MARGIN, py)))
+  }
+}
+
+/** Bottom-left, clear of the app's status bar: where the strip starts life and
+ *  where a double-click on the grip puts it back. */
+function videoBarHome() {
+  const size = videoBarSize()
+  const { vh } = videoBarViewportSize()
+  return clampVideoBarPoint(VIDEO_BAR_MARGIN, vh - size.height - VIDEO_BAR_MARGIN - VIDEO_BAR_STATUS_BAR)
+}
+
+/** The last point the user dropped the strip at, else the home corner. Always
+ *  clamped to the current viewport, so a resize can never strand it. */
+function videoBarPoint() {
+  if (videoBarDrag) return { x: videoBarDrag.x, y: videoBarDrag.y }
+  const settings = $settings.get()
+  if (Number.isFinite(settings.videoBarX) && Number.isFinite(settings.videoBarY)) {
+    return clampVideoBarPoint(settings.videoBarX, settings.videoBarY)
+  }
+  return videoBarHome()
+}
+
+/** Put the strip at a point. Placement only — no settings, no mode, no DOM
+ *  reads beyond the strip's own size. */
+function placeVideoBar(point) {
+  if (!videoBarEl || !videoBarEl.style) return point
+  videoBarEl.style.left = `${point.x}px`
+  videoBarEl.style.top = `${point.y}px`
+  return point
+}
+
+/** Re-apply the saved position (clamped). Called on mount and on every resize,
+ *  never on page/content changes. */
+function applyVideoBarPosition() {
+  const settings = $settings.get()
+  videoBarSeat = `${settings.videoBarX}:${settings.videoBarY}`
+  return placeVideoBar(videoBarPoint())
+}
+
+/** Reset to the home corner: the double-click on the grip. */
+function resetVideoBarPosition() {
+  if (!ctxRef || disposed) return
+  writeSettings({ videoBarX: null, videoBarY: null })
+  placeVideoBar(videoBarHome())
+  showVideoBar()
+}
+
+function onVideoBarResize() {
+  if (!videoBarEl || videoBarDrag) return
+  // Clamp on screen, but leave the stored point alone: a temporarily small
+  // window must not overwrite where the user wants it.
+  applyVideoBarPosition()
+}
+
+/** Is this node one of the strip's controls rather than empty strip chrome?
+ *  Only the strip's own nodes are walked — the app's DOM is never inspected. */
+function videoBarControlAt(node) {
+  let walk = node
+  while (walk && walk !== videoBarEl) {
+    if (videoBarControls.has(walk)) return true
+    walk = walk.parentNode
+  }
+  return false
+}
+
+function onVideoBarDragMove(event) {
+  if (!videoBarDrag || !videoBarEl) return
+  const pointerX = event && Number.isFinite(event.clientX) ? event.clientX : videoBarDrag.startX
+  const pointerY = event && Number.isFinite(event.clientY) ? event.clientY : videoBarDrag.startY
+  const point = clampVideoBarPoint(
+    videoBarDrag.originX + (pointerX - videoBarDrag.startX),
+    videoBarDrag.originY + (pointerY - videoBarDrag.startY)
+  )
+  videoBarDrag.x = point.x
+  videoBarDrag.y = point.y
+  placeVideoBar(point)
+  try { if (event && event.preventDefault) event.preventDefault() } catch { /* synthetic events */ }
+  showVideoBar()
+}
+
+function onVideoBarDragEnd() {
+  if (!videoBarDrag) return
+  const { x, y } = videoBarDrag
+  videoBarDrag = null
+  if (doc && typeof doc.removeEventListener === 'function') {
+    doc.removeEventListener('mousemove', onVideoBarDragMove)
+    doc.removeEventListener('mouseup', onVideoBarDragEnd)
+  }
+  if (videoBarEl && videoBarEl.style) videoBarEl.style.cursor = ''
+  placeVideoBar({ x, y })
+  if (!ctxRef || disposed) return
+  // A drag writes the strip's position and nothing else: no videoWindow, no
+  // backdropMode, no surface switch. The pop-out button is the only way out.
+  writeSettings({ videoBarX: x, videoBarY: y })
+}
+
+/** Start dragging the strip. The pointer's own press, the strip's own
+ *  position — nothing else is touched. */
+function startVideoBarDrag(event) {
+  if (!videoBarEl || videoBarDrag) return
+  if (event && Number.isFinite(event.button) && event.button !== 0) return
+  const origin = videoBarPoint()
+  videoBarDrag = {
+    startX: event && Number.isFinite(event.clientX) ? event.clientX : 0,
+    startY: event && Number.isFinite(event.clientY) ? event.clientY : 0,
+    originX: origin.x,
+    originY: origin.y,
+    x: origin.x,
+    y: origin.y
+  }
+  try { if (event && event.preventDefault) event.preventDefault() } catch { /* synthetic events */ }
+  if (doc && typeof doc.addEventListener === 'function') {
+    doc.addEventListener('mousemove', onVideoBarDragMove)
+    doc.addEventListener('mouseup', onVideoBarDragEnd)
+  }
+  if (videoBarEl.style) videoBarEl.style.cursor = 'grabbing'
+  showVideoBar()
+}
+
 function videoBarActive() {
   const settings = $settings.get()
   const live = $live.get()
@@ -3061,7 +3758,7 @@ function videoBarActive() {
   return true
 }
 
-function videoBarButton(label, aria, cmd, value) {
+function videoBarButton(label, aria, cmd, value, onClick) {
   const el = doc.createElement('button')
   el.type = 'button'
   el.textContent = label
@@ -3079,7 +3776,8 @@ function videoBarButton(label, aria, cmd, value) {
   el.addEventListener('click', event => {
     if (event && event.preventDefault) event.preventDefault()
     showVideoBar()
-    videoCommand(cmd, value)
+    if (typeof onClick === 'function') onClick()
+    else videoCommand(cmd, value)
   })
   return el
 }
@@ -3095,11 +3793,13 @@ function mountVideoBar(node) {
     ? $settings.get().videoBarOpacity
     : VIDEO_BAR_OPACITY)
   Object.assign(bar.style, {
-    // In the composer's underside slot the host owns placement and width: no
-    // fixed coordinates, no z-index, nothing to position against the chat box.
-    position: 'relative', transform: 'none',
+    // A floating pill at the user's own point. The coordinates come from
+    // videoBarX/videoBarY (settings), never from the app's layout: the strip
+    // does not care what the composer, the chat or a new panel is doing.
+    position: 'fixed', right: 'auto', bottom: 'auto', zIndex: '40',
     display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '2px',
-    width: '100%', maxWidth: '100%', boxSizing: 'border-box',
+    width: `${VIDEO_BAR_WIDTH}px`, maxWidth: `calc(100vw - ${VIDEO_BAR_MARGIN * 2}px)`,
+    boxSizing: 'border-box',
     padding: '5px 9px 6px', borderRadius: '14px',
     background: `rgba(12, 10, 22, ${barAlpha})`, color: '#fff',
     border: '1px solid rgba(255,255,255,0.14)',
@@ -3115,6 +3815,8 @@ function mountVideoBar(node) {
   if (doc && typeof doc.addEventListener === 'function') {
     doc.addEventListener('mousemove', onVideoBarMouseMove, { passive: true })
     doc.addEventListener('mousedown', onVideoBarMouseMove, { passive: true })
+    // A resize re-clamps the strip into the window. Nothing else moves it.
+    doc.addEventListener('resize', onVideoBarResize)
   }
 
   const prev = videoBarButton('⏮', 'Previous source', 'prev')
@@ -3172,28 +3874,46 @@ function mountVideoBar(node) {
     setVideoVolume(current > 0 ? 0 : (VIDEO_VOLUME || 0.7))
   })
 
-  // Watch window: the film in its own frame instead of behind the app.
-  // Two controls, two surfaces (owner: "two separate pop-out buttons"). Pop out
-  // is the floating window inside Hermes; Own window is the real OS window.
+  // [subtitles] CC: the film's own switch, on the strip people use while they
+  // work. It is disabled — with the reason in the tooltip — only once the
+  // player has actually said this video has no subtitles.
+  const cc = videoBarButton('CC', 'Subtitles (CC)', 'captions', null, () => {
+    setVideoCaptions(!$settings.get().videoCaptions)
+  })
+  Object.assign(cc.style, {
+    width: 'auto', minWidth: '26px', padding: '0 5px', fontSize: '10.5px',
+    fontWeight: '600', letterSpacing: '0.02em', border: '1px solid transparent',
+    borderRadius: '6px'
+  })
+
+  // Two pop-out controls in the strip, worded exactly like the ones in the
+  // quick menu, the panel and the page: "Frame in Hermes" (a toggle) and
+  // "Pop out to desktop" (which reads "Bring back" while the OS window holds
+  // the film). Equal buttons in their own row: the strip is narrow, so a glyph
+  // pair was unreadable.
   const inlineBtn = doc.createElement('button')
   inlineBtn.type = 'button'
-  inlineBtn.setAttribute('aria-label', 'Pop out')
+  inlineBtn.setAttribute('aria-label', FRAME_LABEL)
+  inlineBtn.textContent = FRAME_LABEL
   inlineBtn.addEventListener('click', event => {
     if (event && event.preventDefault) event.preventDefault()
     setInlineWindow(!videoWindowOn())
   })
   const ownBtn = doc.createElement('button')
   ownBtn.type = 'button'
-  ownBtn.setAttribute('aria-label', 'Own window')
+  ownBtn.setAttribute('aria-label', POPOUT_LABEL)
+  ownBtn.textContent = POPOUT_LABEL
   ownBtn.addEventListener('click', event => {
     if (event && event.preventDefault) event.preventDefault()
     void setOwnWindow(!(desktopOwned || desktopPending))
   })
-  for (const [node, label] of [[inlineBtn, '⧉'], [ownBtn, '⛶']]) {
-    node.textContent = label
+  for (const node of [inlineBtn, ownBtn]) {
     Object.assign(node.style, {
-      width: 'auto', padding: '0 6px', fontSize: '12px', cursor: 'pointer',
-      background: 'transparent', color: 'inherit', border: '0'
+      flex: '1 1 0', minWidth: '0', padding: '3px 6px', fontSize: '10.5px',
+      lineHeight: '1.2', cursor: 'pointer', borderRadius: '8px',
+      background: 'transparent', color: 'inherit',
+      border: '1px solid rgba(255,255,255,0.16)',
+      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
     })
   }
   const windowBtn = inlineBtn
@@ -3213,12 +3933,14 @@ function mountVideoBar(node) {
     width: '1px', height: '16px', background: 'rgba(255,255,255,0.16)', margin: '0 3px'
   })
 
-  // Drag grip: the watch window goes wherever you drop it. Made obvious on
-  // purpose — the first version was a bare glyph nobody could find.
+  // Drag grip: the strip goes wherever you drop it. The grip moves the
+  // CONTROLS, never the film: popping out is the ⧉ button's job alone. Made
+  // obvious on purpose — the first version was a bare glyph nobody could find.
   const grip = doc.createElement('span')
   grip.textContent = '⠿'
-  grip.setAttribute('aria-label', 'Drag to move the watch window')
-  grip.title = 'Drag to move the watch window'
+  grip.setAttribute('role', 'button')
+  grip.setAttribute('aria-label', 'Drag to move the controls')
+  grip.title = 'Drag to move the controls (double-click to reset)'
   Object.assign(grip.style, {
     cursor: 'grab', fontSize: '12px', lineHeight: '1',
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -3226,6 +3948,11 @@ function mountVideoBar(node) {
     borderRadius: '6px', background: 'rgba(255,255,255,0.16)',
     border: '1px solid rgba(255,255,255,0.22)', userSelect: 'none',
     color: 'inherit'
+  })
+  grip.addEventListener('mousedown', event => startVideoBarDrag(event))
+  grip.addEventListener('dblclick', event => {
+    try { if (event && event.preventDefault) event.preventDefault() } catch { /* synthetic events */ }
+    resetVideoBarPosition()
   })
 
   // Close: pauses and takes the film off screen; Settings/quick menu can
@@ -3244,14 +3971,15 @@ function mountVideoBar(node) {
   })
   close.addEventListener('click', () => closeVideo())
 
-  // Two rows: the film's own line (grip, title, scrubber, clock, volume,
-  // window, close) above a centred transport row. The strip ends up about
-  // twice as tall and about half as wide as the single-line pill was.
+  // Three rows: the film's own line (grip, title, scrubber, clock, volume,
+  // close), a centred transport row, and the two named pop-out buttons. The
+  // strip stays a floating pill; the named buttons are the last row so neither
+  // of them ever squeezes the title or the scrubber.
   const topRow = doc.createElement('div')
   Object.assign(topRow.style, {
     display: 'flex', alignItems: 'center', gap: '4px', minWidth: '0'
   })
-  for (const node of [grip, title, scrub, time, sep, volume, inlineBtn, ownBtn, close]) {
+  for (const node of [grip, title, scrub, time, sep, volume, close]) {
     topRow.appendChild(node)
   }
   const transportRow = doc.createElement('div')
@@ -3259,11 +3987,27 @@ function mountVideoBar(node) {
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '2px',
     paddingTop: '3px', borderTop: '1px solid rgba(255,255,255,0.08)'
   })
-  for (const node of [prev, backMin, back, play, fwd, fwdMin, next]) {
+  for (const node of [prev, backMin, back, play, fwd, fwdMin, next, cc]) {
     transportRow.appendChild(node)
   }
+  const popoutRow = doc.createElement('div')
+  Object.assign(popoutRow.style, {
+    display: 'flex', alignItems: 'stretch', gap: '6px', minWidth: '0',
+    paddingTop: '3px', borderTop: '1px solid rgba(255,255,255,0.08)'
+  })
+  popoutRow.appendChild(inlineBtn)
+  popoutRow.appendChild(ownBtn)
   bar.appendChild(topRow)
   bar.appendChild(transportRow)
+  bar.appendChild(popoutRow)
+  // Empty strip chrome (a gap, the title, the padding) drags the strip too; a
+  // press on one of the controls stays that control's. Only the strip's own
+  // nodes are consulted.
+  videoBarControls = new Set([prev, backMin, back, play, fwd, fwdMin, next, cc, scrub, volume, inlineBtn, ownBtn, close])
+  bar.addEventListener('mousedown', event => {
+    if (videoBarControlAt(event && event.target)) return
+    startVideoBarDrag(event)
+  })
   // Wheel over the strip = volume, the way every media player behaves. It is
   // the one gesture that is worth the surprise, and it only fires over the
   // pill, never over the chat.
@@ -3283,7 +4027,9 @@ function mountVideoBar(node) {
 
   slot.appendChild(bar)
   videoBarEl = bar
-  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, inlineBtn, ownBtn, scrub, fill, title }
+  // Where the user last dropped it (or the home corner), clamped on screen.
+  applyVideoBarPosition()
+  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, inlineBtn, ownBtn, scrub, fill, title, cc }
 }
 
 function removeVideoBar() {
@@ -3291,13 +4037,20 @@ function removeVideoBar() {
     clearTimeout(videoBarHideTimer)
     videoBarHideTimer = null
   }
+  // A drag in flight dies with the strip: no listener may outlive it.
+  videoBarDrag = null
+  videoBarSeat = ''
   if (doc && typeof doc.removeEventListener === 'function') {
     doc.removeEventListener('mousemove', onVideoBarMouseMove)
     doc.removeEventListener('mousedown', onVideoBarMouseMove)
+    doc.removeEventListener('mousemove', onVideoBarDragMove)
+    doc.removeEventListener('mouseup', onVideoBarDragEnd)
+    doc.removeEventListener('resize', onVideoBarResize)
   }
   if (videoBarEl && videoBarEl.parentNode) videoBarEl.parentNode.removeChild(videoBarEl)
   videoBarEl = null
   videoBarParts = null
+  videoBarControls = new Set()
 }
 
 /** Reveal the bar and restart the idle countdown. Idle fades it to a ghost,
@@ -3376,20 +4129,25 @@ function panelCss() {
     /* A docked pane inside the host's layout: no fixed positioning, no z-index,
        no body padding. The host owns the box; we fill it. */
     #aura-panel {
-      position: relative; width: 100%; height: 100%;
+      position: relative; width: 100%; max-width: 100%; height: 100%;
       display: flex; flex-direction: column; gap: 12px;
       padding: 14px 14px 12px; box-sizing: border-box; overflow: hidden;
+      min-width: 0;
       color: #f3ece2; font: 12px/1.4 system-ui, -apple-system, sans-serif;
       background: linear-gradient(180deg, #16111f 0%, #1b1418 52%, #241a12 100%);
       border-radius: 12px;
     }
+    /* The host owns the box; we fill it. Every child is border-box, so a 1px
+       border can never push a 260px pane into a horizontal scroll. */
+    #aura-panel, #aura-panel * { box-sizing: border-box; }
     /* header ------------------------------------------------------------- */
-    .ap-head { display: flex; align-items: center; gap: 8px; position: relative; z-index: 1; }
+    .ap-head { display: flex; align-items: center; gap: 8px; position: relative; z-index: 1; flex-wrap: wrap; min-width: 0; }
     .ap-name { font-weight: 650; letter-spacing: 0.3px; font-size: 15px; }
     .ap-spacer { flex: 1; }
     .ap-mode {
       display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px;
       background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+      min-width: 0; flex-wrap: wrap;
     }
     .ap-mode-button {
       appearance: none; border: 0; background: transparent; color: rgba(243,236,226,0.62);
@@ -3426,29 +4184,36 @@ function panelCss() {
 
     /* control deck: the thing that should feel generous ------------------- */
     .ap-controls {
-      display: flex; flex-direction: column; gap: 10px;
+      display: flex; flex-direction: column; gap: 10px; min-width: 0;
       padding: 12px 12px 11px; border-radius: 13px;
       background: rgba(255,255,255,0.045);
       border: 1px solid rgba(255,255,255,0.075);
       box-shadow: 0 8px 22px rgba(0,0,0,0.28);
       flex: none;
     }
-    .ap-transport { display: flex; align-items: center; justify-content: center; gap: 8px; }
+    /* Five transport buttons, evenly spread and never overlapping: each one
+       flexes, so a 260px pane shrinks them instead of squeezing the play
+       button under its neighbours (or wrapping them on top of each other). */
+    .ap-transport {
+      display: flex; align-items: center; justify-content: space-evenly;
+      gap: 4px; flex-wrap: wrap; min-width: 0;
+    }
     .ap-transport button {
       appearance: none; border: 0; background: transparent; color: inherit; cursor: pointer;
-      width: 38px; height: 38px; border-radius: 12px; font-size: 16px;
+      width: auto; height: 36px; flex: 1 1 30px; min-width: 28px; max-width: 44px;
+      padding: 0; border-radius: 12px; font-size: 15px;
       display: inline-flex; align-items: center; justify-content: center;
     }
     .ap-transport button:hover { background: rgba(255,255,255,0.12); }
     .ap-transport button[data-primary="true"] {
-      width: 48px; height: 48px; font-size: 19px; border-radius: 50%;
+      flex: 1 1 38px; max-width: 48px; height: 44px; font-size: 18px; border-radius: 50%;
       background: linear-gradient(160deg, rgba(255,205,140,0.95), rgba(255,150,110,0.95));
       color: #241a12; box-shadow: 0 6px 18px rgba(255,170,110,0.28);
     }
     .ap-transport button[data-primary="true"]:hover { filter: brightness(1.06); }
-    .ap-scrub { display: flex; align-items: center; gap: 10px; }
+    .ap-scrub { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .ap-track {
-      position: relative; flex: 1; height: 6px; border-radius: 999px;
+      position: relative; flex: 1 1 auto; min-width: 40px; height: 6px; border-radius: 999px;
       background: rgba(255,255,255,0.18); cursor: pointer;
     }
     .ap-track:hover { background: rgba(255,255,255,0.26); }
@@ -3457,18 +4222,37 @@ function panelCss() {
       background: linear-gradient(90deg, rgba(255,200,130,0.98), rgba(255,140,160,0.98));
     }
     .ap-time {
-      font-size: 11px; font-variant-numeric: tabular-nums;
-      color: rgba(243,236,226,0.72); min-width: 84px; text-align: right;
+      font-size: 11px; font-variant-numeric: tabular-nums; flex: 0 0 auto;
+      color: rgba(243,236,226,0.72); min-width: 0; text-align: right;
     }
-    .ap-row { display: flex; align-items: center; gap: 9px; }
-    .ap-icon { font-size: 13px; color: rgba(243,236,226,0.6); }
-    .ap-volume { flex: 1; accent-color: #ffbf78; height: 18px; }
+    .ap-row { display: flex; align-items: center; gap: 9px; min-width: 0; flex-wrap: wrap; }
+    .ap-icon { font-size: 13px; color: rgba(243,236,226,0.6); flex: none; }
+    /* The slider is contained by the card: it can shrink to 100% of what is
+       left, never past it. */
+    .ap-volume {
+      flex: 1 1 60px; min-width: 0; width: 100%; max-width: 100%;
+      accent-color: #ffbf78; height: 18px; box-sizing: border-box;
+    }
     .ap-watch {
       appearance: none; border: 1px solid rgba(255,255,255,0.14); background: transparent;
       color: rgba(243,236,226,0.8); width: 34px; height: 30px; border-radius: 9px;
       cursor: pointer; font-size: 13px;
     }
     .ap-watch[data-active="true"] {
+      border-color: rgba(255,190,120,0.55); color: #ffd9a8; background: rgba(255,190,120,0.14);
+    }
+    /* The two pop-out controls: equal buttons, named the same as everywhere
+       else, on their own line so neither squeezes the volume row. */
+    .ap-popout-row { display: flex; align-items: stretch; gap: 6px; min-width: 0; flex-wrap: wrap; }
+    .ap-popout {
+      appearance: none; border: 1px solid rgba(255,255,255,0.16); background: transparent;
+      color: rgba(243,236,226,0.86); font: inherit; font-size: 10.5px; line-height: 1.2;
+      padding: 6px 4px; border-radius: 9px; cursor: pointer;
+      flex: 1 1 0; min-width: 0; box-sizing: border-box;
+      white-space: normal; overflow-wrap: anywhere; text-align: center;
+    }
+    .ap-popout:hover { border-color: rgba(255,255,255,0.32); }
+    .ap-popout[data-active="true"] {
       border-color: rgba(255,190,120,0.55); color: #ffd9a8; background: rgba(255,190,120,0.14);
     }
 
@@ -3478,21 +4262,36 @@ function panelCss() {
       border-radius: 12px; background: rgba(255,255,255,0.03);
       border: 1px solid rgba(255,255,255,0.06); flex: none;
     }
-    .ap-field { display: flex; align-items: center; gap: 10px; }
+    .ap-field { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
     .ap-field-label {
       font-size: 9.5px; letter-spacing: 0.7px; text-transform: uppercase;
-      color: rgba(243,236,226,0.45); min-width: 74px;
+      color: rgba(243,236,226,0.45); min-width: 0; flex: 0 1 auto;
     }
-    .ap-select { flex: 1; min-width: 0; font: inherit; font-size: 11px; }
-    .ap-pills { display: flex; gap: 4px; flex-wrap: wrap; }
+    .ap-select { flex: 1 1 90px; min-width: 0; max-width: 100%; font: inherit; font-size: 11px; }
+    /* The see-through presets wrap onto as many lines as the pane needs: all
+       five stay visible and clickable even at 260px. */
+    .ap-pills { display: flex; gap: 4px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
     .ap-pill {
       appearance: none; border: 1px solid rgba(255,255,255,0.12); background: transparent;
       color: rgba(243,236,226,0.66); font: inherit; font-size: 10px; padding: 3px 8px;
-      border-radius: 999px; cursor: pointer;
+      border-radius: 999px; cursor: pointer; flex: 0 0 auto;
     }
     .ap-pill[data-active="true"] {
       border-color: rgba(255,190,120,0.55); color: #ffd9a8; background: rgba(255,190,120,0.14);
     }
+    /* [subtitles] The CC switch is its own control, not one of the five
+       see-through presets, and it says "off" by being plain. */
+    .ap-cc {
+      appearance: none; border: 1px solid rgba(255,255,255,0.16); background: transparent;
+      color: rgba(243,236,226,0.8); font: inherit; font-size: 10px; font-weight: 600;
+      letter-spacing: 0.04em; padding: 3px 8px; border-radius: 999px; cursor: pointer;
+      flex: 0 0 auto; min-width: 30px;
+    }
+    .ap-cc[aria-pressed="true"] {
+      border-color: rgba(255,190,120,0.55); color: #ffd9a8; background: rgba(255,190,120,0.16);
+    }
+    .ap-cc:disabled { cursor: not-allowed; }
+    .ap-cc-lang { flex: 1 1 90px; min-width: 0; max-width: 100%; }
 
     /* shelf --------------------------------------------------------------- */
     .ap-list {
@@ -3500,17 +4299,26 @@ function panelCss() {
       padding-right: 3px; flex: 1;
     }
     .ap-card {
-      display: flex; align-items: center; gap: 10px; padding: 7px; border-radius: 11px; cursor: pointer;
+      display: flex; flex-direction: column; align-items: stretch; gap: 6px;
+      padding: 7px; border-radius: 11px; cursor: pointer; min-width: 0;
       background: rgba(255,255,255,0.04); border: 1px solid transparent; text-align: left;
     }
     .ap-card:hover { background: rgba(255,255,255,0.09); }
     .ap-card[data-active="true"] { border-color: rgba(255,190,120,0.45); background: rgba(255,190,120,0.10); }
+    /* The thumbnail is as wide as the card, never wider; the title sits on its
+       own lines underneath and clamps at two, so a narrow pane reads
+       "Youth of the Beast" instead of "Yo...". */
     .ap-thumb {
-      width: 82px; height: 46px; border-radius: 8px; flex: none; object-fit: cover;
+      width: 100%; max-width: 100%; height: auto; aspect-ratio: 16 / 9;
+      border-radius: 8px; flex: none; object-fit: cover; box-sizing: border-box;
       background: linear-gradient(135deg, #2a2136, #40302a); display: block;
     }
     .ap-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-    .ap-title { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ap-title {
+      font-size: 11.5px; line-height: 1.3; white-space: normal; overflow: hidden;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow-wrap: anywhere; text-overflow: ellipsis;
+    }
     .ap-kind { font-size: 9px; letter-spacing: 0.6px; text-transform: uppercase; color: rgba(243,236,226,0.45); }
     .ap-empty { font-size: 11px; color: rgba(243,236,226,0.5); text-align: center; padding: 12px 0; }
   `
@@ -3590,6 +4398,25 @@ function uiCss() {
       overflow: hidden; text-overflow: ellipsis;
     }
     #aura-page .aura-watch { gap: 10px; }
+    /* Now playing: the film's own name, right above the player. */
+    #aura-page .aura-now {
+      display: flex; flex-direction: column; gap: 2px; min-width: 0;
+      padding: 0 2px;
+    }
+    #aura-page .aura-now-label {
+      font-size: 10px; font-weight: 650; letter-spacing: 0.26em; text-transform: uppercase;
+      color: #ffc79c;
+    }
+    #aura-page .aura-now-title {
+      font-size: 21px; line-height: 1.22; font-weight: 680; letter-spacing: -0.012em;
+      color: #fdf7ef;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden; word-break: break-word;
+    }
+    #aura-page .aura-now-channel {
+      font-size: 12.5px; line-height: 1.4; font-weight: 600; color: #ffd2a4;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
     #aura-page .aura-stage-wrap { display: flex; justify-content: center; width: 100%; }
     #aura-page .aura-stage {
       border: 1px solid rgba(255,190,140,0.24);
@@ -3670,7 +4497,8 @@ function uiCss() {
     @media (prefers-reduced-motion: reduce) {
       #aura-page .aura-card.is-active { animation: none; }
       #aura-page .aura-card, #aura-page .aura-btn, #aura-page .aura-chip,
-      #aura-page .aura-input { transition: none; }
+      #aura-page .aura-input, #aura-page .aura-shelf-card,
+      #aura-page .aura-shelf-note { transition: none; }
     }
     #aura-page .aura-card-main {
       display: flex; flex-direction: column; gap: 0; cursor: pointer;
@@ -3697,6 +4525,62 @@ function uiCss() {
     }
     #aura-page .aura-rename { flex: 1; font-size: 10.5px; padding: 4px 7px; }
     #aura-page .aura-empty { font-size: 11.5px; color: #bfb4a8; padding: 4px 2px; }
+    /* ---- the shelf -------------------------------------------------------
+       One horizontal strip per category. Every level is min-width: 0 and the
+       strip is the only thing that scrolls, so a narrow Hermes window gets a
+       sideways-scrolling row instead of a page that is wider than its pane. */
+    #aura-page .aura-shelf {
+      display: flex; flex-direction: column; gap: 12px;
+      min-width: 0; max-width: 100%;
+    }
+    #aura-page .aura-shelf-row {
+      display: flex; flex-direction: column; gap: 7px;
+      min-width: 0; max-width: 100%;
+    }
+    #aura-page .aura-shelf-search {
+      flex: 0 1 250px; min-width: 0; font-size: 11.5px; padding: 5px 9px;
+    }
+    #aura-page .aura-shelf-strip {
+      display: flex; gap: 10px; align-items: stretch;
+      overflow-x: auto; overflow-y: hidden;
+      max-width: 100%; min-width: 0;
+      padding: 2px 2px 8px;
+      scrollbar-width: thin; scroll-snap-type: x proximity;
+    }
+    #aura-page .aura-shelf-card, #aura-page .aura-shelf-slot {
+      flex: 0 0 184px; width: 184px; min-width: 0; max-width: 184px;
+      scroll-snap-align: start;
+    }
+    #aura-page .aura-shelf-card {
+      display: flex; flex-direction: column; gap: 5px;
+      padding: 10px 11px 9px; border-radius: 11px; cursor: pointer;
+      background: linear-gradient(180deg, rgba(24,19,28,0.94), rgba(18,14,24,0.94));
+      border: 1px solid rgba(255,255,255,0.09);
+      transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+    }
+    #aura-page .aura-shelf-card:hover { transform: translateY(-2px); border-color: rgba(255,190,140,0.4); }
+    #aura-page .aura-shelf-card.is-active {
+      border-color: rgba(255,170,120,0.6);
+      box-shadow: 0 0 0 1px rgba(255,170,120,0.22), 0 12px 36px rgba(255,120,60,0.24);
+    }
+    #aura-page .aura-shelf-title {
+      font-size: 11.5px; line-height: 1.35; color: #f6efe6; font-weight: 600;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden; overflow-wrap: anywhere;
+    }
+    #aura-page .aura-shelf-meta {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: #bfb4a8;
+    }
+    /* The one-line note: reserved so the card does not jump, and legible only
+       while the card is hovered or focused. */
+    #aura-page .aura-shelf-note {
+      font-size: 10.5px; line-height: 1.4; color: #cfc4b8;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      opacity: 0; transition: opacity 140ms ease;
+    }
+    #aura-page .aura-shelf-card:hover .aura-shelf-note,
+    #aura-page .aura-shelf-card:focus-visible .aura-shelf-note { opacity: 1; }
     /* The Settings component reads host theme tokens; remap them inside the
        page's dark glass so a light host theme cannot put dark text on it. */
     #aura-page .aura-setup, #aura-page .aura-revamp {
@@ -3713,7 +4597,13 @@ function uiCss() {
     @media (max-width: 760px) {
       #aura-page { padding: 20px 16px 40px; }
       #aura-page .aura-title { font-size: 22px; }
+      #aura-page .aura-now-title { font-size: 18px; }
       #aura-page .aura-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+      /* Narrow: the row scrolls, each card gets smaller, nothing gets wider. */
+      #aura-page .aura-shelf-card, #aura-page .aura-shelf-slot {
+        flex-basis: 148px; width: 148px; max-width: 148px;
+      }
+      #aura-page .aura-shelf-search { flex: 1 1 100%; width: 100%; }
       #aura-page .aura-panel { padding: 13px 13px 15px; border-radius: 14px; }
     }
   `
@@ -3887,15 +4777,37 @@ function mountPanelInto(hostNode) {
     setVideoVolume(Number(event && event.target ? event.target.value : 70) / 100)
   })
 
-  const watch = doc.createElement('button')
-  watch.type = 'button'
-  watch.className = 'ap-watch'
-  watch.textContent = '⧉'
-  watch.setAttribute('aria-label', 'Watch window')
-  watch.addEventListener('click', event => {
+  // Two pop-out controls, named exactly as on every other surface. "Frame in
+  // Hermes" is a toggle (pressed while the in-app frame holds the film);
+  // "Pop out to desktop" reads "Bring back" while the desktop window does.
+  // The old single ⧉ glyph called a function that did not exist — a click
+  // threw and nothing happened.
+  const frameBtn = doc.createElement('button')
+  frameBtn.type = 'button'
+  frameBtn.className = 'ap-popout'
+  frameBtn.textContent = FRAME_LABEL
+  frameBtn.setAttribute('aria-label', FRAME_LABEL)
+  frameBtn.addEventListener('click', event => {
     if (event && event.preventDefault) event.preventDefault()
-    void setDesktopWindow($settings.get().videoWindow !== true)
+    // The pane-registering toggle: the frame appears on the click, and an open
+    // desktop window is parked first.
+    setInlineWindow(!framePressed())
   })
+
+  const ownBtn = doc.createElement('button')
+  ownBtn.type = 'button'
+  ownBtn.className = 'ap-popout'
+  ownBtn.textContent = POPOUT_LABEL
+  ownBtn.setAttribute('aria-label', POPOUT_LABEL)
+  ownBtn.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    void setOwnWindow(!(desktopOwned || desktopPending))
+  })
+
+  const popoutRow = doc.createElement('div')
+  popoutRow.className = 'ap-popout-row'
+  popoutRow.appendChild(frameBtn)
+  popoutRow.appendChild(ownBtn)
 
   // Hide this episode: the playlist is read-only from here, so this is the
   // local "never show me this again" (owner: "remove off playlist").
@@ -3922,7 +4834,7 @@ function mountPanelInto(hostNode) {
     void managePlaylist()
   })
 
-  for (const node of [volIcon, vol, hide, manage, watch]) bar.appendChild(node)
+  for (const node of [volIcon, vol, hide, manage]) bar.appendChild(node)
 
   // ---- film settings, right under the film -------------------------------
   const settingsBox = doc.createElement('div')
@@ -3950,6 +4862,19 @@ function mountPanelInto(hostNode) {
   const opacityButtons = doc.createElement('div')
   opacityButtons.className = 'ap-pills'
   const opacityPills = []
+  // Auto first, then the four levels: all five stay on screen because the row
+  // wraps (owner: the five see-through choices must always be reachable).
+  const autoPill = doc.createElement('button')
+  autoPill.type = 'button'
+  autoPill.className = 'ap-pill'
+  autoPill.textContent = 'Auto'
+  autoPill.setAttribute('aria-label', 'Automatic film see-through')
+  autoPill.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    setVideoOpacityAuto()
+  })
+  opacityPills.push(['auto', autoPill])
+  opacityButtons.appendChild(autoPill)
   for (const preset of VIDEO_OPACITY_PRESETS) {
     const pill = doc.createElement('button')
     pill.type = 'button'
@@ -3966,8 +4891,40 @@ function mountPanelInto(hostNode) {
   opacityRow.appendChild(opacityLabel)
   opacityRow.appendChild(opacityButtons)
 
+  // [subtitles] The film's subtitles: the switch, and the language list the
+  // player publishes (only when this video has more than one track).
+  const captionRow = doc.createElement('div')
+  captionRow.className = 'ap-field'
+  const captionLabel = doc.createElement('span')
+  captionLabel.className = 'ap-field-label'
+  captionLabel.textContent = 'Subtitles'
+  const captionControls = doc.createElement('div')
+  captionControls.className = 'ap-pills'
+  const ccBtn = doc.createElement('button')
+  ccBtn.type = 'button'
+  ccBtn.className = 'ap-cc'
+  ccBtn.textContent = 'CC'
+  ccBtn.setAttribute('aria-label', 'Subtitles (CC)')
+  ccBtn.setAttribute('aria-pressed', 'false')
+  ccBtn.title = 'Show subtitles (CC)'
+  ccBtn.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    setVideoCaptions(!$settings.get().videoCaptions)
+  })
+  const captionSelect = doc.createElement('select')
+  captionSelect.className = 'aura-select ap-select ap-cc-lang'
+  captionSelect.setAttribute('aria-label', 'Subtitle language')
+  captionSelect.addEventListener('change', event => {
+    setVideoCaptionLang(String(event && event.target ? event.target.value : ''))
+  })
+  captionControls.appendChild(ccBtn)
+  captionControls.appendChild(captionSelect)
+  captionRow.appendChild(captionLabel)
+  captionRow.appendChild(captionControls)
+
   settingsBox.appendChild(sourceRow)
   settingsBox.appendChild(opacityRow)
+  settingsBox.appendChild(captionRow)
 
   // ---- the shelf ---------------------------------------------------------
   const list = doc.createElement('div')
@@ -3977,6 +4934,7 @@ function mountPanelInto(hostNode) {
   controls.appendChild(transport)
   controls.appendChild(scrub)
   controls.appendChild(bar)
+  controls.appendChild(popoutRow)
 
   panel.appendChild(head)
   panel.appendChild(stage)
@@ -3986,7 +4944,8 @@ function mountPanelInto(hostNode) {
   panelEl = panel
   panelParts = {
     panel, body, stage, hint, track, fill, time, play, list, vol,
-    power, modeButtons, watch, source, opacityPills, opacityButtons
+    power, modeButtons, frameBtn, ownBtn, source, opacityPills, opacityButtons,
+    ccBtn, captionSelect
   }
   syncPanel(true)
 }
@@ -4040,13 +4999,26 @@ function syncPanel(force) {
   }
 
   // film settings under the picture
-  if (parts.watch) {
-    const watching = settings.videoWindow === true
-    const flag = watching ? 'true' : 'false'
-    if (parts.watch.getAttribute('data-active') !== flag) {
-      parts.watch.setAttribute('data-active', flag)
-      parts.watch.title = watching ? 'Close the watch window' : 'Pop the film out into a window'
-    }
+  if (parts.frameBtn) {
+    const on = framePressed()
+    const flag = on ? 'true' : 'false'
+    if (parts.frameBtn.getAttribute('data-active') !== flag) parts.frameBtn.setAttribute('data-active', flag)
+    if (parts.frameBtn.getAttribute('aria-pressed') !== flag) parts.frameBtn.setAttribute('aria-pressed', flag)
+    parts.frameBtn.title = on
+      ? 'The film is in its frame inside Hermes — click to put it back'
+      : 'Keep the film in a movable frame inside Hermes'
+  }
+  if (parts.ownBtn) {
+    const out = popoutPressed()
+    const label = popoutLabel()
+    const flag = out ? 'true' : 'false'
+    if (parts.ownBtn.textContent !== label) parts.ownBtn.textContent = label
+    if (parts.ownBtn.getAttribute('aria-label') !== label) parts.ownBtn.setAttribute('aria-label', label)
+    if (parts.ownBtn.getAttribute('data-active') !== flag) parts.ownBtn.setAttribute('data-active', flag)
+    if (parts.ownBtn.getAttribute('aria-pressed') !== flag) parts.ownBtn.setAttribute('aria-pressed', flag)
+    parts.ownBtn.title = out
+      ? 'Bring the film back from its desktop window'
+      : 'Play the film in its own window on the desktop'
   }
   if (parts.source) {
     // videoSourceOptions() returns <optgroup> elements; mirror them as real DOM.
@@ -4076,8 +5048,46 @@ function syncPanel(force) {
     const auto = settings.videoOpacityAuto !== false
     const current = Math.round(clamp01(settings.videoOpacity) * 100)
     for (const [preset, pill] of parts.opacityPills) {
-      const active = !auto && current === preset ? 'true' : 'false'
+      const active = preset === 'auto'
+        ? (auto ? 'true' : 'false')
+        : (!auto && current === preset ? 'true' : 'false')
       if (pill.getAttribute('data-active') !== active) pill.setAttribute('data-active', active)
+    }
+  }
+
+  // [subtitles] CC: pressed state, the "no subtitles" answer, and the language
+  // list — only when this video actually has a choice to offer.
+  if (parts.ccBtn) {
+    const info = captionInfo()
+    const tip = captionTooltip(info)
+    if (parts.ccBtn.textContent !== 'CC') parts.ccBtn.textContent = 'CC'
+    if (parts.ccBtn.getAttribute('aria-pressed') !== (info.on ? 'true' : 'false')) {
+      parts.ccBtn.setAttribute('aria-pressed', info.on ? 'true' : 'false')
+    }
+    if (parts.ccBtn.title !== tip) parts.ccBtn.title = tip
+    parts.ccBtn.disabled = !info.available
+    parts.ccBtn.style.opacity = info.available ? '1' : '0.45'
+    if (parts.captionSelect) {
+      const choices = captionLanguageChoices(info)
+      const visible = choices.length > 1
+      parts.captionSelect.style.display = visible ? '' : 'none'
+      if (visible) {
+        const signature = choices.map(choice => choice.value).join('|')
+        if (parts.captionSelect.dataset.signature !== signature) {
+          parts.captionSelect.dataset.signature = signature
+          while (parts.captionSelect.firstChild) parts.captionSelect.removeChild(parts.captionSelect.firstChild)
+          for (const choice of choices) {
+            const option = doc.createElement('option')
+            option.value = choice.value
+            option.textContent = choice.label
+            option.style.background = '#f1f1f1'
+            option.style.color = '#111111'
+            parts.captionSelect.appendChild(option)
+          }
+        }
+        const value = captionLanguageValue(info)
+        if (parts.captionSelect.value !== value) parts.captionSelect.value = value
+      }
     }
   }
 
@@ -4340,6 +5350,12 @@ function syncVideoBar(force) {
     ? settings.videoBarOpacity
     : VIDEO_BAR_OPACITY)
   videoBarEl.style.background = `rgba(12, 10, 22, ${barAlpha})`
+  // The strip's seat is the user's saved point, re-clamped for the current
+  // window. It is never derived from the page, so a poll cannot move it — and
+  // once the seat is applied the poll does not even measure the strip.
+  if (!videoBarDrag && `${settings.videoBarX}:${settings.videoBarY}` !== videoBarSeat) {
+    applyVideoBarPosition()
+  }
 
   // A new player document starts at its own default volume: re-send ours
   // shortly after each (re)load so a source swap keeps the level.
@@ -4379,20 +5395,36 @@ function syncVideoBar(force) {
   if (parts.fill && parts.fill.style.width !== percentWidth) parts.fill.style.width = percentWidth
   if (parts.scrub) parts.scrub.setAttribute('aria-valuetext', clock)
   if (parts.inlineBtn) {
-    const wantGlyph = videoWindowOn() ? '⟲' : '⧉'
-    if (parts.inlineBtn.textContent !== wantGlyph) parts.inlineBtn.textContent = wantGlyph
-    parts.inlineBtn.title = inlineLabel() === 'Bring back'
-      ? 'Bring the film back into Hermes'
-      : 'Pop out — a floating window you can drag anywhere'
-    parts.inlineBtn.setAttribute('aria-label', inlineLabel())
+    const label = frameLabel()
+    if (parts.inlineBtn.textContent !== label) parts.inlineBtn.textContent = label
+    parts.inlineBtn.setAttribute('aria-label', label)
+    parts.inlineBtn.setAttribute('aria-pressed', framePressed() ? 'true' : 'false')
+    parts.inlineBtn.setAttribute('data-active', framePressed() ? 'true' : 'false')
+    parts.inlineBtn.style.borderColor = framePressed()
+      ? 'rgba(255,190,120,0.55)'
+      : 'rgba(255,255,255,0.16)'
+    parts.inlineBtn.style.background = framePressed()
+      ? 'rgba(255,190,120,0.16)'
+      : 'transparent'
+    parts.inlineBtn.title = framePressed()
+      ? 'The film is in its frame inside Hermes — click to put it back'
+      : 'Keep the film in a movable frame inside Hermes'
   }
   if (parts.ownBtn) {
-    const wantGlyph = (desktopOwned || desktopPending) ? '⟲' : '⛶'
-    if (parts.ownBtn.textContent !== wantGlyph) parts.ownBtn.textContent = wantGlyph
-    parts.ownBtn.title = ownLabel() === 'Bring back'
-      ? 'Bring the film back from its own window'
-      : 'Own window — open the film outside Hermes (another monitor, full screen)'
-    parts.ownBtn.setAttribute('aria-label', ownLabel())
+    const label = popoutLabel()
+    if (parts.ownBtn.textContent !== label) parts.ownBtn.textContent = label
+    parts.ownBtn.setAttribute('aria-label', label)
+    parts.ownBtn.setAttribute('aria-pressed', popoutPressed() ? 'true' : 'false')
+    parts.ownBtn.setAttribute('data-active', popoutPressed() ? 'true' : 'false')
+    parts.ownBtn.style.borderColor = popoutPressed()
+      ? 'rgba(255,190,120,0.55)'
+      : 'rgba(255,255,255,0.16)'
+    parts.ownBtn.style.background = popoutPressed()
+      ? 'rgba(255,190,120,0.16)'
+      : 'transparent'
+    parts.ownBtn.title = popoutPressed()
+      ? 'Bring the film back from its desktop window'
+      : 'Play the film in its own window on the desktop'
   }
   if (parts.title) {
     const current = videoQueue().find(item => item.url === settings.videoUrl)
@@ -4415,6 +5447,24 @@ function syncVideoBar(force) {
   const volume = Math.round(clamp01(settings.videoVolume) * 100)
   const volumeLabel = volume === 0 ? '🔇' : `🔊 ${volume}%`
   if (parts.volume.textContent !== volumeLabel) parts.volume.textContent = volumeLabel
+
+  // [subtitles] The strip's CC button: pressed while captions are on, disabled
+  // (with the reason) when this video has none.
+  if (parts.cc) {
+    const info = captionInfo()
+    const tip = captionTooltip(info)
+    if (parts.cc.title !== tip) parts.cc.title = tip
+    parts.cc.disabled = !info.available
+    parts.cc.setAttribute('aria-pressed', info.on ? 'true' : 'false')
+    parts.cc.style.opacity = info.available ? '1' : '0.4'
+    parts.cc.style.cursor = info.available ? 'pointer' : 'not-allowed'
+    parts.cc.style.borderColor = info.on && info.available
+      ? 'rgba(255,190,120,0.55)'
+      : 'transparent'
+    parts.cc.style.background = info.on && info.available
+      ? 'rgba(255,190,120,0.16)'
+      : 'transparent'
+  }
 
   if (parts.picker) {
     const queue = videoQueue()
@@ -4566,6 +5616,12 @@ function modeToggle(mode, compact) {
   })
 }
 
+// The quick menu's real width, in CSS px. A row is laid out inside this box
+// (padding 12px a side), and no row may exceed it: labels ellipsis, controls
+// shrink or wrap. Kept as one constant so a test can assert against the same
+// number the popover is given.
+const QUICK_MENU_WIDTH = 288
+
 function AuraQuickMenu() {
   const settings = useValue($settings)
   const live = useValue($live)
@@ -4580,20 +5636,41 @@ function AuraQuickMenu() {
   const locked = filmBackdrop(settings)
   const auraTitle = locked ? AURA_LOCK_TITLE : undefined
   const showTitle = locked ? SHOW_LOCK_TITLE : undefined
+  // "Skipped episodes" only earns a row when something has been skipped: a
+  // permanent "0 hidden" line was noise the owner asked to lose.
+  const skippedCount = Array.isArray(settings.videoHiddenIds) ? settings.videoHiddenIds.length : 0
+  const SKIPPED_TITLE = 'Episodes you hid from your playlists. Aura skips them.'
+  // [subtitles] One read of the player's caption report for the whole menu.
+  const captionState = captionInfo()
+  const captionChoices = captionLanguageChoices(captionState)
+  const captionTip = captionTooltip(captionState)
 
   const setOpen = value => {
     if ($menuOpen.get() !== Boolean(value)) $menuOpen.set(Boolean(value))
   }
 
-  const row = (label, control) =>
+  // One row that can never overflow the popover: the label shrinks (ellipsis)
+  // and the control is allowed to shrink or wrap to the next line. The menu is
+  // a fixed, known width; nothing in a row may exceed it.
+  const row = (label, control, title) =>
     jsxs('div', {
-      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '7px 12px' },
+      style: {
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: 10, padding: '7px 12px', minWidth: 0, flexWrap: 'wrap', rowGap: 4
+      },
       children: [
         jsx('div', {
-          style: { fontSize: 12, color: 'var(--ui-text-primary)', whiteSpace: 'nowrap' },
+          title,
+          style: {
+            fontSize: 12, color: 'var(--ui-text-primary)', whiteSpace: 'nowrap',
+            flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis'
+          },
           children: label
         }),
-        jsx('div', { style: { display: 'flex', alignItems: 'center', flex: 'none' }, children: control })
+        jsx('div', {
+          style: { display: 'flex', alignItems: 'center', flex: '0 1 auto', minWidth: 0 },
+          children: control
+        })
       ]
     })
 
@@ -4618,9 +5695,35 @@ function AuraQuickMenu() {
   const transportStyle = { minWidth: 24, padding: '0 4px', fontSize: 13, lineHeight: 1 }
   const presetStyle = { minWidth: 0, padding: '0 6px', fontSize: 11, lineHeight: 1.4 }
 
-  const glyphColor = auraOn ? 'var(--ui-accent)' : 'var(--ui-text-tertiary)'
+  // Full contrast in both themes: the theme's own primary text when Aura is
+  // off (never the faint tertiary token), the accent while it is active.
+  const glyphColor = auraOn ? 'var(--ui-accent)' : 'var(--ui-text-primary)'
+  const now = nowPlaying(settings, videoState)
+  // The status bar says what is being watched, in the theme's primary text so a
+  // light skin and a dark one both read it. The URL never appears here.
+  const statusTitle = now.title
+    ? (now.title.length > 46 ? now.title.slice(0, 45).trimEnd() + '…' : now.title)
+    : ''
+  const statusLabel = statusTitle
+    ? jsx('span', {
+      className: 'aura-status-title',
+      title: now.title,
+      style: {
+        fontSize: 11.5,
+        fontWeight: 600,
+        lineHeight: 1.2,
+        color: 'var(--ui-text-primary)',
+        maxWidth: 220,
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap'
+      },
+      children: `Watching ${statusTitle}`
+    })
+    : null
 
-  return jsxs(Popover, {
+  const popover = jsxs(Popover, {
     open,
     onOpenChange: setOpen,
     children: [
@@ -4638,7 +5741,8 @@ function AuraQuickMenu() {
             'aria-hidden': true,
             style: {
               display: 'inline-flex', alignItems: 'center', gap: 5,
-              fontSize: 12, lineHeight: 1, letterSpacing: 0.2, fontWeight: 600
+              fontSize: 12, lineHeight: 1, letterSpacing: 0.2, fontWeight: 700,
+              color: 'inherit'
             },
             children: [
               // The mark: a lit core with two aura rings falling away from it,
@@ -4656,12 +5760,12 @@ function AuraQuickMenu() {
                   jsx('path', {
                     d: 'M4.6 4.1a5.5 5.5 0 0 0 0 7.8',
                     stroke: 'currentColor', strokeWidth: 1.25, fill: 'none',
-                    strokeLinecap: 'round', opacity: 0.6
+                    strokeLinecap: 'round', opacity: 0.9
                   }),
                   jsx('path', {
                     d: 'M11.4 4.1a5.5 5.5 0 0 1 0 7.8',
                     stroke: 'currentColor', strokeWidth: 1.25, fill: 'none',
-                    strokeLinecap: 'round', opacity: 0.6
+                    strokeLinecap: 'round', opacity: 0.9
                   })
                 ]
               }),
@@ -4691,7 +5795,10 @@ function AuraQuickMenu() {
         align: 'end',
         'aria-label': 'Aura quick settings',
         style: {
-          minWidth: 264,
+          minWidth: QUICK_MENU_WIDTH,
+          width: QUICK_MENU_WIDTH,
+          maxWidth: 'calc(100vw - 24px)',
+          boxSizing: 'border-box',
           padding: '6px 0',
           background: 'var(--ui-bg-elevated, var(--ui-bg))',
           border: '1px solid var(--ui-stroke-secondary)',
@@ -4899,6 +6006,48 @@ function AuraQuickMenu() {
                     children: videoSourceOptions(settings)
                   })
                 ),
+                // [subtitles] The CC switch, and the language list the player
+                // publishes for this video (only when there is a choice).
+                row(
+                  'Subtitles',
+                  jsxs('div', {
+                    style: { display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, flexWrap: 'wrap' },
+                    children: [
+                      jsx(Button, {
+                        key: 'cc',
+                        size: 'micro',
+                        variant: captionState.on ? 'default' : 'ghost',
+                        'aria-label': 'Subtitles (CC)',
+                        'aria-pressed': captionState.on,
+                        title: captionTip,
+                        disabled: !captionState.available,
+                        onClick: () => setVideoCaptions(!captionState.on),
+                        children: 'CC'
+                      }),
+                      captionChoices.length > 1
+                        ? jsx('select', {
+                          key: 'lang',
+                          className: 'aura-select',
+                          value: captionLanguageValue(captionState),
+                          'aria-label': 'Subtitle language',
+                          title: 'The subtitle language, from the ones this video has',
+                          style: { ...selectStyle, maxWidth: 150, colorScheme: 'light' },
+                          onChange: event => {
+                            setVideoCaptionLang(String(event && event.target ? event.target.value : ''))
+                          },
+                          children: captionChoices.map(choice =>
+                            jsx('option', {
+                              key: choice.value || 'auto',
+                              value: choice.value,
+                              style: { background: '#f1f1f1', color: '#111111' },
+                              children: choice.label
+                            })
+                          )
+                        })
+                        : null
+                    ]
+                  })
+                ),
                 // The picker lists everything; editing lives on the page where
                 // there is room for names, removal and playlists.
                 useHostNav
@@ -5030,18 +6179,24 @@ function AuraQuickMenu() {
                     onCheckedChange: value => setPanelEnabled(value)
                   })
                 ),
-                // Three surfaces, chosen on purpose: the Aura page, the small
-                // in-app frame, and a real OS window. The in-app switch and the
-                // pop-out button are separate so one never turns on the other.
-                row(
-                  'Hidden episodes',
-                  jsx(Button, {
-                    variant: 'ghost',
-                    size: 'sm',
-                    onClick: () => { writeSettings({ videoHiddenIds: [] }); syncPanel(true) },
-                    children: `${(Array.isArray(settings.videoHiddenIds) ? settings.videoHiddenIds.length : 0)} hidden · show all again`
-                  })
-                ),
+                // Three surfaces, chosen on purpose: the Aura page, the in-app
+                // frame, and a real desktop window. The two buttons below are
+                // separate so one never turns on the other; the skipped-episode
+                // row only exists when something has actually been skipped.
+                skippedCount > 0
+                  ? row(
+                    'Skipped episodes',
+                    jsx(Button, {
+                      variant: 'ghost',
+                      size: 'sm',
+                      title: SKIPPED_TITLE,
+                      'aria-label': `Show all ${skippedCount} skipped episodes again`,
+                      onClick: () => { writeSettings({ videoHiddenIds: [] }); syncPanel(true) },
+                      children: `Show all ${skippedCount} again`
+                    }),
+                    SKIPPED_TITLE
+                  )
+                  : null,
                 row(
                   'Edit this list on YouTube',
                   jsx(Button, {
@@ -5063,23 +6218,46 @@ function AuraQuickMenu() {
                     children: 'Open in YouTube'
                   })
                 ),
-                row(
-                  'Small frame in Hermes',
-                  jsx(Switch, {
-                    checked: settings.videoWindow === true,
-                    'aria-label': 'Small frame in Hermes',
-                    onCheckedChange: value => setVideoWindow(value)
-                  })
-                ),
-                row(
-                  'Pop out to its own window',
-                  jsx(Button, {
-                    variant: 'default',
-                    size: 'sm',
-                    onClick: () => { void setDesktopWindow(true) },
-                    children: 'Open on a screen'
-                  })
-                ),
+                // Two equal buttons, the same words every surface uses. "Frame
+                // in Hermes" is a toggle (pressed while the in-app frame holds
+                // the film); "Pop out to desktop" becomes "Bring back" only
+                // while the desktop window holds it.
+                jsxs('div', {
+                  key: 'popouts',
+                  style: {
+                    display: 'flex', alignItems: 'stretch', gap: 8,
+                    padding: '7px 12px', minWidth: 0
+                  },
+                  children: [
+                    jsx(Button, {
+                      size: 'sm',
+                      variant: framePressed() ? 'default' : 'ghost',
+                      'aria-label': FRAME_LABEL,
+                      'aria-pressed': framePressed(),
+                      title: framePressed()
+                        ? 'The film is in its frame inside Hermes — click to put it back'
+                        : 'Keep the film in a movable frame inside Hermes',
+                      style: POPOUT_BUTTON_STYLE,
+                      // setInlineWindow, not setVideoWindow: it also puts the
+                      // frame's own pane on screen and parks an open desktop
+                      // window, so one film never plays on two surfaces.
+                      onClick: () => setInlineWindow(!framePressed()),
+                      children: FRAME_LABEL
+                    }),
+                    jsx(Button, {
+                      size: 'sm',
+                      variant: popoutPressed() ? 'default' : 'ghost',
+                      'aria-label': popoutLabel(),
+                      'aria-pressed': popoutPressed(),
+                      title: popoutPressed()
+                        ? 'Bring the film back from its desktop window'
+                        : 'Play the film in its own window on the desktop',
+                      style: POPOUT_BUTTON_STYLE,
+                      onClick: () => { void setOwnWindow(!(desktopOwned || desktopPending)) },
+                      children: popoutLabel()
+                    })
+                  ]
+                }),
                 jsxs('div', {
                   key: 'videoFooter',
                   style: {
@@ -5104,11 +6282,6 @@ function AuraQuickMenu() {
                     jsx('span', {
                       style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30, textAlign: 'right' },
                       children: `${Math.round(clamp01(settings.videoVolume) * 100)}%`
-                    }),
-                    jsx(Switch, {
-                      checked: settings.videoWindow === true,
-                      'aria-label': 'Small frame in Hermes',
-                      onCheckedChange: value => { setVideoWindow(value) }
                     }),
                     jsx('select', { className: 'aura-select',
                       value: settings.videoWindowSize,
@@ -5161,6 +6334,14 @@ function AuraQuickMenu() {
         ]
       })
     ]
+  })
+
+  // One status-bar item: the "Watching …" line, then the Aura trigger. Both
+  // stay inside Aura's own contribution — no host DOM is restyled.
+  return jsxs('span', {
+    className: 'aura-status-item',
+    style: { display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 },
+    children: [statusLabel, popover]
   })
 }
 
@@ -5337,6 +6518,284 @@ function pageAddSource() {
   return saved
 }
 
+// ---- the shelf: the committed catalogue (web/catalog.json) ----------------
+// One fetch per page visit through the same ctx.rest door everything else uses.
+// Failure is not an error state the page shows: Picks and the saved library
+// still work, so the shelf simply stays absent.
+
+/** Seconds -> "1 h 32 min" / "47 min"; '' when the catalogue has no length. */
+function fmtLength(seconds) {
+  const total = Math.round(Number(seconds))
+  if (!Number.isFinite(total) || total <= 0) return ''
+  const minutes = Math.round(total / 60)
+  if (!minutes) return `${total} s`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  if (hours && rest) return `${hours} h ${rest} min`
+  if (hours) return `${hours} h`
+  return `${rest} min`
+}
+
+/** The catalogue rows as the shelf draws them, in the file's category order. */
+function catalogRows(items, query) {
+  const wanted = String(query || '').trim().toLowerCase()
+  const order = []
+  const byCategory = new Map()
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item || typeof item.url !== 'string' || typeof item.title !== 'string') continue
+    if (!item.category) continue
+    if (wanted) {
+      const haystack = `${item.title} ${item.note || ''} ${item.category}`.toLowerCase()
+      if (!haystack.includes(wanted)) continue
+    }
+    if (!byCategory.has(item.category)) {
+      byCategory.set(item.category, [])
+      order.push(item.category)
+    }
+    byCategory.get(item.category).push(item)
+  }
+  return order.map(category => ({
+    id: category,
+    title: category,
+    items: byCategory.get(category)
+  }))
+}
+
+/** The shelf's own search text. A module mirror (like pageSourceDraft) so the
+ *  commit path reads exactly what is on screen even before a re-render lands. */
+let catalogSearch = ''
+
+/** Load the catalogue once per page visit. A failed fetch leaves `loaded`
+ *  false, so the next visit tries again instead of remembering a bad day. */
+function loadCatalog() {
+  if (!ctxRef || disposed) return Promise.resolve()
+  if ($catalog.get().loaded) return Promise.resolve()
+  if (catalogRequest) return catalogRequest
+  catalogRequest = (async () => {
+    try {
+      const payload = await ctxRef.rest('/catalog', { timeoutMs: 8000 })
+      const raw = payload && Array.isArray(payload.items) ? payload.items : []
+      const seen = new Set()
+      const items = []
+      for (const entry of raw) {
+        if (!entry || typeof entry.url !== 'string' || typeof entry.title !== 'string') continue
+        if (!/^https?:\/\//i.test(entry.url) || !entry.title.trim() || !entry.category) continue
+        if (seen.has(entry.url)) continue
+        seen.add(entry.url)
+        items.push({
+          category: String(entry.category),
+          title: entry.title.trim(),
+          year: Number.isFinite(Number(entry.year)) ? Number(entry.year) : null,
+          url: entry.url.trim().slice(0, VIDEO_URL_MAX),
+          note: typeof entry.note === 'string' ? entry.note : '',
+          duration_s: Number.isFinite(Number(entry.duration_s)) && Number(entry.duration_s) > 0
+            ? Number(entry.duration_s)
+            : null
+        })
+      }
+      $catalog.set({ loaded: true, error: '', items })
+    } catch {
+      // Offline, old server, no catalogue: the page is still a working library.
+      $catalog.set({ loaded: false, error: 'catalogue unavailable', items: [] })
+    } finally {
+      catalogRequest = null
+    }
+  })()
+  return catalogRequest
+}
+
+/** One poster-less shelf card: title, year, length; the one-line note rides on
+ *  the hover/focus tooltip and in a line that only colours in on hover. */
+function PageCatalogCard(props) {
+  const item = props.item
+  const active = props.active === true
+  const length = fmtLength(item.duration_s)
+  const play = () => {
+    void playOnPage(item.url, item.title)
+  }
+  const meta = []
+  if (item.year) meta.push(jsx('span', { key: 'year', className: 'aura-shelf-year', children: String(item.year) }))
+  if (length) meta.push(jsx('span', { key: 'len', className: 'aura-shelf-len', children: length }))
+  return jsxs('div', {
+    className: active ? 'aura-shelf-card is-active' : 'aura-shelf-card',
+    style: { minWidth: 0 },
+    role: 'button',
+    tabIndex: 0,
+    'aria-label': `Play ${item.title}`,
+    title: item.note || item.title,
+    onClick: play,
+    onKeyDown: event => {
+      if (!event || (event.key !== 'Enter' && event.key !== ' ')) return
+      if (event.preventDefault) event.preventDefault()
+      play()
+    },
+    children: [
+      jsx('div', { key: 'title', className: 'aura-shelf-title', children: item.title }),
+      jsx('div', { key: 'meta', className: 'aura-shelf-meta', children: meta }),
+      jsx('div', { key: 'note', className: 'aura-shelf-note', children: item.note || '' })
+    ]
+  })
+}
+
+/** One horizontal row: a heading with its count, then a strip that scrolls
+ *  sideways instead of pushing the page wider than its column. */
+function PageShelfRow(props) {
+  const Card = props.card || PageCatalogCard
+  return jsxs('div', {
+    className: 'aura-shelf-row',
+    'data-category': props.id,
+    style: { minWidth: 0, maxWidth: '100%' },
+    children: [
+      jsxs('div', {
+        key: 'head',
+        className: 'aura-sec-head',
+        children: [
+          jsx('span', { key: 'label', className: 'aura-sec-label', children: props.title }),
+          jsx('span', { key: 'count', className: 'aura-count', children: String(props.items.length) }),
+          jsx('span', { key: 'space', style: { flex: 1 } }),
+          props.extra || null
+        ]
+      }),
+      jsx('div', {
+        key: 'strip',
+        className: 'aura-shelf-strip',
+        style: {
+          display: 'flex', gap: 10, overflowX: 'auto', overflowY: 'hidden',
+          maxWidth: '100%', minWidth: 0, paddingBottom: 6
+        },
+        children: props.items.map(item => jsx(Card, {
+          key: item.url,
+          item,
+          active: item.url === props.currentUrl
+        }))
+      })
+    ]
+  })
+}
+
+/** A Picks card: the starter pack keeps its poster, sized to the shelf strip. */
+function PagePickCard(props) {
+  const item = props.item
+  return jsx('div', {
+    className: 'aura-shelf-slot',
+    style: { minWidth: 0 },
+    children: jsx(PageSourceCard, {
+      item: { label: item.title, url: item.url },
+      kind: 'starter',
+      active: props.active === true
+    })
+  })
+}
+
+/** The shelf proper: Picks (the starter pack, first) then one row per catalogue
+ *  category, all filtered by one search box. */
+function PageShelf() {
+  const settings = useValue($settings)
+  const catalog = useValue($catalog)
+  const [, bumpSearch] = useState(0)
+  const query = catalogSearch
+  useEffect(() => {
+    void loadCatalog()
+  }, [])
+  const hidden = new Set(Array.isArray(settings.videoHiddenStarters) ? settings.videoHiddenStarters : [])
+  const picks = STARTER_SOURCES
+    .filter(item => !hidden.has(item.url))
+    .filter(item => !query || item.label.toLowerCase().includes(query.toLowerCase()))
+    .map(item => ({ label: item.label, url: item.url }))
+  const rows = catalogRows(catalog.items, query)
+  const onSearch = event => {
+    catalogSearch = String(event && event.target ? event.target.value : '')
+    bumpSearch(catalogSearch.length)
+  }
+  const startersHidden = Array.isArray(settings.videoHiddenStarters) &&
+    settings.videoHiddenStarters.length > 0
+  const pickToggle = jsx('button', {
+    key: 'starters-toggle',
+    type: 'button',
+    className: 'aura-chip',
+    'aria-label': startersHidden ? 'Show starter films' : 'Hide starter films',
+    onClick: () => setDemosHidden(!startersHidden),
+    children: startersHidden ? 'Show starters' : 'Hide starters'
+  })
+
+  const children = [
+    jsx('div', {
+      key: 'head',
+      className: 'aura-sec-head',
+      children: [
+        jsx('span', { key: 'label', className: 'aura-sec-label', children: 'Shelf' }),
+        jsx('span', {
+          key: 'count',
+          className: 'aura-count',
+          children: catalog.loaded ? `${catalog.items.length} titles` : 'Picks only'
+        }),
+        jsx('span', { key: 'space', style: { flex: 1 } }),
+        jsx('input', {
+          key: 'search',
+          type: 'text',
+          className: 'aura-input aura-shelf-search',
+          value: query,
+          placeholder: 'Search the catalogue',
+          'aria-label': 'Search the catalogue',
+          spellCheck: false,
+          onChange: onSearch
+        })
+      ]
+    }),
+    jsx(PageShelfRow, {
+      key: 'picks',
+      id: 'picks',
+      title: 'Picks',
+      card: PagePickCard,
+      items: picks.map(item => ({
+        title: item.label,
+        url: item.url,
+        category: 'Picks',
+        year: null,
+        duration_s: null,
+        note: item.label
+      })),
+      currentUrl: settings.videoUrl,
+      extra: pickToggle
+    })
+  ]
+
+  if (startersHidden && !picks.length && !query) {
+    children.push(jsx('div', {
+      key: 'picks-empty',
+      className: 'aura-empty',
+      children: 'The starter films are hidden. Show them again with the button above.'
+    }))
+  }
+
+  for (const row of rows) {
+    children.push(jsx(PageShelfRow, {
+      key: `row-${row.id}`,
+      id: row.id,
+      title: row.title,
+      items: row.items,
+      currentUrl: settings.videoUrl
+    }))
+  }
+
+  if (catalog.loaded && !rows.length) {
+    children.push(jsx('div', {
+      key: 'empty',
+      className: 'aura-empty',
+      children: query
+        ? `Nothing in the catalogue matches “${query}”.`
+        : 'The catalogue is empty.'
+    }))
+  }
+
+  return jsx('div', {
+    className: 'aura-shelf',
+    'aria-label': 'Shelf',
+    style: { display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0, maxWidth: '100%' },
+    children
+  })
+}
+
 /** One poster card: the card itself plays the source; saved entries also get
  *  an inline rename field and a Remove chip. */
 function PageSourceCard(props) {
@@ -5424,9 +6883,7 @@ function PageLibrary() {
   const settings = useValue($settings)
   const [draftUrl, setDraftUrl] = useState('')
   const [draftName, setDraftName] = useState('')
-  const groups = videoSourceGroups(settings)
-  const startersHidden = Array.isArray(settings.videoHiddenStarters) &&
-    settings.videoHiddenStarters.length > 0
+  const groups = videoSourceGroups(settings).filter(group => group.id !== 'starters')
   const submit = () => {
     if (!pageAddSource()) return
     setDraftUrl('')
@@ -5457,6 +6914,7 @@ function PageLibrary() {
           })
         ]
       }),
+      jsx(PageShelf, { key: 'shelf' }),
       jsxs('div', {
         key: 'add',
         className: 'aura-add',
@@ -5529,8 +6987,7 @@ function PageLibrary() {
         ]
       }),
       groups.map(group => {
-        const emptyStarters = group.id === 'starters' && group.items.length === 0
-        if (!group.items.length && !emptyStarters) return null
+        if (!group.items.length) return null
         return jsxs('div', {
           key: `group-${group.id}`,
           className: 'aura-group',
@@ -5542,16 +6999,6 @@ function PageLibrary() {
                 jsx('span', { key: 'label', className: 'aura-sec-label', children: group.label }),
                 jsx('span', { key: 'count', className: 'aura-count', children: String(group.items.length) }),
                 jsx('span', { key: 'space', style: { flex: 1 } }),
-                group.id === 'starters'
-                  ? jsx('button', {
-                    key: 'starters-toggle',
-                    type: 'button',
-                    className: 'aura-chip',
-                    'aria-label': startersHidden ? 'Show starter films' : 'Hide starter films',
-                    onClick: () => setDemosHidden(!startersHidden),
-                    children: startersHidden ? 'Show starters' : 'Hide starters'
-                  })
-                  : null,
                 group.id === 'recent'
                   ? jsx('button', {
                     key: 'clear',
@@ -5564,23 +7011,17 @@ function PageLibrary() {
                   : null
               ]
             }),
-            emptyStarters
-              ? jsx('div', {
-                key: 'empty',
-                className: 'aura-empty',
-                children: 'The starter films are hidden. Show them again with the button above.'
-              })
-              : jsx('div', {
-                key: 'grid',
-                className: 'aura-grid',
-                children: group.items.map(item => jsx(PageSourceCard, {
-                  key: item.url,
-                  item,
-                  kind: groupLabel(group),
-                  active: item.url === settings.videoUrl,
-                  saved: group.id === 'playlists' || group.id === 'films'
-                }))
-              })
+            jsx('div', {
+              key: 'grid',
+              className: 'aura-grid',
+              children: group.items.map(item => jsx(PageSourceCard, {
+                key: item.url,
+                item,
+                kind: groupLabel(group),
+                active: item.url === settings.videoUrl,
+                saved: group.id === 'playlists' || group.id === 'films'
+              }))
+            })
           ]
         })
       })
@@ -5633,6 +7074,9 @@ function AuraPage() {
   }, [])
   const duration = Number(state.duration) || 0
   const progress = duration ? clamp01((Number(state.position) || 0) / duration) : 0
+  // [subtitles] The player's caption report, read once for the whole page.
+  const captionState = captionInfo()
+  const captionChoices = captionLanguageChoices(captionState)
   const hint = !auraOn
     ? 'Aura is off. Turn it on in the setup below to watch here.'
     : settings.videoClosed
@@ -5646,6 +7090,8 @@ function AuraPage() {
             : state.blocked
               ? 'This video cannot be embedded. Paste a different link, or pick another source.'
               : ''
+
+  const now = nowPlaying(settings, state)
 
   const filmStage = jsxs('div', {
     ref: pageStageRef,
@@ -5727,31 +7173,69 @@ function AuraPage() {
       jsx('span', { key: 't', style: { display: 'inline-flex' }, children: pageButton(playing ? '⏸' : '▶', playing ? 'Pause' : 'Play', () => videoCommand('toggle'), true) }),
       jsx('span', { key: 'f', style: { display: 'inline-flex' }, children: pageButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10)) }),
       jsx('span', { key: 'n', style: { display: 'inline-flex' }, children: pageButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next')) }),
+      // [subtitles] CC, and the language list this video actually offers.
+      jsx(Button, {
+        key: 'cc',
+        size: 'micro',
+        variant: captionState.on ? 'default' : 'ghost',
+        'aria-label': 'Subtitles (CC)',
+        'aria-pressed': captionState.on,
+        title: captionTooltip(captionState),
+        disabled: !captionState.available,
+        onClick: () => setVideoCaptions(!captionState.on),
+        children: 'CC'
+      }),
+      captionChoices.length > 1
+        ? jsx('select', {
+          key: 'cc-lang',
+          className: 'aura-select',
+          value: captionLanguageValue(captionState),
+          'aria-label': 'Subtitle language',
+          title: 'The subtitle language, from the ones this video has',
+          style: { maxWidth: 150 },
+          onChange: event => {
+            setVideoCaptionLang(String(event && event.target ? event.target.value : ''))
+          },
+          children: captionChoices.map(choice =>
+            jsx('option', {
+              key: choice.value || 'auto',
+              value: choice.value,
+              style: { background: '#f1f1f1', color: '#111111' },
+              children: choice.label
+            })
+          )
+        })
+        : null,
       jsx('span', { key: 'gap', style: { flex: 1 } }),
-      // Two surfaces, two buttons: the floating window inside Hermes, and the
-      // real OS window outside it. Each turns into "Bring back" for its own
-      // surface only.
+      // Two surfaces, two buttons, equal and named the same way everywhere:
+      // "Frame in Hermes" (a toggle, pressed while the in-app frame holds the
+      // film) and "Pop out to desktop" (which reads "Bring back" while the OS
+      // window holds it).
       jsx(Button, {
         key: 'pop-inline',
         size: 'micro',
         variant: videoWindowOn() ? 'default' : 'ghost',
-        'aria-label': inlineLabel(),
+        'aria-label': frameLabel(),
+        'aria-pressed': videoWindowOn() ? 'true' : 'false',
         title: videoWindowOn()
-          ? 'Bring the film back onto this page'
-          : 'Pop out — a floating window inside Hermes you can drag anywhere',
+          ? 'The film is in its frame inside Hermes — click to put it back'
+          : 'Keep the film in a movable frame inside Hermes',
+        style: POPOUT_BUTTON_STYLE,
         onClick: () => setInlineWindow(!videoWindowOn()),
-        children: inlineLabel()
+        children: frameLabel()
       }),
       jsx(Button, {
         key: 'pop-own',
         size: 'micro',
         variant: (desktopOwned || desktopPending) ? 'default' : 'ghost',
-        'aria-label': ownLabel(),
-        title: (desktopOwned || desktopPending)
-          ? 'Bring the film back from its own window'
-          : 'Own window — play outside Hermes, on another monitor or full screen',
+        'aria-label': popoutLabel(),
+        'aria-pressed': popoutPressed() ? 'true' : 'false',
+        title: popoutPressed()
+          ? 'Bring the film back from its desktop window'
+          : 'Play the film in its own window on the desktop',
+        style: POPOUT_BUTTON_STYLE,
         onClick: () => { void setOwnWindow(!(desktopOwned || desktopPending)) },
-        children: ownLabel()
+        children: popoutLabel()
       }),
       jsx(Button, {
         key: 'open',
@@ -5830,11 +7314,41 @@ function AuraPage() {
     ]
   })
 
+  // Now playing: the title (and its channel when the player knows one) sits
+  // directly above the big player, large and clear. The player's own report
+  // wins; before it arrives the stored title for the source is shown, so a
+  // source change never leaves the previous film's name on screen.
+  const nowLine = jsxs('div', {
+    key: 'now',
+    className: 'aura-now',
+    // Announced, not just drawn: when the playlist moves on, a screen reader
+    // hears the new title without hunting for it.
+    role: 'status',
+    'aria-live': 'polite',
+    children: [
+      jsx('span', {
+        key: 'label',
+        className: 'aura-now-label',
+        children: 'Now playing'
+      }),
+      jsx('span', {
+        key: 'title',
+        className: 'aura-now-title',
+        title: now.title || undefined,
+        children: now.title || 'Nothing playing yet'
+      }),
+      now.channel
+        ? jsx('span', { key: 'channel', className: 'aura-now-channel', children: now.channel })
+        : null
+    ]
+  })
+
   const watch = jsxs('section', {
     key: 'watch',
     className: 'aura-panel aura-watch',
     'aria-label': 'Now playing',
     children: [
+      nowLine,
       jsx('div', { key: 'stage', className: 'aura-stage-wrap', children: filmStage }),
       jsx('div', { key: 'scrub', children: scrub }),
       jsx('div', { key: 'transport', children: transport }),
@@ -6042,6 +7556,9 @@ function AuraSettings() {
   const settings = useValue($settings)
   const live = useValue($live)
   const applied = useValue($themeApplied)
+  // [subtitles] Subscribed so the CC row redraws when the player reports the
+  // tracks this video has (the language list is the player's, not a constant).
+  useValue($video)
 
   const serverLine = live.ok
     ? `Server reachable on 127.0.0.1${live.port ? `:${live.port}` : ''}${live.capture ? ` · capture: ${live.capture}` : ''}`
@@ -6053,6 +7570,9 @@ function AuraSettings() {
   const locked = filmBackdrop(settings)
   const auraTitle = locked ? AURA_LOCK_TITLE : undefined
   const showTitle = locked ? SHOW_LOCK_TITLE : undefined
+
+  // The Readable sample renders the real tokens the theme would paint.
+  const tokens = readableTokens(settings)
 
   const row = (label, hint, control) =>
     jsxs('div', {
@@ -6390,6 +7910,43 @@ function AuraSettings() {
                 ]
               })
             ),
+            // [subtitles] CC: the same switch the player surfaces carry, with
+            // the language list this video offers. Burned-in subtitles are part
+            // of the picture — no API can remove them, so this says so.
+            row(
+              'Subtitles',
+              'Captions for the film: the player shows its own caption track. Subtitles burned into the picture cannot be switched off.',
+              jsxs('div', {
+                style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+                children: [
+                  jsx(Switch, {
+                    checked: settings.videoCaptions === true,
+                    'aria-label': 'Subtitles (CC) (settings)',
+                    title: captionTooltip(captionInfo()),
+                    onCheckedChange: value => setVideoCaptions(value)
+                  }),
+                  captionLanguageChoices(captionInfo()).length > 1
+                    ? jsx('select', {
+                      className: 'aura-select',
+                      value: captionLanguageValue(captionInfo()),
+                      'aria-label': 'Subtitle language (settings)',
+                      style: { maxWidth: 170, colorScheme: 'light' },
+                      onChange: event => {
+                        setVideoCaptionLang(String(event && event.target ? event.target.value : ''))
+                      },
+                      children: captionLanguageChoices(captionInfo()).map(choice =>
+                        jsx('option', {
+                          key: choice.value || 'auto',
+                          value: choice.value,
+                          style: { background: '#f1f1f1', color: '#111111' },
+                          children: choice.label
+                        })
+                      )
+                    })
+                    : null
+                ]
+              })
+            ),
             row(
               'Controls transparency',
               'How solid the floating control strip is over the film. The strip still fades out when the mouse rests.',
@@ -6413,7 +7970,7 @@ function AuraSettings() {
               })
             ),
             row(
-              'Watch window',
+              'Frame in Hermes',
               'Puts the film in its own 16:9 frame above the app instead of behind it, so you can watch it without text reading through.',
               jsxs('div', {
                 style: { display: 'flex', alignItems: 'center', gap: 6 },
@@ -6655,6 +8212,167 @@ function AuraSettings() {
           )
         })
         : null,
+      // ---- Readable: everything that makes chat legible over a film --------
+      // Each control writes a theme token, not a style rule: the host paints the
+      // theme, Aura never reaches into app markup (see the theme contract).
+      jsxs('div', {
+        key: 'readable',
+        'data-aura-group': 'readable',
+        style: {
+          display: 'flex',
+          flexDirection: 'column',
+          margin: '10px 0 4px',
+          padding: '8px 10px 6px',
+          border: '1px solid var(--ui-stroke-secondary)',
+          borderRadius: 8
+        },
+        children: [
+          jsxs('div', {
+            key: 'head',
+            style: { display: 'flex', alignItems: 'baseline', gap: 8 },
+            children: [
+              jsx('div', {
+                key: 'title',
+                style: { fontSize: 12, fontWeight: 600, color: 'var(--ui-text-primary)' },
+                children: 'Readable'
+              }),
+              jsx('div', {
+                key: 'note',
+                style: { fontSize: 11, color: 'var(--ui-text-tertiary)' },
+                children: 'Bigger, higher-contrast chat text'
+              })
+            ]
+          }),
+          jsx('div', {
+            key: 'on',
+            children: row(
+              'Readable text',
+              'Applies these choices through the Aura Live theme, so chat stays legible over a film. Off gives your own theme back.',
+              jsx(Switch, {
+                checked: settings.readable === true,
+                'aria-label': 'Readable text',
+                onCheckedChange: value => setReadable(value)
+              })
+            )
+          }),
+          jsx('div', {
+            key: 'size',
+            children: row(
+              'Text size',
+              'M is the size the app already uses; S, L and XL move away from it, and line spacing grows with the size. Paints the theme’s base size.',
+              jsxs('div', {
+                style: { display: 'flex', alignItems: 'center', gap: 4 },
+                children: READABLE_SIZES.map(size =>
+                  jsx(Button, {
+                    key: size,
+                    size: 'micro',
+                    variant: settings.readableSize === size ? 'default' : 'ghost',
+                    disabled: settings.readable !== true,
+                    'aria-label': `Readable text size ${READABLE_SIZE_LABELS[size]}`,
+                    onClick: () => setReadableSize(size),
+                    children: READABLE_SIZE_LABELS[size]
+                  })
+                )
+              })
+            )
+          }),
+          jsx('div', {
+            key: 'font',
+            children: row(
+              'Text font',
+              'The app-wide face, painted through the theme. Atkinson Hyperlegible is designed for low vision; System and Mono need no download.',
+              jsx('select', {
+                className: 'aura-select',
+                value: settings.readableFont,
+                'aria-label': 'Readable text font',
+                disabled: settings.readable !== true,
+                style: {
+                  font: 'inherit',
+                  fontSize: 11,
+                  color: 'var(--ui-text-primary)',
+                  background: 'var(--ui-bg)',
+                  border: '1px solid var(--ui-stroke-secondary)',
+                  borderRadius: 6,
+                  padding: '3px 6px'
+                },
+                onChange: event => {
+                  setReadableFont(String(event && event.target ? event.target.value : 'system'))
+                },
+                children: READABLE_FONTS.map(font =>
+                  jsx('option', { key: font, value: font, children: READABLE_FONT_LABELS[font] })
+                )
+              })
+            )
+          }),
+          jsx('div', {
+            key: 'ink',
+            children: row(
+              'Text colour',
+              'Paints the theme’s text colour and its quieter secondary together, so both survive the next repaint.',
+              jsx('select', {
+                className: 'aura-select',
+                value: settings.readableInk,
+                'aria-label': 'Readable text colour',
+                disabled: settings.readable !== true,
+                style: {
+                  font: 'inherit',
+                  fontSize: 11,
+                  color: 'var(--ui-text-primary)',
+                  background: 'var(--ui-bg)',
+                  border: '1px solid var(--ui-stroke-secondary)',
+                  borderRadius: 6,
+                  padding: '3px 6px'
+                },
+                onChange: event => {
+                  setReadableInk(String(event && event.target ? event.target.value : 'white'))
+                },
+                children: READABLE_INKS.map(ink =>
+                  jsx('option', { key: ink, value: ink, children: READABLE_INK_LABELS[ink] })
+                )
+              })
+            )
+          }),
+          // Aura's own node in Aura's own surface: a sample of the two tokens it
+          // can show safely (face and size). The colour comes from the live
+          // theme, so it is never a simulation of somebody else's markup.
+          jsx('div', {
+            key: 'sample',
+            'aria-label': 'Readable sample',
+            style: {
+              margin: '2px 0 6px',
+              padding: '6px 8px',
+              borderRadius: 6,
+              background: 'var(--ui-bg)',
+              border: '1px solid var(--ui-stroke-secondary)',
+              fontFamily: tokens.fontSans,
+              fontSize: tokens.baseSize,
+              lineHeight: tokens.lineHeight,
+              color: 'var(--theme-foreground)'
+            },
+            children: 'Handgloves: the quick brown fox jumps over the lazy dog.'
+          }),
+          jsx('div', {
+            key: 'chatfont',
+            children: row(
+              'Hermes chat font',
+              'Hermes keeps its own chat face in Settings ▸ Appearance ▸ Chat font. Readable sets the app-wide face through the theme; that setting overrides the chat alone.',
+              jsx(Button, {
+                size: 'micro',
+                variant: 'ghost',
+                'aria-label': 'Open Hermes chat font setting',
+                onClick: () => {
+                  try {
+                    host.navigate(CHAT_FONT_SETTINGS_PATH)
+                  } catch {
+                    // older hosts without navigate
+                  }
+                },
+                children: 'Open…'
+              })
+            )
+          })
+        ]
+      }),
       jsx('div', {
         key: 'restore',
         children: row(
@@ -6729,6 +8447,121 @@ const AURA_THEME = {
     fontMono: 'ui-monospace, SFMono-Regular, Menlo, monospace'
   }
 }
+
+// ------------------------------------------------------ readable theme layer
+// Readable is NOT a stylesheet over the app: it is the same contributed theme
+// with a different typography block and foreground ink. Updating it is a
+// re-register (the host treats a registry change as a theme change and repaints
+// in place), and turning it off goes through `restoreTheme()` — the same door
+// "Use Aura theme" uses. Nothing here writes host markup.
+
+/** The tokens the Readable choices map to. Sizes and colours are looked up, so
+ *  an unknown value can only ever fall back to the default, never paint. */
+function readableTokens(settings) {
+  const current = settings || {}
+  const size = READABLE_SIZES.includes(current.readableSize) ? current.readableSize : DEFAULT_SETTINGS.readableSize
+  const font = READABLE_FONTS.includes(current.readableFont) ? current.readableFont : DEFAULT_SETTINGS.readableFont
+  const ink = READABLE_INKS.includes(current.readableInk) ? current.readableInk : DEFAULT_SETTINGS.readableInk
+  return {
+    baseSize: READABLE_BASE_SIZES[size],
+    lineHeight: READABLE_LINE_HEIGHTS[size],
+    fontSans: READABLE_FONT_STACKS[font],
+    fontUrl: READABLE_FONT_URLS[font],
+    ink: READABLE_INK_COLORS[ink]
+  }
+}
+
+/** Aura's contributed theme, with the Readable choices layered on while they are
+ *  on. With Readable off this IS the plain Aura Live palette — which is what
+ *  makes "off" a real restore rather than a second look. */
+function auraThemeData(settings) {
+  if (!settings || settings.readable !== true) return AURA_THEME
+  const tokens = readableTokens(settings)
+  const typography = {
+    ...AURA_THEME.typography,
+    fontSans: tokens.fontSans,
+    baseSize: tokens.baseSize,
+    lineHeight: tokens.lineHeight
+  }
+  // Only the webfonts carry a stylesheet; a face that ships with the machine
+  // must not inherit one theme's <link> into the next.
+  if (tokens.fontUrl) typography.fontUrl = tokens.fontUrl
+  return {
+    ...AURA_THEME,
+    colors: {
+      ...AURA_THEME.colors,
+      foreground: tokens.ink.light[0],
+      mutedForeground: tokens.ink.light[1]
+    },
+    darkColors: {
+      ...AURA_THEME.darkColors,
+      foreground: tokens.ink.dark[0],
+      mutedForeground: tokens.ink.dark[1]
+    },
+    typography
+  }
+}
+
+// The live `themes` registration. Re-registering is how a CONTRIBUTED theme is
+// updated: the host bumps its registry version, re-resolves the active theme and
+// repaints — no host DOM, no reload.
+let themeDisposer = null
+
+function contributeAuraTheme() {
+  if (!ctxRef) return null
+  const data = auraThemeData($settings.get())
+  if (themeDisposer) {
+    try {
+      themeDisposer()
+    } catch {
+      // already removed by a previous instance's teardown
+    }
+    themeDisposer = null
+  }
+  themeDisposer = ctxRef.register({ id: THEME_NAME, area: THEMES_AREA, data })
+  return data
+}
+
+/** Readable on = Aura's theme worn with the readable tokens; off = the user's
+ *  own theme back. The tokens live IN the Aura theme, so Readable is that
+ *  theme's opt-in and the two switches always tell the same story. */
+function setReadable(on) {
+  if (!ctxRef || disposed) return
+  const readable = Boolean(on)
+  writeSettings({ readable, themeOptIn: readable })
+  contributeAuraTheme()
+  if (readable) {
+    // Re-request even when we think it is applied: the host may have moved on
+    // (a manual skin pick), and this is the only moment the user asked for it.
+    if ($themeApplied.get()) requestTheme(THEME_NAME)
+    else applyThemeIfOptedIn()
+    return
+  }
+  restoreTheme()
+}
+
+function setReadableSize(size) {
+  if (!READABLE_SIZES.includes(size)) return
+  writeSettings({ readableSize: size })
+  contributeAuraTheme()
+}
+
+function setReadableFont(font) {
+  if (!READABLE_FONTS.includes(font)) return
+  writeSettings({ readableFont: font })
+  contributeAuraTheme()
+}
+
+function setReadableInk(ink) {
+  if (!READABLE_INKS.includes(ink)) return
+  writeSettings({ readableInk: ink })
+  contributeAuraTheme()
+}
+
+// Where Hermes keeps its own chat face (Settings ▸ Appearance). Readable sets
+// the app-wide face through the theme; the chat has its own setting, and the
+// honest thing is to point at it rather than fight it.
+const CHAT_FONT_SETTINGS_PATH = '/settings?tab=config:appearance'
 
 // --------------------------------------------------------------- teardown
 
@@ -6829,12 +8662,20 @@ export default {
     $menuOpen.set(false)
     $pulse.set(0)
     pulseIndex = 0
+    // The shelf belongs to the instance that fetched it: a fresh context asks
+    // its own /catalog once, and a failed fetch is not inherited either.
+    $catalog.set({ loaded: false, error: '', items: [] })
+    catalogRequest = null
+    catalogSearch = ''
     resetShow()
     // A hot reload must not inherit "the pop-out owns the picture" — that flag
     // suppresses every in-app surface, and the window that set it belonged to
     // the previous instance. Same for the adopted frame handle.
     desktopOwned = false
     desktopPending = false
+    // The library cursor goes with it: a fresh instance starts from the queue
+    // head, so commands already applied by the previous one are not replayed.
+    libraryCursor = null
     filmFrame = null
     filmFrameOwner = ''
     const settings = readSettings(ctx)
@@ -6859,13 +8700,21 @@ export default {
       })
     )
 
-    track(
-      ctx.register({
-        id: THEME_NAME,
-        area: THEMES_AREA,
-        data: AURA_THEME
-      })
-    )
+    // Aura's theme carries the Readable tokens too, so it is (re)contributed
+    // from the saved choices rather than registered once from a literal. The
+    // tracked cleanup removes whichever registration is CURRENT — a choice
+    // change re-registers, and the disposer list must not grow with each one.
+    track(() => {
+      if (themeDisposer) {
+        try {
+          themeDisposer()
+        } catch {
+          // already removed
+        }
+        themeDisposer = null
+      }
+    })
+    contributeAuraTheme()
 
     // Settings ▸ Plugins. Older hosts without registerSettingsPage get the
     // same page as a plain SETTINGS_PLUGINS_AREA contribution.
@@ -7052,11 +8901,23 @@ export const __test = {
   // stage exactly the way a real render does.
   pageStageRef,
   shortLabel,
+  storedSourceTitle,
+  nowPlaying,
   videoQueue,
+  // The shelf: pure helpers plus the atom and one-shot loader, so a test can
+  // prove the rows, the search and the play path without a browser.
+  fmtLength,
+  catalogRows,
+  loadCatalog,
+  catalogForTest: () => $catalog.get(),
+  setCatalogSearchForTest: value => { catalogSearch = String(value) },
   applyVideoSource,
   applyUrlBox,
   skipBlockedEpisode,
   panelVisible,
+  // The quick menu's own width, so a layout test asserts against the number the
+  // popover is actually given instead of a copy of it.
+  quickMenuWidth: QUICK_MENU_WIDTH,
   // The backdrop focus guard: a film page that calls window.focus() must not
   // be able to keep the keyboard (owner: "keeps me from typing into hermes").
   // Tests hand in the frame they are working with; production sets it in
@@ -7072,4 +8933,22 @@ export const __test = {
   hiddenVideoIds,
   hideCurrentEpisode,
   managePlaylist,
+  // The control strip: a test mounts it into a stand-in for the host slot and
+  // drives the drag the way a pointer would.
+  mountVideoBarForTest: node => {
+    mountVideoBar(node)
+    return videoBarEl
+  },
+  removeVideoBar,
+  videoBarElForTest: () => videoBarEl,
+  videoBarPointForTest: () => videoBarPoint(),
+  videoBarHomeForTest: () => videoBarHome(),
+  videoBarSizeForTest: () => videoBarSize(),
+  // [subtitles] The CC switch and what it reads, so a headless test can drive
+  // the same writer every surface's button uses.
+  setVideoCaptions,
+  setVideoCaptionLang,
+  captionInfo,
+  captionTooltip,
+  syncVideoBar,
 }

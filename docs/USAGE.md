@@ -2,7 +2,7 @@
 
 One line: a walkthrough of every user-facing part of Aura, from the first film to radio and the agent tools.
 
-Applies to Aura 1.0.0 · revised 2026-11-11
+Applies to Aura 1.0.0 · revised 2026-11-13
 
 ## Turn it on
 
@@ -18,6 +18,9 @@ behaviour profile and motion source are the real controls at the bottom.*
 ## Play a film while you work
 
 1. Open the status-bar **A** menu and choose a saved source, or paste a URL.
+   The status bar names what is playing (**Watching …**) beside the A, in bold
+   full-contrast text — accent-coloured while Aura is on, the theme's own text
+   colour while it is off.
 2. The film opens in the docked theatre pane on the right: a 16:9 stage with a
    scrubber, transport, volume and a poster list of your sources.
 3. Close the pane and the film keeps playing; the status-bar menu brings it back.
@@ -26,6 +29,46 @@ Accepted sources are YouTube videos, YouTube playlists, and direct MP4/WebM
 files. A film remembers where you stopped, keyed by URL, so switching sources
 never restarts it. A film that reaches the end is not remembered at its last
 second.
+
+## Subtitles (CC)
+
+Aura does not set caption options for you, and YouTube decides on its own
+otherwise. The **CC** button turns them on and off, and the choice is
+remembered for every film after it.
+
+- **Where it is.** The floating control strip, the docked pane under the
+  picture (**Subtitles**), the Aura page beside the transport, the **A** menu
+  (**Subtitles**), and Settings ▸ Plugins ▸ Aura (**Subtitles**). Settings grows
+  the language list as well.
+- **What it costs when off.** Nothing: with CC off the embed is not asked for
+  captions at all, and a running player is told to unload its captions module.
+- **Languages.** When a video has more than one caption track, the menu offers
+  the ones it actually has (read from the player itself, not from a list Aura
+  ships). **Automatic** means the machine's own language, then English. The
+  list changes with the video because YouTube publishes it per video.
+- **Every new episode.** YouTube forgets captions per video, so Aura re-applies
+  the choice on each new video in a playlist.
+- **No subtitles.** When the player reports no caption track for the video, the
+  CC button is greyed out and its tooltip reads *No subtitles for this video* —
+  ambient ocean and cab-ride uploads are like this.
+- **Direct files.** An MP4/WebM's own text tracks are switched between showing
+  and hidden; a file with no track behaves like a video with no subtitles.
+- **Burned-in subtitles cannot be turned off.** If the words are painted into
+  the picture (many film uploads are), no player API can remove them and the CC
+  button will not change anything. That is the upload's choice, not a bug.
+
+By voice: *“turn the subtitles on”* → the agent calls `aura_control` with
+`action=captions`, `captions=on` (or `off`), and the same switch is applied.
+
+## Move the controls
+
+The transport strip floats over the app. Drag it by the ⠿ grip — or by any empty
+part of the strip — and it stays where you dropped it, in every mode: dragging
+the strip never pops the film out or changes a mode. **Double-click the grip** to
+send it back to the bottom-left corner. A resize keeps it inside the window.
+
+Only the ⧉ button (in the strip, or on the page) pops the film out. Nothing else
+moves it between surfaces.
 
 ## Add a YouTube playlist
 
@@ -69,9 +112,16 @@ your own session. No API scope, no OAuth review, no second account.
 ## The Aura page
 
 The sidebar **Aura** page puts the same player in a big 16:9 frame with the
-transport, volume and source picker. Under it:
+transport, volume and source picker. Directly above the frame, **Now playing**
+names the film — its title in large type and, when the player knows it, the
+channel underneath. It follows the film as it plays: a playlist moving to the
+next episode, or another source picked, retitles it at once. A source Aura has
+not opened yet shows the title it already stores for it; the URL is never used
+as a title. Under the player:
 
-- **Library** — poster cards; add, rename, remove, hide starters, clear recents.
+- **Library** — Picks first, then one scrolling row per catalogue category; one
+  search box filters them all. Below that: add, rename, remove, hide starters,
+  clear recents.
 - **Playlist how-to** — the three steps above, in place.
 - **Settings** — every control Aura has.
 
@@ -81,6 +131,15 @@ film moves into the page while it is open and goes back when you leave.
 One library feeds two pickers: the source dropdowns in the A menu and in
 Settings both list saved playlists, your films, the starter pack and recents,
 grouped under `Playlists`, `Your films`, `Starters` and `Recent`.
+
+The starter pack is meant to be left running behind work. It holds 32 sources,
+24 of them added for the backdrop: sixteen run 2–12 hours — BBC Earth's
+oceanscapes, NASA+ and ISS material, Monterey Bay Aquarium tanks, Alpine and
+Iberian cab rides, city walks, silent drone aerials, and rain or fireplace beds.
+The shorter entries include Blender's open movies (CC-BY), two NASA films and
+public-domain features from the Internet Archive. Every entry is the
+rights-holder's own upload or a direct file, so nothing in the pack is a
+reupload; **Hide starters** clears the whole list in one click.
 
 ## Watch the visualiser
 
@@ -112,6 +171,9 @@ of it.
   wav.
 - **Music on, video muted** — the audio channel has its own volume and mute.
   The muted state is remembered with the film.
+- **Closing the film does not stop the music** — the audio channel lives in the
+  one page Aura frames, so with the film closed that page stays up as the
+  visualiser and the music keeps playing.
 - **Visuals follow it** — music from Aura's channel (or any other app) drives
   the same visuals.
 
@@ -128,6 +190,26 @@ Because the server is the remote, the chat can drive the film without alt-tab:
 The agent calls `aura_control`, `aura_watch` and `aura_listen`; see
 [REFERENCE.md](REFERENCE.md) for every action and parameter. Search never
 autoplays: options are shown, and playback waits for your pick.
+
+## Make the chat readable over a film
+
+**Settings ▸ Plugins ▸ Aura ▸ Readable.** One switch, then three choices:
+
+| Choice | Options | What it changes |
+|---|---|---|
+| Text size | S / M / L / XL | The theme's base font size, with line spacing growing alongside it. M is the size the app already uses. |
+| Text font | System / Atkinson Hyperlegible / Inter / Mono | The app-wide face. Atkinson Hyperlegible is designed for low vision; System and Mono need no download. |
+| Text colour | White / Warm / High-contrast yellow | The theme's text colour and its quieter secondary, on both the light and dark palettes. |
+
+Readable works by changing the theme Aura contributes, not by styling the app:
+the choices become the host theme's own typography and colour tokens and the
+host paints them, so nothing here can fight a future Hermes release. Turning it
+on wears the Aura Live theme; turning it off gives your own theme back, and
+**Restore my theme** clears Readable too.
+
+Hermes keeps its own chat face in **Settings ▸ Appearance ▸ Chat font**; the
+Readable group has a shortcut to it. That setting overrides the chat alone,
+while Readable sets the face everywhere the theme applies.
 
 ## Stop it, remove it, find your data
 

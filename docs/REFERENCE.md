@@ -2,7 +2,7 @@
 
 One line: every tool, hook, HTTP route and configuration key Aura exposes, with the shapes the code returns.
 
-Applies to Aura 1.0.0 · revised 2026-11-11
+Applies to Aura 1.0.0 · revised 2026-11-13
 
 ## Tools
 
@@ -15,11 +15,12 @@ Turn Aura on/off, read status, set intensity/preset/mood, drive the film.
 
 | Parameter | Type | Required | Notes |
 |---|---|---|---|
-| `action` | string enum | yes | `on`, `off`, `status`, `intensity`, `preset`, `mood`, `pause`, `resume`, `next`, `prev`, `seek`, `popout`, `popin` |
-| `intensity` | number 0..1 | for `intensity` | Render cap. |
+| `action` | string enum | yes | `on`, `off`, `status`, `intensity`, `preset`, `mood`, `pause`, `resume`, `next`, `prev`, `seek`, `captions`, `popout`, `popout_inline`, `popin` |
+| `intensity` | number 0..1 | for `intensity` | Reaction strength: the fraction of the normalised audio reaction the visualizer draws (`0` = none). A new install starts at `0.25`. |
 | `preset` | string or null | for `preset` | Name from `web/presets.json`; `null` resets. |
 | `mood` | string enum | for `mood` | `idle`, `thinking`, `tool`, `approval`, `error`, `streaming`, `done` |
 | `position` | number ≥ 0 | for `seek` / `popout` | Seconds. |
+| `captions` | `on` \| `off` | for `captions` | The film's subtitles; remembered, and applied to whichever player owns the picture. |
 | `url` | string | optional for `popout` | Film to open; defaults to the loaded one. |
 
 Return shape (status, abridged): `ok`, `running`, `enabled`, `port`, `capture`,
@@ -56,16 +57,21 @@ Find something to watch, play the user's pick, report what is playing.
 
 | Parameter | Type | Required | Notes |
 |---|---|---|---|
-| `action` | string enum | yes | `search`, `play`, `now` |
+| `action` | string enum | yes | `search`, `browse`, `play`, `now`, `save`, `remove`, `list` |
 | `q` | string | for `search` | What the user wants to watch. |
 | `limit` | integer 1..10 | optional | Numbered options; default 6. |
+| `category` | string | for `browse` | A catalogue category, e.g. `Anime`, `Classic films`, `Slow TV`. |
+| `query` | string | for `browse` | Words from a title or its description; also accepted as an alias of `q` for `search`. |
 | `url` | string | for `play` | YouTube watch/`youtu.be`/shorts/embed/playlist, or `.mp4`/`.webm`/`.m3u8`/`.mov`. |
 | `label` | string | optional | Title to show. |
 
 `search` returns `ok`, `query`, `count`, `items` (`n`, title, channel, length,
-url), `text` and `next`. `play` returns `ok`, `playing`, `url`, `label`,
-`kind`, `seq`, `delivery`. `now` returns `ok`, `running`, `playing`, `player`,
-`window`.
+url), `text` and `next`. `browse` reads `web/catalog.json` (no network, nothing
+plays) and returns `ok`, `count`, `items` (`n`, title, year, category, url),
+`text` and `next`; with neither `category` nor `query` it returns `categories`
+(`category`, `count`) and lists them. `play` returns `ok`, `playing`, `url`,
+`label`, `kind`, `seq`, `delivery`. `now` returns `ok`, `running`, `playing`,
+`player`, `window`.
 
 ## Hooks
 
@@ -108,6 +114,7 @@ redeems a short-lived ticket.
 | GET | `/healthz` | `ok`, `version`, `pid`, `capture`, `rate`, `clients`. |
 | GET | `/api/state` | Latest features, mood, config-derived display state, audio requests. |
 | GET | `/api/presets` | The curated preset catalogue. |
+| GET | `/api/catalog` | The shelf catalogue from `web/catalog.json` (read once, cached). |
 | GET | `/api/config` | Effective config plus the behaviour profile. |
 | GET | `/api/player` | Last player report, command sequence, window status. |
 | GET | `/api/player/commands?after=N` | Queued transport commands after sequence `N`. |
@@ -137,6 +144,7 @@ only routes the desktop half calls; it never guesses the server port.
 | GET | `/status` | `ok`, `port`, `url`, `capture`, `enabled`. |
 | GET | `/state` | Proxy of the server's `/api/state`. |
 | GET | `/player` | Proxy of `/api/player`. |
+| GET | `/catalog` | Proxy of `/api/catalog` (the shelf catalogue). |
 | GET | `/player/commands?after=N` | Proxy of the command queue. |
 | POST | `/player/report` | Forward the player report. |
 | POST | `/player/command` | Forward a transport command. |
@@ -161,6 +169,21 @@ The full table with defaults lives in [CONFIGURATION.md](CONFIGURATION.md).
 The short list: `enabled`, `listen_background`, `intensity`, `preset`,
 `reduced_motion`, `theme_opt_in`, `opacity`, `behavior`, `mood_reactive`,
 `accent_pulse`, `auto_preset`, `motion`, `idle_motion`.
+
+Desktop-side appearance keys are NOT in that file: they live in the plugin's own
+`settings` storage record and are documented in
+[USAGE.md](USAGE.md#make-the-chat-readable-over-a-film). The Readable group writes
+four of them — `readable`, `readableSize` (`s`/`m`/`l`/`xl`), `readableFont`
+(`system`/`atkinson`/`inter`/`mono`) and `readableInk`
+(`white`/`warm`/`yellow`) — and each one becomes a host theme token
+(`typography.baseSize`, `typography.lineHeight`, `typography.fontSans`,
+`typography.fontUrl`, `colors.foreground`, `colors.mutedForeground`) on the
+`aura-live` contribution.
+
+Subtitles live there too: `videoCaptions` (boolean, default `false`) and
+`videoCaptionLang` (a language tag such as `fr` or `en-US`; empty means
+"the machine's language, then English"). See
+[USAGE.md](USAGE.md#subtitles-cc) and §14 of [CONTRACT.md](../CONTRACT.md).
 
 Environment variables: `HERMES_HOME`, `AURA_CAPTURE`, `AURA_RADIO_BROWSER_SERVERS`,
 `AURA_DESKTOP_BROWSER`, `AURA_DESKTOP_GPU`, plus `XDG_SESSION_TYPE` /

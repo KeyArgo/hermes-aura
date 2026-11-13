@@ -76,10 +76,13 @@ class FakeServer:
 class Recorder:
     """Stands in for ``_request``; records every call the tool makes."""
 
-    def __init__(self, player=None):
+    def __init__(self, player=None, library=None):
         self.calls = []
         self.commands = []
         self.player = player or {}
+        # None = the desktop has not reported a library yet (an older build, or
+        # a desktop that has not polled since Aura started).
+        self.library = library
 
     def __call__(self, method, path, body=None, timeout=2.0):
         self.calls.append((method, path, body))
@@ -87,7 +90,8 @@ class Recorder:
             self.commands.append(body)
             return {"ok": True, "seq": len(self.commands)}
         if path == "/api/player":
-            return {"ok": True, "player": self.player, "seq": 7}
+            return {"ok": True, "player": self.player, "seq": 7,
+                    "library": self.library}
         return {}
 
 
@@ -126,10 +130,33 @@ def online(plugin, monkeypatch):
     return recorder
 
 
+# What the desktop reports as the owner's saved library: playlists first, then
+# films, each already carrying the label the desktop shows.
+LIBRARY = [
+    {"label": "Full octopus documentaries",
+     "url": "https://www.youtube.com/playlist?list=PLabcdefghijklmnopqrstuvwxyz012345",
+     "kind": "playlist"},
+    {"label": "Secrets of the Octopus",
+     "url": "https://www.youtube.com/watch?v=3GB-7qwwIp0", "kind": "film"},
+    {"label": "Octopus: Making Contact",
+     "url": "https://example.org/octopus.mp4", "kind": "film"},
+]
+
+
+@pytest.fixture()
+def saved(plugin, monkeypatch, online):
+    """Online, with the desktop's library already reported."""
+    online.library = [dict(row) for row in LIBRARY]
+    return online
+
+
 def _call(p, args):
     raw = p._tool_aura_watch(args)
     assert isinstance(raw, str)
     return json.loads(raw)
+
+
+ACTIONS = ["search", "browse", "play", "now", "save", "remove", "list"]
 
 
 # ---------------------------------------------------------------------------
@@ -142,10 +169,19 @@ def test_schema_is_valid_and_unmissable(plugin):
     assert schema["name"] == "aura_watch"
     params = schema["parameters"]
     assert params["required"] == ["action"]
-    assert params["properties"]["action"]["enum"] == ["search", "play", "now"]
+    assert params["properties"]["action"]["enum"] == ACTIONS
     description = schema["description"].lower()
     for phrase in ("action=search", "numbered", "stop", "wait", "action=play",
                    "action=now", "title, channel, length and link"):
+        assert phrase in description, f"the description must say {phrase!r}"
+    # The new library actions are discoverable from the description alone, in
+    # the owner's own words.
+    for phrase in ("action=save", "action=remove", "action=list", "save this",
+                   "add the octopus one to my list", "remove nosferatu",
+                   "what's on my list?"):
+        assert phrase in description, f"the description must say {phrase!r}"
+    # Browsing Aura's own catalogue is discoverable too, with its own words.
+    for phrase in ("action=browse", "catalogue", "category", "noir"):
         assert phrase in description, f"the description must say {phrase!r}"
     assert "web search" in description and ".mp4" in description
     json.dumps(schema)
@@ -235,7 +271,7 @@ def test_search_rejects_bad_queries_without_calling_out(plugin, monkeypatch, que
     monkeypatch.setattr(p._search, "youtube_search", explode)
     payload = _call(p, {"action": "search", "q": query})
     assert payload["ok"] is False
-    assert payload["allowed_actions"] == ["search", "play", "now"]
+    assert payload["allowed_actions"] == ACTIONS
 
 
 def test_search_reports_a_broken_search_module(plugin, monkeypatch):
@@ -266,6 +302,8 @@ def test_play_queues_exactly_one_load(plugin, online):
     }]
     assert [call[:2] for call in online.calls].count(
         ("POST", "/api/player/command")) == 1
+    # The saved library is not player state: it must not ride every result.
+    assert "library" not in payload
 
 
 def test_play_normalises_a_share_link(plugin, online):
@@ -393,7 +431,7 @@ def test_unknown_action_is_rejected(plugin):
     p, _ = plugin
     payload = _call(p, {"action": "download"})
     assert payload["ok"] is False
-    assert payload["allowed_actions"] == ["search", "play", "now"]
+    assert payload["allowed_actions"] == ACTIONS
 
 
 @pytest.mark.parametrize("args", [None, [], "play", 7])
@@ -414,6 +452,182 @@ def test_tool_never_raises_when_the_player_layer_breaks(plugin, monkeypatch):
     payload = _call(p, {"action": "now"})
     assert payload["ok"] is False
     assert "RuntimeError" in payload["error"]
+
+
+# ---------------------------------------------------------------------------
+# save / remove / list — the owner's own Aura library
+# ---------------------------------------------------------------------------
+
+def test_save_queues_exactly_one_save_for_the_given_url(plugin, online):
+    p, _ = plugin
+    payload = _call(p, {"action": "save", "url": "https://youtu.be/3GB-7qwwIp0",
+                        "label": "Secrets of the Octopus"})
+    assert payload["ok"] is True
+    assert payload["saved"] is True
+    assert payload["seq"] == 1
+    assert payload["kind"] == "film"
+    # A share link is saved as the canonical watch link, exactly as play does.
+    assert payload["url"] == "https://www.youtube.com/watch?v=3GB-7qwwIp0"
+    assert online.commands == [{
+        "cmd": "save",
+        "url": "https://www.youtube.com/watch?v=3GB-7qwwIp0",
+        "label": "Secrets of the Octopus",
+    }]
+    assert [call[:2] for call in online.calls].count(
+        ("POST", "/api/player/command")) == 1
+
+
+def test_save_takes_the_playing_film_and_its_title_by_default(plugin, online):
+    p, _ = plugin
+    online.player = {"url": "https://www.youtube.com/watch?v=3GB-7qwwIp0",
+                     "label": "Secrets of the Octopus", "playing": True}
+    payload = _call(p, {"action": "save"})
+    assert payload["ok"] is True
+    assert online.commands == [{
+        "cmd": "save",
+        "url": "https://www.youtube.com/watch?v=3GB-7qwwIp0",
+        "label": "Secrets of the Octopus",
+    }]
+
+
+def test_save_a_playlist_link_goes_to_the_saved_playlists(plugin, online):
+    p, _ = plugin
+    payload = _call(p, {
+        "action": "save",
+        "url": "https://www.youtube.com/playlist?list=PLabcdefghijklmnopqrstuvwxyz012345",
+        "label": "Full octopus documentaries",
+    })
+    assert payload["ok"] is True
+    assert payload["kind"] == "playlist"
+
+
+def test_save_with_nothing_playing_and_no_url_says_so(plugin, online):
+    p, _ = plugin
+    online.player = {}
+    payload = _call(p, {"action": "save"})
+    assert payload["ok"] is False
+    assert "nothing is playing" in payload["error"]
+    assert online.commands == []
+
+
+@pytest.mark.parametrize("url", [
+    "", "   ", 7, None, "javascript:alert(1)", "file:///etc/passwd",
+    "ftp://example.org/film.mp4", "https://example.org/podcast.mp3", "not a url",
+])
+def test_save_refuses_unplayable_urls_without_touching_the_player(plugin, online, url):
+    p, _ = plugin
+    online.player = {}
+    payload = _call(p, {"action": "save", "url": url})
+    assert payload["ok"] is False
+    assert payload["error"]
+    assert online.commands == [], f"{url!r} must never reach the library"
+
+
+def test_save_says_the_server_is_not_running(plugin):
+    p, fake = plugin
+    fake.port = None
+    payload = _call(p, {"action": "save", "url": "https://youtu.be/3GB-7qwwIp0"})
+    assert payload["ok"] is False
+    assert "server not running" in payload["error"]
+    assert "aura_control action=on" in payload["hint"]
+
+
+def test_remove_by_label_queues_the_one_matching_url(plugin, saved):
+    p, _ = plugin
+    payload = _call(p, {"action": "remove", "label": "octopus: making contact"})
+    assert payload["ok"] is True
+    assert payload["removed"] is True
+    assert payload["url"] == "https://example.org/octopus.mp4"
+    assert payload["label"] == "Octopus: Making Contact"
+    assert saved.commands == [{
+        "cmd": "remove",
+        "url": "https://example.org/octopus.mp4",
+        "label": "Octopus: Making Contact",
+    }]
+
+
+def test_remove_by_url_matches_the_saved_entry(plugin, saved):
+    p, _ = plugin
+    payload = _call(p, {"action": "remove",
+                        "url": "https://www.youtube.com/watch?v=3GB-7qwwIp0"})
+    assert payload["ok"] is True
+    assert payload["kind"] == "film"
+    assert saved.commands == [{
+        "cmd": "remove",
+        "url": "https://www.youtube.com/watch?v=3GB-7qwwIp0",
+        "label": "Secrets of the Octopus",
+    }]
+
+
+def test_remove_an_ambiguous_label_returns_the_matches_and_changes_nothing(plugin, saved):
+    p, _ = plugin
+    payload = _call(p, {"action": "remove", "label": "octopus"})
+    assert payload["ok"] is False
+    assert payload["error"] == "ambiguous"
+    assert [row["label"] for row in payload["matches"]] == [
+        "Full octopus documentaries", "Secrets of the Octopus",
+        "Octopus: Making Contact"]
+    assert saved.commands == [], "an ambiguous remove must not touch the library"
+
+
+def test_remove_something_not_saved_changes_nothing(plugin, saved):
+    p, _ = plugin
+    payload = _call(p, {"action": "remove", "label": "Nosferatu"})
+    assert payload["ok"] is False
+    assert payload["error"]
+    assert "Nosferatu" in payload["text"]
+    assert saved.commands == []
+
+
+def test_remove_needs_a_url_or_a_label(plugin, saved):
+    p, _ = plugin
+    payload = _call(p, {"action": "remove"})
+    assert payload["ok"] is False
+    assert "url or a label" in payload["error"]
+    assert saved.commands == []
+
+
+def test_remove_before_the_library_is_reported_says_so(plugin, online):
+    p, _ = plugin
+    online.library = None
+    payload = _call(p, {"action": "remove", "label": "Nosferatu"})
+    assert payload["ok"] is False
+    assert payload["error"] == "library_not_reported"
+    assert "not reported yet" in payload["note"]
+    assert online.commands == []
+
+
+def test_list_returns_the_library_the_desktop_reported(plugin, saved):
+    p, _ = plugin
+    payload = _call(p, {"action": "list"})
+    assert payload["ok"] is True
+    assert payload["reported"] is True
+    assert payload["count"] == 3
+    assert [(row["label"], row["url"], row["kind"]) for row in payload["items"]] == [
+        (row["label"], row["url"], row["kind"]) for row in LIBRARY]
+    lines = payload["text"].splitlines()
+    assert lines[0].startswith("1. Full octopus documentaries · playlist · ")
+    assert lines[0].endswith(LIBRARY[0]["url"])
+    assert saved.commands == [], "listing must never queue a command"
+
+
+def test_list_says_not_reported_yet(plugin, online):
+    p, _ = plugin
+    online.library = None
+    payload = _call(p, {"action": "list"})
+    assert payload["ok"] is True
+    assert payload["reported"] is False
+    assert payload["count"] == 0
+    assert payload["items"] == []
+    assert "not reported yet" in payload["note"]
+
+
+def test_list_says_the_server_is_not_running(plugin):
+    p, fake = plugin
+    fake.port = None
+    payload = _call(p, {"action": "list"})
+    assert payload["ok"] is False
+    assert "server not running" in payload["error"]
 
 
 # ---------------------------------------------------------------------------

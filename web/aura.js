@@ -92,14 +92,14 @@
     enabled: true,
     capture: 'unknown',
     reducedMotion: false,
-    userIntensity: 0.6,
+    userIntensity: 0.25,
     // Dynamic intensity (§9.6): the server publishes a multiplier derived from
     // the number of live chats; the user's saved intensity stays untouched.
     sessionBoost: 1.0,
     sessions: 0,
-    effectiveIntensity: 0.6,
-    sampleGain: 1.0,
-    opacity: 0.75,
+    effectiveIntensity: 0.25,
+    sampleGain: 0.25,
+    opacity: 0.25,
     behavior: DEFAULT_BEHAVIOR,
     behaviorProfile: Object.assign({}, BEHAVIOR_PROFILES[DEFAULT_BEHAVIOR]),
     motion: 'both',
@@ -303,12 +303,12 @@
   const SCRIM_MIN_OPACITY = 0.85;
 
   function scrimOpacityFor(opacity) {
-    const o = clamp(num(opacity, 0.75), 0, 1);
+    const o = clamp(num(opacity, 0.25), 0, 1);
     return SCRIM_MIN_OPACITY + (1 - SCRIM_MIN_OPACITY) * o; // 0.85 .. 1.0
   }
 
   function applyVisualOpacity() {
-    const o = clamp(num(state.opacity, 0.75), 0, 1);
+    const o = clamp(num(state.opacity, 0.25), 0, 1);
     const scrim = scrimOpacityFor(o);
     const boost = 1 / scrim; // keeps effective gradient alpha at today's level
     if (dom.canvas) {
@@ -329,7 +329,7 @@
   }
 
   function setOpacityUI(value) {
-    state.opacity = clamp(num(value, 0.75), 0, 1);
+    state.opacity = clamp(num(value, 0.25), 0, 1);
     if (dom.opacity) {
       dom.opacity.value = String(Math.round(state.opacity * 100));
       dom.opacity.setAttribute('aria-valuetext', Math.round(state.opacity * 100) + ' percent');
@@ -639,7 +639,11 @@
 
   function sampleGain() {
     const intensity = effectiveIntensity();
-    let g = 0.2 + 1.8 * intensity;
+    // Reaction strength IS the scale handed to the visualizer: 0 draws no audio
+    // reaction, 0.25 draws a quarter, 1 draws the normalized full level. The old
+    // 0.2 + 1.8 * intensity curve floored a "0" setting at a fifth of the range
+    // and drew 65% for a 25% setting, so the slider never matched what drew.
+    let g = intensity;
     if (state.reducedMotion) g *= 0.75;
     return g;
   }
@@ -2650,7 +2654,19 @@
     degradeLadder,
     evaluateDegrade,
     noteRenderError,
-    _viz: function () { return viz; }
+    _viz: function () { return viz; },
+    // The peak of the PCM actually handed to the visualizer — after the user's
+    // intensity and the auto-gain. This is what draws, as opposed to the
+    // setting the slider shows, so a test can prove the two agree.
+    _drawnPcmPeak: function () {
+      const pcm = latestPcm();
+      let peak = 0;
+      for (let i = 0; i < pcm.length; i += 1) {
+        const v = pcm[i] < 0 ? -pcm[i] : pcm[i];
+        if (v > peak) peak = v;
+      }
+      return peak;
+    }
   };
 
   if (document.readyState === 'loading') {

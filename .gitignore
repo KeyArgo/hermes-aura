@@ -6,6 +6,9 @@ __pycache__/
 node_modules/
 .pytest_cache/
 
+# The verified catalogue source is an input, not a shipped file: the committed
+# artefact is web/catalog.json, built from it by tools/build_catalog.py.
+.catalog-source.tsv
 .last-test.log
 .demo/
 BUILD_INFO.json

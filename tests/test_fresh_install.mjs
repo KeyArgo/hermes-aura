@@ -15,17 +15,17 @@
  *   4. The starter films are there to pick (STARTER_SOURCES on the page and in
  *      the panel card list).
  *   5. Picking a starter film on the Aura PAGE switches to video mode and plays
- *      it (storage backdropMode 'video', videoUrl set, /control backdrop_mode).
- *   6. Picking a starter film from the RIGHT PANEL does the same. This is
- *      EXPECTED TO FAIL on this commit (known bug #3, fixed in another lane):
- *      the panel card click applies the source but never flips the backdrop
- *      mode, so a new user who picks a film in the pane sees nothing.
- *   7. Pop out from the page moves the film to the floating watch window;
- *      Bring back returns it.
+ *      it (storage backdropMode 'video', videoUrl set, /control backdrop_mode,
+ *      and the one SandboxedFrame the pane draws pointing at the player page).
+ *   6. Picking a starter film from the RIGHT PANEL does the same (this was
+ *      known bug #3 — the panel click applied the source but never flipped the
+ *      backdrop mode — and it is fixed).
+ *   7. "Frame in Hermes" from the page moves the film to the floating watch
+ *      window; the same button brings it back.
  *   8. Pasting a YouTube PLAYLIST link on the page saves it to videoPlaylists
  *      (persisted), and it survives dispose + re-register with the same
  *      storage.
- *   9. Dispose leaves nothing behind: contributions, timers, listeners, iframes.
+ *   9. Dispose leaves nothing behind: contributions, timers, listeners, frames.
  *
  * The harness is self-contained and mirrors tests/test_desktop_plugin.mjs: a
  * temp copy of the plugin has its three import specifiers rewritten to local
@@ -33,6 +33,11 @@
  * stands in for document/getComputedStyle, makeCtx provides the host ctx
  * (contributions, timers, listeners, storage, /status /state /control /version
  * stubs) and the whole file reports with an "N passed, M failed" line.
+ *
+ * The film is an SDK SandboxedFrame rendered inside Aura's own surfaces, not an
+ * iframe on the app body: the stub records every frame it is handed in
+ * `globalThis.__sdkFrames`, and a test renders a contribution the way React does
+ * before asserting on it.
  *
  * Run: node tests/test_fresh_install.mjs
  */
@@ -145,8 +150,8 @@ function makeCtx(storageMap) {
   const serverSettings = {
     motion: 'agent_music',
     behavior: 'balanced',
-    intensity: 0.5,
-    opacity: 0.35,
+    intensity: 0.25,
+    opacity: 0.25,
     reduced_motion: false
   }
   const serverFrame = {
@@ -351,6 +356,21 @@ export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right
 export const SETTINGS_PLUGINS_AREA = 'settings.plugins'
 export const THEMES_AREA = 'themes'
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' }
+
+// The composer seams, as the real SDK names them.
+export const COMPOSER_AREAS = {
+  top: 'composer.top', bottom: 'composer.bottom', underside: 'composer.underside',
+  leading: 'composer.leading', actions: 'composer.actions', middleware: 'composer.middleware',
+  attachments: 'composer.attachments', microActions: 'composer.microActions',
+  atCompletions: 'composer.atCompletions', modelPill: 'composer.modelPill', contextMenu: 'composer.contextMenu'
+}
+
+// The SDK's sandboxed frame. The film is drawn by THIS element (React), never
+// by a raw iframe appended to the app body, so the stub records the src/title it
+// was handed for a test to assert against.
+export const frames = []
+globalThis.__sdkFrames = frames
+export const SandboxedFrame = props => { frames.push(props); return null }
 `
 )
 
@@ -476,6 +496,17 @@ globalThis.getComputedStyle = () => ({
 })
 
 const hostIframes = () => bodyChildren.filter(node => node.tagName === 'IFRAME')
+// The film is drawn by the SDK's SandboxedFrame inside Aura's own surface (never
+// an iframe appended to the app body), so a test renders a contribution the way
+// React does; the stub records each frame it is handed.
+const framesNow = () => globalThis.__sdkFrames
+const clearFrames = () => { globalThis.__sdkFrames.length = 0 }
+const playerFrames = () => framesNow().filter(props => String(props.src || '').includes('/player.html'))
+function renderSurface(bucket, id) {
+  const contribution = bucket.contributions.find(entry => entry.id === id)
+  assert.ok(contribution, `no '${id}' contribution to render`)
+  return renderDeep(renderContribution(contribution))
+}
 // The panel/page stylesheets are product surfaces (id 'aura-panel-style' /
 // 'aura-ui-style'), not host injections; the guarded "effect" styles are the
 // glass and theme injections the other suite covers.
@@ -656,13 +687,14 @@ record('4. fresh install: the starter films are offered on the page and in the p
       chips.push(node.props['aria-label'])
     }
   })
-  assert.equal(chips.length, 8, `expected the 8 starter films on the page, got ${chips.length}: ${JSON.stringify(chips)}`)
+  assert.ok(chips.length >= 20, `expected the expanded starter pack on the page, got ${chips.length}: ${JSON.stringify(chips)}`)
   assert.ok(chips.includes('Play Sintel · Blender film'), 'Sintel is not offered on the page')
   assert.ok(chips.includes('Play Big Buck Bunny · Blender film'), 'Big Buck Bunny is not offered on the page')
 
   const hostNode = mountPane(freshA)
   const cards = panelCards(hostNode)
-  assert.equal(cards.length, 8, `expected 8 starter cards in the pane, got ${cards.length}`)
+  // The A menu's card list is capped at PANEL_SCORE_MAX (12) sources.
+  assert.equal(cards.length, Math.min(12, chips.length), `expected ${Math.min(12, chips.length)} starter cards in the pane, got ${cards.length}`)
   assert.ok(cards.some(card => cardTitle(card).includes('Sintel')), 'the pane card list has no Sintel')
   const kinds = domFindAll(hostNode, node => node.className === 'ap-kind').map(node => node.textContent)
   assert.ok(kinds.includes('youtube'), 'the pane does not label the starter cards as youtube sources')
@@ -696,8 +728,11 @@ await recordAsync('5. fresh install: picking a starter film on the Aura page swi
     freshB.controls.some(patch => patch && patch.video_url === SINTEL_URL),
     'the film url never reached /control'
   )
-  // "plays it": one player frame, pointing at the video player page.
-  const frames = hostIframes()
+  // "plays it": ONE player, drawn by the pane's own SandboxedFrame and pointing
+  // at the local video player page for the picked film.
+  clearFrames()
+  renderSurface(freshB, 'panel')
+  const frames = playerFrames()
   assert.equal(frames.length, 1, `the page pick should mount exactly one player, got ${frames.length}`)
   assert.match(frames[0].src, /player\.html/)
   assert.ok(decodeURIComponent(frames[0].src).includes(SINTEL_URL), 'the player is not showing the picked film')
@@ -744,7 +779,7 @@ const freshD = makeCtx()
 const disposeD = pluginModule.default.register(freshD.ctx)
 await tickPoll(freshD)
 
-await recordAsync('7. fresh install: Pop out from the page moves the film to the floating watch window, Bring back returns it', async () => {
+await recordAsync('7. fresh install: "Frame in Hermes" on the page moves the film to the floating watch window, and the same button brings it back', async () => {
   let tree = pageTree(freshD)
   let stageRef = null
   walk(tree, node => {
@@ -759,26 +794,44 @@ await recordAsync('7. fresh install: Pop out from the page moves the film to the
   card.props.onClick()
   await sleep(60)
 
-  const onPage = () => hostIframes().filter(frame => frame.style.width === '800px')
-  assert.equal(onPage().length, 1, 'the picked film did not land on the page stage')
-  assert.equal(onPage()[0].style.zIndex, '1', 'the page film must sit above the page')
+  // The picked film is on the page stage: the page owns the ONE frame, and that
+  // frame is the local player page for the picked film.
+  clearFrames()
+  pageTree(freshD)
+  const onPage = playerFrames()
+  assert.equal(onPage.length, 1, 'the picked film did not land on the page stage')
+  assert.equal(pluginModule.__test.filmOwner(), 'page', 'the page does not own the player')
 
-  // Pop out: the film leaves the page and becomes the floating watch window.
-  const pop = pageAria(pageTree(freshD), 'Pop out')
-  assert.ok(pop, 'the page has no Pop out button')
+  // Pop out: the film leaves the page and becomes the floating watch window
+  // inside Hermes. The product names that button "Frame in Hermes" (the OS
+  // window is a separate button, "Pop out to desktop").
+  const pop = pageAria(pageTree(freshD), 'Frame in Hermes')
+  assert.ok(pop, 'the page has no way to put the film in its floating frame')
   pop.props.onClick()
-  assert.equal(onPage().length, 0, 'Pop out left the film on the page')
-  const floating = hostIframes().find(frame => frame.style.zIndex === '999997')
-  assert.ok(floating, 'Pop out did not hand the film to the floating watch window')
+  await sleep(20)
+  clearFrames()
+  pageTree(freshD)
+  assert.equal(playerFrames().length, 0, 'the floating frame left the film on the page')
+  clearFrames()
+  renderSurface(freshD, 'watch')
+  assert.equal(playerFrames().length, 1, 'the floating watch window did not get the film')
   assert.equal(freshD.storage.get('settings').videoWindow, true, 'the watch window was not persisted')
 
-  // Bring back: the same single player returns to the page stage.
-  const back = pageAria(pageTree(freshD), 'Bring back')
-  assert.ok(back, 'a popped-out film offers no Bring back')
+  // Bring it back: the same single player returns to the page stage.
+  const back = pageAria(pageTree(freshD), 'Frame in Hermes')
+  assert.ok(back, 'a framed film offers no way back')
   back.props.onClick()
-  assert.equal(onPage().length, 1, 'Bring back did not return the film to the page')
+  await sleep(20)
+  // Every surface that exists now, at once: exactly one player between them.
+  clearFrames()
+  pageTree(freshD)
+  for (const id of ['panel', 'watch']) {
+    const surface = freshD.contributions.find(entry => entry.id === id)
+    if (surface) renderDeep(renderContribution(surface))
+  }
+  assert.equal(playerFrames().length, 1, 'Bring back did not return the film to the page, or a second player was left behind')
+  assert.equal(pluginModule.__test.filmOwner(), 'page', 'the page did not take the player back')
   assert.equal(freshD.storage.get('settings').videoWindow, false, 'bring-back did not persist')
-  assert.equal(hostIframes().length, 1, 'pop out / bring back grew a second player')
   stageRef(null)
 })
 
@@ -837,7 +890,7 @@ await recordAsync('8. fresh install: pasting a YouTube playlist link on the page
 const freshF = makeCtx()
 const disposeF = pluginModule.default.register(freshF.ctx)
 
-await recordAsync('9. fresh install: dispose leaves nothing behind - no contributions, no timers, no listeners, no iframes', async () => {
+await recordAsync('9. fresh install: dispose leaves nothing behind - no contributions, no timers, no listeners, no frames', async () => {
   await tickPoll(freshF)
   const hostNode = mountPane(freshF)
 
@@ -847,16 +900,20 @@ await recordAsync('9. fresh install: dispose leaves nothing behind - no contribu
   assert.ok(card, 'no starter source to pick')
   card.props.onClick()
   await sleep(60)
-  assert.ok(hostIframes().length >= 1, 'precondition: no player mounted to clean up')
+  clearFrames()
+  renderSurface(freshF, 'panel')
+  assert.ok(playerFrames().length >= 1, 'precondition: no player drawn to clean up')
   const timersStarted = freshF.timers.length
   assert.ok(freshF.listeners.length > 0, 'precondition: no host listener was registered')
   assert.ok(timersStarted > 0, 'precondition: no host timer was registered')
 
+  clearFrames()
   disposeF()
 
   assert.equal(freshF.contributions.length, 0, 'a contribution survived dispose')
   assert.ok(freshF.timers.every(t => t.cleared), 'a timer survived dispose')
   assert.ok(freshF.listeners.every(t => t.removed), 'a listener survived dispose')
+  assert.equal(framesNow().length, 0, 'a frame was still drawn after dispose')
   assert.equal(hostIframes().length, 0, 'an iframe survived dispose')
   assert.equal(hostStyles().length, 0, 'a host stylesheet survived dispose')
   assert.equal(headChildren.length, 0, `a stylesheet survived dispose (${headChildren.map(n => n.attributes && n.attributes.id).join(', ')})`)

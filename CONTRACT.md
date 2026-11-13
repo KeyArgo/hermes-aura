@@ -148,7 +148,7 @@ Additive to §1/§2/§4. No existing field changed meaning. New config keys are 
 
 | key | type | default | validation |
 |---|---|---|---|
-| `opacity` | number 0..1 | 0.35 | non-numeric/bool -> `opacity_must_be_number`; outside 0..1 -> `opacity_out_of_range` |
+| `opacity` | number 0..1 | 0.25 | non-numeric/bool -> `opacity_must_be_number`; outside 0..1 -> `opacity_out_of_range` |
 | `behavior` | `"calm"` \| `"balanced"` \| `"intense"` | `"balanced"` | non-string -> `behavior_must_be_string`; unknown -> `bad_behavior` |
 | `mood_reactive` | bool | `true` | non-bool -> `mood_reactive_must_be_bool` |
 | `accent_pulse` | bool | `false` | non-bool -> `accent_pulse_must_be_bool` |
@@ -318,3 +318,68 @@ No recorder is opened unless the visual actually needs audio:
   it at once instead of waiting out `CAPTURE_RETRY_S` (10 s).
 - A replaced recorder is always closed (`_swap_capture()`), so neither the gate nor the silent
   retry path can leak a device handle.
+
+## 13. Readable text through the theme contract (additive, 2026-11-13)
+
+The owner asked for the chat text to be changeable in font and colour so it can be read over a
+film. The supported door is the host theme contract (`DesktopTheme.typography` +
+`colors.foreground` / `mutedForeground`), never host markup: Aura contributes `aura-live` and
+re-registers that ONE contribution when a Readable choice changes, which the host treats as a
+theme change and repaints in place. No selector, stylesheet or style rule is added, and the host
+`html`/`body`/root styles are still never written (§11).
+
+- Choices (`readable`, `readableSize`, `readableFont`, `readableInk` in the plugin's own settings
+  record) map to tokens: size → `typography.baseSize` + `typography.lineHeight`; font →
+  `typography.fontSans`, plus `typography.fontUrl` from `fonts.bunny.net` for the two webfonts
+  only; colour → `colors.foreground` + `colors.mutedForeground` on both palettes.
+- Readable on requests `aura-live` (it IS that theme's opt-in, so `themeOptIn` follows it);
+  Readable off goes through `restoreTheme()`, the same door every other opt-out uses, and hands
+  back the theme the user was wearing.
+- "Keep my theme when idle" (`themeIdleRestore`) does not apply while Readable is on: reverting
+  on an idle window would undo the text exactly when the user goes back to reading chat.
+- Hermes' own chat face (`desktop.font_family`, Settings ▸ Appearance ▸ Chat font) is left alone;
+  the Readable group links to it instead of overriding it.
+
+
+## 13. Where reaction strength and opacity draw (additive, 2026-11-13)
+
+Both controls are first-run `0.25`; a saved config keeps its own value.
+
+- **Reaction strength** (`intensity`, §1/§9.1) is the scale the page hands to the visualizer:
+  `sampleGain = effectiveIntensity` (0..1, and `× 0.75` under reduced motion). `0` therefore
+  draws no audio reaction and `0.25` draws a quarter. It is not remapped by a floor or a curve:
+  the value on the slider is the value that draws. The page's auto-gain still normalises a quiet
+  capture up to `AGC_TARGET_PEAK`; it never attenuates loud audio, and it does not cancel the
+  setting (the gain is applied after it).
+- **Opacity** is applied **once**, by the visualizer page, to its own canvas (§9.2), with the
+  scrim compensated from the same number. The desktop half must not dim the visualizer frame as
+  well: doing that squared the setting (25% drew 6%) and dimmed the page chrome §9.2 keeps
+  legible. The frame element carries only the "Only while active" fade factor. A **film** frame
+  is the exception — `web/player.html` has no opacity of its own, so its frame carries the
+  adaptive video transparency.
+
+## 14. Subtitles (additive, 2026-11-13)
+
+Ownership is unchanged: the page owns the player, the desktop half owns the choice.
+
+- **Page → app.** `video-state` gains `captions: {on, lang, current, known, tracks: [{code, name}]}`.
+  `known: false` means the player has not answered yet; `known: true` with an empty `tracks` is
+  the real "this video has no subtitles" answer, and only that disables the CC control.
+- **App → page.** The page is loaded with `?captions=1` and `?cc_lang=<tag>` when the choice is on.
+  A live switch is `{aura: 'transport', cmd: 'captions', value: 0|1, lang?: '<tag>'}` over the same
+  bridge as the transport.
+- **Queue.** `/api/player/command` accepts `cmd: "captions"` with `value: 0|1` and an optional
+  `lang` matching `^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$`; anything else in `lang` is dropped, not
+  forwarded to YouTube. The OS window is opened with `captions`/`lang` in `/api/window/open`.
+- **Player commands** are `web/captions.js`: `cc_load_policy=1` + `cc_lang_pref` in the embed when
+  on (nothing when off), `loadModule`/`unloadModule` for `captions`, plus
+  `setOption('captions','track',{languageCode})` when a language is known. They are re-applied per
+  video id, because YouTube resets captions per video.
+- **Where the track list comes from.** The player's own `apiInfoDelivery` message
+  (`{namespaces:['captions'], captions:{track, tracklist}}`), which it posts whether or not captions
+  are showing. Measured: a Netflix/BBC Earth upload publishes 17 tracks; ambient uploads publish no
+  captions namespace at all.
+- **Direct files.** `<video>.textTracks[i].mode` is `showing` for the chosen track and `hidden` for
+  the rest.
+- **Not detectable, and stated as such:** subtitles burned into the picture. No player API exposes
+  them, so the CC switch cannot remove them; the README and USAGE say so.

@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml"><img alt="CI: tests" src="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml/badge.svg?branch=main"></a>
-  <a href="TESTING.md"><img alt="621 tests passing" src="https://img.shields.io/badge/tests-621%20passing-2ea44f?style=flat-square"></a>
+  <a href="TESTING.md"><img alt="703 tests passing" src="https://img.shields.io/badge/tests-703%20passing-2ea44f?style=flat-square"></a>
   <a href="https://github.com/NousResearch/hermes-agent/pull/154027"><img alt="Hermes plugin catalog: in review" src="https://img.shields.io/badge/plugin%20catalog-in%20review-f59e0b?style=flat-square"></a>
   <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/license-MIT-2f6bff?style=flat-square"></a>
   <a href="https://github.com/NousResearch/hermes-agent"><img alt="Hermes Agent 0.22.5 or newer" src="https://img.shields.io/badge/Hermes%20Agent-%E2%89%A5%200.22.5-7c3aed?style=flat-square"></a>
@@ -106,6 +106,15 @@ streams audio from the backend, and that stream is what keeps capture awake on a
   window — real Chromium on its own profile — so YouTube's own page opens and
   adding, removing and reordering work with your own session. No API scope, no
   OAuth review, no second account.
+- **Subtitles you control.** A **CC** button on the control strip, the pane, the
+  Aura page and the A menu turns the film's captions on and off, and the choice
+  is remembered. When a video has several caption tracks the menu lists the ones
+  it actually has and switches between them (Automatic means your machine's
+  language, then English); YouTube forgets captions per video, so Aura
+  re-applies the choice on every episode. A video with no caption track greys
+  the button out — *No subtitles for this video*. **Subtitles burned into the
+  picture cannot be turned off**: no player API exposes them, so the CC button
+  cannot remove them. That is the upload's choice, not a setting of ours.
 - **Free placement.** The floating watch window drags anywhere and remembers its
   spot; 320 / 480 / 640 wide. Its control strip is two rows — the film's title,
   scrubber, clock, volume and window buttons above a centred transport row —
@@ -121,7 +130,12 @@ streams audio from the backend, and that stream is what keeps capture awake on a
 - **One library, two pickers.** The source dropdowns in the A menu and in
   Settings list everything — saved playlists, your films, the starter pack and
   recents — grouped under `Playlists`, `Your films`, `Starters` and `Recent`. A
-  small **Edit sources…** link opens the Aura page, where editing lives.
+  small **Edit sources…** link opens the Aura page, where editing lives. The
+  starter pack is now a backdrop shelf as much as a film shelf: 32 entries,
+  half of them 2–12 hour single takes — BBC Earth oceanscapes, NASA and ISS
+  material, Monterey Bay Aquarium tanks, cab rides, city walks, silent drone
+  aerials, rain and fireplace beds — plus Blender's open movies (CC-BY) and two
+  public-domain features served straight from the Internet Archive.
 - **A film owns the screen.** While Backdrop is **Video player**, Style,
   Intensity, the Aura transparency and Gentle motion are greyed out (they only
   describe the Aura visual), and Show is forced to Always in effect: a playing
@@ -180,6 +194,7 @@ from the chat — no alt-tab, no reaching for the mouse:
 - “pause” / “resume” / “next episode” / “go back an episode”
 - “jump to 40 minutes” (seek)
 - “put it on my other screen” / “pop the film out” / “bring it back into Hermes”
+- “turn the subtitles on” / “turn them off” (`action=captions`)
 
 The agent calls `aura_control` with
 `action=pause|resume|next|prev|seek|popout|popin`, and `action=status` answers
@@ -215,6 +230,66 @@ a direct link). `action=play` accepts YouTube watch / `youtu.be` / shorts / embe
 dashboard also exposes the same search as
 `GET /api/plugins/aura/search?q=…&limit=…`.
 
+### The shelf: 346 titles, on the page and by name
+
+The Aura page opens with **Picks** — the starter films — then one row per
+category: Deep sea & oceans, Nature & wildlife, Space & astronomy, Earth from
+above, Slow TV, Classic films, Classic cartoons, Anime, Open movies, Science &
+history docs and Ambience. Every row scrolls sideways, each card names the
+title, year and length and shows its one-line note on hover, and one click plays
+it through the same path a picked source takes. One search box filters every row
+at once. The catalogue is a committed file (`web/catalog.json`, built by
+`tools/build_catalog.py` from the verified rows) served by
+`GET /api/catalog`, so it works offline and nothing is fetched from YouTube or
+archive.org at runtime.
+
+Ask for one by name and Hermes browses the same list without touching the
+network:
+
+> **You:** find me a noir film
+> **Hermes:** Here are a few from Aura's catalogue — say the number:
+> 1. The Cabinet of Dr. Caligari (1920) · Classic films · archive.org/…
+> 2. Dr. Mabuse the Gambler (1922) · Classic films · archive.org/…
+> 3. Detour (1945) · Classic films · archive.org/…
+
+`aura_watch action=browse` takes an optional `category` and an optional `query`
+(words from a title or its description), returns up to ten matches (title, year,
+category, url) and lists the categories when given neither. It shows the
+numbered options and stops, exactly like `action=search`; the pick then plays
+through `action=play`.
+
+### Keep your own list, by asking
+
+Aura's Library (the **Playlists** and **Your films** groups in the source
+picker) is the list you save, not a YouTube account's. Hermes can change it:
+
+> **You:** save this
+> **Hermes:** Saved to your Aura library (films): Secrets of the Octopus
+>
+> **You:** add the octopus one to my list
+> **Hermes:** Saved to your Aura library (playlists): Full octopus documentaries
+>
+> **You:** remove Nosferatu
+> **Hermes:** Removed from your Aura library: Nosferatu
+>
+> **You:** what's on my list?
+> **Hermes:** 1. Nosferatu · film · youtube.com/watch?v=… (and the rest)
+
+`aura_watch` gains `action=save` (the `url` may be left out — “save this” saves
+what is playing, and `label` defaults to the title the player already knows),
+`action=remove` (`url`, or a `label` that matches exactly or uniquely, ignoring
+case) and `action=list`. A playlist link is saved as a playlist and everything
+else as a film, the same URL is never saved twice, and the same URL rules as
+`action=play` apply. An ambiguous title returns the matches and changes nothing.
+
+All three actions ride the same `/api/player/command` queue: the desktop handles
+`save`/`remove` with the helpers its own Add and Remove buttons use, so the page
+updates live and shows a short note (“Saved to your Aura library”). For
+`action=list` the desktop adds the saved list (`library`) to the player report it
+already sends (`/api/player/report`), and the server keeps the last one — if no
+desktop has reported yet, the tool says “not reported yet” instead of inventing
+a list. Nothing here touches YouTube's own playlists.
+
 ### The plugin surface
 
 - Status-bar **A** menu: play/pause, seek, volume, source picker, watch window,
@@ -225,7 +300,8 @@ dashboard also exposes the same search as
   readable on dark themes.
 - The **`aura_control`** tool, so the agent itself can set the room; the
   **`aura_listen`** tool for radio search and the audio channel; the
-  **`aura_watch`** tool to find something to watch and start the choice you pick.
+  **`aura_watch`** tool to find something to watch, start the choice you pick,
+  and save, remove or list what is in your own Library.
 - Hooks: session start/end, `pre`/`post_tool_call`, approval request/response,
   `api_request_error`, stream start/end, subagent start/stop.
 
@@ -283,7 +359,7 @@ automatically there; macOS needs a virtual audio device.
 
 1. Install and enable Aura (above).
 2. Open the status-bar **A** menu and pick a film, or paste a YouTube video or
-   playlist URL.
+   playlist URL. The Aura page names what is playing above the big player.
 3. Work. The film plays in the right-hand pane.
 4. Switch the film off and the same audio paints the visualiser behind the
    interface.
@@ -350,12 +426,17 @@ that rule; the film moves, and the surface that loses it does not keep a copy.
 
 <p align="center"><img src="assets/three-surfaces.svg" alt="The docked pane, the Aura page, and the pop-out window" width="100%"></p>
 
-### Pop out to its own window
+### Frame in Hermes, or pop out to desktop
 
-Click **Pop out** and the film leaves the Hermes window: a real OS window
-(Chrome/Chromium app mode) that you can drag to another monitor or full-screen.
-It opens at the exact second the in-app player had reached, and the in-app one
-pauses so two copies never play with sound. **Pop in** closes it again.
+Two buttons, the same words on the quick menu, the right panel, the Aura page
+and the floating control strip. **Frame in Hermes** keeps the film in a movable
+frame inside Hermes (the button stays pressed while it does). **Pop out to
+desktop** sends it to a real OS window — Chrome/Chromium app mode — that you can
+drag to another monitor or full-screen. While that window holds the film the
+button reads **Bring back**.
+
+Pop-out opens at the exact second the in-app player had reached, and the in-app
+one pauses so two copies never play with sound.
 
 The pop-out needs Chrome or Chromium. If none is installed Aura says so plainly;
 set `AURA_DESKTOP_BROWSER=/path/to/chrome` to point it at one. The window uses
@@ -422,8 +503,9 @@ It does not run a shell, and it does not touch host `html`/`body` styles.
 **Host safety.** The pane is a Hermes `PANES_AREA` contribution — Hermes lays it
 out; no fixed positioning, no z-index, no `body` padding. The film is an SDK
 `<SandboxedFrame>` inside that pane, and the transport strip is a
-`COMPOSER_AREAS.underside` contribution — no app markup is queried, nothing is
-appended to the document body, and no host stylesheet is written. Host root
+`COMPOSER_AREAS.underside` contribution whose floating pill sits at the point the
+user dragged it to (`videoBarX`/`videoBarY`) — no app markup is queried, nothing
+is appended to the document body, and no host stylesheet is written. Host root
 styles are never written; the
 accent override is the SDK's sanctioned mechanism. Switching the visual off,
 turning Aura off, **Restore my theme** and plugin disposal remove every effect
@@ -443,9 +525,9 @@ node --test tests/test_desktop_plugin.mjs
 
 | Suite | Result at this commit |
 |---|---|
-| Python (capture, analysis, server, hooks, tools, radio, search) | **489 passed** |
-| Desktop contract (menu, pane, transport, resume, mode gating) | **132 passed, 0 failed** |
-| **Total** | **621 passed** |
+| Python (capture, analysis, server, hooks, tools, radio, search, catalogue) | **536 passed** |
+| Desktop contract (menu, pane, transport, resume, mode gating, shelf) | **167 passed, 0 failed** |
+| **Total** | **703 passed** |
 
 The end-to-end visualiser tests drive a real headless Chrome and measure the
 canvas. They skip themselves when the machine is too loaded to sample reliably
