@@ -3052,15 +3052,9 @@ function captionTooltip(info) {
   return detail.on ? 'Subtitles on — click to turn off' : 'Show subtitles (CC)'
 }
 
-/** The language the switch should ask the player for. Empty means "the
- *  player's own choice": the page decides from the tracks and the machine. */
-function captionLanguage(info) {
-  const detail = info || captionInfo()
-  if (detail.lang) return detail.lang
-  return ''
-}
-
-/** Send the caption switch to whichever player owns the picture. */
+/** Send the caption switch to whichever player owns the picture. An empty
+ *  language means "the page decides": it has the tracks and the machine's
+ *  language, and only it knows which track to show. */
 function sendCaptionsToPlayer(on, lang) {
   const body = { cmd: 'captions', value: on ? 1 : 0 }
   if (CAPTION_LANG_RE.test(lang || '')) body.lang = lang
@@ -4974,7 +4968,7 @@ function syncPanel(force) {
       parts.ccBtn.setAttribute('aria-pressed', info.on ? 'true' : 'false')
     }
     if (parts.ccBtn.title !== tip) parts.ccBtn.title = tip
-    if (parts.ccBtn.disabled === Boolean(info.available)) parts.ccBtn.disabled = !info.available
+    parts.ccBtn.disabled = !info.available
     parts.ccBtn.style.opacity = info.available ? '1' : '0.45'
     if (parts.captionSelect) {
       const choices = captionLanguageChoices(info)
