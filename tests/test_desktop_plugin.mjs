@@ -4950,6 +4950,86 @@ await recordAsync('pop out: an error reply shows the server reason and moves not
   }
 })
 
+// ------------------------------------------- watching with Aura switched off
+// Owner: "even if aura is off you should be able to play in the aura app, the
+// on and off is for being able to overlay on your chat … not inside the plugin".
+// The page, the Right panel, the film frame, the pop-outs and the strip are
+// Aura's own surfaces. Aura's switch owns the overlay painted on the chat.
+
+const offWatchUrl = 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+const offCtx = makeCtx({
+  enabled: false,
+  backdropMode: 'video',
+  panelEnabled: true,
+  videoUrl: offWatchUrl
+})
+closePopout(offCtx)
+const disposeOffCtx = pluginModule.default.register(offCtx.ctx)
+await primeLive()
+pageStage(1200, 400)
+
+record('aura off: the page plays the film instead of asking for Aura to be on', () => {
+  const body = texts(layoutPageOf(offCtx))
+  assert.ok(!/Aura is off/i.test(body),
+    `the page still refuses to play while Aura is off: ${JSON.stringify(body)}`)
+  globalThis.__sdkFrames.length = 0
+  layoutPageOf(offCtx)
+  const framed = globalThis.__sdkFrames.filter(frame => String(frame.src || '').includes('/player.html'))
+  assert.equal(framed.length, 1, 'the page drew no film frame while Aura is off')
+})
+
+record('aura off: the Right panel still holds the film and never refuses', () => {
+  const panel = layoutMountPanel(offCtx)
+  const texts_ = layoutDescendants(panel)
+    .map(node => String(node.textContent || ''))
+    .join('\n')
+  assert.ok(!/Aura is off/i.test(texts_),
+    `the Right panel still refuses to play while Aura is off: ${JSON.stringify(texts_)}`)
+  assert.equal(tx.filmOwner() === 'page', true,
+    `an in-app surface no longer owns the film: ${JSON.stringify(tx.filmGates())}`)
+})
+
+await recordAsync('aura off: Frame in Hermes and Pop out to desktop still move the film', async () => {
+  pageAria(layoutPageOf(offCtx), 'Frame in Hermes').props.onClick()
+  assert.equal(pluginModule.wiringTest.settings.get().videoWindow, true,
+    'Frame in Hermes did nothing while Aura is off')
+  tx.setVideoWindow(false)
+  // An earlier scenario can leave a pop-out half-open; settle it first.
+  await tx.setOwnWindow(false)
+  pageAria(layoutPageOf(offCtx), 'Pop out to desktop').props.onClick()
+  await sleep(80)
+  assert.ok(pageAria(layoutPageOf(offCtx), 'Bring back'),
+    `Pop out to desktop opened nothing while Aura is off: ${JSON.stringify(tx.filmGates())}`)
+  assert.equal(tx.filmOwner(), '',
+    `the film is still in an in-app surface with the window open: ${JSON.stringify(tx.filmGates())}`)
+  await tx.setOwnWindow(false)
+})
+
+pageStage(null)
+disposeOffCtx()
+
+const offStripCtx = makeCtx({
+  enabled: false,
+  backdropMode: 'video',
+  panelEnabled: false,
+  videoUrl: offWatchUrl
+})
+closePopout(offStripCtx)
+const disposeOffStrip = pluginModule.default.register(offStripCtx.ctx)
+await primeLive()
+
+record('aura off: the control strip is there to play the film with', () => {
+  const strip = offStripCtx.contributions.find(c => c.id === 'strip')
+  assert.ok(strip, 'the strip contribution is gone')
+  const tree = strip.render()
+  const element = tree && typeof tree.type === 'function' ? tree.type(tree.props) : tree
+  assert.ok(element, 'the control strip renders nothing while Aura is off')
+  assert.equal(offStripCtx.storage.get('settings').enabled, false,
+    'the scenario is meant to run with Aura off')
+})
+
+disposeOffStrip()
+
 // --------------------------------------------------------------- reporting
 
 console.log(results.join('\n'))

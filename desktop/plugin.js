@@ -4081,9 +4081,9 @@ function startVideoBarDrag(event) {
 
 function videoBarActive() {
   const settings = $settings.get()
-  const live = $live.get()
-  const enabled = live.ok ? live.enabled === true : settings.enabled
-  if (!doc || !enabled || settings.backdropMode !== 'video' || !settings.videoUrl || settings.videoClosed) return false
+  // The strip drives Aura's own player, so it is there whenever a film is open
+  // in video mode — Aura's on/off switch only governs the overlay on the chat.
+  if (!doc || settings.backdropMode !== 'video' || !settings.videoUrl || settings.videoClosed) return false
   // When the docked panel is open it owns the controls; the pill is for the
   // tray-only life.
   if (panelVisible() && settings.panelCollapsed !== true) return false
@@ -6742,12 +6742,11 @@ function pageVideoSlot() {
 }
 
 /** The page alone wants the film: like the pane, it is a watch surface. Gated
- *  exactly like showEligible, so Aura off (or no server) still draws nothing. */
+ *  on a film and a live server, never on Aura's overlay switch: turning Aura
+ *  off stops the visual painted on the chat, not watching in its own page. */
 function pageFilmWanted() {
   const settings = $settings.get()
-  const live = $live.get()
-  const enabled = live.ok ? live.enabled === true : settings.enabled
-  return Boolean(doc && enabled && liveUrl() && pageVisible() &&
+  return Boolean(doc && liveUrl() && pageVisible() &&
     settings.backdropMode === 'video' && !settings.videoClosed && settings.videoUrl)
 }
 
@@ -7450,19 +7449,19 @@ function AuraPage() {
   // [subtitles] The player's caption report, read once for the whole page.
   const captionState = captionInfo()
   const captionChoices = captionLanguageChoices(captionState)
-  const hint = !auraOn
-    ? 'Aura is off. Turn it on in the setup below to watch here.'
-    : settings.videoClosed
-      ? 'Film closed — press Open video below.'
-      : !settings.videoUrl
-        ? 'No film yet. Paste a link below, or pick one of the sources.'
-        : settings.backdropMode !== 'video'
-          ? 'Backdrop mode is set to the Aura visual. Choose "Video player" in the setup below to watch here.'
-          : videoWindowOn()
-            ? 'Playing in the pop-out window. Press Bring back to watch it here.'
-            : state.blocked
-              ? 'This video cannot be embedded. Paste a different link, or pick another source.'
-              : ''
+  // The page is Aura's own watch surface: Aura's on/off switch belongs to the
+  // overlay painted on the chat, never to watching a film here.
+  const hint = settings.videoClosed
+    ? 'Film closed — press Open video below.'
+    : !settings.videoUrl
+      ? 'No film yet. Paste a link below, or pick one of the sources.'
+      : settings.backdropMode !== 'video'
+        ? 'Backdrop mode is set to the Aura visual. Choose "Video player" in the setup below to watch here.'
+        : videoWindowOn()
+          ? 'Playing in the pop-out window. Press Bring back to watch it here.'
+          : state.blocked
+            ? 'This video cannot be embedded. Paste a different link, or pick another source.'
+            : ''
 
   const now = nowPlaying(settings, state)
 
