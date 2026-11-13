@@ -220,6 +220,38 @@ a direct link). `action=play` accepts YouTube watch / `youtu.be` / shorts / embe
 dashboard also exposes the same search as
 `GET /api/plugins/aura/search?q=…&limit=…`.
 
+### Keep your own list, by asking
+
+Aura's Library (the **Playlists** and **Your films** groups in the source
+picker) is the list you save, not a YouTube account's. Hermes can change it:
+
+> **You:** save this
+> **Hermes:** Saved to your Aura library (films): Secrets of the Octopus
+>
+> **You:** add the octopus one to my list
+> **Hermes:** Saved to your Aura library (playlists): Full octopus documentaries
+>
+> **You:** remove Nosferatu
+> **Hermes:** Removed from your Aura library: Nosferatu
+>
+> **You:** what's on my list?
+> **Hermes:** 1. Nosferatu · film · youtube.com/watch?v=… (and the rest)
+
+`aura_watch` gains `action=save` (the `url` may be left out — “save this” saves
+what is playing, and `label` defaults to the title the player already knows),
+`action=remove` (`url`, or a `label` that matches exactly or uniquely, ignoring
+case) and `action=list`. A playlist link is saved as a playlist and everything
+else as a film, the same URL is never saved twice, and the same URL rules as
+`action=play` apply. An ambiguous title returns the matches and changes nothing.
+
+All three actions ride the same `/api/player/command` queue: the desktop handles
+`save`/`remove` with the helpers its own Add and Remove buttons use, so the page
+updates live and shows a short note (“Saved to your Aura library”). For
+`action=list` the desktop adds the saved list (`library`) to the player report it
+already sends (`/api/player/report`), and the server keeps the last one — if no
+desktop has reported yet, the tool says “not reported yet” instead of inventing
+a list. Nothing here touches YouTube's own playlists.
+
 ### The plugin surface
 
 - Status-bar **A** menu: play/pause, seek, volume, source picker, watch window,
@@ -230,7 +262,8 @@ dashboard also exposes the same search as
   readable on dark themes.
 - The **`aura_control`** tool, so the agent itself can set the room; the
   **`aura_listen`** tool for radio search and the audio channel; the
-  **`aura_watch`** tool to find something to watch and start the choice you pick.
+  **`aura_watch`** tool to find something to watch, start the choice you pick,
+  and save, remove or list what is in your own Library.
 - Hooks: session start/end, `pre`/`post_tool_call`, approval request/response,
   `api_request_error`, stream start/end, subagent start/stop.
 

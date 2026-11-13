@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — Hermes can edit your own list
+
+- **`aura_watch` can save, remove and list the owner's Aura library** (the
+  Playlists and Your films groups in the source picker — never a YouTube
+  account's playlists). `action=save` takes a url (or none, meaning "what is
+  playing now") plus an optional label that defaults to the playing title; a
+  `/playlist` link is saved as a playlist and anything else as a film, the same
+  url is never saved twice, and the same url rules as `action=play` apply.
+  `action=remove` takes a url or a title (exact or unique, ignoring case) and an
+  ambiguous title returns the matches without changing anything. `action=list`
+  answers "what's on my list?" with label, url and kind.
+- **The desktop reports its library with the player report** (`library` on
+  `/api/player/report`, kept by the server on `/api/player`), so `action=list`
+  and `action=remove` read the owner's real list; before the first report they
+  say "not reported yet" instead of guessing.
+- **Two new player-queue commands, `save` and `remove`.** The desktop applies
+  them with the same helpers its own Add and Remove buttons use, so the page
+  updates live and shows a short note ("Saved to your Aura library"). The
+  library poll keeps its own cursor, so a save still lands while the OS window
+  owns playback.
+
 ## Unreleased — the control strip is the user's
 
 - **Dragging the strip moves the strip.** The ⠿ grip (and any empty part of the
