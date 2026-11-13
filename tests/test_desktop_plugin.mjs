@@ -138,7 +138,7 @@ function renderContribution(contribution) {
   return typeof element.type === 'function' ? element.type(element.props) : element
 }
 
-function makeCtx(settings) {
+function makeCtx(settings, catalog) {
   const contributions = []
   const timers = []
   const controls = []
@@ -281,6 +281,12 @@ function makeCtx(settings) {
           channel: 'dev',
           dirty: false
         }
+      }
+      if (route === '/catalog') {
+        // Only the shelf scenarios hand in a catalogue; everywhere else the
+        // route is as absent as it is on an old server, so the page must cope.
+        if (!catalog) throw new Error('unexpected route /catalog')
+        return catalog
       }
       throw new Error(`unexpected route ${route}`)
     }
@@ -4020,6 +4026,176 @@ record('right panel: no fixed width wider than a 260px pane, and it wraps instea
   dispose()
   assert.equal(ctx.contributions.length, 0, 'a contribution survived dispose')
 })
+
+// --------------------------------------------------------------- the shelf
+// The catalogue is a committed file (web/catalog.json); the shelf draws one
+// horizontally scrolling row per category, Picks (STARTER_SOURCES) first, and
+// one click plays a title through the same applyVideoSource path a starter uses.
+
+const CATALOG = JSON.parse(fs.readFileSync(path.join(ROOT, 'web', 'catalog.json'), 'utf8'))
+const CATALOG_CATEGORIES = [...new Set(CATALOG.map(item => item.category))]
+
+const sh = makeCtx(
+  { enabled: true, backdropMode: 'aura', videoUrl: '' },
+  { ok: true, count: CATALOG.length, items: CATALOG }
+)
+const disposeSh = pluginModule.default.register(sh.ctx)
+// Prime the mount once: the fetch is asynchronous, so the first render is the
+// one that starts it and the next one sees the catalogue.
+renderDeep(renderContribution(sh.contributions.find(c => c.area === 'routes')))
+await sleep(120)
+const shPage = () => renderDeep(renderContribution(sh.contributions.find(c => c.area === 'routes')))
+const shelfRowsOf = tree => {
+  const rows = []
+  walk(tree, node => {
+    if (node.props && typeof node.props['data-category'] === 'string') rows.push(node)
+  })
+  return rows
+}
+const stripOf = row => row.props.children[1]
+
+record('shelf: one row per catalogue category, Picks first, each row titled and counted', () => {
+  const rows = shelfRowsOf(shPage())
+  assert.deepEqual(
+    rows.map(row => row.props['data-category']),
+    ['picks', ...CATALOG_CATEGORIES],
+    'the shelf does not draw Picks plus one row per category, in catalogue order'
+  )
+  const picksCount = rows[0]
+  assert.equal(texts(picksCount.props.children[0].props.children[0]), 'Picks')
+  assert.equal(
+    texts(picksCount.props.children[0].props.children[1]),
+    String(starterEntries.length),
+    'the Picks row does not hold the whole starter pack'
+  )
+  CATALOG_CATEGORIES.forEach((category, index) => {
+    const row = rows[index + 1]
+    const expected = CATALOG.filter(item => item.category === category)
+    assert.equal(texts(row.props.children[0].props.children[0]), category, 'the row is not titled with its category')
+    assert.equal(texts(row.props.children[0].props.children[1]), String(expected.length),
+      `the ${category} row does not show its count`)
+    assert.equal(stripOf(row).props.children.length, expected.length,
+      `the ${category} row does not hold every title`)
+  })
+})
+
+record('shelf: a card is poster-less and carries title, year, length and its note', () => {
+  const tree = shPage()
+  const item = CATALOG.find(entry => entry.year && entry.duration_s)
+  assert.ok(item, 'the catalogue has no title with a year and a length to check')
+  const card = pageAria(tree, `Play ${item.title}`)
+  assert.ok(card, 'no shelf card for a catalogue title')
+  assert.equal(card.props.title, item.note, 'the one-line note is not on the hover title')
+  const classes = []
+  const pictures = []
+  walk(card, node => {
+    if (node.props && node.props.className) classes.push(node.props.className)
+    if (node.props && node.props.style && node.props.style.backgroundImage) pictures.push(node)
+  })
+  assert.ok(classes.includes('aura-shelf-title'), 'the card has no title block')
+  assert.ok(classes.includes('aura-shelf-meta'), 'the card has no year/length line')
+  assert.ok(classes.includes('aura-shelf-note'), 'the card has no note line')
+  assert.equal(pictures.length, 0, 'a catalogue card grew a poster')
+  const body = texts(card)
+  assert.match(body, new RegExp(String(item.year)), 'the year is missing from the card')
+  assert.match(body, new RegExp(tx.fmtLength(item.duration_s).replace(/ /g, '\\s+')),
+    'the length is missing from the card')
+  assert.ok(body.includes(item.title), 'the title is missing from the card')
+})
+
+record('shelf: lengths read as hours and minutes, and unknown lengths say nothing', () => {
+  assert.equal(tx.fmtLength(0), '')
+  assert.equal(tx.fmtLength(null), '')
+  assert.equal(tx.fmtLength(95), '2 min')
+  assert.equal(tx.fmtLength(2700), '45 min')
+  assert.equal(tx.fmtLength(3600), '1 h')
+  assert.equal(tx.fmtLength(5520), '1 h 32 min')
+})
+
+await recordAsync('shelf: clicking a catalogue card plays it exactly like a starter', async () => {
+  const item = CATALOG.find(entry => entry.category === 'Anime')
+  assert.ok(item, 'the Anime row is empty')
+  const card = pageAria(shPage(), `Play ${item.title}`)
+  assert.ok(card, 'no card to click')
+  card.props.onClick()
+  await sleep(150)
+  const saved = sh.storage.get('settings') || {}
+  assert.equal(saved.videoUrl, item.url, 'the clicked title was not applied')
+  assert.equal(saved.backdropMode, 'video', 'the shelf did not switch to video mode')
+  assert.ok(sh.controls.some(patch => patch && patch.backdrop_mode === 'video'),
+    'the mode change never reached /control')
+  assert.ok((saved.videoRecent || []).some(row => row.url === item.url),
+    'the played title did not join the queue like a picked source')
+})
+
+record('shelf: one search box filters every row, and clearing it restores them', () => {
+  const box = pageAria(shPage(), 'Search the catalogue')
+  assert.ok(box, 'the shelf has no search box')
+  box.props.onChange({ target: { value: 'Mobile Suit' } })
+  const filtered = shPage()
+  const rows = shelfRowsOf(filtered)
+  assert.ok(rows.length >= 2, 'the query hid every row instead of filtering them')
+  assert.ok(rows.length < CATALOG_CATEGORIES.length + 1, 'the query did not hide any row')
+  for (const row of rows) {
+    for (const card of stripOf(row).props.children) {
+      assert.match(card.props['aria-label'], /Mobile Suit/i,
+        `a card that does not match the query survived in ${row.props['data-category']}`)
+    }
+  }
+  assert.equal(pageAria(filtered, 'Search the catalogue').props.value, 'Mobile Suit',
+    'the search box does not show what was typed')
+
+  // A starter-only phrase keeps the catalogue empty but leaves its Picks.
+  pageAria(filtered, 'Search the catalogue').props.onChange({ target: { value: '· Blender film' } })
+  const picksOnly = shPage()
+  assert.deepEqual(shelfRowsOf(picksOnly).map(row => row.props['data-category']), ['picks'])
+  assert.ok(stripOf(shelfRowsOf(picksOnly)[0]).props.children.length >= 3,
+    'the search did not keep the matching Picks')
+
+  pageAria(picksOnly, 'Search the catalogue').props.onChange({ target: { value: '' } })
+  assert.equal(shelfRowsOf(shPage()).length, CATALOG_CATEGORIES.length + 1,
+    'clearing the search did not restore every row')
+})
+
+record('shelf: the catalogue is fetched once per mount, not once per render', () => {
+  const calls = sh.requests.filter(request => request.route === '/catalog')
+  assert.equal(calls.length, 1, `the page asked for /catalog ${calls.length} times`)
+})
+
+record('shelf: rows scroll sideways and shrink on a narrow window, never widen the page', () => {
+  assert.match(source, /\.aura-shelf-strip\s*\{[^}]*overflow-x:\s*auto/,
+    'the shelf strip does not scroll horizontally')
+  assert.match(source, /\.aura-shelf-strip\s*\{[^}]*max-width:\s*100%/,
+    'the shelf strip has no width ceiling')
+  assert.match(source, /@media \(max-width: 760px\)[\s\S]*?\.aura-shelf-card, #aura-page \.aura-shelf-slot \{\s*flex-basis: 148px/,
+    'narrow windows do not shrink the shelf cards')
+  const row = shelfRowsOf(shPage()).find(entry => entry.props['data-category'] === 'Anime')
+  assert.ok(row, 'the Anime row is missing')
+  assert.equal(stripOf(row).props.style.overflowX, 'auto', 'the rendered strip is not a horizontal scroller')
+  for (const card of stripOf(row).props.children) {
+    assert.equal(card.props.style && card.props.style.width, undefined,
+      'a shelf card sets its own pixel width inline, which no media query can undo')
+  }
+})
+
+// An old server (or no network) has no /catalog at all: the page must still be
+// the working library it was, with Picks and the saved lists only.
+const shDown = makeCtx({ enabled: true, backdropMode: 'aura', videoUrl: '' })
+const disposeShDown = pluginModule.default.register(shDown.ctx)
+await sleep(80)
+
+record('shelf: with no catalogue the page still offers Picks and the saved library', () => {
+  const tree = renderDeep(renderContribution(shDown.contributions.find(c => c.area === 'routes')))
+  const rows = shelfRowsOf(tree)
+  assert.deepEqual(rows.map(row => row.props['data-category']), ['picks'],
+    'a failed /catalog left rows behind')
+  assert.equal(stripOf(rows[0]).props.children.length, starterEntries.length,
+    'the Picks row is empty after a failed fetch')
+  assert.ok(pageAria(tree, 'Play Sintel · Blender film'), 'Picks are not playable after a failed fetch')
+  assert.match(texts(tree), /How to add a YouTube playlist/, 'the library half disappeared with the catalogue')
+})
+disposeShDown()
+disposeSh()
 
 // --------------------------------------------------------------- reporting
 
