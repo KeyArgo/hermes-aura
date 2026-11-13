@@ -27,6 +27,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import socket
 import struct
@@ -101,6 +102,9 @@ _STATIC_TYPES = {
     # [listen lane] The audio channel (radio / direct audio URLs) loaded by
     # both the visualiser page and the video backdrop page.
     "/audio.js": "text/javascript; charset=utf-8",
+    # [subtitles] The CC rules (embed query + live player commands), loaded by
+    # the video backdrop page and exercised by its contract test.
+    "/captions.js": "text/javascript; charset=utf-8",
 }
 _VENDOR_TYPES = {
     ".js": "text/javascript; charset=utf-8",
@@ -673,6 +677,8 @@ def _capture_loop(stop_event: threading.Event) -> None:
 
 PLAYER_COMMANDS = ("play", "pause", "toggle", "next", "prev", "seek",
                    "volume", "load", "watch_window", "bring_back",
+                   # [subtitles] the CC switch; the active player answers it
+                   "captions",
                    # [savelist lane] the owner's own saved library: the agent
                    # queues one of these and the desktop writes its settings.
                    "save", "remove")
@@ -801,18 +807,29 @@ def enqueue_command(data: Any) -> dict:
     if cmd not in PLAYER_COMMANDS:
         raise ValueError(f"cmd must be one of {list(PLAYER_COMMANDS)}")
     command: dict = {"cmd": cmd, "ts": time.time()}
-    for key in ("value", "url", "label", "title"):
+    for key in ("value", "url", "label", "title", "lang"):
         if key in data and data[key] is not None:
             if key == "value":
                 number = _player_number(data[key])
+                # [subtitles] the CC switch is a boolean at the tool's edge; it
+                # travels as 0/1 so the page has one shape to read.
+                if cmd == "captions" and isinstance(data[key], bool):
+                    number = 1.0 if data[key] else 0.0
                 if cmd in ("seek", "volume") and number is None:
                     raise ValueError(f"{cmd} needs a numeric value")
                 if number is not None:
                     command["value"] = number
+            elif key == "lang":
+                # A language tag and nothing else: it is forwarded to YouTube.
+                text = _player_text(data[key], 20).strip()
+                if re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?", text):
+                    command["lang"] = text
             else:
                 text = _player_text(data[key])
                 if text:
                     command[key] = text
+    if cmd == "captions" and "value" not in command:
+        raise ValueError("captions needs a value of 0 or 1")
     if cmd == "seek" and "value" not in command:
         raise ValueError("seek needs a numeric value")
     if cmd == "volume":
@@ -908,6 +925,12 @@ def open_window(data: Any) -> dict:
         playing = reported.get("playing")
     if playing is False:
         options["paused"] = True
+    # [subtitles] The window starts with the owner's caption choice.
+    if isinstance(body.get("captions"), bool):
+        options["captions"] = body["captions"]
+        lang = body.get("lang")
+        if isinstance(lang, str) and lang.strip():
+            options["lang"] = lang.strip()
     result = desktop_window.open_window(int(port), _STATE.token, url, **options)
     result["ok"] = True
     result["window"] = desktop_window.status()
