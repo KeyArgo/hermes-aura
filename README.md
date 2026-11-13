@@ -18,9 +18,6 @@
   <a href="https://github.com/KeyArgo/hermes-aura/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/KeyArgo/hermes-aura?style=flat-square&color=f5b301"></a>
 </p>
 
-<p align="center">
-  <img src="docs/media/aura-film.gif" width="100%" alt="Aura in Hermes Desktop: pick a film from the shelf and it plays docked beside the chat">
-</p>
 
 <p align="center">
   <img alt="140 MilkDrop presets" src="https://img.shields.io/badge/milkdrop%20presets-140-ec4899?style=flat-square">
