@@ -4104,6 +4104,12 @@ function syncPanel(force) {
   // header: which mode is live, and whether Aura is on at all
   const liveNow = $live.get()
   const auraOn = liveNow.ok ? liveNow.enabled === true : settings.enabled
+  // The film stage, transport and sources belong to video mode; in visualiser
+  // mode the panel shows the visualiser's controls instead (AuraPane).
+  if (parts.body) {
+    const display = settings.backdropMode === 'video' ? '' : 'none'
+    if (parts.body.style.display !== display) parts.body.style.display = display
+  }
   if (parts.power) {
     const label = auraOn ? 'Aura on — click to turn off' : 'Aura off — click to turn on'
     if (parts.power.getAttribute('aria-label') !== label) {
@@ -4336,13 +4342,48 @@ function AuraPane() {
       open ? jsx(AuraSettings, { key: 'controls' }) : null
     ]
   })
+  // Visualiser mode: the panel is the visualiser's remote (the film stage hides
+  // itself in syncPanel), so its controls sit right under the header.
+  const visualSection = settings.backdropMode === 'video'
+    ? null
+    : jsx(AuraPaneVisualControls, { key: 'visual' })
   return jsxs('div', {
     key: 'pane',
     style: {
       height: '100%', minHeight: 0, overflowY: 'auto',
       display: 'flex', flexDirection: 'column'
     },
-    children: [theatre, settingsSection]
+    children: [theatre, visualSection, settingsSection]
+  })
+}
+
+function AuraPaneVisualControls() {
+  const settings = useValue($settings)
+  const row = (label, control) =>
+    jsxs('div', {
+      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '6px 4px' },
+      children: [
+        jsx('div', { style: { fontSize: 12, color: '#f3ece2', whiteSpace: 'nowrap' }, children: label }),
+        jsx('div', { style: { display: 'flex', alignItems: 'center', flex: 'none' }, children: control })
+      ]
+    })
+  const selectStyle = {
+    font: 'inherit', fontSize: 11, color: '#f3ece2', background: 'rgba(255,255,255,0.06)',
+    border: '1px solid rgba(255,255,255,0.16)', borderRadius: 6, padding: '3px 6px'
+  }
+  const readout = value =>
+    jsx('span', {
+      style: { fontSize: 11, color: 'rgba(243,236,226,0.6)', minWidth: 30, textAlign: 'right', fontVariantNumeric: 'tabular-nums' },
+      children: `${Math.round(clamp01(value) * 100)}%`
+    })
+  return jsxs('section', {
+    'aria-label': 'Visualizer controls',
+    style: { flex: '0 0 auto', marginTop: 8, padding: '6px 10px 4px' },
+    children: visualControlRows(settings, {
+      row, selectStyle, readout,
+      sliderStyle: { width: 110, accentColor: '#ffbe78' },
+      locked: false, auraTitle: undefined, showTitle: undefined
+    })
   })
 }
 
@@ -4825,6 +4866,98 @@ function modeToggle(mode, compact) {
   })
 }
 
+/** The visualiser's live controls: what it reacts to, intensity, transparency,
+ *  style, gentle motion and when it shows. One set of rows, drawn by the status
+ *  menu and by the Right panel in visualiser mode, so both drive the same
+ *  handlers. `ui` carries the surface's own row/select/slider styling. */
+function visualControlRows(settings, ui) {
+  const { row, selectStyle, sliderStyle, readout, locked, auraTitle, showTitle } = ui
+  const slider = (label, value, onValue) =>
+    jsxs('div', {
+      style: { display: 'flex', alignItems: 'center', gap: 8 },
+      children: [
+        jsx('input', {
+          key: 'slider',
+          type: 'range',
+          min: 0,
+          max: 100,
+          step: 1,
+          value: Math.round(clamp01(value) * 100),
+          'aria-label': label,
+          disabled: locked,
+          title: auraTitle,
+          style: sliderStyle,
+          onChange: event => onValue(Number(event && event.target ? event.target.value : 0) / 100)
+        }),
+        readout(value)
+      ]
+    })
+  return [
+    row(
+      'Reacts to',
+      jsx('select', { className: 'aura-select',
+        value: settings.motion,
+        'aria-label': 'Reacts to',
+        style: selectStyle,
+        onChange: event => {
+          void setMotion(event && event.target ? String(event.target.value) : 'both')
+        },
+        children: motionChoices(settings).map(name =>
+          jsx('option', { key: name, value: name, children: MOTION_LABELS[name] })
+        )
+      })
+    ),
+    row('Intensity', slider('Intensity', settings.intensity, value => applyIntensity(value))),
+    row('Transparency', slider('Transparency', settings.opacity, value => { void setOpacity(clamp01(value)) })),
+    row(
+      'Style',
+      jsx('select', { className: 'aura-select',
+        value: settings.behavior,
+        'aria-label': 'Style',
+        disabled: locked,
+        title: auraTitle,
+        style: selectStyle,
+        onChange: event => {
+          void setBehavior(event && event.target ? String(event.target.value) : 'balanced')
+        },
+        children: BEHAVIORS.map(name =>
+          jsx('option', { key: name, value: name, children: BEHAVIOR_LABELS[name] })
+        )
+      })
+    ),
+    // Gentle motion is an Aura-visual setting, so it sits with Style and
+    // Intensity and locks with them while a film is playing.
+    row(
+      'Gentle motion',
+      jsx(Switch, {
+        checked: settings.reducedMotion,
+        disabled: locked,
+        title: auraTitle,
+        'aria-label': 'Gentle motion (motion-sensitive)',
+        onCheckedChange: value => {
+          void setReducedMotion(value)
+        }
+      })
+    ),
+    row(
+      'Show',
+      jsx('select', { className: 'aura-select',
+        value: settings.showWhen,
+        'aria-label': 'Show',
+        disabled: locked,
+        title: showTitle,
+        style: selectStyle,
+        onChange: event => {
+          void setShowWhen(event && event.target ? String(event.target.value) : 'always')
+        },
+        children: SHOW_WHEN_OPTIONS.map(name =>
+          jsx('option', { key: name, value: name, children: SHOW_WHEN_LABELS[name] })
+        )
+      })
+    )
+  ]
+}
+
 function AuraQuickMenu() {
   const settings = useValue($settings)
   const live = useValue($live)
@@ -5008,116 +5141,7 @@ function AuraQuickMenu() {
             : jsxs('div', {
               key: 'visualRows',
               style: { display: 'contents' },
-              children: [
-          row(
-            'Reacts to',
-            jsx('select', { className: 'aura-select',
-              value: settings.motion,
-              'aria-label': 'Reacts to',
-              style: selectStyle,
-              onChange: event => {
-                void setMotion(event && event.target ? String(event.target.value) : 'both')
-              },
-              children: motionChoices(settings).map(name =>
-                jsx('option', { key: name, value: name, children: MOTION_LABELS[name] })
-              )
-            })
-          ),
-          row(
-            'Intensity',
-            jsxs('div', {
-              style: { display: 'flex', alignItems: 'center', gap: 8 },
-              children: [
-                jsx('input', {
-                  key: 'slider',
-                  type: 'range',
-                  min: 0,
-                  max: 100,
-                  step: 1,
-                  value: Math.round(settings.intensity * 100),
-                  'aria-label': 'Intensity',
-                  disabled: locked,
-                  title: auraTitle,
-                  style: sliderStyle,
-                  onChange: event => {
-                    applyIntensity(Number(event && event.target ? event.target.value : 0) / 100)
-                  }
-                }),
-                readout(settings.intensity)
-              ]
-            })
-          ),
-          row(
-            'Transparency',
-            jsxs('div', {
-              style: { display: 'flex', alignItems: 'center', gap: 8 },
-              children: [
-                jsx('input', {
-                  key: 'slider',
-                  type: 'range',
-                  min: 0,
-                  max: 100,
-                  step: 1,
-                  value: Math.round(settings.opacity * 100),
-                  'aria-label': 'Transparency',
-                  disabled: locked,
-                  title: auraTitle,
-                  style: sliderStyle,
-                  onChange: event => {
-                    void setOpacity(clamp01(Number(event && event.target ? event.target.value : 0) / 100))
-                  }
-                }),
-                readout(settings.opacity)
-              ]
-            })
-          ),
-          row(
-            'Style',
-            jsx('select', { className: 'aura-select',
-              value: settings.behavior,
-              'aria-label': 'Style',
-              disabled: locked,
-              title: auraTitle,
-              style: selectStyle,
-              onChange: event => {
-                void setBehavior(event && event.target ? String(event.target.value) : 'balanced')
-              },
-              children: BEHAVIORS.map(name =>
-                jsx('option', { key: name, value: name, children: BEHAVIOR_LABELS[name] })
-              )
-            })
-          ),
-          // Gentle motion is an Aura-visual setting, so it sits with Style and
-          // Intensity and locks with them while a film is playing.
-          row(
-            'Gentle motion',
-            jsx(Switch, {
-              checked: settings.reducedMotion,
-              disabled: locked,
-              title: auraTitle,
-              'aria-label': 'Gentle motion (motion-sensitive)',
-              onCheckedChange: value => {
-                void setReducedMotion(value)
-              }
-            })
-          ),
-          row(
-            'Show',
-            jsx('select', { className: 'aura-select',
-              value: settings.showWhen,
-              'aria-label': 'Show',
-              disabled: locked,
-              title: showTitle,
-              style: selectStyle,
-              onChange: event => {
-                void setShowWhen(event && event.target ? String(event.target.value) : 'always')
-              },
-              children: SHOW_WHEN_OPTIONS.map(name =>
-                jsx('option', { key: name, value: name, children: SHOW_WHEN_LABELS[name] })
-              )
-            })
-          )
-              ]
+              children: visualControlRows(settings, { row, selectStyle, sliderStyle, readout, locked, auraTitle, showTitle })
             }),
           settings.backdropMode === 'video'
             ? jsxs('div', {

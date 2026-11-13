@@ -800,6 +800,37 @@ await recordAsync('12. one click on the panel header hides the Right panel, Aura
 safeDispose('the out-of-the-way scenario (G)', disposeG)
 
 // ===================================================================
+// Scenario H: in visualiser mode the Right panel is the visualiser's controls.
+// ===================================================================
+
+for (const [mode, expectControls] of [['aura', true], ['video', false]]) {
+  const freshH = makeCtx(new Map([['settings', {
+    enabled: true, backdropMode: mode, panelEnabled: true, windowVisual: true, videoUrl: SINTEL_URL
+  }]]))
+  const disposeH = pluginModule.default.register(freshH.ctx)
+  await tickPoll(freshH)
+  const paneH = mountPane(freshH)
+  await tickPoll(freshH)
+  const tree = renderDeep(renderContribution(freshH.contributions.find(c => c.area === 'panes')))
+  const body = domFind(paneH, node => node.className === 'ap-body')
+
+  record(`13. ${mode} mode: the Right panel ${expectControls ? 'shows' : 'does not show'} the visualiser controls`, () => {
+    for (const label of ['Reacts to', 'Intensity', 'Transparency', 'Style']) {
+      assert.equal(Boolean(pageAria(tree, label)), expectControls,
+        `${mode} mode: "${label}" is ${expectControls ? 'missing from' : 'shown in'} the Right panel`)
+    }
+  })
+
+  record(`14. ${mode} mode: the film stage is ${expectControls ? 'hidden' : 'shown'} in the Right panel`, () => {
+    assert.ok(body, 'the panel has no film body')
+    assert.equal(body.style.display === 'none', expectControls,
+      `${mode} mode: the film stage display is "${body.style.display || ''}"`)
+  })
+
+  safeDispose(`the panel-mode scenario (H, ${mode})`, disposeH)
+}
+
+// ===================================================================
 // Scenario D: pop out from the page / bring back on a fresh install.
 // (Test 7)
 // ===================================================================
