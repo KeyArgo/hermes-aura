@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased — the 346-title shelf
+
+- **The Aura page opens on a real catalogue.** Library now starts with **Picks**
+  (the starter sources) and then one horizontally scrolling row per category
+  — Deep sea & oceans, Nature & wildlife, Space & astronomy, Earth from above,
+  Slow TV, Classic films, Classic cartoons, Anime, Open movies, Science &
+  history docs, Ambience — with 346 verified titles in all. Each row carries its
+  name and count, each card its title, year and length (poster-less), its
+  one-line note on hover/focus, and one click plays it through the same
+  `applyVideoSource` path a picked starter takes. One search box filters every
+  row at once; rows scroll sideways and shrink on narrow windows instead of
+  pushing the page wider.
+- **The catalogue is a committed file, served by the server.** `web/catalog.json`
+  is generated from the verified rows by `tools/build_catalog.py` and served at
+  `GET /api/catalog` (read once, cached); the dashboard mirrors it at
+  `GET /catalog`. The page fetches it through `ctx.rest('/catalog')` once per
+  mount, and if that fails it still works with Picks and the saved library.
+- **`aura_watch action=browse` reads the same catalogue offline.** Optional
+  `category` and `query` return up to ten matches (title, year, category, url);
+  with neither it lists the categories. Nothing plays until the pick goes
+  through `action=play`, exactly like `action=search`.
+- **`tools/build_catalog.py` retires the multi-gigabyte masters.** For each
+  archive.org `/download/<id>/<file>.mp4` over 2 GB it HEADs the item's smaller
+  derivative (`<name>_512kb.mp4`, then `<id>.ia.mp4`) and switches only when the
+  answer is `200` with a `video/*` type and a genuinely smaller Content-Length —
+  archive.org returns 200 (and the original bytes) for derivative names that do
+  not exist, and those are refused.
+
 ## Unreleased — Hermes can edit your own list
 
 - **`aura_watch` can save, remove and list the owner's Aura library** (the

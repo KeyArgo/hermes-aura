@@ -56,16 +56,21 @@ Find something to watch, play the user's pick, report what is playing.
 
 | Parameter | Type | Required | Notes |
 |---|---|---|---|
-| `action` | string enum | yes | `search`, `play`, `now` |
+| `action` | string enum | yes | `search`, `browse`, `play`, `now`, `save`, `remove`, `list` |
 | `q` | string | for `search` | What the user wants to watch. |
 | `limit` | integer 1..10 | optional | Numbered options; default 6. |
+| `category` | string | for `browse` | A catalogue category, e.g. `Anime`, `Classic films`, `Slow TV`. |
+| `query` | string | for `browse` | Words from a title or its description; also accepted as an alias of `q` for `search`. |
 | `url` | string | for `play` | YouTube watch/`youtu.be`/shorts/embed/playlist, or `.mp4`/`.webm`/`.m3u8`/`.mov`. |
 | `label` | string | optional | Title to show. |
 
 `search` returns `ok`, `query`, `count`, `items` (`n`, title, channel, length,
-url), `text` and `next`. `play` returns `ok`, `playing`, `url`, `label`,
-`kind`, `seq`, `delivery`. `now` returns `ok`, `running`, `playing`, `player`,
-`window`.
+url), `text` and `next`. `browse` reads `web/catalog.json` (no network, nothing
+plays) and returns `ok`, `count`, `items` (`n`, title, year, category, url),
+`text` and `next`; with neither `category` nor `query` it returns `categories`
+(`category`, `count`) and lists them. `play` returns `ok`, `playing`, `url`,
+`label`, `kind`, `seq`, `delivery`. `now` returns `ok`, `running`, `playing`,
+`player`, `window`.
 
 ## Hooks
 
@@ -108,6 +113,7 @@ redeems a short-lived ticket.
 | GET | `/healthz` | `ok`, `version`, `pid`, `capture`, `rate`, `clients`. |
 | GET | `/api/state` | Latest features, mood, config-derived display state, audio requests. |
 | GET | `/api/presets` | The curated preset catalogue. |
+| GET | `/api/catalog` | The shelf catalogue from `web/catalog.json` (read once, cached). |
 | GET | `/api/config` | Effective config plus the behaviour profile. |
 | GET | `/api/player` | Last player report, command sequence, window status. |
 | GET | `/api/player/commands?after=N` | Queued transport commands after sequence `N`. |
@@ -137,6 +143,7 @@ only routes the desktop half calls; it never guesses the server port.
 | GET | `/status` | `ok`, `port`, `url`, `capture`, `enabled`. |
 | GET | `/state` | Proxy of the server's `/api/state`. |
 | GET | `/player` | Proxy of `/api/player`. |
+| GET | `/catalog` | Proxy of `/api/catalog` (the shelf catalogue). |
 | GET | `/player/commands?after=N` | Proxy of the command queue. |
 | POST | `/player/report` | Forward the player report. |
 | POST | `/player/command` | Forward a transport command. |
