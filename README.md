@@ -32,6 +32,9 @@
 <p align="center"><sub><b>Aura inside Hermes Desktop</b>: the film pane beside your work, then the same audio driving the visualiser behind the chat.
 <a href="https://x.com/MHArgonaut/status/2120634853146435961">Watch the full 50-second demo ▶</a></sub></p>
 
+<p align="center"><img src="docs/media/aura-film.gif" alt="Aura: picking a film from the shelf, then it plays docked beside the chat" width="100%"/>
+<br/><sub><b>A film beside your work.</b> Pick one from the shelf and it plays docked next to the chat.</sub></p>
+
 <p align="center">
   <a href="#install">Install</a> ·
   <a href="#features">Features</a> ·
