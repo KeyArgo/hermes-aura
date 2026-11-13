@@ -156,7 +156,7 @@ def _call(p, args):
     return json.loads(raw)
 
 
-ACTIONS = ["search", "play", "now", "save", "remove", "list"]
+ACTIONS = ["search", "browse", "play", "now", "save", "remove", "list"]
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +179,9 @@ def test_schema_is_valid_and_unmissable(plugin):
     for phrase in ("action=save", "action=remove", "action=list", "save this",
                    "add the octopus one to my list", "remove nosferatu",
                    "what's on my list?"):
+        assert phrase in description, f"the description must say {phrase!r}"
+    # Browsing Aura's own catalogue is discoverable too, with its own words.
+    for phrase in ("action=browse", "catalogue", "category", "noir"):
         assert phrase in description, f"the description must say {phrase!r}"
     assert "web search" in description and ".mp4" in description
     json.dumps(schema)
