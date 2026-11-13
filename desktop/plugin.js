@@ -119,7 +119,7 @@ const VIDEO_BAR_OPACITY = 0.72
 // nothing here reads the composer, a text field or any other app node.
 const VIDEO_BAR_WIDTH = 380
 // Fallback height while the strip has no layout yet (first paint, headless tests).
-const VIDEO_BAR_NOMINAL_HEIGHT = 62
+const VIDEO_BAR_NOMINAL_HEIGHT = 90
 // Gap to the window edge, and the app's status bar kept clear along the bottom.
 const VIDEO_BAR_MARGIN = 16
 const VIDEO_BAR_STATUS_BAR = 32
@@ -1652,14 +1652,41 @@ function restoreDesktopPlayback(player) {
 }
 let handoffPlayback = null
 
-/** Labels for the two pop-out controls. Each one names its own surface, and
- *  each becomes "Bring back" while ITS surface holds the film. */
-function inlineLabel() {
-  return videoWindowOn() ? 'Bring back' : 'Pop out'
+/** The two pop-out controls, in the same words on every surface (quick menu,
+ *  right panel, Aura page, control strip).
+ *
+ *  "Frame in Hermes" is a toggle: its pressed state says the in-app frame holds
+ *  the film. "Pop out to desktop" becomes "Bring back" only while the OS window
+ *  holds it — one control per surface, never one button doing both jobs. */
+const FRAME_LABEL = 'Frame in Hermes'
+const POPOUT_LABEL = 'Pop out to desktop'
+const BRING_BACK_LABEL = 'Bring back'
+
+// One style for the two pop-out buttons wherever they are laid out side by
+// side: equal widths, allowed to shrink, and their own text clipped instead of
+// the box's edge.
+const POPOUT_BUTTON_STYLE = Object.freeze({
+  flex: '1 1 0',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap'
+})
+
+function frameLabel() {
+  return FRAME_LABEL
 }
 
-function ownLabel() {
-  return desktopOwned || desktopPending ? 'Bring back' : 'Own window'
+function framePressed() {
+  return videoWindowOn() === true
+}
+
+function popoutLabel() {
+  return desktopOwned || desktopPending ? BRING_BACK_LABEL : POPOUT_LABEL
+}
+
+function popoutPressed() {
+  return desktopOwned || desktopPending
 }
 
 /** "Pop out": the floating watch window INSIDE Hermes, and nothing else.
@@ -3478,28 +3505,34 @@ function mountVideoBar(node) {
     setVideoVolume(current > 0 ? 0 : (VIDEO_VOLUME || 0.7))
   })
 
-  // Watch window: the film in its own frame instead of behind the app.
-  // Two controls, two surfaces (owner: "two separate pop-out buttons"). Pop out
-  // is the floating window inside Hermes; Own window is the real OS window.
+  // Two pop-out controls in the strip, worded exactly like the ones in the
+  // quick menu, the panel and the page: "Frame in Hermes" (a toggle) and
+  // "Pop out to desktop" (which reads "Bring back" while the OS window holds
+  // the film). Equal buttons in their own row: the strip is narrow, so a glyph
+  // pair was unreadable.
   const inlineBtn = doc.createElement('button')
   inlineBtn.type = 'button'
-  inlineBtn.setAttribute('aria-label', 'Pop out')
+  inlineBtn.setAttribute('aria-label', FRAME_LABEL)
+  inlineBtn.textContent = FRAME_LABEL
   inlineBtn.addEventListener('click', event => {
     if (event && event.preventDefault) event.preventDefault()
     setInlineWindow(!videoWindowOn())
   })
   const ownBtn = doc.createElement('button')
   ownBtn.type = 'button'
-  ownBtn.setAttribute('aria-label', 'Own window')
+  ownBtn.setAttribute('aria-label', POPOUT_LABEL)
+  ownBtn.textContent = POPOUT_LABEL
   ownBtn.addEventListener('click', event => {
     if (event && event.preventDefault) event.preventDefault()
     void setOwnWindow(!(desktopOwned || desktopPending))
   })
-  for (const [node, label] of [[inlineBtn, '⧉'], [ownBtn, '⛶']]) {
-    node.textContent = label
+  for (const node of [inlineBtn, ownBtn]) {
     Object.assign(node.style, {
-      width: 'auto', padding: '0 6px', fontSize: '12px', cursor: 'pointer',
-      background: 'transparent', color: 'inherit', border: '0'
+      flex: '1 1 0', minWidth: '0', padding: '3px 6px', fontSize: '10.5px',
+      lineHeight: '1.2', cursor: 'pointer', borderRadius: '8px',
+      background: 'transparent', color: 'inherit',
+      border: '1px solid rgba(255,255,255,0.16)',
+      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
     })
   }
   const windowBtn = inlineBtn
@@ -3557,14 +3590,15 @@ function mountVideoBar(node) {
   })
   close.addEventListener('click', () => closeVideo())
 
-  // Two rows: the film's own line (grip, title, scrubber, clock, volume,
-  // window, close) above a centred transport row. The strip ends up about
-  // twice as tall and about half as wide as the single-line pill was.
+  // Three rows: the film's own line (grip, title, scrubber, clock, volume,
+  // close), a centred transport row, and the two named pop-out buttons. The
+  // strip stays a floating pill; the named buttons are the last row so neither
+  // of them ever squeezes the title or the scrubber.
   const topRow = doc.createElement('div')
   Object.assign(topRow.style, {
     display: 'flex', alignItems: 'center', gap: '4px', minWidth: '0'
   })
-  for (const node of [grip, title, scrub, time, sep, volume, inlineBtn, ownBtn, close]) {
+  for (const node of [grip, title, scrub, time, sep, volume, close]) {
     topRow.appendChild(node)
   }
   const transportRow = doc.createElement('div')
@@ -3575,8 +3609,16 @@ function mountVideoBar(node) {
   for (const node of [prev, backMin, back, play, fwd, fwdMin, next]) {
     transportRow.appendChild(node)
   }
+  const popoutRow = doc.createElement('div')
+  Object.assign(popoutRow.style, {
+    display: 'flex', alignItems: 'stretch', gap: '6px', minWidth: '0',
+    paddingTop: '3px', borderTop: '1px solid rgba(255,255,255,0.08)'
+  })
+  popoutRow.appendChild(inlineBtn)
+  popoutRow.appendChild(ownBtn)
   bar.appendChild(topRow)
   bar.appendChild(transportRow)
+  bar.appendChild(popoutRow)
   // Empty strip chrome (a gap, the title, the padding) drags the strip too; a
   // press on one of the controls stays that control's. Only the strip's own
   // nodes are consulted.
@@ -3706,20 +3748,25 @@ function panelCss() {
     /* A docked pane inside the host's layout: no fixed positioning, no z-index,
        no body padding. The host owns the box; we fill it. */
     #aura-panel {
-      position: relative; width: 100%; height: 100%;
+      position: relative; width: 100%; max-width: 100%; height: 100%;
       display: flex; flex-direction: column; gap: 12px;
       padding: 14px 14px 12px; box-sizing: border-box; overflow: hidden;
+      min-width: 0;
       color: #f3ece2; font: 12px/1.4 system-ui, -apple-system, sans-serif;
       background: linear-gradient(180deg, #16111f 0%, #1b1418 52%, #241a12 100%);
       border-radius: 12px;
     }
+    /* The host owns the box; we fill it. Every child is border-box, so a 1px
+       border can never push a 260px pane into a horizontal scroll. */
+    #aura-panel, #aura-panel * { box-sizing: border-box; }
     /* header ------------------------------------------------------------- */
-    .ap-head { display: flex; align-items: center; gap: 8px; position: relative; z-index: 1; }
+    .ap-head { display: flex; align-items: center; gap: 8px; position: relative; z-index: 1; flex-wrap: wrap; min-width: 0; }
     .ap-name { font-weight: 650; letter-spacing: 0.3px; font-size: 15px; }
     .ap-spacer { flex: 1; }
     .ap-mode {
       display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px;
       background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+      min-width: 0; flex-wrap: wrap;
     }
     .ap-mode-button {
       appearance: none; border: 0; background: transparent; color: rgba(243,236,226,0.62);
@@ -3756,29 +3803,36 @@ function panelCss() {
 
     /* control deck: the thing that should feel generous ------------------- */
     .ap-controls {
-      display: flex; flex-direction: column; gap: 10px;
+      display: flex; flex-direction: column; gap: 10px; min-width: 0;
       padding: 12px 12px 11px; border-radius: 13px;
       background: rgba(255,255,255,0.045);
       border: 1px solid rgba(255,255,255,0.075);
       box-shadow: 0 8px 22px rgba(0,0,0,0.28);
       flex: none;
     }
-    .ap-transport { display: flex; align-items: center; justify-content: center; gap: 8px; }
+    /* Five transport buttons, evenly spread and never overlapping: each one
+       flexes, so a 260px pane shrinks them instead of squeezing the play
+       button under its neighbours (or wrapping them on top of each other). */
+    .ap-transport {
+      display: flex; align-items: center; justify-content: space-evenly;
+      gap: 4px; flex-wrap: wrap; min-width: 0;
+    }
     .ap-transport button {
       appearance: none; border: 0; background: transparent; color: inherit; cursor: pointer;
-      width: 38px; height: 38px; border-radius: 12px; font-size: 16px;
+      width: auto; height: 36px; flex: 1 1 30px; min-width: 28px; max-width: 44px;
+      padding: 0; border-radius: 12px; font-size: 15px;
       display: inline-flex; align-items: center; justify-content: center;
     }
     .ap-transport button:hover { background: rgba(255,255,255,0.12); }
     .ap-transport button[data-primary="true"] {
-      width: 48px; height: 48px; font-size: 19px; border-radius: 50%;
+      flex: 1 1 38px; max-width: 48px; height: 44px; font-size: 18px; border-radius: 50%;
       background: linear-gradient(160deg, rgba(255,205,140,0.95), rgba(255,150,110,0.95));
       color: #241a12; box-shadow: 0 6px 18px rgba(255,170,110,0.28);
     }
     .ap-transport button[data-primary="true"]:hover { filter: brightness(1.06); }
-    .ap-scrub { display: flex; align-items: center; gap: 10px; }
+    .ap-scrub { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .ap-track {
-      position: relative; flex: 1; height: 6px; border-radius: 999px;
+      position: relative; flex: 1 1 auto; min-width: 40px; height: 6px; border-radius: 999px;
       background: rgba(255,255,255,0.18); cursor: pointer;
     }
     .ap-track:hover { background: rgba(255,255,255,0.26); }
@@ -3787,18 +3841,37 @@ function panelCss() {
       background: linear-gradient(90deg, rgba(255,200,130,0.98), rgba(255,140,160,0.98));
     }
     .ap-time {
-      font-size: 11px; font-variant-numeric: tabular-nums;
-      color: rgba(243,236,226,0.72); min-width: 84px; text-align: right;
+      font-size: 11px; font-variant-numeric: tabular-nums; flex: 0 0 auto;
+      color: rgba(243,236,226,0.72); min-width: 0; text-align: right;
     }
-    .ap-row { display: flex; align-items: center; gap: 9px; }
-    .ap-icon { font-size: 13px; color: rgba(243,236,226,0.6); }
-    .ap-volume { flex: 1; accent-color: #ffbf78; height: 18px; }
+    .ap-row { display: flex; align-items: center; gap: 9px; min-width: 0; flex-wrap: wrap; }
+    .ap-icon { font-size: 13px; color: rgba(243,236,226,0.6); flex: none; }
+    /* The slider is contained by the card: it can shrink to 100% of what is
+       left, never past it. */
+    .ap-volume {
+      flex: 1 1 60px; min-width: 0; width: 100%; max-width: 100%;
+      accent-color: #ffbf78; height: 18px; box-sizing: border-box;
+    }
     .ap-watch {
       appearance: none; border: 1px solid rgba(255,255,255,0.14); background: transparent;
       color: rgba(243,236,226,0.8); width: 34px; height: 30px; border-radius: 9px;
       cursor: pointer; font-size: 13px;
     }
     .ap-watch[data-active="true"] {
+      border-color: rgba(255,190,120,0.55); color: #ffd9a8; background: rgba(255,190,120,0.14);
+    }
+    /* The two pop-out controls: equal buttons, named the same as everywhere
+       else, on their own line so neither squeezes the volume row. */
+    .ap-popout-row { display: flex; align-items: stretch; gap: 6px; min-width: 0; flex-wrap: wrap; }
+    .ap-popout {
+      appearance: none; border: 1px solid rgba(255,255,255,0.16); background: transparent;
+      color: rgba(243,236,226,0.86); font: inherit; font-size: 10.5px; line-height: 1.2;
+      padding: 6px 4px; border-radius: 9px; cursor: pointer;
+      flex: 1 1 0; min-width: 0; box-sizing: border-box;
+      white-space: normal; overflow-wrap: anywhere; text-align: center;
+    }
+    .ap-popout:hover { border-color: rgba(255,255,255,0.32); }
+    .ap-popout[data-active="true"] {
       border-color: rgba(255,190,120,0.55); color: #ffd9a8; background: rgba(255,190,120,0.14);
     }
 
@@ -3808,17 +3881,19 @@ function panelCss() {
       border-radius: 12px; background: rgba(255,255,255,0.03);
       border: 1px solid rgba(255,255,255,0.06); flex: none;
     }
-    .ap-field { display: flex; align-items: center; gap: 10px; }
+    .ap-field { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
     .ap-field-label {
       font-size: 9.5px; letter-spacing: 0.7px; text-transform: uppercase;
-      color: rgba(243,236,226,0.45); min-width: 74px;
+      color: rgba(243,236,226,0.45); min-width: 0; flex: 0 1 auto;
     }
-    .ap-select { flex: 1; min-width: 0; font: inherit; font-size: 11px; }
-    .ap-pills { display: flex; gap: 4px; flex-wrap: wrap; }
+    .ap-select { flex: 1 1 90px; min-width: 0; max-width: 100%; font: inherit; font-size: 11px; }
+    /* The see-through presets wrap onto as many lines as the pane needs: all
+       five stay visible and clickable even at 260px. */
+    .ap-pills { display: flex; gap: 4px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
     .ap-pill {
       appearance: none; border: 1px solid rgba(255,255,255,0.12); background: transparent;
       color: rgba(243,236,226,0.66); font: inherit; font-size: 10px; padding: 3px 8px;
-      border-radius: 999px; cursor: pointer;
+      border-radius: 999px; cursor: pointer; flex: 0 0 auto;
     }
     .ap-pill[data-active="true"] {
       border-color: rgba(255,190,120,0.55); color: #ffd9a8; background: rgba(255,190,120,0.14);
@@ -3830,17 +3905,26 @@ function panelCss() {
       padding-right: 3px; flex: 1;
     }
     .ap-card {
-      display: flex; align-items: center; gap: 10px; padding: 7px; border-radius: 11px; cursor: pointer;
+      display: flex; flex-direction: column; align-items: stretch; gap: 6px;
+      padding: 7px; border-radius: 11px; cursor: pointer; min-width: 0;
       background: rgba(255,255,255,0.04); border: 1px solid transparent; text-align: left;
     }
     .ap-card:hover { background: rgba(255,255,255,0.09); }
     .ap-card[data-active="true"] { border-color: rgba(255,190,120,0.45); background: rgba(255,190,120,0.10); }
+    /* The thumbnail is as wide as the card, never wider; the title sits on its
+       own lines underneath and clamps at two, so a narrow pane reads
+       "Youth of the Beast" instead of "Yo...". */
     .ap-thumb {
-      width: 82px; height: 46px; border-radius: 8px; flex: none; object-fit: cover;
+      width: 100%; max-width: 100%; height: auto; aspect-ratio: 16 / 9;
+      border-radius: 8px; flex: none; object-fit: cover; box-sizing: border-box;
       background: linear-gradient(135deg, #2a2136, #40302a); display: block;
     }
     .ap-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-    .ap-title { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ap-title {
+      font-size: 11.5px; line-height: 1.3; white-space: normal; overflow: hidden;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow-wrap: anywhere; text-overflow: ellipsis;
+    }
     .ap-kind { font-size: 9px; letter-spacing: 0.6px; text-transform: uppercase; color: rgba(243,236,226,0.45); }
     .ap-empty { font-size: 11px; color: rgba(243,236,226,0.5); text-align: center; padding: 12px 0; }
   `
@@ -4237,15 +4321,37 @@ function mountPanelInto(hostNode) {
     setVideoVolume(Number(event && event.target ? event.target.value : 70) / 100)
   })
 
-  const watch = doc.createElement('button')
-  watch.type = 'button'
-  watch.className = 'ap-watch'
-  watch.textContent = '⧉'
-  watch.setAttribute('aria-label', 'Watch window')
-  watch.addEventListener('click', event => {
+  // Two pop-out controls, named exactly as on every other surface. "Frame in
+  // Hermes" is a toggle (pressed while the in-app frame holds the film);
+  // "Pop out to desktop" reads "Bring back" while the desktop window does.
+  // The old single ⧉ glyph called a function that did not exist — a click
+  // threw and nothing happened.
+  const frameBtn = doc.createElement('button')
+  frameBtn.type = 'button'
+  frameBtn.className = 'ap-popout'
+  frameBtn.textContent = FRAME_LABEL
+  frameBtn.setAttribute('aria-label', FRAME_LABEL)
+  frameBtn.addEventListener('click', event => {
     if (event && event.preventDefault) event.preventDefault()
-    void setDesktopWindow($settings.get().videoWindow !== true)
+    // The pane-registering toggle: the frame appears on the click, and an open
+    // desktop window is parked first.
+    setInlineWindow(!framePressed())
   })
+
+  const ownBtn = doc.createElement('button')
+  ownBtn.type = 'button'
+  ownBtn.className = 'ap-popout'
+  ownBtn.textContent = POPOUT_LABEL
+  ownBtn.setAttribute('aria-label', POPOUT_LABEL)
+  ownBtn.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    void setOwnWindow(!(desktopOwned || desktopPending))
+  })
+
+  const popoutRow = doc.createElement('div')
+  popoutRow.className = 'ap-popout-row'
+  popoutRow.appendChild(frameBtn)
+  popoutRow.appendChild(ownBtn)
 
   // Hide this episode: the playlist is read-only from here, so this is the
   // local "never show me this again" (owner: "remove off playlist").
@@ -4272,7 +4378,7 @@ function mountPanelInto(hostNode) {
     void managePlaylist()
   })
 
-  for (const node of [volIcon, vol, hide, manage, watch]) bar.appendChild(node)
+  for (const node of [volIcon, vol, hide, manage]) bar.appendChild(node)
 
   // ---- film settings, right under the film -------------------------------
   const settingsBox = doc.createElement('div')
@@ -4300,6 +4406,19 @@ function mountPanelInto(hostNode) {
   const opacityButtons = doc.createElement('div')
   opacityButtons.className = 'ap-pills'
   const opacityPills = []
+  // Auto first, then the four levels: all five stay on screen because the row
+  // wraps (owner: the five see-through choices must always be reachable).
+  const autoPill = doc.createElement('button')
+  autoPill.type = 'button'
+  autoPill.className = 'ap-pill'
+  autoPill.textContent = 'Auto'
+  autoPill.setAttribute('aria-label', 'Automatic film see-through')
+  autoPill.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    setVideoOpacityAuto()
+  })
+  opacityPills.push(['auto', autoPill])
+  opacityButtons.appendChild(autoPill)
   for (const preset of VIDEO_OPACITY_PRESETS) {
     const pill = doc.createElement('button')
     pill.type = 'button'
@@ -4327,6 +4446,7 @@ function mountPanelInto(hostNode) {
   controls.appendChild(transport)
   controls.appendChild(scrub)
   controls.appendChild(bar)
+  controls.appendChild(popoutRow)
 
   panel.appendChild(head)
   panel.appendChild(stage)
@@ -4336,7 +4456,7 @@ function mountPanelInto(hostNode) {
   panelEl = panel
   panelParts = {
     panel, body, stage, hint, track, fill, time, play, list, vol,
-    power, modeButtons, watch, source, opacityPills, opacityButtons
+    power, modeButtons, frameBtn, ownBtn, source, opacityPills, opacityButtons
   }
   syncPanel(true)
 }
@@ -4390,13 +4510,26 @@ function syncPanel(force) {
   }
 
   // film settings under the picture
-  if (parts.watch) {
-    const watching = settings.videoWindow === true
-    const flag = watching ? 'true' : 'false'
-    if (parts.watch.getAttribute('data-active') !== flag) {
-      parts.watch.setAttribute('data-active', flag)
-      parts.watch.title = watching ? 'Close the watch window' : 'Pop the film out into a window'
-    }
+  if (parts.frameBtn) {
+    const on = framePressed()
+    const flag = on ? 'true' : 'false'
+    if (parts.frameBtn.getAttribute('data-active') !== flag) parts.frameBtn.setAttribute('data-active', flag)
+    if (parts.frameBtn.getAttribute('aria-pressed') !== flag) parts.frameBtn.setAttribute('aria-pressed', flag)
+    parts.frameBtn.title = on
+      ? 'The film is in its frame inside Hermes — click to put it back'
+      : 'Keep the film in a movable frame inside Hermes'
+  }
+  if (parts.ownBtn) {
+    const out = popoutPressed()
+    const label = popoutLabel()
+    const flag = out ? 'true' : 'false'
+    if (parts.ownBtn.textContent !== label) parts.ownBtn.textContent = label
+    if (parts.ownBtn.getAttribute('aria-label') !== label) parts.ownBtn.setAttribute('aria-label', label)
+    if (parts.ownBtn.getAttribute('data-active') !== flag) parts.ownBtn.setAttribute('data-active', flag)
+    if (parts.ownBtn.getAttribute('aria-pressed') !== flag) parts.ownBtn.setAttribute('aria-pressed', flag)
+    parts.ownBtn.title = out
+      ? 'Bring the film back from its desktop window'
+      : 'Play the film in its own window on the desktop'
   }
   if (parts.source) {
     // videoSourceOptions() returns <optgroup> elements; mirror them as real DOM.
@@ -4426,7 +4559,9 @@ function syncPanel(force) {
     const auto = settings.videoOpacityAuto !== false
     const current = Math.round(clamp01(settings.videoOpacity) * 100)
     for (const [preset, pill] of parts.opacityPills) {
-      const active = !auto && current === preset ? 'true' : 'false'
+      const active = preset === 'auto'
+        ? (auto ? 'true' : 'false')
+        : (!auto && current === preset ? 'true' : 'false')
       if (pill.getAttribute('data-active') !== active) pill.setAttribute('data-active', active)
     }
   }
@@ -4735,20 +4870,36 @@ function syncVideoBar(force) {
   if (parts.fill && parts.fill.style.width !== percentWidth) parts.fill.style.width = percentWidth
   if (parts.scrub) parts.scrub.setAttribute('aria-valuetext', clock)
   if (parts.inlineBtn) {
-    const wantGlyph = videoWindowOn() ? '⟲' : '⧉'
-    if (parts.inlineBtn.textContent !== wantGlyph) parts.inlineBtn.textContent = wantGlyph
-    parts.inlineBtn.title = inlineLabel() === 'Bring back'
-      ? 'Bring the film back into Hermes'
-      : 'Pop out — a floating window you can drag anywhere'
-    parts.inlineBtn.setAttribute('aria-label', inlineLabel())
+    const label = frameLabel()
+    if (parts.inlineBtn.textContent !== label) parts.inlineBtn.textContent = label
+    parts.inlineBtn.setAttribute('aria-label', label)
+    parts.inlineBtn.setAttribute('aria-pressed', framePressed() ? 'true' : 'false')
+    parts.inlineBtn.setAttribute('data-active', framePressed() ? 'true' : 'false')
+    parts.inlineBtn.style.borderColor = framePressed()
+      ? 'rgba(255,190,120,0.55)'
+      : 'rgba(255,255,255,0.16)'
+    parts.inlineBtn.style.background = framePressed()
+      ? 'rgba(255,190,120,0.16)'
+      : 'transparent'
+    parts.inlineBtn.title = framePressed()
+      ? 'The film is in its frame inside Hermes — click to put it back'
+      : 'Keep the film in a movable frame inside Hermes'
   }
   if (parts.ownBtn) {
-    const wantGlyph = (desktopOwned || desktopPending) ? '⟲' : '⛶'
-    if (parts.ownBtn.textContent !== wantGlyph) parts.ownBtn.textContent = wantGlyph
-    parts.ownBtn.title = ownLabel() === 'Bring back'
-      ? 'Bring the film back from its own window'
-      : 'Own window — open the film outside Hermes (another monitor, full screen)'
-    parts.ownBtn.setAttribute('aria-label', ownLabel())
+    const label = popoutLabel()
+    if (parts.ownBtn.textContent !== label) parts.ownBtn.textContent = label
+    parts.ownBtn.setAttribute('aria-label', label)
+    parts.ownBtn.setAttribute('aria-pressed', popoutPressed() ? 'true' : 'false')
+    parts.ownBtn.setAttribute('data-active', popoutPressed() ? 'true' : 'false')
+    parts.ownBtn.style.borderColor = popoutPressed()
+      ? 'rgba(255,190,120,0.55)'
+      : 'rgba(255,255,255,0.16)'
+    parts.ownBtn.style.background = popoutPressed()
+      ? 'rgba(255,190,120,0.16)'
+      : 'transparent'
+    parts.ownBtn.title = popoutPressed()
+      ? 'Bring the film back from its desktop window'
+      : 'Play the film in its own window on the desktop'
   }
   if (parts.title) {
     const current = videoQueue().find(item => item.url === settings.videoUrl)
@@ -4922,6 +5073,12 @@ function modeToggle(mode, compact) {
   })
 }
 
+// The quick menu's real width, in CSS px. A row is laid out inside this box
+// (padding 12px a side), and no row may exceed it: labels ellipsis, controls
+// shrink or wrap. Kept as one constant so a test can assert against the same
+// number the popover is given.
+const QUICK_MENU_WIDTH = 288
+
 function AuraQuickMenu() {
   const settings = useValue($settings)
   const live = useValue($live)
@@ -4936,20 +5093,37 @@ function AuraQuickMenu() {
   const locked = filmBackdrop(settings)
   const auraTitle = locked ? AURA_LOCK_TITLE : undefined
   const showTitle = locked ? SHOW_LOCK_TITLE : undefined
+  // "Skipped episodes" only earns a row when something has been skipped: a
+  // permanent "0 hidden" line was noise the owner asked to lose.
+  const skippedCount = Array.isArray(settings.videoHiddenIds) ? settings.videoHiddenIds.length : 0
+  const SKIPPED_TITLE = 'Episodes you hid from your playlists. Aura skips them.'
 
   const setOpen = value => {
     if ($menuOpen.get() !== Boolean(value)) $menuOpen.set(Boolean(value))
   }
 
-  const row = (label, control) =>
+  // One row that can never overflow the popover: the label shrinks (ellipsis)
+  // and the control is allowed to shrink or wrap to the next line. The menu is
+  // a fixed, known width; nothing in a row may exceed it.
+  const row = (label, control, title) =>
     jsxs('div', {
-      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '7px 12px' },
+      style: {
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: 10, padding: '7px 12px', minWidth: 0, flexWrap: 'wrap', rowGap: 4
+      },
       children: [
         jsx('div', {
-          style: { fontSize: 12, color: 'var(--ui-text-primary)', whiteSpace: 'nowrap' },
+          title,
+          style: {
+            fontSize: 12, color: 'var(--ui-text-primary)', whiteSpace: 'nowrap',
+            flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis'
+          },
           children: label
         }),
-        jsx('div', { style: { display: 'flex', alignItems: 'center', flex: 'none' }, children: control })
+        jsx('div', {
+          style: { display: 'flex', alignItems: 'center', flex: '0 1 auto', minWidth: 0 },
+          children: control
+        })
       ]
     })
 
@@ -5074,7 +5248,10 @@ function AuraQuickMenu() {
         align: 'end',
         'aria-label': 'Aura quick settings',
         style: {
-          minWidth: 264,
+          minWidth: QUICK_MENU_WIDTH,
+          width: QUICK_MENU_WIDTH,
+          maxWidth: 'calc(100vw - 24px)',
+          boxSizing: 'border-box',
           padding: '6px 0',
           background: 'var(--ui-bg-elevated, var(--ui-bg))',
           border: '1px solid var(--ui-stroke-secondary)',
@@ -5413,18 +5590,24 @@ function AuraQuickMenu() {
                     onCheckedChange: value => setPanelEnabled(value)
                   })
                 ),
-                // Three surfaces, chosen on purpose: the Aura page, the small
-                // in-app frame, and a real OS window. The in-app switch and the
-                // pop-out button are separate so one never turns on the other.
-                row(
-                  'Hidden episodes',
-                  jsx(Button, {
-                    variant: 'ghost',
-                    size: 'sm',
-                    onClick: () => { writeSettings({ videoHiddenIds: [] }); syncPanel(true) },
-                    children: `${(Array.isArray(settings.videoHiddenIds) ? settings.videoHiddenIds.length : 0)} hidden · show all again`
-                  })
-                ),
+                // Three surfaces, chosen on purpose: the Aura page, the in-app
+                // frame, and a real desktop window. The two buttons below are
+                // separate so one never turns on the other; the skipped-episode
+                // row only exists when something has actually been skipped.
+                skippedCount > 0
+                  ? row(
+                    'Skipped episodes',
+                    jsx(Button, {
+                      variant: 'ghost',
+                      size: 'sm',
+                      title: SKIPPED_TITLE,
+                      'aria-label': `Show all ${skippedCount} skipped episodes again`,
+                      onClick: () => { writeSettings({ videoHiddenIds: [] }); syncPanel(true) },
+                      children: `Show all ${skippedCount} again`
+                    }),
+                    SKIPPED_TITLE
+                  )
+                  : null,
                 row(
                   'Edit this list on YouTube',
                   jsx(Button, {
@@ -5446,23 +5629,46 @@ function AuraQuickMenu() {
                     children: 'Open in YouTube'
                   })
                 ),
-                row(
-                  'Small frame in Hermes',
-                  jsx(Switch, {
-                    checked: settings.videoWindow === true,
-                    'aria-label': 'Small frame in Hermes',
-                    onCheckedChange: value => setVideoWindow(value)
-                  })
-                ),
-                row(
-                  'Pop out to its own window',
-                  jsx(Button, {
-                    variant: 'default',
-                    size: 'sm',
-                    onClick: () => { void setDesktopWindow(true) },
-                    children: 'Open on a screen'
-                  })
-                ),
+                // Two equal buttons, the same words every surface uses. "Frame
+                // in Hermes" is a toggle (pressed while the in-app frame holds
+                // the film); "Pop out to desktop" becomes "Bring back" only
+                // while the desktop window holds it.
+                jsxs('div', {
+                  key: 'popouts',
+                  style: {
+                    display: 'flex', alignItems: 'stretch', gap: 8,
+                    padding: '7px 12px', minWidth: 0
+                  },
+                  children: [
+                    jsx(Button, {
+                      size: 'sm',
+                      variant: framePressed() ? 'default' : 'ghost',
+                      'aria-label': FRAME_LABEL,
+                      'aria-pressed': framePressed(),
+                      title: framePressed()
+                        ? 'The film is in its frame inside Hermes — click to put it back'
+                        : 'Keep the film in a movable frame inside Hermes',
+                      style: POPOUT_BUTTON_STYLE,
+                      // setInlineWindow, not setVideoWindow: it also puts the
+                      // frame's own pane on screen and parks an open desktop
+                      // window, so one film never plays on two surfaces.
+                      onClick: () => setInlineWindow(!framePressed()),
+                      children: FRAME_LABEL
+                    }),
+                    jsx(Button, {
+                      size: 'sm',
+                      variant: popoutPressed() ? 'default' : 'ghost',
+                      'aria-label': popoutLabel(),
+                      'aria-pressed': popoutPressed(),
+                      title: popoutPressed()
+                        ? 'Bring the film back from its desktop window'
+                        : 'Play the film in its own window on the desktop',
+                      style: POPOUT_BUTTON_STYLE,
+                      onClick: () => { void setOwnWindow(!(desktopOwned || desktopPending)) },
+                      children: popoutLabel()
+                    })
+                  ]
+                }),
                 jsxs('div', {
                   key: 'videoFooter',
                   style: {
@@ -5487,11 +5693,6 @@ function AuraQuickMenu() {
                     jsx('span', {
                       style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30, textAlign: 'right' },
                       children: `${Math.round(clamp01(settings.videoVolume) * 100)}%`
-                    }),
-                    jsx(Switch, {
-                      checked: settings.videoWindow === true,
-                      'aria-label': 'Small frame in Hermes',
-                      onCheckedChange: value => { setVideoWindow(value) }
                     }),
                     jsx('select', { className: 'aura-select',
                       value: settings.videoWindowSize,
@@ -6121,30 +6322,35 @@ function AuraPage() {
       jsx('span', { key: 'f', style: { display: 'inline-flex' }, children: pageButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10)) }),
       jsx('span', { key: 'n', style: { display: 'inline-flex' }, children: pageButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next')) }),
       jsx('span', { key: 'gap', style: { flex: 1 } }),
-      // Two surfaces, two buttons: the floating window inside Hermes, and the
-      // real OS window outside it. Each turns into "Bring back" for its own
-      // surface only.
+      // Two surfaces, two buttons, equal and named the same way everywhere:
+      // "Frame in Hermes" (a toggle, pressed while the in-app frame holds the
+      // film) and "Pop out to desktop" (which reads "Bring back" while the OS
+      // window holds it).
       jsx(Button, {
         key: 'pop-inline',
         size: 'micro',
         variant: videoWindowOn() ? 'default' : 'ghost',
-        'aria-label': inlineLabel(),
+        'aria-label': frameLabel(),
+        'aria-pressed': videoWindowOn() ? 'true' : 'false',
         title: videoWindowOn()
-          ? 'Bring the film back onto this page'
-          : 'Pop out — a floating window inside Hermes you can drag anywhere',
+          ? 'The film is in its frame inside Hermes — click to put it back'
+          : 'Keep the film in a movable frame inside Hermes',
+        style: POPOUT_BUTTON_STYLE,
         onClick: () => setInlineWindow(!videoWindowOn()),
-        children: inlineLabel()
+        children: frameLabel()
       }),
       jsx(Button, {
         key: 'pop-own',
         size: 'micro',
         variant: (desktopOwned || desktopPending) ? 'default' : 'ghost',
-        'aria-label': ownLabel(),
-        title: (desktopOwned || desktopPending)
-          ? 'Bring the film back from its own window'
-          : 'Own window — play outside Hermes, on another monitor or full screen',
+        'aria-label': popoutLabel(),
+        'aria-pressed': popoutPressed() ? 'true' : 'false',
+        title: popoutPressed()
+          ? 'Bring the film back from its desktop window'
+          : 'Play the film in its own window on the desktop',
+        style: POPOUT_BUTTON_STYLE,
         onClick: () => { void setOwnWindow(!(desktopOwned || desktopPending)) },
-        children: ownLabel()
+        children: popoutLabel()
       }),
       jsx(Button, {
         key: 'open',
@@ -7482,6 +7688,9 @@ export const __test = {
   applyUrlBox,
   skipBlockedEpisode,
   panelVisible,
+  // The quick menu's own width, so a layout test asserts against the number the
+  // popover is actually given instead of a copy of it.
+  quickMenuWidth: QUICK_MENU_WIDTH,
   // The backdrop focus guard: a film page that calls window.focus() must not
   // be able to keep the keyboard (owner: "keeps me from typing into hermes").
   // Tests hand in the frame they are working with; production sets it in
