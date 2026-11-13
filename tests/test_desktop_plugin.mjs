@@ -5139,6 +5139,102 @@ await recordAsync('play a film: with nothing watched yet it starts the first pic
 
 disposePlayFresh()
 
+// ------------------------------------------- a film that never loads
+// Row 46, second half: a blocked embed reports itself, but a film that simply
+// never starts says nothing at all. After 20 s without a ready/playing signal
+// the surfaces say so and offer a way out instead of spinning forever.
+
+const stallUrl = 'https://www.youtube.com/watch?v=4Xy0KzPq1Wm'
+const stallCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: true,
+  videoUrl: stallUrl
+})
+closePopout(stallCtx)
+const disposeStall = pluginModule.default.register(stallCtx.ctx)
+await primeLive()
+pageStage(1200, 400)
+
+const stallTimers = ctx => ctx.timers.filter(t => t.kind === 'timeout' && t.ms === 20000 && !t.cleared)
+const panelText = ctx => layoutDescendants(layoutMountPanel(ctx))
+  .map(node => String(node.textContent || ''))
+  .join('\n')
+
+record('stall: a film that never reports is called stuck after 20 s, on page and panel', () => {
+  const timers = stallTimers(stallCtx)
+  assert.equal(timers.length, 1,
+    `expected one 20 s watchdog, timers: ${stallCtx.timers.map(t => t.ms).join(',')}`)
+  timers[0].fn()
+  const page = layoutPageOf(stallCtx)
+  assert.match(texts(page), /isn't loading/, 'the page says nothing after 20 s of nothing')
+  assert.ok(pageAria(page, 'Try again'), 'the page offers no Try again')
+  assert.ok(pageAria(page, 'Pick another'), 'the page offers no way to pick another film')
+  assert.match(panelText(stallCtx), /isn't loading/, 'the Right panel says nothing after 20 s')
+})
+
+await recordAsync('stall: Try again reloads the same film and re-arms the watch', async () => {
+  pageAria(layoutPageOf(stallCtx), 'Try again').props.onClick()
+  await sleep(30)
+  assert.ok(!/isn't loading/.test(texts(layoutPageOf(stallCtx))), 'Try again left the message up')
+  assert.match(tx.filmSrc(), /retry=/, 'Try again did not reload the film')
+  const state = tx.stallStateForTest()
+  assert.equal(state.timer, true, 'Try again did not watch the new attempt')
+  assert.match(String(state.armed), /\|1$/, `the reload was not a new watch: ${state.armed}`)
+})
+
+await recordAsync('stall: Pick another starts a different film', async () => {
+  // The reload never arrives either: the same 20 s verdict, then the way out.
+  const last = stallCtx.timers.filter(t => t.kind === 'timeout' && t.ms === 20000).at(-1)
+  last.fn()
+  const another = pageAria(layoutPageOf(stallCtx), 'Pick another')
+  assert.ok(another, 'the film was not called stuck a second time')
+  another.props.onClick()
+  await sleep(60)
+  const saved = stallCtx.storage.get('settings')
+  assert.ok(saved.videoUrl && saved.videoUrl !== stallUrl,
+    `Pick another did not change the film: ${saved.videoUrl}`)
+})
+
+pageStage(null)
+disposeStall()
+
+const readyCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: true,
+  videoUrl: stallUrl
+})
+closePopout(readyCtx)
+const disposeReady = pluginModule.default.register(readyCtx.ctx)
+await primeLive()
+pageStage(1200, 400)
+
+record('stall: a film that reports playing is never called stuck', () => {
+  const timers = stallTimers(readyCtx)
+  assert.equal(timers.length, 1, 'no watchdog was armed for the film')
+  const listener = readyCtx.listeners.find(entry => entry.type === 'message' && !entry.removed)
+  assert.ok(listener, 'no message bridge listener')
+  const frame = { contentWindow: { postMessage() {} } }
+  tx.setBackdropForTest(frame)
+  listener.fn({
+    source: frame.contentWindow,
+    data: {
+      aura: 'video-state', url: stallUrl, kind: 'youtube', playing: true, position: 4,
+      duration: 5400, muted: true, title: 'A film', controllable: true
+    }
+  })
+  assert.equal(timers[0].cleared, true, 'a playing film left its 20 s watchdog armed')
+  // Even if a stale timer somehow runs, a film with a known length is not stuck.
+  timers[0].fn()
+  assert.ok(!/isn't loading/.test(texts(layoutPageOf(readyCtx))),
+    'a film that reported playing was called stuck')
+  tx.setBackdropForTest(null)
+})
+
+pageStage(null)
+disposeReady()
+
 // --------------------------------------------------------------- reporting
 
 console.log(results.join('\n'))

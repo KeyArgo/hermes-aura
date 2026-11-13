@@ -101,7 +101,10 @@ streams audio from the backend, and that stream is what keeps capture awake on a
   and fall back to your saved sources when the current source is a single video.
 - **Auto-skip.** A playlist item that forbids embedding (or has been deleted)
   would otherwise break the whole list, so Aura resolves the playlist
-  server-side and moves to the next playable episode.
+  server-side and moves to the next playable episode. A film that simply never
+  starts is not a blocked one: after 20 s with no picture the stage says *This
+  film isn't loading* and offers **Try again** and **Pick another**, instead of
+  spinning forever.
 - **Manage a playlist where it lives.** `☰` hands the list to the pop-out
   window — real Chromium on its own profile — so YouTube's own page opens and
   adding, removing and reordering work with your own session. No API scope, no

@@ -579,6 +579,10 @@ const $live = atom({ ...EMPTY_LIVE })
 // Transport state as reported by web/player.html. Kept in an atom so the A
 // popover, the floating bar and the settings page all read one truth.
 const $video = atom({ ...EMPTY_VIDEO })
+// The film the watchdog gave up on ('' while the film is fine), and how many
+// times the film on screen has been reloaded by hand.
+const $stall = atom('')
+const $filmRetry = atom(0)
 const $themeApplied = atom(false)
 // Quick-menu state: which way the host Popover is open (so dispose can close
 // it) and the current pulse-dot opacity (recomputed by the poll ticker).
@@ -1134,6 +1138,9 @@ function mountBackdrop(url, opacity) {
     backdropKey = pageKey()
   }
   void opacity
+  // The frame is about to load a film on a page or a pane: watch it, so a film
+  // that never starts stops being a silent spinner.
+  armFilmWatchdog()
 }
 
 /** Is audio actually playing right now? The server's own reading: level over
@@ -1240,13 +1247,100 @@ function filmSrc() {
   if (!base) return ''
   const mode = filmPageMode()
   if (!mode) return ''
-  return backdropSrc(base, mode)
+  const src = backdropSrc(base, mode)
+  if (!src) return ''
+  const retry = Number($filmRetry.get()) || 0
+  // A manual retry has to be a NEW document: reusing the same URL would keep
+  // the player that never started.
+  if (!retry || mode !== 'video') return src
+  return `${src}${src.includes('?') ? '&' : '?'}retry=${retry}`
+}
+
+// ---- a film that never loads --------------------------------------------
+// A blocked embed reports itself; a film that simply never starts says nothing
+// at all, so the stage used to spin forever. One watch per attempt: with no
+// ready/playing signal inside FILM_STALL_MS the surfaces say so and offer a way
+// out.
+const FILM_STALL_MS = 20000
+let stallTimer = null
+let stallEpoch = 0
+let stallArmedFor = ''
+
+/** Is the film on screen the one the watch gave up on? */
+function filmStalled() {
+  const url = $stall.get()
+  if (!url) return false
+  const settings = $settings.get()
+  return url === String(settings.videoUrl || '').trim() && settings.videoClosed !== true
+}
+
+function resetFilmStall() {
+  stallEpoch += 1
+  if (stallTimer) {
+    clearShowTimer(stallTimer)
+    stallTimer = null
+  }
+  stallArmedFor = ''
+  if ($stall.get()) $stall.set('')
+}
+
+/** Only a surface that can say "this isn't loading" is worth watching: the page
+ *  and the pane. The pop-out windows are players of their own. */
+function watchdogSurface() {
+  const owner = filmOwner()
+  return owner === 'page' || owner === 'pane' ? owner : ''
+}
+
+function armFilmWatchdog() {
+  if (!ctxRef || disposed || !doc) return
+  const settings = $settings.get()
+  const url = String(settings.videoUrl || '').trim()
+  const surface = watchdogSurface()
+  if (!url || !surface || settings.backdropMode !== 'video' || settings.videoClosed || !liveUrl()) return
+  const key = `${url}|${surface}|${$filmRetry.get()}`
+  if (stallArmedFor === key) return
+  if (stallTimer) clearShowTimer(stallTimer)
+  stallArmedFor = key
+  const epoch = ++stallEpoch
+  stallTimer = setShowTimer(() => {
+    stallTimer = null
+    if (disposed || epoch !== stallEpoch) return
+    const now = $settings.get()
+    if (String(now.videoUrl || '').trim() !== url || now.videoClosed) return
+    // A paused film has reported its length; only silence is a stall.
+    const state = $video.get()
+    if (state.playing === true || Number(state.duration) > 0) return
+    $stall.set(url)
+    syncPanel(true)
+    syncVideoBar(true)
+  }, FILM_STALL_MS)
+}
+
+/** The player proved it is loading, so this film is not stuck. */
+function noteFilmReady(info) {
+  if (!stallTimer) return
+  if (info.playing !== true && !(Number(info.duration) > 0)) return
+  clearShowTimer(stallTimer)
+  stallTimer = null
+}
+
+/** Reload the film that is stuck: a frame that never booted will not answer a
+ *  command, so a new document is the only honest retry. */
+function retryFilm() {
+  if (!ctxRef || disposed) return
+  const url = String($settings.get().videoUrl || '').trim()
+  if (!url) return
+  resetFilmStall()
+  $filmRetry.set($filmRetry.get() + 1)
+  syncBackdrop()
 }
 
 function AuraFilm({ surface, style }) {
   const settings = useValue($settings)
   const live = useValue($live)
   const video = useValue($video)
+  // A manual retry changes the frame's URL, so the element has to re-render.
+  useValue($filmRetry)
   const owner = filmOwner()
   // Subscribed above so a server coming up (or a source/close change) re-renders
   // this element; the values themselves are read imperatively below.
@@ -2762,6 +2856,9 @@ async function setVideoUrl(next) {
   const videoUrl = typeof next === 'string' ? next.trim().slice(0, VIDEO_URL_MAX) : ''
   if ($settings.get().videoUrl === videoUrl) return
   handoffPlayback = null
+  // A different film is not the stuck one: drop the message and its watch.
+  resetFilmStall()
+  $filmRetry.set(0)
   // A deliberate source change keeps its bookmark: switching away and back
   // should carry on, not restart. Save where we are before the switch.
   saveCurrentPosition()
@@ -2958,6 +3055,7 @@ function closeVideo() {
   saveCurrentPosition()
   postToBackdrop({ cmd: 'pause' })
   writeSettings({ videoClosed: true })
+  resetFilmStall()
   resetShow()
   removeBackdrop()
   removeVideoBar()
@@ -3787,6 +3885,8 @@ function onBackdropMessage(event) {
     blockedFor = data.url
     void skipBlockedEpisode()
   }
+  // A film that reports a picture is not stuck, whatever the watchdog thinks.
+  noteFilmReady(data)
   if (typeof data.url === 'string' && data.url) {
     if (data.ended === true) rememberPosition(data.url, 0, duration, true, data.videoId)
     else rememberPosition(data.url, position, duration, false, data.videoId)
@@ -4568,6 +4668,18 @@ function panelCss() {
       text-align: center; padding: 16px; color: #cfc4b8; font-size: 12px; pointer-events: none;
     }
     .ap-hint[data-note="true"] { color: #ffd9a8; letter-spacing: 0.2px; }
+    /* A film that never starts: the words come from .ap-hint, the way out
+       sits under them and takes the clicks. */
+    .ap-stall {
+      position: absolute; left: 0; right: 0; bottom: 10px;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .ap-stall button {
+      appearance: none; border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(20,16,28,0.86); color: #f3ece2;
+      font: inherit; font-size: 11px; padding: 4px 10px; border-radius: 999px;
+      cursor: pointer;
+    }
 
     /* control deck: the thing that should feel generous ------------------- */
     .ap-controls {
@@ -5110,6 +5222,15 @@ function mountPanelInto(hostNode) {
   hint.textContent = 'No film playing'
   stage.appendChild(hint)
 
+  // A film that never loads is not a blocked film: nothing is reported at all.
+  // Once the watch gives up, the stage offers its own way out.
+  const stall = doc.createElement('div')
+  stall.className = 'ap-stall'
+  stall.style.display = 'none'
+  stall.appendChild(panelButton('Try again', 'Try again', () => retryFilm()))
+  stall.appendChild(panelButton('Pick another', 'Pick another', () => stepVideo(1)))
+  stage.appendChild(stall)
+
   // ---- transport, full size, directly under the picture ------------------
   const controls = doc.createElement('div')
   controls.className = 'ap-controls'
@@ -5330,7 +5451,7 @@ function mountPanelInto(hostNode) {
 
   panelEl = panel
   panelParts = {
-    panel, body, stage, hint, track, fill, time, play, list, vol,
+    panel, body, stage, hint, stall, track, fill, time, play, list, vol,
     power, modeButtons, frameBtn, ownBtn, source, opacityPills, opacityButtons,
     ccBtn, captionSelect
   }
@@ -5485,20 +5606,24 @@ function syncPanel(force) {
     : '—'
   const progress = state.duration ? Math.min(1, Math.max(0, state.position / state.duration)) : 0
   parts.fill.style.width = `${(progress * 100).toFixed(2)}%`
+  const stalled = filmStalled()
   const baseHint = settings.videoClosed
     ? 'Film closed — press Open video in the A menu'
     : !settings.videoUrl
       ? 'No source chosen yet'
-      : (state.blocked
-        ? 'This video (or the first one in the playlist) cannot be embedded. Remove it from the playlist, or paste a link to a different episode.'
-        : '')
+      : stalled
+        ? "This film isn't loading — try again, or pick another."
+        : (state.blocked
+          ? 'This video (or the first one in the playlist) cannot be embedded. Remove it from the playlist, or paste a link to a different episode.'
+          : '')
   if (!baseHint && paneNote && Date.now() < paneNoteUntil) {
     parts.hint.textContent = paneNote
     parts.hint.setAttribute('data-note', 'true')
   } else {
     parts.hint.textContent = baseHint
-    parts.hint.setAttribute('data-note', 'false')
+    parts.hint.setAttribute('data-note', stalled ? 'true' : 'false')
   }
+  if (parts.stall) parts.stall.style.display = stalled ? '' : 'none'
   // When the SDK frame is showing the film, the stage box is just an empty
   // 16:9 hole: the hint belongs to a stage with no picture in it.
   if (parts.stage) parts.stage.style.display = filmFrame ? 'none' : ''
@@ -7559,6 +7684,9 @@ function AuraPage() {
   // [subtitles] The player's caption report, read once for the whole page.
   const captionState = captionInfo()
   const captionChoices = captionLanguageChoices(captionState)
+  // Subscribed so the watchdog's verdict redraws the stage with its two ways out.
+  useValue($stall)
+  const stalled = filmStalled()
   // The page is Aura's own watch surface: Aura's on/off switch belongs to the
   // overlay painted on the chat, never to watching a film here.
   const hint = settings.videoClosed
@@ -7569,9 +7697,11 @@ function AuraPage() {
         ? 'Backdrop mode is set to the Aura visual. Choose "Video player" in the setup below to watch here.'
         : videoWindowOn()
           ? 'Playing in the pop-out window. Press Bring back to watch it here.'
-          : state.blocked
-            ? 'This video cannot be embedded. Paste a different link, or pick another source.'
-            : ''
+          : stalled
+            ? ''
+            : state.blocked
+              ? 'This video cannot be embedded. Paste a different link, or pick another source.'
+              : ''
 
   const now = nowPlaying(settings, state)
 
@@ -7590,18 +7720,54 @@ function AuraPage() {
     },
     children: [
       jsx(AuraFilm, { key: 'film', surface: 'page', style: { position: 'absolute', inset: 0 } }),
-      hint
-      ? jsx('div', {
-        key: 'hint',
-        className: 'aura-hint',
-        style: {
-          position: 'absolute', inset: 0, display: 'flex',
-          alignItems: 'center', justifyContent: 'center', textAlign: 'center',
-          padding: 16, fontSize: 12, color: '#cfc4b8'
-        },
-        children: hint
-      })
-      : null
+      stalled
+        ? jsxs('div', {
+          key: 'stall',
+          className: 'aura-hint',
+          style: {
+            position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 8, textAlign: 'center',
+            padding: 16, fontSize: 12, color: '#cfc4b8'
+          },
+          children: [
+            jsx('div', { key: 'msg', children: "This film isn't loading." }),
+            jsxs('div', {
+              key: 'actions',
+              style: { display: 'flex', alignItems: 'center', gap: 8 },
+              children: [
+                jsx(Button, {
+                  key: 'retry',
+                  size: 'micro',
+                  'aria-label': 'Try again',
+                  title: 'Load this film again',
+                  onClick: () => retryFilm(),
+                  children: 'Try again'
+                }),
+                jsx(Button, {
+                  key: 'another',
+                  size: 'micro',
+                  variant: 'ghost',
+                  'aria-label': 'Pick another',
+                  title: 'Play the next film in your sources',
+                  onClick: () => stepVideo(1),
+                  children: 'Pick another'
+                })
+              ]
+            })
+          ]
+        })
+        : hint
+          ? jsx('div', {
+            key: 'hint',
+            className: 'aura-hint',
+            style: {
+              position: 'absolute', inset: 0, display: 'flex',
+              alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+              padding: 16, fontSize: 12, color: '#cfc4b8'
+            },
+            children: hint
+          })
+          : null
     ]
   })
 
@@ -9086,6 +9252,7 @@ function teardown() {
   removeVideoBar()
   disposePaneRegistration()
   disposeNavRegistration()
+  resetFilmStall()
   removePanel()
   removeUiStyle()
   saveCurrentPosition()
@@ -9189,6 +9356,10 @@ export default {
     $settings.set(settings)
     $live.set({ ...EMPTY_LIVE })
     $video.set({ ...EMPTY_VIDEO })
+    // A hot reload starts with no film and no stuck-film message: both belong
+    // to the instance that watched them.
+    resetFilmStall()
+    $filmRetry.set(0)
     // Bookmarks live in settings, so a remount (another plugin, another chat)
     // reads them straight back without any extra storage key.
 
@@ -9476,4 +9647,6 @@ export const __test = {
   captionInfo,
   captionTooltip,
   syncVideoBar,
+  // The stuck-film watch: what it is armed for, and which film it gave up on.
+  stallStateForTest: () => ({ armed: stallArmedFor, timer: Boolean(stallTimer), stalled: $stall.get(), ms: FILM_STALL_MS }),
 }
