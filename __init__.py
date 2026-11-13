@@ -200,6 +200,21 @@ def _token_path() -> Path:
 
 
 def _token() -> str | None:
+    """The token that belongs to the port ``_port()`` returned.
+
+    The live server's token is authoritative; the file is only a fallback. Pairing a port from
+    ``server.get_port()`` with a token read off disk is how every control call ended up answering
+    401 on Windows, where a second process could have rewritten the file since.
+    """
+    if _server is not None:
+        get_token = getattr(_server, "get_token", None)
+        if get_token is not None:
+            try:
+                live = get_token()
+            except Exception:  # noqa: BLE001
+                live = None
+            if live:
+                return live
     try:
         value = _token_path().read_text(encoding="utf-8").strip()
     except OSError:
