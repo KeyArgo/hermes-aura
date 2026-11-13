@@ -14,6 +14,9 @@
  *     motion / accent-follow / window visual / theme controls, and Restore my
  *     theme,
  *   - an optional `THEMES_AREA` theme ('aura-live') the user must opt into,
+ *   - the same theme carrying the "Readable" choices (text size, face and ink) —
+ *     bigger, higher-contrast chat text over a film, changed by re-registering
+ *     the theme's typography/colour tokens, never by styling host markup,
  *   - "Visual behind the app": one fixed, click-through backdrop iframe at
  *     a single stylesheet that cleared the app's
  *     own big surfaces so the moving visual shows through. It appears only
@@ -208,7 +211,60 @@ const DEFAULT_SETTINGS = Object.freeze({
   videoHiddenIds: [],
   // Per-film bookmarks: { [url]: { position, duration, at } }. This is what
   // makes an interrupted movie pick up where it stopped, days later.
-  videoPositions: {}
+  videoPositions: {},
+  // Readable: bigger, higher-contrast chat text over a film. The choices live
+  // in Aura's own contributed theme (typography + foreground tokens), so they
+  // are exactly what the host paints — never a stylesheet over app markup.
+  readable: false,
+  readableSize: 'l',
+  readableFont: 'atkinson',
+  readableInk: 'white'
+})
+
+// ---- Readable: chat text you can read over a film -------------------------
+// The host theme contract is the SUPPORTED door for how text looks
+// (DesktopTheme.typography + colors.foreground / mutedForeground). Every choice
+// below becomes a token on Aura's contributed theme; the host paints it. This
+// file never styles host markup to get there.
+const READABLE_SIZES = Object.freeze(['s', 'm', 'l', 'xl'])
+const READABLE_SIZE_LABELS = Object.freeze({ s: 'S', m: 'M', l: 'L', xl: 'XL' })
+// The host's own root size is 1rem (`--dt-base-size` in styles.css), so M is
+// exactly what the app already uses: turning Readable on never shrinks text.
+const READABLE_BASE_SIZES = Object.freeze({ s: '0.9375rem', m: '1rem', l: '1.125rem', xl: '1.25rem' })
+// More leading as the size grows: a bigger face on the same 1.5 crams the
+// lines together, which is the opposite of the point.
+const READABLE_LINE_HEIGHTS = Object.freeze({ s: '1.5', m: '1.6', l: '1.65', xl: '1.7' })
+const READABLE_FONTS = Object.freeze(['system', 'atkinson', 'inter', 'mono'])
+const READABLE_FONT_LABELS = Object.freeze({
+  system: 'System', atkinson: 'Atkinson Hyperlegible', inter: 'Inter', mono: 'Mono'
+})
+const READABLE_FONT_STACKS = Object.freeze({
+  // The host's own stack, so "System" means "what you already had".
+  system: 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+  // Designed by the Braille Institute for low vision: the reason this group exists.
+  atkinson: '"Atkinson Hyperlegible", "Atkinson Hyperlegible Next", system-ui, sans-serif',
+  inter: 'Inter, system-ui, sans-serif',
+  mono: 'ui-monospace, SFMono-Regular, Menlo, "DejaVu Sans Mono", monospace'
+})
+// A webfont may only come from a well-known font CDN — the host injects this
+// stylesheet itself and Aura fetches nothing. Both URLs below were fetched and
+// returned 200 with the right @font-face on 2026-11-13. System and Mono ship
+// with the machine, so they carry no URL at all.
+const READABLE_FONT_URLS = Object.freeze({
+  atkinson: 'https://fonts.bunny.net/css?family=atkinson-hyperlegible:400,700',
+  inter: 'https://fonts.bunny.net/css?family=inter:400,500,600,700'
+})
+const READABLE_INKS = Object.freeze(['white', 'warm', 'yellow'])
+const READABLE_INK_LABELS = Object.freeze({
+  white: 'White', warm: 'Warm', yellow: 'High-contrast yellow'
+})
+// [foreground, mutedForeground] per palette. The dark pair is the one that
+// matters over a film; the light pair keeps the same hue usable in daylight
+// instead of dropping white text on a pale surface.
+const READABLE_INK_COLORS = Object.freeze({
+  white: Object.freeze({ dark: ['#ffffff', '#d5d2e8'], light: ['#15131f', '#5b5572'] }),
+  warm: Object.freeze({ dark: ['#ffe9c8', '#d8c2a2'], light: ['#2a1f13', '#6b5a48'] }),
+  yellow: Object.freeze({ dark: ['#ffe600', '#f2d95a'], light: ['#3a3000', '#6b5a00'] })
 })
 
 // The plugin's own entry inside Settings ▸ Plugins (same shape the host's
@@ -760,6 +816,18 @@ function readSettings(ctx) {
     if (typeof raw.panelEnabled === 'boolean') out.panelEnabled = raw.panelEnabled
     if (typeof raw.panelCollapsed === 'boolean') out.panelCollapsed = raw.panelCollapsed
     if (typeof raw.panelSettingsOpen === 'boolean') out.panelSettingsOpen = raw.panelSettingsOpen
+    // Readable: each choice is validated against its own list, so a stale
+    // storage value can never become a token the host cannot paint.
+    if (typeof raw.readable === 'boolean') out.readable = raw.readable
+    if (typeof raw.readableSize === 'string' && READABLE_SIZES.includes(raw.readableSize)) {
+      out.readableSize = raw.readableSize
+    }
+    if (typeof raw.readableFont === 'string' && READABLE_FONTS.includes(raw.readableFont)) {
+      out.readableFont = raw.readableFont
+    }
+    if (typeof raw.readableInk === 'string' && READABLE_INKS.includes(raw.readableInk)) {
+      out.readableInk = raw.readableInk
+    }
     out.videoSources = readSourceList(raw.videoSources)
     out.videoRecent = readSourceList(raw.videoRecent)
     out.videoPlaylists = readSourceList(raw.videoPlaylists)
@@ -2084,11 +2152,15 @@ function auraShowingSomething() {
 function syncThemeForActivity() {
   const settings = $settings.get()
   if (!settings.themeOptIn) return
-  if (settings.themeIdleRestore !== false && !auraShowingSomething()) {
+  // Readable is a readability setting, not a skin. Handing the user's theme
+  // back whenever nothing is showing would undo the larger, higher-contrast
+  // text the moment the film ends — exactly when they go back to reading chat.
+  const readable = settings.readable === true
+  if (!readable && settings.themeIdleRestore !== false && !auraShowingSomething()) {
     restoreTheme()
     return
   }
-  if (auraShowingSomething() && !$themeApplied.get()) applyThemeIfOptedIn()
+  if ((readable || auraShowingSomething()) && !$themeApplied.get()) applyThemeIfOptedIn()
 }
 
 /** The probe reports the active skin. A user skin change drops our retint so
@@ -2116,8 +2188,13 @@ function onThemeName(name) {
 }
 
 function setThemeOptIn(on) {
-  writeSettings({ themeOptIn: Boolean(on) })
-  if (on) applyThemeIfOptedIn()
+  // Turning Aura's theme off turns Readable off with it: the readable text is
+  // that theme's typography, so a switch that says "off" while the text stays
+  // changed would be lying. Switching it on leaves Readable exactly as it was.
+  const optIn = Boolean(on)
+  writeSettings(optIn ? { themeOptIn: true } : { themeOptIn: false, readable: false })
+  contributeAuraTheme()
+  if (optIn) applyThemeIfOptedIn()
   else restoreTheme()
 }
 
@@ -2140,7 +2217,8 @@ async function setWindowVisual(on) {
  *  removes every effect Aura may have applied. The plugin stays mounted. */
 async function restoreMyTheme() {
   if (!ctxRef || disposed) return
-  writeSettings({ accentPulse: false, themeOptIn: false, windowVisual: false })
+  writeSettings({ accentPulse: false, themeOptIn: false, windowVisual: false, readable: false })
+  contributeAuraTheme()
   resetShow()
   removeBackdrop()
   clearAccent(true)
@@ -6580,6 +6658,9 @@ function AuraSettings() {
   const auraTitle = locked ? AURA_LOCK_TITLE : undefined
   const showTitle = locked ? SHOW_LOCK_TITLE : undefined
 
+  // The Readable sample renders the real tokens the theme would paint.
+  const tokens = readableTokens(settings)
+
   const row = (label, hint, control) =>
     jsxs('div', {
       style: { display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0' },
@@ -7181,6 +7262,167 @@ function AuraSettings() {
           )
         })
         : null,
+      // ---- Readable: everything that makes chat legible over a film --------
+      // Each control writes a theme token, not a style rule: the host paints the
+      // theme, Aura never reaches into app markup (see the theme contract).
+      jsxs('div', {
+        key: 'readable',
+        'data-aura-group': 'readable',
+        style: {
+          display: 'flex',
+          flexDirection: 'column',
+          margin: '10px 0 4px',
+          padding: '8px 10px 6px',
+          border: '1px solid var(--ui-stroke-secondary)',
+          borderRadius: 8
+        },
+        children: [
+          jsxs('div', {
+            key: 'head',
+            style: { display: 'flex', alignItems: 'baseline', gap: 8 },
+            children: [
+              jsx('div', {
+                key: 'title',
+                style: { fontSize: 12, fontWeight: 600, color: 'var(--ui-text-primary)' },
+                children: 'Readable'
+              }),
+              jsx('div', {
+                key: 'note',
+                style: { fontSize: 11, color: 'var(--ui-text-tertiary)' },
+                children: 'Bigger, higher-contrast chat text'
+              })
+            ]
+          }),
+          jsx('div', {
+            key: 'on',
+            children: row(
+              'Readable text',
+              'Applies these choices through the Aura Live theme, so chat stays legible over a film. Off gives your own theme back.',
+              jsx(Switch, {
+                checked: settings.readable === true,
+                'aria-label': 'Readable text',
+                onCheckedChange: value => setReadable(value)
+              })
+            )
+          }),
+          jsx('div', {
+            key: 'size',
+            children: row(
+              'Text size',
+              'M is the size the app already uses; S, L and XL move away from it, and line spacing grows with the size. Paints the theme’s base size.',
+              jsxs('div', {
+                style: { display: 'flex', alignItems: 'center', gap: 4 },
+                children: READABLE_SIZES.map(size =>
+                  jsx(Button, {
+                    key: size,
+                    size: 'micro',
+                    variant: settings.readableSize === size ? 'default' : 'ghost',
+                    disabled: settings.readable !== true,
+                    'aria-label': `Readable text size ${READABLE_SIZE_LABELS[size]}`,
+                    onClick: () => setReadableSize(size),
+                    children: READABLE_SIZE_LABELS[size]
+                  })
+                )
+              })
+            )
+          }),
+          jsx('div', {
+            key: 'font',
+            children: row(
+              'Text font',
+              'The app-wide face, painted through the theme. Atkinson Hyperlegible is designed for low vision; System and Mono need no download.',
+              jsx('select', {
+                className: 'aura-select',
+                value: settings.readableFont,
+                'aria-label': 'Readable text font',
+                disabled: settings.readable !== true,
+                style: {
+                  font: 'inherit',
+                  fontSize: 11,
+                  color: 'var(--ui-text-primary)',
+                  background: 'var(--ui-bg)',
+                  border: '1px solid var(--ui-stroke-secondary)',
+                  borderRadius: 6,
+                  padding: '3px 6px'
+                },
+                onChange: event => {
+                  setReadableFont(String(event && event.target ? event.target.value : 'system'))
+                },
+                children: READABLE_FONTS.map(font =>
+                  jsx('option', { key: font, value: font, children: READABLE_FONT_LABELS[font] })
+                )
+              })
+            )
+          }),
+          jsx('div', {
+            key: 'ink',
+            children: row(
+              'Text colour',
+              'Paints the theme’s text colour and its quieter secondary together, so both survive the next repaint.',
+              jsx('select', {
+                className: 'aura-select',
+                value: settings.readableInk,
+                'aria-label': 'Readable text colour',
+                disabled: settings.readable !== true,
+                style: {
+                  font: 'inherit',
+                  fontSize: 11,
+                  color: 'var(--ui-text-primary)',
+                  background: 'var(--ui-bg)',
+                  border: '1px solid var(--ui-stroke-secondary)',
+                  borderRadius: 6,
+                  padding: '3px 6px'
+                },
+                onChange: event => {
+                  setReadableInk(String(event && event.target ? event.target.value : 'white'))
+                },
+                children: READABLE_INKS.map(ink =>
+                  jsx('option', { key: ink, value: ink, children: READABLE_INK_LABELS[ink] })
+                )
+              })
+            )
+          }),
+          // Aura's own node in Aura's own surface: a sample of the two tokens it
+          // can show safely (face and size). The colour comes from the live
+          // theme, so it is never a simulation of somebody else's markup.
+          jsx('div', {
+            key: 'sample',
+            'aria-label': 'Readable sample',
+            style: {
+              margin: '2px 0 6px',
+              padding: '6px 8px',
+              borderRadius: 6,
+              background: 'var(--ui-bg)',
+              border: '1px solid var(--ui-stroke-secondary)',
+              fontFamily: tokens.fontSans,
+              fontSize: tokens.baseSize,
+              lineHeight: tokens.lineHeight,
+              color: 'var(--theme-foreground)'
+            },
+            children: 'Handgloves: the quick brown fox jumps over the lazy dog.'
+          }),
+          jsx('div', {
+            key: 'chatfont',
+            children: row(
+              'Hermes chat font',
+              'Hermes keeps its own chat face in Settings ▸ Appearance ▸ Chat font. Readable sets the app-wide face through the theme; that setting overrides the chat alone.',
+              jsx(Button, {
+                size: 'micro',
+                variant: 'ghost',
+                'aria-label': 'Open Hermes chat font setting',
+                onClick: () => {
+                  try {
+                    host.navigate(CHAT_FONT_SETTINGS_PATH)
+                  } catch {
+                    // older hosts without navigate
+                  }
+                },
+                children: 'Open…'
+              })
+            )
+          })
+        ]
+      }),
       jsx('div', {
         key: 'restore',
         children: row(
@@ -7255,6 +7497,121 @@ const AURA_THEME = {
     fontMono: 'ui-monospace, SFMono-Regular, Menlo, monospace'
   }
 }
+
+// ------------------------------------------------------ readable theme layer
+// Readable is NOT a stylesheet over the app: it is the same contributed theme
+// with a different typography block and foreground ink. Updating it is a
+// re-register (the host treats a registry change as a theme change and repaints
+// in place), and turning it off goes through `restoreTheme()` — the same door
+// "Use Aura theme" uses. Nothing here writes host markup.
+
+/** The tokens the Readable choices map to. Sizes and colours are looked up, so
+ *  an unknown value can only ever fall back to the default, never paint. */
+function readableTokens(settings) {
+  const current = settings || {}
+  const size = READABLE_SIZES.includes(current.readableSize) ? current.readableSize : DEFAULT_SETTINGS.readableSize
+  const font = READABLE_FONTS.includes(current.readableFont) ? current.readableFont : DEFAULT_SETTINGS.readableFont
+  const ink = READABLE_INKS.includes(current.readableInk) ? current.readableInk : DEFAULT_SETTINGS.readableInk
+  return {
+    baseSize: READABLE_BASE_SIZES[size],
+    lineHeight: READABLE_LINE_HEIGHTS[size],
+    fontSans: READABLE_FONT_STACKS[font],
+    fontUrl: READABLE_FONT_URLS[font],
+    ink: READABLE_INK_COLORS[ink]
+  }
+}
+
+/** Aura's contributed theme, with the Readable choices layered on while they are
+ *  on. With Readable off this IS the plain Aura Live palette — which is what
+ *  makes "off" a real restore rather than a second look. */
+function auraThemeData(settings) {
+  if (!settings || settings.readable !== true) return AURA_THEME
+  const tokens = readableTokens(settings)
+  const typography = {
+    ...AURA_THEME.typography,
+    fontSans: tokens.fontSans,
+    baseSize: tokens.baseSize,
+    lineHeight: tokens.lineHeight
+  }
+  // Only the webfonts carry a stylesheet; a face that ships with the machine
+  // must not inherit one theme's <link> into the next.
+  if (tokens.fontUrl) typography.fontUrl = tokens.fontUrl
+  return {
+    ...AURA_THEME,
+    colors: {
+      ...AURA_THEME.colors,
+      foreground: tokens.ink.light[0],
+      mutedForeground: tokens.ink.light[1]
+    },
+    darkColors: {
+      ...AURA_THEME.darkColors,
+      foreground: tokens.ink.dark[0],
+      mutedForeground: tokens.ink.dark[1]
+    },
+    typography
+  }
+}
+
+// The live `themes` registration. Re-registering is how a CONTRIBUTED theme is
+// updated: the host bumps its registry version, re-resolves the active theme and
+// repaints — no host DOM, no reload.
+let themeDisposer = null
+
+function contributeAuraTheme() {
+  if (!ctxRef) return null
+  const data = auraThemeData($settings.get())
+  if (themeDisposer) {
+    try {
+      themeDisposer()
+    } catch {
+      // already removed by a previous instance's teardown
+    }
+    themeDisposer = null
+  }
+  themeDisposer = ctxRef.register({ id: THEME_NAME, area: THEMES_AREA, data })
+  return data
+}
+
+/** Readable on = Aura's theme worn with the readable tokens; off = the user's
+ *  own theme back. The tokens live IN the Aura theme, so Readable is that
+ *  theme's opt-in and the two switches always tell the same story. */
+function setReadable(on) {
+  if (!ctxRef || disposed) return
+  const readable = Boolean(on)
+  writeSettings({ readable, themeOptIn: readable })
+  contributeAuraTheme()
+  if (readable) {
+    // Re-request even when we think it is applied: the host may have moved on
+    // (a manual skin pick), and this is the only moment the user asked for it.
+    if ($themeApplied.get()) requestTheme(THEME_NAME)
+    else applyThemeIfOptedIn()
+    return
+  }
+  restoreTheme()
+}
+
+function setReadableSize(size) {
+  if (!READABLE_SIZES.includes(size)) return
+  writeSettings({ readableSize: size })
+  contributeAuraTheme()
+}
+
+function setReadableFont(font) {
+  if (!READABLE_FONTS.includes(font)) return
+  writeSettings({ readableFont: font })
+  contributeAuraTheme()
+}
+
+function setReadableInk(ink) {
+  if (!READABLE_INKS.includes(ink)) return
+  writeSettings({ readableInk: ink })
+  contributeAuraTheme()
+}
+
+// Where Hermes keeps its own chat face (Settings ▸ Appearance). Readable sets
+// the app-wide face through the theme; the chat has its own setting, and the
+// honest thing is to point at it rather than fight it.
+const CHAT_FONT_SETTINGS_PATH = '/settings?tab=config:appearance'
 
 // --------------------------------------------------------------- teardown
 
@@ -7388,13 +7745,21 @@ export default {
       })
     )
 
-    track(
-      ctx.register({
-        id: THEME_NAME,
-        area: THEMES_AREA,
-        data: AURA_THEME
-      })
-    )
+    // Aura's theme carries the Readable tokens too, so it is (re)contributed
+    // from the saved choices rather than registered once from a literal. The
+    // tracked cleanup removes whichever registration is CURRENT — a choice
+    // change re-registers, and the disposer list must not grow with each one.
+    track(() => {
+      if (themeDisposer) {
+        try {
+          themeDisposer()
+        } catch {
+          // already removed
+        }
+        themeDisposer = null
+      }
+    })
+    contributeAuraTheme()
 
     // Settings ▸ Plugins. Older hosts without registerSettingsPage get the
     // same page as a plain SETTINGS_PLUGINS_AREA contribution.

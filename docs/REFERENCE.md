@@ -2,7 +2,7 @@
 
 One line: every tool, hook, HTTP route and configuration key Aura exposes, with the shapes the code returns.
 
-Applies to Aura 1.0.0 · revised 2026-11-11
+Applies to Aura 1.0.0 · revised 2026-11-13
 
 ## Tools
 
@@ -161,6 +161,16 @@ The full table with defaults lives in [CONFIGURATION.md](CONFIGURATION.md).
 The short list: `enabled`, `listen_background`, `intensity`, `preset`,
 `reduced_motion`, `theme_opt_in`, `opacity`, `behavior`, `mood_reactive`,
 `accent_pulse`, `auto_preset`, `motion`, `idle_motion`.
+
+Desktop-side appearance keys are NOT in that file: they live in the plugin's own
+`settings` storage record and are documented in
+[USAGE.md](USAGE.md#make-the-chat-readable-over-a-film). The Readable group writes
+four of them — `readable`, `readableSize` (`s`/`m`/`l`/`xl`), `readableFont`
+(`system`/`atkinson`/`inter`/`mono`) and `readableInk`
+(`white`/`warm`/`yellow`) — and each one becomes a host theme token
+(`typography.baseSize`, `typography.lineHeight`, `typography.fontSans`,
+`typography.fontUrl`, `colors.foreground`, `colors.mutedForeground`) on the
+`aura-live` contribution.
 
 Environment variables: `HERMES_HOME`, `AURA_CAPTURE`, `AURA_RADIO_BROWSER_SERVERS`,
 `AURA_DESKTOP_BROWSER`, `AURA_DESKTOP_GPU`, plus `XDG_SESSION_TYPE` /

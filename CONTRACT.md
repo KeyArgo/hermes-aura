@@ -318,3 +318,24 @@ No recorder is opened unless the visual actually needs audio:
   it at once instead of waiting out `CAPTURE_RETRY_S` (10 s).
 - A replaced recorder is always closed (`_swap_capture()`), so neither the gate nor the silent
   retry path can leak a device handle.
+
+## 13. Readable text through the theme contract (additive, 2026-11-13)
+
+The owner asked for the chat text to be changeable in font and colour so it can be read over a
+film. The supported door is the host theme contract (`DesktopTheme.typography` +
+`colors.foreground` / `mutedForeground`), never host markup: Aura contributes `aura-live` and
+re-registers that ONE contribution when a Readable choice changes, which the host treats as a
+theme change and repaints in place. No selector, stylesheet or style rule is added, and the host
+`html`/`body`/root styles are still never written (§11).
+
+- Choices (`readable`, `readableSize`, `readableFont`, `readableInk` in the plugin's own settings
+  record) map to tokens: size → `typography.baseSize` + `typography.lineHeight`; font →
+  `typography.fontSans`, plus `typography.fontUrl` from `fonts.bunny.net` for the two webfonts
+  only; colour → `colors.foreground` + `colors.mutedForeground` on both palettes.
+- Readable on requests `aura-live` (it IS that theme's opt-in, so `themeOptIn` follows it);
+  Readable off goes through `restoreTheme()`, the same door every other opt-out uses, and hands
+  back the theme the user was wearing.
+- "Keep my theme when idle" (`themeIdleRestore`) does not apply while Readable is on: reverting
+  on an idle window would undo the text exactly when the user goes back to reading chat.
+- Hermes' own chat face (`desktop.font_family`, Settings ▸ Appearance ▸ Chat font) is left alone;
+  the Readable group links to it instead of overriding it.
