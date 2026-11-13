@@ -398,7 +398,7 @@ fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: ty
 fs.writeFileSync(
   sdkStub,
   `// Stub of @hermes/plugin-sdk: records the calls the plugin makes.
-export const calls = { accent: [], themes: [], navigations: [], notifications: [], undismissed: [], revealed: [] }
+export const calls = { accent: [], themes: [], navigations: [], notifications: [], undismissed: [], revealed: [], composerFocus: [] }
 
 function makeAtom(initial) {
   let value = initial
@@ -427,7 +427,10 @@ export const host = {
   navigate: route => { calls.navigations.push(route) },
   notify: message => { calls.notifications.push(message) },
   undismissPane: paneId => { calls.undismissed.push(paneId) },
-  revealPane: paneId => { calls.revealed.push(paneId) }
+  revealPane: paneId => { calls.revealed.push(paneId) },
+  // The SDK's own caret verb (returnFocusToComposer): recorded, so a test can
+  // prove Escape gives the keyboard back without touching the app's DOM.
+  composer: { focus: surface => { calls.composerFocus.push(surface) } }
 }
 
 export const useValue = store => store.get()
@@ -4948,6 +4951,263 @@ await recordAsync('pop out: an error reply shows the server reason and moves not
   } finally {
     dispose()
   }
+})
+
+// --------------------------------------- lane controlbar: the strip, redesigned
+// Owner ask, in his words: "seek bar across the whole top, times on the bottom;
+// big bottom controls; both pop-out buttons on the bottom row; X on the left,
+// under the drag bar but low enough that moving the bar can't hit it;
+// transparency, and mouse wheel / hover / keyboard control like the volume."
+// These pin the layout and the three gestures, not a screenshot.
+
+const barUrl = 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+const barSettings = extra => Object.assign({
+  enabled: true, backdropMode: 'video', windowVisual: true, panelEnabled: false,
+  videoUrl: barUrl, videoVolume: 0.5
+}, extra || {})
+// The strip is built as rows: drag row, seek row, time row, bottom row. `rowOf`
+// finds the top-level row a node lives in, however deeply it is nested.
+const stripRows = bar => bar.children || []
+const rowOf = (bar, node) => {
+  if (!node) return null
+  let walk = node
+  while (walk && walk.parentNode !== bar) walk = walk.parentNode
+  return walk && walk.parentNode === bar ? walk : null
+}
+const bottomRowOf = bar => stripRows(bar)[stripRows(bar).length - 1]
+const nodesTagged = (root, tag) => {
+  const out = []
+  const visit = node => {
+    if (!node || typeof node !== 'object') return
+    if (node.tagName === tag) out.push(node)
+    for (const child of node.children || []) visit(child)
+  }
+  visit(root)
+  return out
+}
+const withStrip = fn => {
+  const ctx = makeCtx(barSettings())
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const bar = tx.mountVideoBarForTest(document.createElement('div'))
+    assert.ok(bar, 'the strip did not mount')
+    return fn(ctx, bar)
+  } finally {
+    tx.removeVideoBar()
+    dispose()
+  }
+}
+
+record('control bar: the seek bar spans the whole strip, times on their own row', () => {
+  withStrip((ctx, bar) => {
+    const seek = findByLabel(bar, 'Seek')
+    assert.ok(seek, 'the strip has no seek bar')
+    assert.equal(seek.style.width, '100%', 'the seek bar does not span the strip')
+    const seekRow = rowOf(bar, seek)
+    assert.ok(seekRow, 'the seek bar has no row of its own')
+    assert.equal(seekRow.style.width, '100%', 'the seek row is not strip-wide')
+    const elapsed = findByLabel(bar, 'Elapsed time')
+    const remaining = findByLabel(bar, 'Remaining and total time')
+    assert.ok(elapsed, 'the strip has no elapsed clock')
+    assert.ok(remaining, 'the strip has no remaining/total clock')
+    const timeRow = rowOf(bar, elapsed)
+    assert.equal(rowOf(bar, remaining), timeRow, 'the two clocks are not on one row')
+    assert.equal(timeRow.children[0], elapsed, 'the elapsed clock is not on the left')
+    assert.equal(timeRow.children[timeRow.children.length - 1], remaining,
+      'the remaining clock is not on the right')
+    // The seek row comes before the clocks — the owner's order, top to bottom.
+    const order = stripRows(bar).indexOf(seekRow)
+    assert.equal(stripRows(bar).indexOf(timeRow), order + 1, 'the clocks are not directly under the seek bar')
+  })
+})
+
+record('control bar: Close is the far-left control of the bottom row, below the grip', () => {
+  withStrip((ctx, bar) => {
+    const close = findByLabel(bar, 'Close video')
+    const grip = findByLabel(bar, 'Drag to move the controls')
+    assert.ok(close, 'the strip has no Close control')
+    assert.ok(grip, 'the strip has no grip')
+    const bottom = bottomRowOf(bar)
+    const bottomIndex = stripRows(bar).indexOf(bottom)
+    assert.equal(bottom.children[0], close, 'Close is not the first control of the bottom row')
+    // At least the seek bar and the clock row sit between the grip and Close, so
+    // a drag that starts on the grip can never land on Close.
+    const seekRow = rowOf(bar, findByLabel(bar, 'Seek'))
+    const timeRow = rowOf(bar, findByLabel(bar, 'Elapsed time'))
+    assert.ok(stripRows(bar).indexOf(rowOf(bar, close)) > stripRows(bar).indexOf(seekRow),
+      'Close shares a row with (or sits above) the seek bar')
+    assert.ok(stripRows(bar).indexOf(rowOf(bar, close)) > stripRows(bar).indexOf(timeRow),
+      'Close sits above the clocks')
+    assert.notEqual(rowOf(bar, grip), rowOf(bar, close), 'Close shares a row with the grip')
+    assert.equal(bottomIndex, stripRows(bar).length - 1, 'the bottom row is not the last row')
+  })
+})
+
+record('control bar: the wheel seeks over the seek bar and sets the level over the volume', () => {
+  withStrip((ctx, bar) => {
+    const sent = []
+    tx.setBackdropForTest({ contentWindow: { postMessage: message => sent.push(message) } })
+    const wheel = (node, deltaY) => {
+      const event = { deltaY, target: node, preventDefault() {} }
+      for (const fn of bar.__handlers.wheel || []) fn(event)
+      return event
+    }
+    const volume = findByLabel(bar, 'Volume — scroll to change')
+    const seek = findByLabel(bar, 'Seek')
+    assert.ok(volume && seek, 'the strip is missing the volume or the seek bar')
+
+    wheel(volume, -100)
+    assert.equal(Math.round(ctx.storage.get('settings').videoVolume * 100), 55,
+      'the wheel over the volume no longer raises it by 5%')
+    const level = ctx.storage.get('settings').videoVolume
+
+    // A wheel over the seek bar seeks, and leaves the level alone.
+    wheel(seek, -1)
+    assert.equal((sent.filter(message => message.cmd === 'seek').at(-1) || {}).value, 5,
+      'a wheel up over the seek bar did not seek forward 5 s')
+    wheel(seek, 1)
+    assert.equal((sent.filter(message => message.cmd === 'seek').at(-1) || {}).value, -5,
+      'a wheel down over the seek bar did not seek back 5 s')
+    assert.equal(ctx.storage.get('settings').videoVolume, level,
+      'a wheel over the seek bar changed the volume')
+  })
+})
+
+record('control bar: the keyboard drives the strip, and only while the strip has focus', () => {
+  withStrip((ctx, bar) => {
+    const sent = []
+    tx.setBackdropForTest({ contentWindow: { postMessage: message => sent.push(message) } })
+    const press = (key, target) => {
+      const event = { key, target: target || bar, defaultPrevented: false, preventDefault() { event.defaultPrevented = true } }
+      for (const fn of bar.__handlers.keydown || []) fn(event)
+      return event
+    }
+    press('ArrowRight')
+    assert.equal((sent.filter(message => message.cmd === 'seek').at(-1) || {}).value, 5,
+      'Right does not seek forward 5 s')
+    press('ArrowLeft')
+    assert.equal((sent.filter(message => message.cmd === 'seek').at(-1) || {}).value, -5,
+      'Left does not seek back 5 s')
+    const start = ctx.storage.get('settings').videoVolume
+    press('ArrowUp')
+    assert.equal(Math.round(ctx.storage.get('settings').videoVolume * 100),
+      Math.round(start * 100) + 5, 'Up does not raise the volume by 5%')
+    press('ArrowDown')
+    assert.equal(Math.round(ctx.storage.get('settings').videoVolume * 100),
+      Math.round(start * 100), 'Down does not lower the volume by 5%')
+
+    const before = sent.length
+    const space = press(' ')
+    assert.ok(space.defaultPrevented, 'Space does not take the key')
+    assert.ok(sent.slice(before).some(message => message.cmd === 'play' || message.cmd === 'pause'),
+      'Space does not play or pause')
+
+    press('c')
+    assert.equal(ctx.storage.get('settings').videoCaptions, true, 'C does not turn captions on')
+    press('C')
+    assert.equal(ctx.storage.get('settings').videoCaptions, false, 'C does not turn captions off')
+
+    const focused = sdk.calls.composerFocus.length
+    press('Escape')
+    assert.equal(sdk.calls.composerFocus.length, focused + 1,
+      'Escape does not hand the keyboard back to the chat')
+
+    // The chat's own text box keeps its keys: nothing over a text input.
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    const seeks = sent.filter(message => message.cmd === 'seek').length
+    const levels = ctx.storage.get('settings').videoVolume
+    const typed = press('ArrowRight', textarea)
+    assert.equal(typed.defaultPrevented, false, 'the strip swallowed a key meant for a text input')
+    assert.equal(sent.filter(message => message.cmd === 'seek').length, seeks,
+      'a key pressed in a text input seeked the film')
+    assert.equal(ctx.storage.get('settings').videoVolume, levels,
+      'a key pressed in a text input changed the volume')
+  })
+})
+
+record('control bar: transparency is a persisted setting, and the strip is opaque on hover', () => {
+  withStrip((ctx, bar) => {
+    assert.equal(pluginModule.wiringTest.settings.get().videoBarOpacity, 0.6,
+      'the strip does not start at 0.6 transparency')
+    tx.setVideoBarOpacity(0.4)
+    assert.equal(ctx.storage.get('settings').videoBarOpacity, 0.4,
+      'the transparency setting was not persisted')
+    tx.syncVideoBar(true)
+    assert.match(bar.style.background, /0\.4\)$/, `the strip ignored the setting: ${bar.style.background}`)
+
+    for (const fn of bar.__handlers.mouseenter || []) fn({})
+    assert.match(bar.style.background, /,\s*1\)$/, 'the strip is not fully solid while hovered')
+    for (const fn of bar.__handlers.mouseleave || []) fn({})
+    assert.match(bar.style.background, /0\.4\)$/, 'the strip stayed solid after the pointer left')
+
+    for (const fn of bar.__handlers.focus || []) fn({ type: 'focus', target: bar })
+    assert.match(bar.style.background, /,\s*1\)$/, 'the strip is not fully solid while focused')
+    for (const fn of bar.__handlers.blur || []) fn({ type: 'blur', target: bar })
+    assert.match(bar.style.background, /0\.4\)$/, 'the strip stayed solid after it lost focus')
+
+    // The range is 0.2..1: a nearly invisible strip is not a usable one.
+    tx.setVideoBarOpacity(0.01)
+    assert.equal(ctx.storage.get('settings').videoBarOpacity, 0.2,
+      'the transparency can be set below 20%')
+  })
+})
+
+record('control bar: both pop-out buttons share the bottom row, on 36px targets', () => {
+  withStrip((ctx, bar) => {
+    const bottom = bottomRowOf(bar)
+    const frame = findByLabel(bar, 'Frame in Hermes')
+    const own = findByLabel(bar, 'Pop out to desktop')
+    assert.ok(frame && own, 'the strip lost a pop-out button')
+    const pair = frame.parentNode
+    assert.ok(pair, 'the two pop-out buttons have no shared container')
+    assert.equal(own.parentNode, pair, 'the two pop-out buttons are not together')
+    assert.equal(pair.parentNode, bottom, 'the pop-out pair is not part of the bottom row')
+    assert.equal(bottom.children[bottom.children.length - 1], pair,
+      'the pop-out pair is not the last thing on the bottom row')
+    // The transport shares that row: the named buttons live with the big
+    // controls, not on a row of their own above them.
+    for (const label of ['Close video', 'Previous source', 'Play', 'Next source']) {
+      assert.equal(rowOf(bar, findByLabel(bar, label)), bottom,
+        `"${label}" left the bottom row`)
+    }
+
+    for (const label of [
+      'Close video', 'Previous source', 'Play', 'Next source',
+      'Volume — scroll to change', 'Subtitles (CC)'
+    ]) {
+      const node = findByLabel(bar, label)
+      assert.ok(node, `the strip has no "${label}" control`)
+      const height = parseInt(String(node.style.height || '0'), 10)
+      assert.ok(height >= 36, `"${label}" is a ${height}px target, not at least 36px`)
+    }
+  })
+})
+
+record('control bar: every button is named, and a 320px window wraps instead of overflowing', () => {
+  withStrip((ctx, bar) => {
+    const buttons = nodesTagged(bar, 'BUTTON')
+    assert.ok(buttons.length >= 6, `the strip has only ${buttons.length} buttons`)
+    for (const button of buttons) {
+      assert.ok(String(button.getAttribute('aria-label') || '').trim(),
+        `a strip button has no accessible name (${button.textContent})`)
+    }
+    const bottom = bottomRowOf(bar)
+    assert.match(String(bottom.style.flexWrap), /wrap/, 'the bottom row cannot wrap')
+    // Nothing in the bottom row may demand more width than a 288px strip has:
+    // a fixed px width above that is what overflow looks like.
+    for (const child of bottom.children) {
+      const wanted = String(child.style.width || '')
+      const fixed = /^(\d+)px$/.exec(wanted)
+      if (fixed) assert.ok(Number(fixed[1]) <= 120, `a bottom-row control is ${wanted} wide`)
+      const min = String(child.style.minWidth || '')
+      const floor = /^(\d+)px$/.exec(min)
+      if (floor) assert.ok(Number(floor[1]) <= 120, `a bottom-row control has min-width ${min}`)
+    }
+    // The strip itself is capped to the window, so 320px can never overflow.
+    assert.match(String(bar.style.maxWidth), /100vw/, 'the strip is not capped to the window width')
+    assert.match(String(bar.style.boxSizing), /border-box/, 'the strip is not border-box')
+  })
 })
 
 // --------------------------------------------------------------- reporting

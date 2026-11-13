@@ -116,9 +116,14 @@ streams audio from the backend, and that stream is what keeps capture awake on a
   picture cannot be turned off**: no player API exposes them, so the CC button
   cannot remove them. That is the upload's choice, not a setting of ours.
 - **Free placement.** The floating watch window drags anywhere and remembers its
-  spot; 320 / 480 / 640 wide. Its control strip is two rows — the film's title,
-  scrubber, clock, volume and window buttons above a centred transport row —
-  stays inside the viewport, and dims when idle instead of vanishing.
+  spot; 320 / 480 / 640 wide. Its control strip is four rows — the drag bar, a
+  seek bar across the full width, elapsed on the left and time-left over the
+  length on the right, then one big row of 36px controls (Close at the far left,
+  transport, volume, CC, and both pop-out buttons together) — stays inside the
+  viewport, wraps instead of overflowing, is translucent at rest and solid under
+  the pointer or keyboard, seeks ±5 s on the wheel over the seek bar, changes the
+  level ±5% over the volume, and answers Left/Right, Up/Down, Space, C and Escape
+  while it holds the focus. It dims when idle instead of vanishing.
 - **An Aura page in the sidebar — the whole product in one place.** The same
   film in a big 16:9 frame with the transport, volume and source picker, a
   **Library** of poster cards (add, rename, remove, hide starters, clear
@@ -545,9 +550,9 @@ node --test tests/test_desktop_plugin.mjs
 
 | Suite | Result at this commit |
 |---|---|
-| Python (capture, analysis, server, hooks, tools, radio, search, catalogue) | **536 passed** |
-| Desktop contract (menu, pane, transport, resume, mode gating, shelf) | **167 passed, 0 failed** |
-| **Total** | **703 passed** |
+| Python (capture, analysis, server, hooks, tools, radio, search, catalogue) | **542 passed** |
+| Desktop contract (menu, pane, transport, resume, mode gating, shelf) | **188 passed, 0 failed** |
+| **Total** | **730 passed** |
 
 The end-to-end visualiser tests drive a real headless Chrome and measure the
 canvas. They skip themselves when the machine is too loaded to sample reliably
