@@ -1,6 +1,3 @@
-docs/screenshots/visualiser-page-chrome.png
-docs/screenshots/visualiser-skylight.png
-docs/screenshots/visualiser-tokamak-witchery.png
-docs/screenshots/visualiser-spiral-artifact.png
-docs/screenshots/visualiser-infused-spiral.png
-docs/screenshots/visualiser-pogo-cubes.png
+# Screenshots and animations for the catalog entry.
+# Paths are relative to the repository root and must exist at the pinned commit.
+docs/screenshots/aura-audio.gif      Aura's visualiser reacting to a beat (800 px, 6 fps, looped)

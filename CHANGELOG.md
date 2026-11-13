@@ -29,7 +29,8 @@
 - **The film is an SDK `SandboxedFrame`** inside Aura's own pane, page and pop-out
   window — not a raw iframe on the document body. The glass stylesheet and the
   full-bleed "behind the app" visual went with it: the SDK has no backdrop slot
-  yet, so it is requested in `docs/HERMES-ISSUES.md`.
+  yet, so it is requested outside the repo (issue drafts are not
+  shipped with the plugin).
 - **No private active-session read.** The `hermes_cli.active_sessions` import and
   the `runtime/active_sessions.json` reader are gone; the per-chat intensity
   boost is gone with them, and `session_boost` stays on the wire as a constant

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 
 import pytest
 
@@ -193,6 +194,9 @@ def test_reap_ignores_a_pid_that_is_not_ours(tmp_path, monkeypatch):
     assert window.reap_orphan() is False
 
 
+@pytest.mark.skipif(sys.platform != "linux",
+                    reason="reap_orphan reads /proc/<pid>/cmdline and signals a process "
+                           "group; both are Linux-only, and the code path is guarded the same way")
 def test_reap_kills_only_our_profile(tmp_path, monkeypatch):
     import io
     import os

@@ -9,7 +9,8 @@ public promise). Nous asked for both to go, and they are gone.
 Consequence, stated plainly: **the number of open chats no longer changes the
 visual.** Every connected surface renders the intensity the user saved. When
 Hermes exposes a public active-session count, this module is the one place that
-changes — the request is drafted in ``docs/HERMES-ISSUES.md``.
+changes — the request is drafted outside the repo, with the plugin's
+other Hermes issue requests.
 
 The public functions are kept so the server and the pages keep one mapping from
 "what the user saved" to "what is rendered", and they clamp exactly as before.

@@ -1,4 +1,6 @@
 import os
+
+import pytest
 import subprocess
 import sys
 import tempfile
@@ -12,7 +14,12 @@ def test_backends_load_when_package_is_namespaced():
     # top-level ``aura_core`` is not importable there. Regression: every Aura
     # start inside Hermes silently got zero capture backends.
     with tempfile.TemporaryDirectory() as tmp:
-        os.symlink(REPO, Path(tmp) / "plugpkg")
+        try:
+            os.symlink(REPO, Path(tmp) / "plugpkg")
+        except (OSError, NotImplementedError) as exc:
+            # Windows without Developer Mode cannot create symlinks. The import
+            # rule itself is platform-independent; the fixture is not.
+            pytest.skip(f"symlinks unavailable here: {exc}")
         code = (
             "import sys\n"
             "sys.path = [p for p in sys.path if p not in ('', %r)]\n"
