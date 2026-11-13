@@ -199,7 +199,8 @@ def build(source: Path, out: Path, cache_path: Path | None, offline: bool) -> li
         raise SystemExit(f"categories with no titles: {empty}")
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(items, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    rows = ",\n".join(json.dumps(item, ensure_ascii=False) for item in items)
+    out.write_text("[\n" + rows + "\n]\n", encoding="utf-8")
 
     if cache_path and not offline and cache:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
