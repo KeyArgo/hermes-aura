@@ -2611,6 +2611,70 @@ await recordAsync('player coordinator reports, consumes commands, and restores a
   dispose()
 })
 
+await recordAsync('savelist: save/remove commands write the library, the report carries it', async () => {
+  const url = 'https://example.test/octopus.mp4'
+  const x = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: url })
+  const reports = []
+  let head = 0
+  let queue = []
+  const original = x.ctx.rest
+  x.ctx.rest = async (route, options = {}) => {
+    if (route === '/player') return { ok: true, window: { open: false }, player: {} }
+    if (route.startsWith('/player/commands?')) return { ok: true, head_seq: head, commands: queue }
+    if (route === '/player/report') {
+      reports.push(options.body || {})
+      return { ok: true }
+    }
+    return original(route, options)
+  }
+  const dispose = pluginModule.default.register(x.ctx)
+  const sync = () => pluginModule.wiringTest.sync()
+  const stored = () => x.storage.get('settings') || {}
+  await sync() // first poll only takes the cursor
+
+  // A save queued by aura_watch lands in the saved films, once, with its label.
+  head = 1
+  queue = [{ seq: 1, cmd: 'save', url, label: 'Secrets of the Octopus' }]
+  await sync()
+  assert.deepEqual((stored().videoSources || []).map(item => [item.label, item.url]),
+    [['Secrets of the Octopus', url]], 'the save did not reach the saved films')
+
+  // The library travels with the player report, so action=list can read it.
+  const reported = reports[reports.length - 1] || {}
+  assert.ok(Array.isArray(reported.library), 'the player report has no library field')
+  assert.deepEqual(reported.library.map(item => [item.label, item.url, item.kind]),
+    [['Secrets of the Octopus', url, 'film']],
+    'the report does not carry the saved film')
+
+  // Saving the same film again does not file a second copy.
+  head = 2
+  queue = [{ seq: 2, cmd: 'save', url, label: 'Secrets of the Octopus' }]
+  await sync()
+  assert.equal((stored().videoSources || []).length, 1,
+    `a duplicate save made ${(stored().videoSources || []).length} copies`)
+
+  // Remove by label: the desktop resolves the one saved film and drops it.
+  head = 3
+  queue = [{ seq: 3, cmd: 'remove', label: 'secrets of the octopus' }]
+  await sync()
+  assert.deepEqual((stored().videoSources || []).map(item => item.url), [],
+    'remove by label left the film in the library')
+  const after = reports[reports.length - 1] || {}
+  assert.deepEqual(after.library || [], [],
+    'the report still lists the film that was just removed')
+
+  // An ambiguous label removes nothing: a wrong film must never be dropped.
+  queue = [{ seq: 4, cmd: 'save', url: 'https://example.test/octopus-two.mp4', label: 'Octopus Two' },
+    { seq: 5, cmd: 'save', url: 'https://example.test/octopus-three.mp4', label: 'Octopus Three' },
+    { seq: 6, cmd: 'remove', label: 'octopus' }]
+  head = 6
+  await sync()
+  assert.deepEqual((stored().videoSources || []).map(item => item.url),
+    ['https://example.test/octopus-three.mp4', 'https://example.test/octopus-two.mp4'],
+    'an ambiguous label removed something anyway')
+  dispose()
+})
+
 await recordAsync('page buttons: Pop out floats inside Hermes, Own window opens the OS window', async () => {
   const x = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/one.mp4' })
   const calls = []

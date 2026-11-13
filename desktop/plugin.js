@@ -1566,6 +1566,10 @@ let desktopOwned = false
 // until we know whether a real window opened ("one or the other").
 let desktopPending = false
 let playerCursor = null
+// [savelist lane] Its own cursor for save/remove, so the library follows the
+// agent even while the OS window holds playback and this half stops polling
+// for transport commands.
+let libraryCursor = null
 let playerReportAt = 0
 let playerReportKey = ''
 let lastDesktopPlayer = null
@@ -1590,6 +1594,9 @@ async function syncPlayerOwnership() {
         $video.set({ ...$video.get(), ...player, reportedAt: Date.now() })
       }
       playerCursor = null
+      // The saved library is this half's own settings, so save/remove still
+      // land while the OS window owns the picture.
+      await applyLibraryCommands()
       return
     }
     if (desktopOwned) {
@@ -1601,15 +1608,22 @@ async function syncPlayerOwnership() {
       playerCursor = null
     }
     if (playerCursor !== null && Number.isSafeInteger(snapshot.seq) && snapshot.seq < playerCursor) playerCursor = null
+    // Library first, so this tick's report already describes the list after a
+    // save/remove the agent queued.
+    await applyLibraryCommands()
     const settings = $settings.get()
     const video = $video.get()
     const report = {
       desktop: false, url: settings.videoUrl || '', kind: video.kind || '',
       title: video.title || '', videoId: video.videoId || '',
       playing: video.playing === true, position: Number(video.position) || 0,
-      duration: Number(video.duration) || 0, volume: Number(settings.videoVolume) || 0
+      duration: Number(video.duration) || 0, volume: Number(settings.videoVolume) || 0,
+      // [savelist lane] What the owner has saved, so aura_watch action=list can
+      // answer "what's on my list?" with the real list.
+      library: libraryReport()
     }
-    const key = JSON.stringify([report.url, report.kind, report.title, report.videoId, report.playing, report.volume])
+    const key = JSON.stringify([report.url, report.kind, report.title, report.videoId,
+      report.playing, report.volume, report.library])
     if (Date.now() - playerReportAt >= 1000 || key !== playerReportKey) {
       await ctxRef.rest('/player/report', { method: 'POST', body: report, timeoutMs: 3000 })
       playerReportAt = Date.now()
@@ -1621,6 +1635,10 @@ async function syncPlayerOwnership() {
     for (const command of payload.commands) {
       if (!command || !Number.isSafeInteger(command.seq) || command.seq <= playerCursor) continue
       playerCursor = command.seq
+      // Library commands belong to applyLibraryCommands() below: they edit
+      // settings, not the player, and keeping them out of this chain is what
+      // stops a save from being mistaken for a transport verb.
+      if (command.cmd === 'save' || command.cmd === 'remove') continue
       if (command.cmd === 'load') await playOnPage(command.url, command.label)
       else if (command.cmd === 'watch_window') {
         if (command.url) await playOnPage(command.url, command.label)
@@ -2545,6 +2563,91 @@ function addVideoSource(url, name) {
   rememberVideoSource(clean, label)
   syncVideoBar(true)
   return true
+}
+
+/** The owner's saved library as the player report carries it: saved playlists
+ *  first, then saved films, each with the label the Library shows. One entry
+ *  per url. aura_watch action=list reads this straight back, so the agent
+ *  answers with the owner's real list instead of guessing at it. */
+function libraryReport() {
+  const settings = $settings.get()
+  const rows = (list, kind) => (Array.isArray(list) ? list : [])
+    .map(item => {
+      const url = item && typeof item.url === 'string' ? item.url.trim() : ''
+      if (!url) return null
+      const label = String((item && item.label) || shortLabel(url)).trim().slice(0, 120)
+      return { label: label || shortLabel(url), url: url.slice(0, VIDEO_URL_MAX), kind }
+    })
+    .filter(Boolean)
+  const seen = new Set()
+  return [...rows(settings.videoPlaylists, 'playlist'), ...rows(settings.videoSources, 'film')]
+    .filter(row => (seen.has(row.url) ? false : seen.add(row.url)))
+}
+
+/** The one saved source whose title is *name* (ignoring case), or ''. Two
+ *  matches answer '' — a wrong film must never be removed on a guess. */
+function savedSourceByLabel(name) {
+  const wanted = String(name || '').trim().toLowerCase()
+  if (!wanted) return ''
+  const settings = $settings.get()
+  const lists = [
+    ...(Array.isArray(settings.videoPlaylists) ? settings.videoPlaylists : []),
+    ...(Array.isArray(settings.videoSources) ? settings.videoSources : [])
+  ]
+  const urls = [...new Set(lists
+    .filter(item => item && String(item.label || '').trim().toLowerCase() === wanted)
+    .map(item => String(item.url || '').trim())
+    .filter(Boolean))]
+  return urls.length === 1 ? urls[0] : ''
+}
+
+/** Apply one save/remove command from Hermes through the same helpers the
+ *  Library's Add/Remove buttons use, so the page updates live and there is a
+ *  single writer of the saved lists. Returns true when the command was ours. */
+function applyLibraryCommand(command) {
+  if (!command || typeof command.cmd !== 'string') return false
+  if (command.cmd === 'save') {
+    const url = String(command.url || '').trim()
+    if (!url) return false
+    // addVideoSource replaces a same-url entry instead of adding a second one,
+    // so a repeated save is a no-op on the list itself.
+    addVideoSource(url, command.label)
+    note('Saved to your Aura library', 4000)
+    return true
+  }
+  if (command.cmd === 'remove') {
+    const url = String(command.url || '').trim() || savedSourceByLabel(command.label)
+    if (!url) {
+      note('That film is not in your Aura library', 4000)
+      return true
+    }
+    removeVideoSource(url)
+    note('Removed from your Aura library', 4000)
+    return true
+  }
+  return false
+}
+
+/** Poll the queue for save/remove only. Kept apart from the transport poll so
+ *  the library still follows the agent while the OS window owns playback (that
+ *  page has no library of its own and ignores these commands). */
+async function applyLibraryCommands() {
+  if (!ctxRef || disposed) return
+  try {
+    const payload = await ctxRef.rest(
+      '/player/commands?after=' + (libraryCursor === null ? 0 : libraryCursor),
+      { timeoutMs: 3000 })
+    if (!payload || payload.ok !== true || !Array.isArray(payload.commands)) return
+    if (libraryCursor === null) {
+      libraryCursor = Number.isSafeInteger(payload.head_seq) ? payload.head_seq : 0
+      return
+    }
+    for (const command of payload.commands) {
+      if (!command || !Number.isSafeInteger(command.seq) || command.seq <= libraryCursor) continue
+      libraryCursor = command.seq
+      applyLibraryCommand(command)
+    }
+  } catch { /* offline poll: the next tick retries, nothing is claimed */ }
 }
 
 /** Rename a saved source everywhere it is remembered (playlists, films,
@@ -7258,6 +7361,9 @@ export default {
     // the previous instance. Same for the adopted frame handle.
     desktopOwned = false
     desktopPending = false
+    // The library cursor goes with it: a fresh instance starts from the queue
+    // head, so commands already applied by the previous one are not replayed.
+    libraryCursor = null
     filmFrame = null
     filmFrameOwner = ''
     const settings = readSettings(ctx)
