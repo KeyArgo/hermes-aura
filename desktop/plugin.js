@@ -6177,10 +6177,9 @@ function disposePaneRegistration() {
   }
 }
 
-/** Follow the mode: the pane exists only while the Right panel belongs on
- *  screen (video mode, film open, switch on). Called from the poll tick and
- *  from every action that can change those three — so visualizer mode takes the
- *  panel away on the click, and coming back to video mode puts it back. */
+/** Follow the mode: the pane exists only while the Right panel belongs on screen
+ *  (video mode, film open, switch on). Called from the poll tick and from every
+ *  action that can change those three. */
 function syncPanelPresence() {
   if (!ctxRef || disposed) return
   const want = panelRequested()
