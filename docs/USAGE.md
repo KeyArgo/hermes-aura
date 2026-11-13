@@ -139,6 +139,9 @@ of it.
   wav.
 - **Music on, video muted** — the audio channel has its own volume and mute.
   The muted state is remembered with the film.
+- **Closing the film does not stop the music** — the audio channel lives in the
+  one page Aura frames, so with the film closed that page stays up as the
+  visualiser and the music keeps playing.
 - **Visuals follow it** — music from Aura's channel (or any other app) drives
   the same visuals.
 

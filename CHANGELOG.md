@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — the music outlives the film, and CI runs every desktop suite
+
+- **Closing the film no longer takes the music with it.** The audio channel
+  (`web/audio.js`) lives in the one page Aura frames; that page is now kept up
+  whenever music or radio has a source, even while the film is closed, and it is
+  the visualiser page rather than a dead player. Before this, "stop the film,
+  keep the radio" left `playAudioSource` posting into nothing.
+- **The desktop suites are back, and CI can no longer lose one.**
+  `tests/test_listen_desktop.mjs` and `tests/test_fresh_install.mjs` had been
+  crashing at import since the SandboxedFrame change (their SDK stubs lacked
+  `COMPOSER_AREAS` and `SandboxedFrame`), so nothing ran them; both now import
+  and assert through the recorded frames. The desktop CI job runs every
+  `tests/*.mjs` file instead of one named file.
+
 ## Unreleased — Hermes can edit your own list
 
 - **`aura_watch` can save, remove and list the owner's Aura library** (the
