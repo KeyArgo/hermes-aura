@@ -1,8 +1,8 @@
-# Aura — wire contract (v0.1, frozen 2026-11-04)
+# Aura — wire contract
 
-Every lane implements against THIS document. Do not change it without the orchestrator's
-agreement: L1 (capture/server), L2 (viz page), L3 (desktop), L4 (hooks/mood) are built in
-parallel and only the contract keeps them compatible.
+How Aura's four parts talk to each other: the capture server, the visualiser page, the Desktop half
+and the mood hooks. Each part is built and tested against this document, so a change here is a change
+to all four.
 
 ## 1. Server
 
