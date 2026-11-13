@@ -47,7 +47,7 @@
 
 Aura turns Hermes Desktop into a room you can live in. Put any film, lecture or
 playlist in the right-hand pane and keep working; switch the film off and the
-same audio drives a MilkDrop-compatible visualiser behind the interface. It
+same audio drives a MilkDrop-compatible visualiser. It
 listens to what the machine is already playing — system loopback, never the
 microphone — and nothing leaves the computer: no account, no uploads, no
 recording.
@@ -405,9 +405,11 @@ and immediately when Aura is turned off or the motion mode does not use audio.
 It does not run a shell, and it does not touch host `html`/`body` styles.
 
 **Host safety.** The pane is a Hermes `PANES_AREA` contribution — Hermes lays it
-out; no fixed positioning, no z-index, no `body` padding. The backdrop is one
-click-through iframe at negative z-index plus a single `#aura-glass` stylesheet,
-mounted only while a visual is showing. Host root styles are never written; the
+out; no fixed positioning, no z-index, no `body` padding. The film is an SDK
+`<SandboxedFrame>` inside that pane, and the transport strip is a
+`COMPOSER_AREAS.underside` contribution — no app markup is queried, nothing is
+appended to the document body, and no host stylesheet is written. Host root
+styles are never written; the
 accent override is the SDK's sanctioned mechanism. Switching the visual off,
 turning Aura off, **Restore my theme** and plugin disposal remove every effect
 Aura applied and restore the theme that was there before.

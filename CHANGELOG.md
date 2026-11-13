@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — review fixes
+
+- **The transport strip lives in the composer slot.** It was a fixed bar appended
+  to the app body and parked above the input by scanning its DOM; it is now a
+  `COMPOSER_AREAS.underside` contribution, and a click hands the caret back via
+  `host.composer.focus(null)`.
+- **No focus or key capture.** The document-level `focusin`/`keydown` listeners
+  and the saved caret range are gone.
+- **The film is an SDK `SandboxedFrame`** inside Aura's own pane, page and pop-out
+  window — not a raw iframe on the document body. The glass stylesheet and the
+  full-bleed "behind the app" visual went with it: the SDK has no backdrop slot
+  yet, so it is requested in `docs/HERMES-ISSUES.md`.
+- **No private active-session read.** The `hermes_cli.active_sessions` import and
+  the `runtime/active_sessions.json` reader are gone; the per-chat intensity
+  boost is gone with them, and `session_boost` stays on the wire as a constant
+  `1.0`.
+- **macOS capture dependency declared** (`sounddevice`, darwin only), and the
+  token path now resolves through `config.hermes_home()` so it follows the
+  active profile.
+
 ## 1.0.0 — in catalog review
 
 First public release.

@@ -33,8 +33,8 @@ ctx.register({
   data: {
     // the plugin promises it is decoration: no pointer events, no focus
     interactive: false,
-    opacityToken: '--plugin-backdrop-opacity'   // host-applied, so the host can
-                                                // fade it without plugin styles
+    // the host applies the fade, so a plugin never writes an opacity of its own
+    hostOwnsOpacity: true
   },
   render: () => jsx(SandboxedFrame, { src, title: 'Aura' })
 })
