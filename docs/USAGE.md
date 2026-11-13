@@ -92,6 +92,15 @@ One library feeds two pickers: the source dropdowns in the A menu and in
 Settings both list saved playlists, your films, the starter pack and recents,
 grouped under `Playlists`, `Your films`, `Starters` and `Recent`.
 
+The starter pack is meant to be left running behind work. It holds 32 sources,
+24 of them added for the backdrop: sixteen run 2–12 hours — BBC Earth's
+oceanscapes, NASA+ and ISS material, Monterey Bay Aquarium tanks, Alpine and
+Iberian cab rides, city walks, silent drone aerials, and rain or fireplace beds.
+The shorter entries include Blender's open movies (CC-BY), two NASA films and
+public-domain features from the Internet Archive. Every entry is the
+rights-holder's own upload or a direct file, so nothing in the pack is a
+reupload; **Hide starters** clears the whole list in one click.
+
 ## Watch the visualiser
 
 Switch the film off and the same system audio drives a MilkDrop-compatible
