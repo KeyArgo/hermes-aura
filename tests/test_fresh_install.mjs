@@ -499,7 +499,7 @@ const pluginModule = await import(pathToFileURL(pluginCopy).href)
 const sdk = await import(pathToFileURL(sdkStub).href)
 
 const SINTEL_URL = 'https://www.youtube.com/watch?v=eRsGyueVLvQ'
-const PLAYLIST_URL = 'https://youtube.com/playlist?list=PLKcvhYw9tgjI&si=x'
+const PLAYLIST_URL = 'https://youtube.com/playlist?list=PLabcdefghij&si=x'
 
 // --------------------------------------------------------------- shared bits
 

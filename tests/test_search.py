@@ -50,9 +50,9 @@ def test_fixture_yields_one_row_per_usable_result(page):
     assert [item["kind"] for item in items] == ["video", "playlist", "video", "playlist"]
     assert [item["id"] for item in items] == [
         "3GB-7qwwIp0",
-        "PLyayDEcNvgueXmwaNc3dWXZY18EipwUD6",
+        "PLabcdefghijklmnopqrstuvwxyz012345",
         "ah8U0-fV6k8",
-        "PLQgyOUGZUlLu4LEriF6UtF5Vu-RSYCbgz",
+        "PLzyxwvutsrqponmlkjihgfedcba543210",
     ]
     assert page == ["octopus documentary"]
 
@@ -75,7 +75,7 @@ def test_title_with_braces_is_not_truncated(page):
 def test_playlist_renderer_fields(page):
     playlist = search.youtube_search("octopus documentary", 6)[1]
     assert playlist["url"] == (
-        "https://www.youtube.com/playlist?list=PLyayDEcNvgueXmwaNc3dWXZY18EipwUD6")
+        "https://www.youtube.com/playlist?list=PLabcdefghijklmnopqrstuvwxyz012345")
     assert playlist["channel"] == "Timely Documentaries"
     assert playlist["length"] == "8 videos"
     assert playlist["views"] == "54,332 views"
@@ -94,7 +94,7 @@ def test_lockup_video_and_playlist_shapes(page):
     assert playlist["channel"] == "Kevin Smuts"
     assert playlist["length"] == "33 videos"
     assert playlist["url"] == (
-        "https://www.youtube.com/playlist?list=PLQgyOUGZUlLu4LEriF6UtF5Vu-RSYCbgz")
+        "https://www.youtube.com/playlist?list=PLzyxwvutsrqponmlkjihgfedcba543210")
 
 
 def test_duplicates_and_invalid_ids_are_dropped(page):
@@ -214,8 +214,8 @@ def test_a_parser_bug_does_not_escape(monkeypatch, page):
      "https://www.youtube.com/watch?v=3GB-7qwwIp0"),
     ("https://www.youtube.com/live/3GB-7qwwIp0",
      "https://www.youtube.com/watch?v=3GB-7qwwIp0"),
-    ("https://music.youtube.com/playlist?list=PLyayDEcNvgueXmwaNc3dWXZY18EipwUD6",
-     "https://www.youtube.com/playlist?list=PLyayDEcNvgueXmwaNc3dWXZY18EipwUD6"),
+    ("https://music.youtube.com/playlist?list=PLabcdefghijklmnopqrstuvwxyz012345",
+     "https://www.youtube.com/playlist?list=PLabcdefghijklmnopqrstuvwxyz012345"),
     ("https://www.youtube-nocookie.com/embed/3GB-7qwwIp0",
      "https://www.youtube.com/watch?v=3GB-7qwwIp0"),
     ("https://example.org/films/octopus.mp4", "https://example.org/films/octopus.mp4"),
@@ -255,6 +255,6 @@ def test_refused_play_urls_say_why(url):
 
 def test_watch_link_keeps_its_playlist_context():
     result = search.check_play_url(
-        "https://www.youtube.com/watch?v=3GB-7qwwIp0&list=PLyayDEcNvgueXmwaNc3dWXZY18EipwUD6")
+        "https://www.youtube.com/watch?v=3GB-7qwwIp0&list=PLabcdefghijklmnopqrstuvwxyz012345")
     assert result["ok"] is True
-    assert "list=PLyayDEcNvgueXmwaNc3dWXZY18EipwUD6" in result["url"]
+    assert "list=PLabcdefghijklmnopqrstuvwxyz012345" in result["url"]

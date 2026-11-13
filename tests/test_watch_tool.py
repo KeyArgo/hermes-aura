@@ -39,8 +39,8 @@ ROWS = [
      "url": "https://www.youtube.com/watch?v=3GB-7qwwIp0",
      "title": "Secrets of the Octopus", "channel": "Nat Geo Animals",
      "length": "2:03:39", "views": "2,946,453 views"},
-    {"kind": "playlist", "id": "PLyayDEcNvgueXmwaNc3dWXZY18EipwUD6",
-     "url": "https://www.youtube.com/playlist?list=PLyayDEcNvgueXmwaNc3dWXZY18EipwUD6",
+    {"kind": "playlist", "id": "PLabcdefghijklmnopqrstuvwxyz012345",
+     "url": "https://www.youtube.com/playlist?list=PLabcdefghijklmnopqrstuvwxyz012345",
      "title": "Full octopus documentaries", "channel": "Timely Documentaries",
      "length": "8 videos", "views": "54,332 views"},
     {"kind": "video", "id": "ah8U0-fV6k8",
@@ -290,7 +290,7 @@ def test_play_accepts_a_playlist(plugin, online):
     p, _ = plugin
     payload = _call(p, {
         "action": "play",
-        "url": "https://www.youtube.com/playlist?list=PLyayDEcNvgueXmwaNc3dWXZY18EipwUD6",
+        "url": "https://www.youtube.com/playlist?list=PLabcdefghijklmnopqrstuvwxyz012345",
         "label": "Full octopus documentaries",
     })
     assert payload["ok"] is True

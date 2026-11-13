@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — quality review fixes
+
+- **The film frame is built from the live server again.** It was handed the
+  film's own URL, so a YouTube link became `https://www.youtube.com/watch/player.html`
+  and Aura mode embedded the audio URL instead of the visualiser. The frame is
+  `<origin>/player.html?url=…&token=…` (or `<origin>/?token=…&overlay=1`), and it
+  re-renders when the server comes up.
+- **One owner for the player.** Nothing renders while the film is closed, while
+  the OS pop-out owns playback, or before the server answers; pane and page open
+  together now produce exactly one player (precedence: pop-out → page → pane), and
+  an unmount from a surface that never had it can no longer clear the handle.
+- **The URL box has one path.** It is a controlled draft synced from
+  `settings.videoUrl`, applied by Enter or the Apply button — no blur handler
+  racing the click, no empty draft submitted.
+- **Live state is published before side effects**, so a failing window call can no
+  longer make the plugin believe the server is down.
+- Test fixtures use synthetic YouTube playlist ids rather than real ones.
+
 ## Unreleased — review fixes
 
 - **The transport strip lives in the composer slot.** It was a fixed bar appended
