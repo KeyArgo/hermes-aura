@@ -156,6 +156,26 @@ The agent calls `aura_control`, `aura_watch` and `aura_listen`; see
 [REFERENCE.md](REFERENCE.md) for every action and parameter. Search never
 autoplays: options are shown, and playback waits for your pick.
 
+## Make the chat readable over a film
+
+**Settings ▸ Plugins ▸ Aura ▸ Readable.** One switch, then three choices:
+
+| Choice | Options | What it changes |
+|---|---|---|
+| Text size | S / M / L / XL | The theme's base font size, with line spacing growing alongside it. M is the size the app already uses. |
+| Text font | System / Atkinson Hyperlegible / Inter / Mono | The app-wide face. Atkinson Hyperlegible is designed for low vision; System and Mono need no download. |
+| Text colour | White / Warm / High-contrast yellow | The theme's text colour and its quieter secondary, on both the light and dark palettes. |
+
+Readable works by changing the theme Aura contributes, not by styling the app:
+the choices become the host theme's own typography and colour tokens and the
+host paints them, so nothing here can fight a future Hermes release. Turning it
+on wears the Aura Live theme; turning it off gives your own theme back, and
+**Restore my theme** clears Readable too.
+
+Hermes keeps its own chat face in **Settings ▸ Appearance ▸ Chat font**; the
+Readable group has a shortcut to it. That setting overrides the chat alone,
+while Readable sets the face everywhere the theme applies.
+
 ## Stop it, remove it, find your data
 
 - **Stop now:** turn Aura off in **Settings ▸ Plugins ▸ Aura**. Capture stops,

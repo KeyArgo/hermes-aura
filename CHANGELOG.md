@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased — readable chat text over a film
+
+- **A new Readable group in Settings ▸ Plugins ▸ Aura.** One switch that makes
+  the chat legible over a film, plus the three choices behind it: **text size**
+  (S/M/L/XL), **text font** (System, Atkinson Hyperlegible, Inter, Mono) and
+  **text colour** (White, Warm, High-contrast yellow).
+- **It is the theme that changes, not the app.** Every choice maps to a token in
+  the host theme contract — size to `typography.baseSize`/`lineHeight`, font to
+  `typography.fontSans` (plus a `fontUrl` from `fonts.bunny.net` for the two
+  webfonts), colour to `colors.foreground` and `mutedForeground` on both the
+  light and dark palettes — and Aura's own contributed theme is re-registered,
+  so the host repaints. No stylesheet, selector or style rule ever touches app
+  markup (the owner's Nous-review rule).
+- **On and off tell the truth.** Turning Readable on requests the Aura theme
+  (the readable tokens live in it, so it is the same opt-in), and turning it off
+  goes through `restoreTheme()`, which hands back the theme the user was wearing.
+  Turning "Use Aura theme" off, or **Restore my theme**, turns Readable off with
+  it rather than leaving a switch that lies.
+- **Idle no longer reverts the text.** "Keep my theme when idle" used to hand the
+  user's theme back whenever no film or visual was showing, undoing Readable
+  exactly when the film ends; Readable now keeps the theme while idle.
+- A **Hermes chat font** row points at Hermes' own setting (Settings ▸
+  Appearance ▸ Chat font), which overrides the chat face alone.
+- Ten contract tests cover it: each choice's token mapping, the ordering of the
+  four sizes, the CDN rule (only the webfonts get a stylesheet), the measured
+  luminance of each ink on the dark palette, on/off restore, the idle case, the
+  single in-place theme contribution, and that no host DOM node or style is
+  written.
+
 ## Unreleased — the control strip is the user's
 
 - **Dragging the strip moves the strip.** The ⠿ grip (and any empty part of the

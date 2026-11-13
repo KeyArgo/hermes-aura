@@ -2,11 +2,11 @@
 
 One line: the index of every Aura document, with what each one answers.
 
-Applies to Aura 1.0.0 · revised 2026-11-11
+Applies to Aura 1.0.0 · revised 2026-11-13
 
 | Document | What it answers |
 |---|---|
-| [USAGE.md](USAGE.md) | How to use each feature: films, playlists, the page, pop-out, radio, agent tools. |
+| [USAGE.md](USAGE.md) | How to use each feature: films, playlists, the page, pop-out, radio, readable text, agent tools. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How the pieces fit together, where data lives, which file owns what. |
 | [REFERENCE.md](REFERENCE.md) | Every tool, hook, HTTP route and config key, with parameters and return shapes. |
 | [CONFIGURATION.md](CONFIGURATION.md) | Every setting and environment variable the code reads, with defaults. |
