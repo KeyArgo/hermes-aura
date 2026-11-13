@@ -3513,6 +3513,174 @@ record('dispose from the now-playing scenario is clean', () => {
   assert.ok(np.listeners.every(entry => entry.removed), 'a listener survived dispose')
 })
 
+// ------------------------------------------------------------ readable text
+// Owner ask: "change the font and color of the hermes chat text so we can make
+// it much easier to read". The only supported door is the host theme contract —
+// typography (baseSize/fontSans/fontUrl) and colours (foreground/
+// mutedForeground) on Aura's OWN contributed theme. Nothing here may restyle
+// host markup, so the DOM checks below are part of the scenario, not an aside.
+
+sdk.themeState.name = 'nous'
+const rd = makeCtx({ enabled: true, themeOptIn: false })
+const disposeRd = pluginModule.default.register(rd.ctx)
+// Snapshotted AFTER register: mounting the plugin may legitimately style its
+// own surface. What must not change is anything the Readable controls do.
+const rdHead = headChildren.length
+const rdBody = bodyChildren.length
+// The app always mounts the theme probe; its first report is what lets the
+// plugin remember which theme it owes the user back.
+renderContribution(rd.contributions.find(c => c.area === 'titleBar.center'))
+
+const rdTheme = () => {
+  const found = rd.contributions.filter(c => c.area === 'themes')
+  assert.equal(found.length, 1, `expected exactly one contributed theme, found ${found.length}`)
+  return found[0].data
+}
+const rdPage = () => renderContribution(rd.contributions.find(c => c.area === 'settings.plugins'))
+const rdControl = label => {
+  const node = findSwitch(rdPage(), label)
+  assert.ok(node, `no Readable control labelled "${label}"`)
+  return node
+}
+// Relative luminance, so "easy to read over a film" is measured, not asserted
+// by vibes: the readable inks are the ones that stay bright on a dark surface.
+const luminance = hex => {
+  const channels = [1, 3, 5].map(at => parseInt(String(hex).slice(at, at + 2), 16) / 255)
+    .map(v => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+}
+
+const baseDarkInk = rdTheme().darkColors.foreground
+const basePrimary = rdTheme().colors.primary
+
+record('readable: off by default, so the contributed theme carries no readable overrides', () => {
+  const theme = rdTheme()
+  assert.equal(theme.typography.baseSize, undefined, 'a base size was painted with Readable off')
+  assert.equal(theme.typography.fontUrl, undefined, 'a font stylesheet was fetched with Readable off')
+  assert.equal(rdControl('Readable text').props.checked, false, 'Readable is on by default')
+  for (const label of ['Readable text size S', 'Readable text size L']) {
+    assert.equal(rdControl(label).props.disabled, true, `${label} is live while Readable is off`)
+  }
+  for (const label of ['Readable text font', 'Readable text colour']) {
+    assert.equal(rdControl(label).props.disabled, true, `${label} is live while Readable is off`)
+  }
+})
+
+record('readable: turning it on persists the choice and asks for the Aura theme', () => {
+  const before = sdk.calls.themes.length
+  rdControl('Readable text').props.onCheckedChange(true)
+  assert.equal(rd.storage.get('settings').readable, true, 'Readable was not persisted')
+  assert.ok(sdk.calls.themes.slice(before).includes('aura-live'),
+    'turning Readable on did not request the Aura theme')
+  assert.equal(rd.contributions.filter(c => c.area === 'themes').length, 1,
+    'the theme was contributed twice instead of updated in place')
+  for (const label of ['Readable text font', 'Readable text colour']) {
+    assert.equal(rdControl(label).props.disabled, false, `${label} stayed disabled with Readable on`)
+  }
+})
+
+record('readable: the readable theme survives an idle window, because it is not a skin', () => {
+  // "Keep my theme when idle" is on by default and normally hands the user's
+  // own theme back whenever no film or visual is showing. Readable must outlive
+  // that, or the text reverts the moment the film ends.
+  assert.equal(rd.storage.get('settings').readable, true, 'Readable is not on at this point')
+  const idle = rdControl('Keep my theme when idle')
+  const before = sdk.calls.themes.length
+  idle.props.onCheckedChange(true)
+  assert.equal(sdk.calls.themes.length, before,
+    'the readable theme was handed back while Aura had nothing on screen')
+})
+
+record('readable: S/M/L/XL each paint a larger typography.baseSize and lineHeight', () => {
+  const painted = {}
+  for (const size of ['s', 'm', 'l', 'xl']) {
+    rdControl(`Readable text size ${size.toUpperCase()}`).props.onClick()
+    const theme = rdTheme()
+    assert.equal(rd.storage.get('settings').readableSize, size, `${size} was not persisted`)
+    assert.match(String(theme.typography.baseSize), /^[\d.]+rem$/, `${size} painted no base size`)
+    assert.match(String(theme.typography.lineHeight), /^[\d.]+$/, `${size} painted no line height`)
+    painted[size] = parseFloat(theme.typography.baseSize)
+  }
+  assert.ok(painted.s < painted.m && painted.m < painted.l && painted.l < painted.xl,
+    `the four sizes are not ordered: ${JSON.stringify(painted)}`)
+})
+
+record('readable: each font sets typography.fontSans, with a CDN URL only where a webfont is needed', () => {
+  const expected = {
+    system: /system-ui/,
+    atkinson: /Atkinson Hyperlegible/,
+    inter: /Inter/,
+    mono: /mono/i
+  }
+  for (const [font, pattern] of Object.entries(expected)) {
+    rdControl('Readable text font').props.onChange({ target: { value: font } })
+    const theme = rdTheme()
+    assert.equal(rd.storage.get('settings').readableFont, font, `${font} was not persisted`)
+    assert.match(String(theme.typography.fontSans), pattern, `${font} did not reach fontSans`)
+    if (font === 'system' || font === 'mono') {
+      assert.equal(theme.typography.fontUrl, undefined,
+        `${font} ships with the system: it must not fetch a stylesheet`)
+    } else {
+      assert.match(String(theme.typography.fontUrl), /^https:\/\/fonts\.(bunny|googleapis)\.net\//,
+        `${font} is not served by a well-known font CDN`)
+    }
+  }
+})
+
+record('readable: each text colour sets foreground and mutedForeground on both palettes', () => {
+  const seen = {}
+  for (const ink of ['white', 'warm', 'yellow']) {
+    rdControl('Readable text colour').props.onChange({ target: { value: ink } })
+    const theme = rdTheme()
+    assert.equal(rd.storage.get('settings').readableInk, ink, `${ink} was not persisted`)
+    for (const key of ['foreground', 'mutedForeground']) {
+      assert.match(String(theme.colors[key]), /^#[0-9a-f]{6}$/i, `light ${key} is not a hex colour`)
+      assert.match(String(theme.darkColors[key]), /^#[0-9a-f]{6}$/i, `dark ${key} is not a hex colour`)
+    }
+    assert.ok(luminance(theme.darkColors.foreground) > 0.5,
+      `${ink} is not bright enough to read over a film: ${theme.darkColors.foreground}`)
+    seen[ink] = theme.darkColors.foreground
+  }
+  assert.equal(new Set(Object.values(seen)).size, 3,
+    `the three inks are not distinct: ${JSON.stringify(seen)}`)
+  assert.equal(rdTheme().colors.primary, basePrimary,
+    'Readable changed the palette: it must only move text tokens')
+  assert.notEqual(seen.white, baseDarkInk, 'the White ink is the palette default, so nothing changed')
+})
+
+record('readable: the group points at Hermes own chat font setting', () => {
+  const tree = rdPage()
+  assert.ok(texts(tree).includes('Readable'), 'no Readable group on the settings page')
+  const link = findSwitch(tree, 'Open Hermes chat font setting')
+  assert.ok(link, 'no jump to the Hermes chat font setting')
+  link.props.onClick()
+  assert.equal(sdk.calls.navigations.at(-1), '/settings?tab=config:appearance',
+    'the link does not open Appearance, where Hermes keeps its chat font')
+})
+
+record('readable: turning it off restores the previous theme and drops every override', () => {
+  sdk.themeState.name = 'aura-live'          // the host is wearing it, as after an opt-in
+  rdControl('Readable text').props.onCheckedChange(false)
+  assert.equal(rd.storage.get('settings').readable, false, 'Readable was not turned off')
+  assert.equal(sdk.calls.themes.at(-1), 'nous', 'the previous theme was not handed back')
+  const theme = rdTheme()
+  assert.equal(theme.typography.baseSize, undefined, 'the readable size survived the switch-off')
+  assert.equal(theme.typography.fontUrl, undefined, 'the font stylesheet survived the switch-off')
+  assert.equal(theme.darkColors.foreground, baseDarkInk, 'the readable ink survived the switch-off')
+})
+
+record('readable: nothing was written to the host DOM', () => {
+  assert.equal(headChildren.length, rdHead, 'a node was appended to the host head')
+  assert.equal(bodyChildren.length, rdBody, 'a node was appended to the host body')
+  assert.deepEqual(Object.keys(documentElement.style), [], 'host html/root style was mutated')
+  assert.deepEqual(Object.keys(document.body.style), [], 'host body style was mutated')
+})
+
+record('dispose from the readable scenario is clean', () => {
+  disposeRd()
+  assert.equal(rd.contributions.length, 0, 'a contribution survived dispose')
+})
+
 // --------------------------------------------------------------- reporting
 
 console.log(results.join('\n'))
