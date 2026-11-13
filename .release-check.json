@@ -1,3 +1,6 @@
 {
-  "mirrors": ["aura_core/server.py"]
+  "mirrors": [
+    "aura_core/server.py"
+  ],
+  "dev_base": 95
 }
