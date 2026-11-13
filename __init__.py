@@ -93,7 +93,8 @@ class _Config:
 _CFG = _Config()
 _CTX: Any = None
 _ACTIONS = ("on", "off", "status", "intensity", "preset", "mood",
-            "pause", "resume", "next", "prev", "seek", "popout", "popout_inline", "popin")
+            "pause", "resume", "next", "prev", "seek", "captions",
+            "popout", "popout_inline", "popin")
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +530,30 @@ def _action_transport(action: str, args: dict, extra: dict | None = None,
     return payload
 
 
+def _action_captions(args: dict) -> dict:
+    """Turn the film's subtitles on or off (action=captions).
+
+    The switch is queued like every other transport verb, so it reaches
+    whichever player owns the picture — the in-app frame or its own window —
+    and the desktop half remembers the choice for the next film.
+    """
+    raw = args.get("captions")
+    if isinstance(raw, bool):
+        on = raw
+    elif isinstance(raw, str) and raw.strip().lower() in ("on", "off", "true", "false", "1", "0"):
+        on = raw.strip().lower() in ("on", "true", "1")
+    else:
+        return {"ok": False, "error": "captions needs on or off",
+                "allowed_actions": list(_ACTIONS),
+                "hint": "Send {\"action\": \"captions\", \"captions\": \"on\"} or \"off\"."}
+    payload = _action_transport("captions", {"captions": raw}, extra={"value": 1 if on else 0})
+    if payload.get("ok") is True:
+        payload["captions"] = on
+        payload["hint"] = ("Subtitles on." if on
+                           else "Subtitles off. Subtitles burned into the picture cannot be turned off.")
+    return payload
+
+
 def _film_url_problem(url: str) -> str:
     """Why *url* cannot be a film in its own window ('' means it can).
 
@@ -722,6 +747,8 @@ def _tool_aura_control(args: dict, **kw) -> str:
             payload = _action_mood(args)
         elif action in ("pause", "resume", "next", "prev", "seek"):
             payload = _action_transport("play" if action == "resume" else action, args)
+        elif action == "captions":
+            payload = _action_captions(args)
         elif action == "popout":
             payload = _action_popout(args)
         elif action == "popout_inline":
@@ -752,7 +779,10 @@ SCHEMA_AURA_CONTROL = {
         "the floating window inside Hermes, and action=popin closes either; "
         "optional url and position choose what to open. Use these when the user "
         "says 'pause', 'next episode', 'play the octopus documentary' or 'put it "
-        "on my other screen'. Returns JSON. Never blocks the turn; if the server "
+        "on my other screen'. action=captions turns the film's subtitles on or off "
+        "(captions: on|off) — the choice is remembered and applies to whichever "
+        "player owns the picture; subtitles burned into the picture cannot be "
+        "turned off. Returns JSON. Never blocks the turn; if the server "
         "is not running it says so plainly."
     ),
     "parameters": {
@@ -783,6 +813,11 @@ SCHEMA_AURA_CONTROL = {
                 "minimum": 0.0,
                 "description": "for seek: absolute position in seconds; for "
                                "popout: where the window should start",
+            },
+            "captions": {
+                "type": "string",
+                "enum": ["on", "off"],
+                "description": "for captions: turn the film's subtitles on or off",
             },
             "url": {
                 "type": "string",
