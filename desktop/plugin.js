@@ -891,6 +891,25 @@ function setError(message) {
   setLive({ error: typeof message === 'string' ? message : '' })
 }
 
+/** Say something the user will actually see.
+ *
+ *  Three seats, because which one is on screen depends on the layout: the
+ *  pane's stage line (`note`), the host's own notification (a toast outside any
+ *  of our surfaces) and the settings page's server line. A pop-out failure used
+ *  to reach the settings line only — which is why clicking "Pop out to desktop"
+ *  looked like it did nothing at all. */
+function sayIt(text, ms) {
+  const message = String(text || '').trim()
+  if (!message) return
+  note(message, ms)
+  setError(message)
+  try {
+    if (host && typeof host.notify === 'function') host.notify(message)
+  } catch {
+    // an older host has no notification seat: the other two still say it
+  }
+}
+
 // Optional whole-window page, enabled only by the user. In "aura" mode the
 // frame points at the visualizer page on the local server (with its own
 // `overlay=1` / `reduced-motion=1` switches). In "video" mode it points at
@@ -1172,9 +1191,18 @@ function filmPageMode() {
 /** Which surface owns the one player right now, or '' when none may show it.
  *
  *  Precedence: the OS pop-out window wins (one film, one surface), then the
- *  page while it is open, then the docked pane. Nothing renders while the film
- *  is closed AND no music needs a page, while no local server is up (no token,
- *  no page), or when the mode wants a source the user has not chosen.
+ *  page while it is open, then the docked pane, then the audio seat. Nothing
+ *  renders while the film is closed AND no music needs a page, while no local
+ *  server is up (no token, no page), or when the mode wants a source the user
+ *  has not chosen.
+ *
+ *  The audio seat is last on purpose. The Right panel is a VIDEO surface
+ *  (panelModeAllows): in visualiser mode, with the film closed, or with the
+ *  panel switched off, there is no visible surface at all — and the music,
+ *  which lives inside this page (web/audio.js), then had no document and went
+ *  silent. `audio` is the always-registered, invisible seat that exists for
+ *  exactly that gap. It never competes with a visible surface: a page, pane or
+ *  window that appears takes the film back and the seat renders nothing.
  */
 function filmOwner() {
   const settings = $settings.get()
@@ -1186,7 +1214,17 @@ function filmOwner() {
   if (settings.videoWindow === true) return 'window'
   if (pageVisible()) return 'page'
   if (panelVisible()) return 'pane'
+  if (audioChannelLive()) return 'audio'
   return ''
+}
+
+/** The page the invisible audio seat loads: always the visualiser, whatever the
+ *  backdrop mode is. That is the page which carries web/audio.js, and a hidden
+ *  copy of player.html would start a film nobody can see. */
+function audioSeatSrc() {
+  const base = liveUrl()
+  if (!base || !audioChannelLive()) return ''
+  return backdropSrc(base, 'aura')
 }
 
 /** The player/visualiser URL for the owning surface, or '' when there is nothing
@@ -1209,7 +1247,9 @@ function AuraFilm({ surface, style }) {
   // Subscribed above so a server coming up (or a source/close change) re-renders
   // this element; the values themselves are read imperatively below.
   void live
-  const src = owner === surface ? filmSrc() : ''
+  // The audio seat is the one surface that does not draw the film: it is there
+  // to keep the music's page alive behind everything else.
+  const src = owner !== surface ? '' : (surface === 'audio' ? audioSeatSrc() : filmSrc())
   useEffect(() => () => {
     // Only the owner may clear the shared handle: an unmount from the surface
     // that never had the player must not leave the other one unreachable.
@@ -1234,6 +1274,7 @@ function AuraFilm({ surface, style }) {
       if (node) {
         filmFrame = node
         filmFrameOwner = surface
+        resumeAudioChannel(node)
       } else if (filmFrameOwner === surface) {
         filmFrame = null
         filmFrameOwner = ''
@@ -1242,27 +1283,90 @@ function AuraFilm({ surface, style }) {
   })
 }
 
+// Frames that have already had the music handed to them. A frame element is a
+// DOCUMENT: a surface change (visualiser -> pane, page -> watch window) mounts a
+// new one, and the old page's audio died with it — so the play the settings
+// remember is re-sent once per frame, never once per render.
+const audioResumedFrames = new WeakSet()
+
+/** Hand the remembered music to a frame that has just appeared.
+ *
+ *  Nothing else re-issues a play when the ONE frame moves, which is why the
+ *  music used to stop the moment a visible surface took the film back from the
+ *  audio seat. web/audio.js ignores a repeat of the stream it is already
+ *  playing, so sending it again is safe.
+ */
+function resumeAudioChannel(node) {
+  if (!node || audioResumedFrames.has(node)) return
+  audioResumedFrames.add(node)
+  const settings = $settings.get()
+  const url = String(settings.audioUrl || '').trim()
+  if (!url) return
+  // A frame mounted in this tick has no document yet: a message posted now is
+  // dropped, not queued. Send it once the page has had a moment to boot.
+  if (typeof setTimeout !== 'function') return
+  setTimeout(() => {
+    if (disposed || filmFrame !== node) return
+    audioCommand({ cmd: 'play', url, label: settings.audioLabel, volume: settings.audioVolume })
+  }, 600)
+}
+
+/** The audio channel's own seat.
+ *
+ *  The music/radio channel lives inside the page (web/audio.js), so it needs a
+ *  document of its own whenever no visible surface is showing one — in
+ *  visualiser mode the Right panel does not exist at all (owner: it is a video
+ *  surface), so radio played into nothing and went silent.
+ *
+ *  It sits in the composer's underside slot, the same chrome-free seam the
+ *  control strip uses, registered for the life of the plugin. It is invisible
+ *  rather than absent: `display: none` would tear the page down and stop the
+ *  music, while a zero-size box at opacity 0 keeps it playing. AuraFilm renders
+ *  nothing here the moment a visible surface owns the film, so this can never
+ *  become a second frame.
+ */
+function AuraAudioSeat() {
+  return jsx('div', {
+    key: 'audio-seat',
+    'data-aura-audio': '1',
+    'aria-hidden': 'true',
+    style: {
+      position: 'absolute', width: 0, height: 0, overflow: 'hidden',
+      opacity: 0, pointerEvents: 'none', border: 0
+    },
+    children: jsx(AuraFilm, {
+      surface: 'audio',
+      style: { width: '100%', height: '100%', border: 0, pointerEvents: 'none' }
+    })
+  })
+}
+
 
 // ------------------------------------------------- the floating watch window
 // "Pop out" in the owner's words: a small window that floats inside Hermes, so
-// the film can be dragged over the work without leaving the app. It is an SDK
-// pane with placement 'floating' — the host owns the geometry, the drag and the
-// corner it spawns from — not a fixed-position element of our own.
+// the film can be dragged over the work without leaving the app.
+//
+// It has to be OUR box. A pane is a tile in the host's layout (the SDK's
+// placements are main/left/right/top/bottom), so a pane can never float over
+// the chat and the host draws no bar to drag — which is exactly what the owner
+// saw: "small frame in hermes has no drag bar". The frame therefore lives in
+// the composer's `underside` slot — the same chrome-free seat the control strip
+// uses — as a fixed-position box with its own bar along the top edge (title,
+// grip, and the three controls). Its position is videoWindowX/videoWindowY,
+// clamped to the viewport; the strip keeps its own videoBarX/videoBarY, so
+// moving one never moves the other.
 let watchPaneRegistration = null
+// The frame bar's height in CSS px, and the frame's z-index (above the strip's
+// 40: the frame is the film, the strip is its remote).
+const WATCH_FRAME_BAR = 30
+const WATCH_FRAME_Z = 45
 
 function registerWatchPane(on) {
   if (!ctxRef || disposed) return
   if (on && !watchPaneRegistration) {
     const off = ctxRef.register({
       id: 'watch',
-      area: PANES_AREA,
-      title: 'Aura film',
-      data: {
-        placement: 'floating',
-        anchor: 'bottom-right',
-        width: '420px',
-        height: '260px'
-      },
+      area: COMPOSER_AREAS.underside,
       render: () => jsx(AuraWatchWindow, {})
     })
     watchPaneRegistration = typeof off === 'function' ? off : null
@@ -1271,52 +1375,209 @@ function registerWatchPane(on) {
   if (!on && watchPaneRegistration) {
     const off = watchPaneRegistration
     watchPaneRegistration = null
+    // A drag in flight dies with the frame: no document listener may outlive it.
+    stopWatchFrameDrag()
     try {
       off()
     } catch {
-      // one broken disposer must not strand the pane
+      // one broken disposer must not strand the frame
     }
+  }
+}
+
+// ------------------------------------------------------- the frame's own seat
+// The frame is the user's to place. Everything below moves the FRAME and only
+// the frame: videoWindowX / videoWindowY (plus "this is a free position"), never
+// the control strip's seat, never the backdrop mode, never the film's state.
+let watchFrameEl = null
+// A drag in flight: where the frame started, where the pointer started, and the
+// width it was laid out at (its own size, never the app's).
+let watchFrameDrag = null
+// The point being dragged to, so React re-renders the frame where the pointer
+// is without a settings write per mouse event.
+let watchFrameLive = null
+
+/** The frame's total height: the bar over a 16:9 picture. */
+function watchFrameHeight(width) {
+  return Math.round(width * 9 / 16) + WATCH_FRAME_BAR
+}
+
+/** A point that keeps the whole frame — bar included — on screen. */
+function clampWatchFramePoint(x, y, width) {
+  const view = doc && doc.defaultView
+  const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
+  const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
+  const maxX = Math.max(8, vw - width - 8)
+  const maxY = Math.max(8, vh - watchFrameHeight(width) - 8)
+  const px = Number.isFinite(x) ? x : 8
+  const py = Number.isFinite(y) ? y : 8
+  return {
+    x: Math.round(Math.min(maxX, Math.max(8, px))),
+    y: Math.round(Math.min(maxY, Math.max(8, py)))
+  }
+}
+
+function startWatchFrameDrag(event) {
+  if (!event) return
+  if (Number.isFinite(event.button) && event.button !== 0) return
+  const width = videoWindowWidth()
+  const point = videoWindowPoint(width)
+  watchFrameDrag = {
+    x0: point.x, y0: point.y, width,
+    px: Number(event.clientX) || 0, py: Number(event.clientY) || 0
+  }
+  watchFrameLive = point
+  if (doc && typeof doc.addEventListener === 'function') {
+    doc.addEventListener('mousemove', onWatchFrameDragMove)
+    doc.addEventListener('mouseup', onWatchFrameDragEnd)
+  }
+  try {
+    if (event.preventDefault) event.preventDefault()
+  } catch {
+    // synthetic events may have no preventDefault
+  }
+}
+
+function onWatchFrameDragMove(event) {
+  const drag = watchFrameDrag
+  if (!drag || !event) return
+  const point = clampWatchFramePoint(
+    drag.x0 + ((Number(event.clientX) || 0) - drag.px),
+    drag.y0 + ((Number(event.clientY) || 0) - drag.py),
+    drag.width
+  )
+  watchFrameLive = point
+  if (watchFrameEl && watchFrameEl.style) {
+    watchFrameEl.style.left = `${point.x}px`
+    watchFrameEl.style.top = `${point.y}px`
+  }
+}
+
+function onWatchFrameDragEnd() {
+  const drag = watchFrameDrag
+  const point = watchFrameLive
+  const still = Boolean(drag)
+  stopWatchFrameDrag()
+  if (!still || !point) return
+  // The drop is the user's, so it is persisted as a free position: the corner
+  // presets are only where the frame starts life. Clamped where it lands.
+  writeSettings({ videoWindowCorner: 'free', videoWindowX: point.x, videoWindowY: point.y })
+  // Settings now hold the drop, so the in-flight point must stop winning — a
+  // stale one would override the corner presets for the rest of the session.
+  watchFrameLive = null
+}
+
+/** End a drag: the document listeners must never outlive it. */
+function stopWatchFrameDrag() {
+  if (doc && typeof doc.removeEventListener === 'function') {
+    doc.removeEventListener('mousemove', onWatchFrameDragMove)
+    doc.removeEventListener('mouseup', onWatchFrameDragEnd)
+  }
+  watchFrameDrag = null
+}
+
+/** A press on the bar starts a drag, unless it landed on one of its controls. */
+function watchFrameBarPress(event) {
+  const target = event && event.target
+  const label = target && typeof target.getAttribute === 'function'
+    ? target.getAttribute('aria-label')
+    : ''
+  // Read at press time: the labels live with the rest of the pop-out words.
+  if (label && [BRING_BACK_LABEL, POPOUT_LABEL, 'Close video'].includes(label)) return
+  startWatchFrameDrag(event)
+}
+
+/** The frame's node. React hands it over on mount and takes it back on unmount,
+ *  so a closed frame never leaves a document listener or a stale handle. */
+function watchFrameRef(node) {
+  if (!node) {
+    watchFrameEl = null
+    stopWatchFrameDrag()
+    watchFrameLive = null
+    return
+  }
+  watchFrameEl = node
+  const point = watchFrameLive || videoWindowPoint(videoWindowWidth())
+  if (node.style) {
+    node.style.left = `${point.x}px`
+    node.style.top = `${point.y}px`
   }
 }
 
 function AuraWatchWindow() {
   useValue($settings)
-  useValue($video)
+  const video = useValue($video)
+  // The server url landing (or a source change) must re-render the picture.
+  useValue($live)
+  const settings = $settings.get()
+  const width = videoWindowWidth()
+  const point = videoWindowPoint(width)
+  const title = String(video.title || shortLabel(settings.videoUrl) || 'Aura film')
+  const barButton = (key, label, aria, title2, onClick) => jsx(Button, {
+    key, size: 'micro', variant: 'ghost', 'aria-label': aria, title: title2,
+    style: { fontSize: 10.5, lineHeight: '1.2', padding: '2px 6px', whiteSpace: 'nowrap' },
+    onClick,
+    children: label
+  })
   return jsxs('div', {
-    style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, gap: 0 },
+    key: 'frame',
+    ref: watchFrameRef,
+    style: {
+      position: 'fixed', left: `${point.x}px`, top: `${point.y}px`,
+      width: `${width}px`, height: `${watchFrameHeight(width)}px`,
+      zIndex: WATCH_FRAME_Z, display: 'flex', flexDirection: 'column',
+      boxSizing: 'border-box', borderRadius: 12, overflow: 'hidden',
+      background: '#0b0a14', color: '#f3ece2',
+      border: '1px solid rgba(255,255,255,0.16)',
+      boxShadow: '0 18px 48px rgba(0,0,0,0.5)',
+      font: '11px/1.2 system-ui, -apple-system, sans-serif'
+    },
     children: [
+      // The bar along the top edge: grip, title, and the three controls. It is
+      // the frame's handle — a press anywhere on it (except on a control) drags.
+      jsxs('div', {
+        key: 'bar',
+        role: 'toolbar',
+        'aria-label': 'Drag to move the frame',
+        title: 'Drag the bar to move the frame',
+        onMouseDown: watchFrameBarPress,
+        style: {
+          flex: '0 0 auto', height: `${WATCH_FRAME_BAR}px`, boxSizing: 'border-box',
+          display: 'flex', alignItems: 'center', gap: 6, padding: '0 6px',
+          background: 'rgba(255,255,255,0.07)',
+          borderBottom: '1px solid rgba(255,255,255,0.12)',
+          cursor: 'grab', userSelect: 'none'
+        },
+        children: [
+          jsx('span', {
+            key: 'grip',
+            'aria-hidden': true,
+            style: {
+              flex: 'none', fontSize: 12, lineHeight: '1', opacity: 0.75,
+              display: 'inline-flex', alignItems: 'center', width: 16, justifyContent: 'center'
+            },
+            children: '⠿'
+          }),
+          jsx('span', {
+            key: 'title',
+            style: {
+              flex: '1 1 auto', minWidth: 0, overflow: 'hidden',
+              textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11
+            },
+            children: title
+          }),
+          barButton('back', 'Bring back', 'Bring back', 'Put the film back in the Aura panel',
+            () => setInlineWindow(false)),
+          barButton('own', POPOUT_LABEL, POPOUT_LABEL, 'Play the film in its own window on the desktop',
+            () => { void setOwnWindow(true) }),
+          barButton('close', '✕', 'Close video', 'Close video (resumes where it stopped)',
+            () => closeVideo())
+        ]
+      }),
       jsx(AuraFilm, {
         key: 'film',
         surface: 'window',
         style: { flex: '1 1 auto', minHeight: 0, width: '100%', background: '#000' }
-      }),
-      jsxs('div', {
-        key: 'bar',
-        style: {
-          flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 4,
-          padding: '5px 8px', fontSize: 11
-        },
-        children: [
-          jsx(Button, {
-            size: 'micro', variant: 'ghost', 'aria-label': 'Play', title: 'Play or pause',
-            onClick: () => videoCommand('toggle'), children: '▶'
-          }),
-          jsx(Button, {
-            size: 'micro', variant: 'ghost', 'aria-label': 'Next', title: 'Next episode or source',
-            onClick: () => videoCommand('next'), children: '⏭'
-          }),
-          jsx('span', { style: { flex: '1 1 auto' } }),
-          jsx(Button, {
-            size: 'micro', variant: 'ghost', 'aria-label': 'Own window',
-            title: 'Open the film in its own OS window',
-            onClick: () => { void setOwnWindow(true) }, children: '⛶ Own window'
-          }),
-          jsx(Button, {
-            size: 'micro', variant: 'ghost', 'aria-label': 'Bring back',
-            title: 'Bring the film back into Hermes',
-            onClick: () => setInlineWindow(false), children: '⟲ Bring back'
-          })
-        ]
       })
     ]
   })
@@ -1805,6 +2066,9 @@ function restoreDesktopPlayback(player) {
   handoffPlayback = { url, position: positions[url].position, videoId: positions[url].videoId,
     paused: player.playing !== true }
   writeSettings({ videoUrl: url, videoPositions: positions, videoClosed: false, backdropMode: 'video' })
+  // Handing the film back from the OS window puts us in video mode, so the
+  // Right panel belongs on screen again.
+  syncPanelPresence()
   $video.set({ ...$video.get(), ...player, desktop: false, reportedAt: Date.now() })
   removeBackdrop()
   syncBackdrop()
@@ -1877,26 +2141,36 @@ async function setOwnWindow(on) {
   if (on) {
     const settings = $settings.get()
     if (!String(settings.videoUrl || '').trim()) {
-      setError('Choose a film first — then it can open in its own window.')
+      sayIt('Choose a film first — then it can open in its own window.')
       return
     }
-    // Park the floating window BEFORE the request: one film, one surface, not
-    // even for the length of an HTTP round trip.
-    if (videoWindowOn()) {
-      setVideoWindow(false)
-      registerWatchPane(false)
+    // Ask the server whether this machine can give us a window at all. Only a
+    // clear "no" turns this into the in-app frame — and then it is said out
+    // loud: a silent swap is what made one button do two jobs.
+    const status = await windowStatus()
+    if (status && status.available === false) {
+      setInlineWindow(true)
+      sayIt('This machine has no Chrome or Chromium, so the film stays in its frame inside Hermes.')
+      return
     }
     desktopPending = true
-    applyBackdropLayout()
     const result = await openDesktopWindow()
     desktopPending = false
     if (result && result.open === true) {
       desktopOwned = true
+      // Park the frame only now: while the request is in flight the film stays
+      // exactly where it was, so a failure cannot leave the user with nothing.
+      if (videoWindowOn()) {
+        setVideoWindow(false)
+        registerWatchPane(false)
+      }
       applyBackdropLayout()
       return
     }
-    const reason = (result && result.error) || 'no Chrome or Chromium was found'
-    setError(`Aura could not open the film in its own window — ${reason}. The film stays in Hermes.`)
+    const reason = result && result.error === 'server_unreachable'
+      ? 'the local server is not answering'
+      : (result && result.error) || 'no Chrome or Chromium was found'
+    sayIt(`Aura could not open the film in its own window — ${reason}. The film stays in Hermes.`)
     applyBackdropLayout()
     return
   }
@@ -1931,7 +2205,57 @@ async function toggleDesktopWindow() {
 // window is open the in-app film should be parked (desktopWindowOpen tells the
 // caller); closing the window brings it back.
 
-/** Pop the current film out into its own window, at the current position. */
+/** What the server says about the OS window: `{ ok, available, open }`.
+ *
+ *  `available` is the host's own answer about whether it can give us a real
+ *  window. A status call that fails is NOT a "no" — the plugin asks for the
+ *  window anyway and lets the open route say why. */
+async function windowStatus() {
+  if (!ctxRef || disposed) return null
+  try {
+    const reply = await ctxRef.rest('/window', { timeoutMs: 4000 })
+    return reply && reply.ok === true ? reply : null
+  } catch {
+    return null
+  }
+}
+
+/** The server's own sentence out of a thrown `ctx.rest` failure.
+ *
+ *  A non-2xx reply arrives as an exception whose message carries the body
+ *  (`… 503: {"ok":false,"error":"no Chrome or Chromium found…"}`). Reporting
+ *  "the server is not answering" for that is a lie the owner cannot act on, so
+ *  the body's own reason is dug out here. Empty means "no usable sentence". */
+function serverReason(cause) {
+  if (!cause) return ''
+  for (const key of ['body', 'payload', 'data', 'json']) {
+    const body = cause[key]
+    if (body && typeof body === 'object' && typeof body.error === 'string' && body.error.trim()) {
+      return body.error.trim()
+    }
+  }
+  const text = String(cause.message || cause || '').trim()
+  const json = /\{[\s\S]*\}/.exec(text)
+  if (json) {
+    try {
+      const parsed = JSON.parse(json[0])
+      if (parsed && typeof parsed.error === 'string' && parsed.error.trim()) return parsed.error.trim()
+    } catch {
+      // not JSON: fall through to the plain message
+    }
+  }
+  // A transport failure has nothing the user can act on; the caller says
+  // "the local server is not answering" instead.
+  if (/server_unreachable|not answering|ECONNREFUSED|ECONNRESET|fetch failed|network/i.test(text)) return ''
+  if (/^[A-Za-z0-9][A-Za-z0-9 .,'’()\-—:/]{3,180}$/.test(text)) return text
+  return ''
+}
+
+/** Pop the current film out into its own window, at the current position.
+ *
+ *  Returns `{ open, error }` and never shows anything itself: the caller (the
+ *  button, through setOwnWindow) decides what the user is told, so one click
+ *  can never produce two different explanations. */
 async function openDesktopWindow() {
   if (!ctxRef || disposed) return { open: false, error: 'Aura is not running.' }
   const settings = $settings.get()
@@ -1959,14 +2283,15 @@ async function openDesktopWindow() {
       if (!desktopOwned) $video.set({ ...$video.get(), playing: false, reportedAt: Date.now() })
       return { open: true, already: result.already === true, url: result.url || videoUrl }
     }
-    const reason = result && typeof result.error === 'string' && result.error
-      ? result.error
+    const reason = result && typeof result.error === 'string' && result.error.trim()
+      ? result.error.trim()
       : 'the window could not be opened'
-    setError(`Aura could not open the film window — ${reason}.`)
     return { open: false, error: reason }
-  } catch {
-    setError('Aura could not open the film window — the local server is not answering.')
-    return { open: false, error: 'server_unreachable' }
+  } catch (cause) {
+    const reason = serverReason(cause)
+    return reason
+      ? { open: false, error: reason }
+      : { open: false, error: 'server_unreachable' }
   }
 }
 
@@ -2089,6 +2414,7 @@ async function poll() {
     if (ok) await syncPlayerOwnership()
     updateShow()
     syncBackdrop()
+    syncPanelPresence()
     syncPanel()
     // Keep the film glued to the panel's stage (and to the window/corner) as
     // the layout moves under us.
@@ -2416,6 +2742,9 @@ async function setBackdropMode(next) {
   writeSettings({ backdropMode })
   resetShow()
   removeBackdrop()
+  // The Right panel is a video surface: leaving video mode takes it away on the
+  // click, and returning puts it back (owner 04:50).
+  syncPanelPresence()
   if ($settings.get().showWhen === 'always') syncBackdrop()
   else updateShow()
   await pushControl({ backdrop_mode: backdropMode })
@@ -2597,6 +2926,8 @@ function closeVideo() {
   resetShow()
   removeBackdrop()
   removeVideoBar()
+  // With the film closed the Right panel has nothing to be a panel for.
+  syncPanelPresence()
   syncThemeForActivity()
 }
 
@@ -2604,6 +2935,7 @@ function closeVideo() {
 function openVideo() {
   if (!ctxRef || disposed) return
   writeSettings({ videoClosed: false })
+  syncPanelPresence()
   syncBackdrop()
   syncVideoBar(true)
   syncThemeForActivity()
@@ -2975,7 +3307,7 @@ function audioCommand(message) {
 }
 
 function audioUnavailable() {
-  setError('Music needs Aura’s visual or film on screen — turn on the window visual or open the film.')
+  setError('Music needs Aura’s local server — it is not reachable right now.')
 }
 
 /** Play a direct audio URL or radio stream on the audio channel.
@@ -3543,28 +3875,28 @@ function videoWindowWidth() {
  *  real frame above the app. */
 /** Where the watch window sits, in CSS px, clamped to the viewport. A free
  *  position wins over the corner presets; corners are just the starting point
- *  the first time you drag it. */
+ *  the first time you drag it. `watchFrameLive` is a drag in flight: the frame
+ *  follows the pointer without a settings write per mouse event. */
 function videoWindowPoint(width) {
+  if (watchFrameLive) return watchFrameLive
   const settings = $settings.get()
   const view = doc && doc.defaultView
   const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
   const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
-  const frameHeight = Math.round(width * 9 / 16)
-  const clampX = value => Math.min(Math.max(8, vw - width - 8), Math.max(8, value))
-  const clampY = value => Math.min(Math.max(8, vh - frameHeight - 8), Math.max(8, value))
   if (settings.videoWindowCorner === 'free' &&
       Number.isFinite(settings.videoWindowX) && Number.isFinite(settings.videoWindowY)) {
-    return { x: clampX(settings.videoWindowX), y: clampY(settings.videoWindowY) }
+    return clampWatchFramePoint(settings.videoWindowX, settings.videoWindowY, width)
   }
   const corner = VIDEO_WINDOW_CORNERS.includes(settings.videoWindowCorner)
     ? settings.videoWindowCorner
     : VIDEO_WINDOW_DEFAULT_CORNER
   const right = corner.endsWith('right')
   const bottom = corner.startsWith('bottom')
-  return {
-    x: right ? clampX(vw - width - VIDEO_WINDOW_RIGHT_MARGIN) : VIDEO_WINDOW_RIGHT_MARGIN,
-    y: bottom ? clampY(vh - frameHeight - VIDEO_WINDOW_BOTTOM) : VIDEO_WINDOW_TOP
-  }
+  return clampWatchFramePoint(
+    right ? vw - width - VIDEO_WINDOW_RIGHT_MARGIN : VIDEO_WINDOW_RIGHT_MARGIN,
+    bottom ? vh - watchFrameHeight(width) - VIDEO_WINDOW_BOTTOM : VIDEO_WINDOW_TOP,
+    width
+  )
 }
 
 function applyBackdropLayout() {
@@ -4112,16 +4444,36 @@ function hostPaneVisible() {
   return null
 }
 
-/** Panel is on screen when enabled, not hidden by the user, and the host has
- *  not closed or switched away from the pane. The last part matters because a
- *  hidden pane must not suppress the floating transport bar. */
+/** Is the Right panel part of the current surface at all?
+ *
+ *  Owner (04:50): the panel is a VIDEO surface. It shows while the backdrop is
+ *  the video player and the film is open, and it goes away on its own in
+ *  visualizer mode or with the film closed — coming back by itself when video
+ *  mode returns. The user's "Right panel" switch still means "show it in video
+ *  mode"; it is not a second, independent way to keep it on screen.
+ *
+ *  Deliberately NOT gated on `enabled`: switching Aura off stops it painting on
+ *  the chat (backdrop, accent, theme). It must not stop the player — a film in
+ *  the pane is Aura's own surface and works on its own (owner's rule). */
+function panelModeAllows(settings) {
+  const current = settings || $settings.get()
+  if (current.backdropMode !== 'video') return false
+  return current.videoClosed !== true
+}
+
+/** Should the host pane exist right now? (Whether it is on SCREEN is a
+ *  different question — the host can hide a registered pane in a collapsed
+ *  zone, and that must not tear the pane down.) */
+function panelRequested() {
+  return Boolean(doc && $settings.get().panelEnabled !== false && panelModeAllows())
+}
+
+/** Panel is on screen when it is requested and the host has not closed or
+ *  switched away from the pane. The last part matters because a hidden pane
+ *  must not suppress the floating transport bar. */
 function panelVisible() {
-  const settings = $settings.get()
   if (hostPaneVisible() === false) return false
-  // Deliberately NOT gated on `enabled`: switching Aura off stops it painting on
-  // the chat (backdrop, accent, theme). It must not stop the player — a film in
-  // the pane is Aura's own surface and works on its own (owner's rule).
-  return Boolean(doc && settings.panelEnabled !== false)
+  return panelRequested()
 }
 
 function panelCss() {
@@ -5203,6 +5555,25 @@ function disposePaneRegistration() {
   }
 }
 
+/** Follow the mode: the pane exists only while the Right panel belongs on
+ *  screen (video mode, film open, switch on). Called from the poll tick and
+ *  from every action that can change those three — so visualizer mode takes the
+ *  panel away on the click, and coming back to video mode puts it back. */
+function syncPanelPresence() {
+  if (!ctxRef || disposed) return
+  const want = panelRequested()
+  if (want) {
+    if (!paneRegistration) registerPanelPane(true)
+    return
+  }
+  if (paneRegistration) {
+    // Remove first: the pane disappears even if something later in the tick
+    // throws. `removePanel` also drops the DOM and its stylesheet with it.
+    disposePaneRegistration()
+    removePanel()
+  }
+}
+
 /** Stable ref callback for the host pane's theatre node. A fresh callback on
  *  every render made React detach the old one (null) and reattach the new one
  *  to the same node; the null cleared our pointer without removing the DOM,
@@ -5305,8 +5676,10 @@ function setPanelEnabled(on) {
   if (!ctxRef || disposed) return
   const next = Boolean(on)
   writeSettings({ panelEnabled: next })
+  // One owner for "does the pane exist": the switch only says WHERE it may
+  // show (video mode), and syncPanelPresence decides whether that is now.
+  syncPanelPresence()
   if (next) {
-    registerPanelPane(true)
     if ($settings.get().videoWindow === true) registerWatchPane(true)
     syncPanel(true)
   } else {
@@ -8584,6 +8957,11 @@ function teardown() {
   audioCommand({ cmd: 'stop' })
   removeBackdrop()
   pageStageEl = null
+  // The frame goes with the instance: its contribution, its document listeners
+  // and its node handle all belong to the plugin that drew it.
+  registerWatchPane(false)
+  watchFrameEl = null
+  watchFrameLive = null
   removeVideoBar()
   disposePaneRegistration()
   removePanel()
@@ -8657,6 +9035,13 @@ export default {
     knownTheme = ''
     // A previous instance (hot reload) may still own a pane registration.
     disposePaneRegistration()
+    // ...and a frame registration. A stale handle here made "Frame in Hermes"
+    // a no-op for the rest of the session: registerWatchPane saw a handle and
+    // returned without contributing anything.
+    watchPaneRegistration = null
+    watchFrameEl = null
+    watchFrameLive = null
+    stopWatchFrameDrag()
     disposers.length = 0
     $themeApplied.set(false)
     $menuOpen.set(false)
@@ -8779,17 +9164,16 @@ export default {
 
     // The theatre pane, docked to the right of the workspace. The host owns the
     // box and the width; we own nothing but the content. Registered ONLY while
-    // the user has the panel on: switching it off disposes the contribution so
-    // the host removes the empty frame/tab/strip too.
+    // the panel belongs on screen — video mode with the film open and the
+    // "Right panel" switch on — so visualizer mode, a closed film or switching
+    // it off disposes the contribution and the host removes the empty
+    // frame/tab/strip too (owner 04:50).
     track(disposePaneRegistration)
-    // `restore: true` at boot: the host also remembers its own "pane closed"
-    // state per layout, and that outlives our setting. With the panel on, a
-    // stale host dismissal must not leave the user with no pane at all — the
-    // ✕ in the pane writes panelEnabled=false, which is the real opt-out.
-    // Always at boot: a remembered close (ours or the host's own dismissal)
-    // must not leave the user with no Aura surface at all. The ✕ disposes the
-    // pane for this session.
-    registerPanelPane(true)
+    // `restore: true` on registration: the host also remembers its own "pane
+    // closed" state per layout, and that outlives our setting. With the panel
+    // requested, a stale host dismissal must not leave the user with no pane at
+    // all — the ✕ in the pane writes panelEnabled=false, which is the opt-out.
+    syncPanelPresence()
     // A floating watch window the user left open comes back with the plugin;
     // it is a surface, so it must not silently disappear on reload.
     if ($settings.get().videoWindow === true) registerWatchPane(true)
@@ -8829,6 +9213,16 @@ export default {
           id: 'strip',
           area: COMPOSER_AREAS.underside,
           render: () => jsx(AuraComposerStrip, {})
+        }))
+        // …and so does the audio channel's own seat, registered for the whole
+        // life of the plugin and after the strip so the strip stays the slot's
+        // first contribution. It renders an invisible SandboxedFrame only while
+        // no visible surface owns the film (filmOwner() === 'audio'), which is
+        // how radio keeps playing in visualiser mode with no Right panel.
+        track(ctx.register({
+          id: 'audio-surface',
+          area: COMPOSER_AREAS.underside,
+          render: () => jsx(AuraAudioSeat, {})
         }))
         doc.addEventListener('keydown', onPanelKeydown)
         track(() => doc.removeEventListener('keydown', onPanelKeydown))
@@ -8893,6 +9287,7 @@ export const __test = {
     live: Boolean(liveUrl()),
     pane: panelVisible(),
     page: pageVisible(),
+    audio: audioChannelLive(),
     mode: $settings.get().backdropMode,
     hasUrl: Boolean(String($settings.get().videoUrl || '').trim())
   }),
@@ -8930,6 +9325,21 @@ export const __test = {
   setVideoWindow,
   registerWatchPane,
   popoutSurface,
+  // The Right panel is a video surface: a test drives the real mode switch and
+  // the real film open/close, then looks at what the host was contributed.
+  setBackdropMode,
+  closeVideo,
+  openVideo,
+  panelRequested,
+  panelModeAllows,
+  syncPanelPresence,
+  // The frame's own seat: its clamp, its size and its node, so a test can drag
+  // it the way a pointer does and prove nothing else moved.
+  videoWindowPointForTest: () => videoWindowPoint(videoWindowWidth()),
+  watchFrameHeightForTest: () => watchFrameHeight(videoWindowWidth()),
+  watchFrameElForTest: () => watchFrameEl,
+  windowStatusForTest: windowStatus,
+  serverReasonForTest: serverReason,
   hiddenVideoIds,
   hideCurrentEpisode,
   managePlaylist,

@@ -435,14 +435,34 @@ desktop** sends it to a real OS window — Chrome/Chromium app mode — that you
 drag to another monitor or full-screen. While that window holds the film the
 button reads **Bring back**.
 
+The frame is a frame: it carries its own bar along the top edge with the film's
+title, a grip, and its own **Bring back**, **Pop out to desktop** and **close**.
+Drag the bar and the frame goes with the pointer — only the frame, which keeps
+its own position (clamped to the window and remembered across a restart); the
+floating control strip has a separate position and never follows.
+
 Pop-out opens at the exact second the in-app player had reached, and the in-app
 one pauses so two copies never play with sound.
 
-The pop-out needs Chrome or Chromium. If none is installed Aura says so plainly;
-set `AURA_DESKTOP_BROWSER=/path/to/chrome` to point it at one. The window uses
+The pop-out needs Chrome or Chromium. Aura asks the server first: if it answers
+that this machine has no browser, the film stays in its frame inside Hermes and
+Aura says why. If the window fails to open, Aura shows the server's own reason
+in a note and leaves the film exactly where it was — it never quietly turns a
+failed pop-out into the in-app frame. Set `AURA_DESKTOP_BROWSER=/path/to/chrome`
+to point it at one. The window uses
 its own browser profile, so it never touches your normal browsing session. If
 the Aura server restarts (or the app quits), the window is closed with it — a
 stale window could play audio nothing can control.
+
+The right panel is the film's panel: it is on screen while the backdrop is the
+video player and the film is open, and it goes away on its own in the Aura
+visual mode (or when you close the film), coming back when video mode does. The
+**Right panel** switch in Settings means "show it in video mode".
+
+Music and radio do not depend on that panel. Their page lives in a hidden seat
+of Aura's own, so radio keeps playing in visualiser mode with no panel on screen
+— and when a panel, the page or the pop-out takes the film back, the music
+follows it instead of going silent.
 
 ### The audio path
 

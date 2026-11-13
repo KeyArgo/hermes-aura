@@ -770,53 +770,18 @@ record('contributes the Aura page route and its sidebar row', () => {
   assert.equal(a.contributions.some(c => c.area === 'palette'), false, 'no palette command is wanted')
 })
 
-record('docks the theatre as an enforced right-hand pane the host lays out', () => {
-  const pane = a.contributions.find(c => c.area === 'panes')
-  assert.ok(pane, 'no panes contribution: the panel has no home')
-  assert.equal(pane.id, 'panel')
-  assert.equal(typeof pane.render, 'function', 'the pane needs a render function')
-  assert.equal(pane.data.placement, 'right', 'owner prefers right-hand panels')
-  assert.deepEqual(
-    pane.data.dock,
-    { pane: 'workspace', pos: 'right', enforce: true },
-    'existing layouts must be moved to the right on boot'
-  )
-  assert.match(String(pane.data.width), /^\d+px$/, 'the host needs a width')
-  // A pane is laid out by the app; anything we would have to pin ourselves is
-  // exactly what broke the layout before.
-  assert.ok(!('position' in pane.data), 'pane must not set its own position')
-})
-
-record('the Right panel offers every Aura setting in a collapsible drawer', () => {
-  const pane = a.contributions.find(c => c.area === 'panes')
-  let tree = renderContribution(pane)
-  assert.equal(tree.props.style.overflowY, 'auto', 'the pane must scroll when content is taller than the window')
-  assert.ok(texts(tree).includes('Aura settings'), 'the settings drawer title is missing')
-  assert.equal(texts(tree).includes('Aura enabled'), false, 'the settings drawer must start collapsed')
-  let toggle = null
-  walk(tree, node => {
-    if (!toggle && node.props && node.props['aria-label'] === 'Expand Aura settings') toggle = node
-  })
-  assert.ok(toggle, 'the settings drawer has no expand control')
-  toggle.props.onClick()
-  assert.equal(a.storage.get('settings').panelSettingsOpen, true, 'opening the drawer was not remembered')
-  tree = renderContribution(a.contributions.find(c => c.area === 'panes'))
-  let settingsNode = null
-  walk(tree, node => {
-    if (!settingsNode && node.props && node.props.key === 'controls' && typeof node.type === 'function') settingsNode = node
-  })
-  assert.ok(settingsNode, 'the pane does not render the AuraSettings component')
-  assert.ok(
-    texts(settingsNode.type(settingsNode.props)).includes('Aura enabled'),
-    'the full AuraSettings component is not rendered in the pane'
-  )
-  let collapse = null
-  walk(tree, node => {
-    if (!collapse && node.props && node.props['aria-label'] === 'Collapse Aura settings') collapse = node
-  })
-  assert.ok(collapse, 'the open drawer has no collapse control')
-  collapse.props.onClick()
-  assert.equal(a.storage.get('settings').panelSettingsOpen, false, 'closing the drawer was not remembered')
+// The pane itself is a VIDEO surface now (owner 04:50): its layout and its
+// settings drawer are proven on a video-mode context in the "Right panel is a
+// video surface" block further down, and in visualizer mode there is no pane to
+// check at all.
+record('in visualizer mode the Right panel is not contributed at all', () => {
+  // Scenario A is visualizer mode with the "Right panel" switch on, and the
+  // panel still must not exist: it is a film surface, and no film is on.
+  assert.equal(a.storage.get('settings').backdropMode, undefined,
+    'this scenario is meant to run on the default (Aura visual) mode')
+  assert.equal(a.contributions.some(c => c.area === 'panes'), false,
+    'the Right panel is contributed while the Aura visual is the backdrop')
+  assert.equal(a.contributions.some(c => c.id === 'panel'), false)
 })
 
 record('occupies the status bar with exactly one quick-menu contribution', () => {
@@ -1596,27 +1561,8 @@ await recordAsync('the quick menu shows the same version chip as the settings pa
   assert.ok(body.includes('abcdef12'), 'the quick menu chip is not the shared build line')
 })
 
-await recordAsync('switching the Right panel off disposes the pane and on re-registers it', async () => {
-  assert.ok(f.contributions.some(c => c.area === 'panes'), 'the pane was not registered at boot')
-  const undismissedBefore = sdk.calls.undismissed.length
-  const revealedBefore = sdk.calls.revealed.length
-  const page = renderContribution(f.contributions.find(c => c.area === 'settings.plugins'))
-  const off = findByAria(page, 'Right panel')
-  assert.ok(off, 'the Right panel switch is missing')
-  off.props.onCheckedChange(false)
-  await sleep(30)
-  assert.equal(f.contributions.some(c => c.area === 'panes'), false, 'the pane contribution survived switch-off')
-  assert.equal(f.storage.get('settings').panelEnabled, false, 'switch-off was not persisted')
-  const on = findByAria(renderContribution(f.contributions.find(c => c.area === 'settings.plugins')), 'Right panel')
-  on.props.onCheckedChange(true)
-  await sleep(30)
-  assert.ok(f.contributions.some(c => c.area === 'panes'), 'the pane did not re-register when switched back on')
-  assert.equal(f.storage.get('settings').panelEnabled, true, 'switch-on was not persisted')
-  assert.equal(sdk.calls.undismissed.length, undismissedBefore + 1, 'undismissPane was not called')
-  assert.equal(sdk.calls.undismissed.at(-1), 'aura:panel', 'undismissPane got the wrong contribution-scoped id')
-  assert.equal(sdk.calls.revealed.length, revealedBefore + 1, 'revealPane was not called')
-  assert.equal(sdk.calls.revealed.at(-1), 'aura:panel', 'revealPane got the wrong contribution-scoped id')
-})
+// The "Right panel" switch now means "show it in video mode", so it is driven in
+// the video-mode block further down ("right panel switch ...").
 
 record('dispose from the quick-menu scenario is clean', () => {
   disposeF()
@@ -2331,22 +2277,34 @@ record('hidden episodes survive a reload and drop junk ids', () => {
   }
 })
 
-record('two pop-out buttons: each names its own surface, neither falls back', () => {
+record('two pop-out buttons: each names its own surface, and the frame is never a silent fallback', () => {
   // Owner: "two separate pop-out buttons". Pop out = the floating window inside
-  // Hermes, and nothing else. Own window = the real OS window, and nothing else.
+  // Hermes, and nothing else. Own window = the real OS window. The one allowed
+  // in-app fallback is the server answering available:false (this machine has
+  // no browser at all) — and that is said out loud, never done behind the
+  // user's back after a failed open.
   const inline = source.slice(source.indexOf('function setInlineWindow'), source.indexOf('async function setOwnWindow'))
   const own = source.slice(source.indexOf('async function setOwnWindow'), source.indexOf('function popoutSurface'))
 
   assert.ok(!/openDesktopWindow|\/window\/open/.test(inline),
     'Pop out can still open an OS window')
   assert.match(inline, /setVideoWindow\(true\)/, 'Pop out does not open the floating window')
-  assert.match(inline, /registerWatchPane\(true\)/, 'Pop out does not register its pane')
+  assert.match(inline, /registerWatchPane\(true\)/, 'Pop out does not register its frame')
 
   assert.match(own, /openDesktopWindow/, 'Own window does not open the OS window')
-  assert.ok(!/setVideoWindow\(true\)/.test(own),
-    'Own window falls back to the in-app surface')
-  assert.match(own, /setError\(/, 'a failed OS window says nothing')
+  assert.match(own, /available === false/,
+    'the in-app fallback is not gated on the server reporting available:false')
+  assert.match(own, /setInlineWindow\(true\)/, 'the available:false fallback has no frame to fall back to')
+  assert.match(own, /sayIt\(/, 'a failed OS window says nothing')
+  assert.match(own, /stays in its frame inside Hermes/i,
+    'the available:false fallback does not say where the film went')
   assert.match(own, /film stays in Hermes/i, 'the failure path does not say where the film went')
+  // The frame is parked only AFTER the window answered: nothing in the request
+  // path may take the film off screen before the outcome is known.
+  const requestAt = own.indexOf('await openDesktopWindow()')
+  const parkAt = own.indexOf('registerWatchPane(false)')
+  assert.ok(requestAt > 0 && parkAt > requestAt,
+    'the frame is parked before the window request has answered')
 })
 
 record('review 2: no document-level focus/key capture, and focus returns via the SDK', () => {
@@ -2504,7 +2462,7 @@ await recordAsync('a pending blocked-playlist lookup does not override a new sel
 })
 
 record('the pane ref is stable and does not accumulate duplicate theatre DOM', () => {
-  const ctx = makeCtx({ enabled: true })
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video' })
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
     const pane = ctx.contributions.find(c => c.area === 'panes')
@@ -2533,7 +2491,7 @@ record('the pane ref is stable and does not accumulate duplicate theatre DOM', (
 })
 
 record('the pane header carries the mode switch and the power control', () => {
-  const ctx = makeCtx({ enabled: true })
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video' })
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
     const pane = ctx.contributions.find(c => c.area === 'panes')
@@ -2564,7 +2522,7 @@ record('the pane header carries the mode switch and the power control', () => {
 })
 record('panelVisible respects the host pane visibility atom', () => {
   const previous = sdk.host.paneVisibility
-  const ctx = makeCtx({ enabled: true })
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video' })
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
     sdk.host.paneVisibility = () => ({ get: () => false })
@@ -2724,7 +2682,9 @@ await recordAsync('page buttons: Frame in Hermes floats inside Hermes, Pop out t
   dispose()
   void frames
 
-  // A host with no browser: say why, do not fall back to the in-app surface.
+  // A host with no browser: the server says so, so the film falls back to its
+  // frame inside Hermes — and the user is told. Owner 04:50: the fallback is
+  // allowed only on available:false, and it is never silent.
   const y = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/one.mp4' })
   const originalY = y.ctx.rest
   y.ctx.rest = async (route, options = {}) => {
@@ -2735,16 +2695,20 @@ await recordAsync('page buttons: Frame in Hermes floats inside Hermes, Pop out t
     if (route === '/player/report') return { ok: true }
     return originalY(route, options)
   }
+  const saidBefore = sdk.calls.notifications.length
   const disposeY = pluginModule.default.register(y.ctx)
   await sleep(40)
   const routeY = y.contributions.find(c => c.area === 'routes')
   pageAria(renderDeep(renderContribution(routeY)), 'Pop out to desktop').props.onClick()
   await sleep(60)
-  // A never-set key is absent, not false: what matters is that the floating
-  // surface was not switched on by a failed OS window.
-  assert.notEqual((y.storage.get('settings') || {}).videoWindow, true,
-    'the failure fell back to the floating window')
-  assert.ok(!y.contributions.find(c => c.id === 'watch'), 'the failure opened the floating pane')
+  assert.equal((y.storage.get('settings') || {}).videoWindow, true,
+    'available:false did not fall back to the frame inside Hermes')
+  assert.ok(y.contributions.find(c => c.id === 'watch'),
+    'the available:false fallback did not put the film in its frame')
+  const told = sdk.calls.notifications.slice(saidBefore).join('\n')
+  assert.match(told, /no Chrome or Chromium/i, 'the fallback happened without saying why')
+  assert.equal(y.contributions.some(c => c.id === 'panel'), true,
+    'the fallback lost the Right panel')
   disposeY()
 })
 
@@ -2955,7 +2919,7 @@ await recordAsync('review 3 + quality: the frame is the LOCAL player page, with 
   }
 })
 
-await recordAsync('quality: Aura (visualiser) mode frames the local visualiser, not the audio url', async () => {
+await recordAsync('quality: Aura (visualiser) mode frames the local visualiser on the page, never the audio url', async () => {
   const ctx = makeCtx({
     enabled: true, backdropMode: 'aura',
     audioUrl: 'https://example.test/stream.mp3'
@@ -2964,16 +2928,21 @@ await recordAsync('quality: Aura (visualiser) mode frames the local visualiser, 
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
     await primeLive()
+    // Owner 04:50: the Right panel is a film surface, so visualizer mode has no
+    // pane at all. The Aura page is the surface that frames the visualiser.
+    assert.equal(ctx.contributions.find(c => c.area === 'panes'), undefined,
+      'the Right panel is contributed while the Aura visual is the backdrop')
+    pageStage(1200, 400)
     globalThis.__sdkFrames.length = 0
-    const pane = ctx.contributions.find(c => c.area === 'panes')
-    if (pane) expandTree(pane.render())
-    const framed = globalThis.__sdkFrames.find(f => String(f.src || '').includes('token='))
+    expandTree(renderContribution(ctx.contributions.find(c => c.area === 'routes')))
+    const framed = globalThis.__sdkFrames.find(f => String(f.src || '').includes('overlay=1'))
     assert.ok(framed, `the visualiser was not framed: owner=${tx.filmOwner()} src=${tx.filmSrc()} gates=${JSON.stringify(tx.filmGates())}`)
     const url = new URL(framed.src)
     assert.equal(url.origin, 'http://127.0.0.1:4321', `wrong origin: ${framed.src}`)
     assert.ok(!String(framed.src).includes('example.test'), 'the audio url was embedded as a page')
     assert.equal(url.searchParams.get('overlay'), '1', 'the visualiser frame is not overlay mode')
   } finally {
+    pageStage(null)
     dispose()
   }
 })
@@ -2983,15 +2952,20 @@ await recordAsync('display: the visualiser frame is never dimmed a second time',
   // its scrim for it, so the frame element must stay at full strength. Dimming
   // the frame too squared the setting (25% drew 6%) and dimmed the page chrome
   // the contract keeps legible.
-  const ctx = makeCtx({ enabled: true, backdropMode: 'aura', opacity: 0.25 })
+  // The music being on is what gives visualiser mode a surface at all: the Right
+  // panel is a video surface, so with the film closed the ONE frame lives on the
+  // audio seat (or the Aura page, which is mounted too).
+  const ctx = makeCtx({ enabled: true, backdropMode: 'aura', opacity: 0.25, audioUrl: 'https://example.test/music.mp3' })
   closePopout(ctx)
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
     await primeLive()
     globalThis.__sdkFrames.length = 0
-    const pane = ctx.contributions.find(c => c.area === 'panes')
-    assert.ok(pane, 'no pane contribution')
-    expandTree(pane.render())
+    assert.equal(ctx.contributions.find(c => c.area === 'panes'), undefined,
+      'the Right panel is contributed while the Aura visual is the backdrop')
+    const surfaces = ctx.contributions.filter(c => c.id === 'audio-surface' || c.id === 'aura-page')
+    assert.ok(surfaces.length, 'visualiser mode has no surface to draw the page on')
+    for (const surface of surfaces) expandTree(surface.render())
     const framed = globalThis.__sdkFrames.find(f => String(f.src || '').includes('overlay=1'))
     assert.ok(framed, `the visualiser was not framed: ${JSON.stringify(globalThis.__sdkFrames.map(f => f.src))}`)
     assert.equal(framed.style.opacity, 1,
@@ -3209,11 +3183,16 @@ await recordAsync('the chip shows nothing until the backend answers, then copies
   }
 })
 
-await recordAsync('cold start: the visual appears when the server answers, with no toggling', async () => {
+await recordAsync('cold start: the film appears when the server answers, with no toggling', async () => {
   // Owner's blocker: "it doesn't even play at all ... I had to toggle aura on and
-  // off and then visualizer and video". A cold start must mount the visual as
-  // soon as the backend answers — the user touches nothing.
-  const ctx = makeCtx({ enabled: true, backdropMode: 'aura' })
+  // off and then visualizer and video". A cold start must mount the player as
+  // soon as the backend answers — the user touches nothing. The Right panel is
+  // the film's surface (owner 04:50), so this is the video-mode cold start.
+  const ctx = makeCtx({
+    enabled: true,
+    backdropMode: 'video',
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
   closePopout(ctx)
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
@@ -3228,11 +3207,11 @@ await recordAsync('cold start: the visual appears when the server answers, with 
     await primeLive()
     globalThis.__sdkFrames.length = 0
     expandTree(pane.render())
-    const framed = globalThis.__sdkFrames.find(f => String(f.src || '').includes('overlay=1'))
-    assert.ok(framed, 'the visual never mounted after the server answered — the toggle bug')
-    assert.match(framed.src, /token=/, 'the visual frame carries no token, so it cannot stream')
-    assert.equal(ctx.storage.get('settings').backdropMode, 'aura',
-      'mounting the visual changed the user\'s mode')
+    const framed = globalThis.__sdkFrames.find(f => String(f.src || '').includes('/player.html'))
+    assert.ok(framed, 'the film never mounted after the server answered — the toggle bug')
+    assert.match(framed.src, /token=/, 'the player frame carries no token, so it cannot play')
+    assert.equal(ctx.storage.get('settings').backdropMode, 'video',
+      'mounting the film changed the user\'s mode')
   } finally {
     dispose()
   }
@@ -3242,7 +3221,8 @@ await recordAsync('a stale backend is named, not left looking broken', async () 
   // Hermes keeps the Python module it loaded: after an update the pane can be new
   // while the server is old. Its /version then has no `line`, and the pane says
   // so — "restart Hermes to finish the update" — instead of drawing nothing.
-  const ctx = makeCtx({ enabled: true, backdropMode: 'aura' })
+  // The pane is a video-mode surface (owner 04:50), so that is where its note lives.
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video' })
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
     tx.resetBuildForTest()
@@ -3800,6 +3780,145 @@ record('readable: nothing was written to the host DOM', () => {
 record('dispose from the readable scenario is clean', () => {
   disposeRd()
   assert.equal(rd.contributions.length, 0, 'a contribution survived dispose')
+})
+
+// ----------------------------------------- the Right panel is a VIDEO surface
+// Owner 04:50: "the right panel shows ONLY in video mode". It used to be
+// contributed whenever the "Right panel" switch was on, so it sat over the Aura
+// visual with no film to show and stayed there after the film was closed. Now
+// the pane exists exactly while video mode holds the film, comes back with it,
+// and the switch means "show it in video mode".
+const rightPanelScenario = extra => makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: true,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ',
+  ...extra
+})
+const hasRightPanel = ctx => ctx.contributions.some(c => c.area === 'panes')
+
+record('docks the theatre as an enforced right-hand pane the host lays out', () => {
+  const ctx = rightPanelScenario()
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const pane = ctx.contributions.find(c => c.area === 'panes')
+    assert.ok(pane, 'no panes contribution: the panel has no home')
+    assert.equal(pane.id, 'panel')
+    assert.equal(typeof pane.render, 'function', 'the pane needs a render function')
+    assert.equal(pane.data.placement, 'right', 'owner prefers right-hand panels')
+    assert.deepEqual(
+      pane.data.dock,
+      { pane: 'workspace', pos: 'right', enforce: true },
+      'existing layouts must be moved to the right on boot'
+    )
+    assert.match(String(pane.data.width), /^\d+px$/, 'the host needs a width')
+    // A pane is laid out by the app; anything we would have to pin ourselves is
+    // exactly what broke the layout before.
+    assert.ok(!('position' in pane.data), 'pane must not set its own position')
+  } finally {
+    dispose()
+  }
+})
+
+record('the Right panel offers every Aura setting in a collapsible drawer', () => {
+  const ctx = rightPanelScenario()
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const paneOf = () => ctx.contributions.find(c => c.area === 'panes')
+    let tree = renderContribution(paneOf())
+    assert.equal(tree.props.style.overflowY, 'auto', 'the pane must scroll when content is taller than the window')
+    assert.ok(texts(tree).includes('Aura settings'), 'the settings drawer title is missing')
+    assert.equal(texts(tree).includes('Aura enabled'), false, 'the settings drawer must start collapsed')
+    let toggle = null
+    walk(tree, node => {
+      if (!toggle && node.props && node.props['aria-label'] === 'Expand Aura settings') toggle = node
+    })
+    assert.ok(toggle, 'the settings drawer has no expand control')
+    toggle.props.onClick()
+    assert.equal(ctx.storage.get('settings').panelSettingsOpen, true, 'opening the drawer was not remembered')
+    tree = renderContribution(paneOf())
+    let settingsNode = null
+    walk(tree, node => {
+      if (!settingsNode && node.props && node.props.key === 'controls' && typeof node.type === 'function') settingsNode = node
+    })
+    assert.ok(settingsNode, 'the pane does not render the AuraSettings component')
+    assert.ok(
+      texts(settingsNode.type(settingsNode.props)).includes('Aura enabled'),
+      'the full AuraSettings component is not rendered in the pane'
+    )
+    let collapse = null
+    walk(tree, node => {
+      if (!collapse && node.props && node.props['aria-label'] === 'Collapse Aura settings') collapse = node
+    })
+    assert.ok(collapse, 'the open drawer has no collapse control')
+    collapse.props.onClick()
+    assert.equal(ctx.storage.get('settings').panelSettingsOpen, false, 'closing the drawer was not remembered')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('right panel switch: off disposes the pane, on re-registers it, in video mode', async () => {
+  const ctx = rightPanelScenario()
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    assert.ok(hasRightPanel(ctx), 'the pane was not registered in video mode')
+    const undismissedBefore = sdk.calls.undismissed.length
+    const revealedBefore = sdk.calls.revealed.length
+    const settingsPage = () => renderContribution(ctx.contributions.find(c => c.area === 'settings.plugins'))
+    const off = findByAria(settingsPage(), 'Right panel')
+    assert.ok(off, 'the Right panel switch is missing')
+    off.props.onCheckedChange(false)
+    await sleep(30)
+    assert.equal(hasRightPanel(ctx), false, 'the pane contribution survived switch-off')
+    assert.equal(ctx.storage.get('settings').panelEnabled, false, 'switch-off was not persisted')
+    const on = findByAria(settingsPage(), 'Right panel')
+    on.props.onCheckedChange(true)
+    await sleep(30)
+    assert.ok(hasRightPanel(ctx), 'the pane did not re-register when switched back on')
+    assert.equal(ctx.storage.get('settings').panelEnabled, true, 'switch-on was not persisted')
+    assert.equal(sdk.calls.undismissed.length, undismissedBefore + 1, 'undismissPane was not called')
+    assert.equal(sdk.calls.undismissed.at(-1), 'aura:panel', 'undismissPane got the wrong contribution-scoped id')
+    assert.equal(sdk.calls.revealed.length, revealedBefore + 1, 'revealPane was not called')
+    assert.equal(sdk.calls.revealed.at(-1), 'aura:panel', 'revealPane got the wrong contribution-scoped id')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('right panel: video mode shows it, the Aura visual takes it away, back with video', async () => {
+  const ctx = rightPanelScenario()
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    assert.ok(hasRightPanel(ctx), 'video mode did not contribute the Right panel')
+    assert.equal(tx.panelVisible(), true, 'a video-mode panel is not counted as on screen')
+    // The real switch the owner would use, not a settings poke.
+    await tx.setBackdropMode('aura')
+    assert.equal(hasRightPanel(ctx), false, 'the panel stayed after switching to the Aura visual')
+    assert.equal(tx.panelVisible(), false, 'a removed panel still counts as on screen')
+    // ...and video mode brings it back on its own.
+    await tx.setBackdropMode('video')
+    assert.ok(hasRightPanel(ctx), 'the panel did not come back with video mode')
+    assert.equal(tx.panelVisible(), true, 'the returned panel is not on screen')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('right panel: closing the film takes the panel away, reopening brings it back', async () => {
+  const ctx = rightPanelScenario()
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    assert.ok(hasRightPanel(ctx), 'the panel is missing to start with')
+    tx.closeVideo()
+    assert.equal(hasRightPanel(ctx), false, 'the panel survived the film being closed')
+    assert.equal(ctx.storage.get('settings').videoClosed, true, 'Close video did not persist')
+    tx.openVideo()
+    assert.ok(hasRightPanel(ctx), 'the panel did not return when the film was reopened')
+    assert.equal(ctx.storage.get('settings').videoClosed, false, 'Open video did not persist')
+  } finally {
+    dispose()
+  }
 })
 
 // ------------------------------------------------------ narrow-surface layout
@@ -4620,6 +4739,212 @@ record('subtitles: the Aura page and the panel carry the same CC control', () =>
     for (const fn of cc.__handlers.click || []) fn({ preventDefault() {} })
     assert.equal(ctx.storage.get('settings').videoCaptions, true,
       'the panel CC did not turn captions on')
+  } finally {
+    dispose()
+  }
+})
+
+// ------------------------------------------- lane popout: the frame and the window
+// Owner, live on the hackathon build: "small frame in hermes has no drag bar.
+// pop out to its own window doesn't do anything". Two separate failures, so two
+// sets of tests: the frame must BE a frame (own bar, own position, draggable),
+// and the pop-out must either open the OS window or say the server's own reason
+// out loud — never quietly do something else.
+
+// The frame starts at a free point well inside the viewport, so a drag has room
+// to move in every direction (the corner presets park it against an edge).
+const frameScenario = extra => makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: true,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ',
+  videoWindow: true,
+  videoWindowCorner: 'free',
+  videoWindowX: 100,
+  videoWindowY: 100,
+  ...extra
+})
+const frameTreeOf = ctx => renderContribution(ctx.contributions.find(c => c.id === 'watch'))
+const frameBarOf = tree => {
+  let bar = null
+  walk(tree, node => {
+    if (!bar && node.props && node.props['aria-label'] === 'Drag to move the frame') bar = node
+  })
+  return bar
+}
+const frameEvent = (x, y, target) => ({
+  button: 0, clientX: x, clientY: y, target: target || { getAttribute: () => null },
+  preventDefault() {}, stopPropagation() {}
+})
+
+record('the frame in Hermes has its own visible bar: title, grip and the three controls', () => {
+  const ctx = frameScenario()
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const frame = frameTreeOf(ctx)
+    assert.ok(frame, 'the frame did not render an element')
+    const style = frame.props.style || {}
+    // A real floating box: the frame is positioned by its own saved point, not
+    // laid out by the app (that is what left it with no handle at all).
+    assert.equal(style.position, 'fixed', 'the frame is not a floating box')
+    assert.match(String(style.left), /px$/, 'the frame has no position of its own')
+    const bar = frameBarOf(frame)
+    assert.ok(bar, 'the frame has no drag bar')
+    assert.equal(bar.props.role, 'toolbar', 'the bar does not read as a toolbar')
+    assert.equal(typeof bar.props.onMouseDown, 'function', 'the bar does not take a drag')
+    const textsInBar = texts(bar)
+    assert.ok(textsInBar.includes('⠿'), 'the bar has no visible grip')
+    assert.match(textsInBar, /Aura film|aqz-KE|youtube/i, 'the bar carries no title')
+    for (const label of ['Bring back', 'Pop out to desktop', 'Close video']) {
+      assert.ok(findByAria(bar, label), `the frame bar has no "${label}" control`)
+    }
+    // The bar sits along the TOP edge, above the picture.
+    const children = frame.props.children || []
+    assert.equal(children[0], bar, 'the bar is not the frame\'s first row')
+  } finally {
+    dispose()
+  }
+})
+
+record('dragging the frame bar moves the frame — and only the frame', () => {
+  const ctx = frameScenario()
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const bar = frameBarOf(frameTreeOf(ctx))
+    assert.ok(bar, 'the frame has no drag bar')
+    const start = tx.videoWindowPointForTest()
+    // The live atom, not the raw ctx object: a drag must leave every other
+    // setting exactly as the plugin holds it.
+    const before = { ...pluginModule.wiringTest.settings.get() }
+    bar.props.onMouseDown(frameEvent(500, 300))
+    fireDoc('mousemove', frameEvent(540, 330))
+    fireDoc('mouseup', frameEvent(540, 330))
+    const after = { ...pluginModule.wiringTest.settings.get() }
+    assert.equal(after.videoWindowX, start.x + 40, 'the frame did not move right with the pointer')
+    assert.equal(after.videoWindowY, start.y + 30, 'the frame did not move down with the pointer')
+    assert.equal(after.videoWindowCorner, 'free', 'the drop was not remembered as a free position')
+    // Nothing else moved: not the strip's seat, not the modes, not the film.
+    assert.equal(after.videoBarX, before.videoBarX, 'dragging the frame moved the control strip')
+    assert.equal(after.videoBarY, before.videoBarY, 'dragging the frame moved the control strip')
+    assert.equal(after.backdropMode, 'video', 'dragging the frame changed the mode')
+    assert.equal(after.videoWindow, true, 'dragging the frame closed the frame')
+    assert.equal(after.videoClosed, before.videoClosed, 'dragging the frame changed the film')
+    const changed = Object.keys(after).filter(key => after[key] !== before[key])
+    assert.ok(changed.includes('videoWindowX') && changed.includes('videoWindowY'),
+      'the drop did not persist the frame position')
+    const allowed = new Set(['videoWindowCorner', 'videoWindowX', 'videoWindowY'])
+    const alsoChanged = changed.filter(key => !allowed.has(key))
+    assert.deepEqual(alsoChanged, [],
+      `a frame drag changed other settings: ${alsoChanged.join(', ')}`)
+  } finally {
+    dispose()
+  }
+})
+
+record('the frame position is clamped to the viewport and survives a remount', () => {
+  const ctx = frameScenario()
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const bar = frameBarOf(frameTreeOf(ctx))
+    // Drag far past the bottom-right corner: the frame stays fully on screen.
+    bar.props.onMouseDown(frameEvent(10, 10))
+    fireDoc('mousemove', frameEvent(9000, 9000))
+    fireDoc('mouseup', frameEvent(9000, 9000))
+    const saved = ctx.storage.get('settings')
+    const width = 480 // the default watch-window width
+    assert.equal(saved.videoWindowX, 1400 - width - 8, `the frame left the right edge: ${saved.videoWindowX}`)
+    assert.equal(saved.videoWindowY, 900 - tx.watchFrameHeightForTest() - 8,
+      `the frame left the bottom edge (bar included): ${saved.videoWindowY}`)
+
+    // ...and drag past the top-left corner: clamped to 8px, never negative.
+    bar.props.onMouseDown(frameEvent(100, 100))
+    fireDoc('mousemove', frameEvent(-4000, -4000))
+    fireDoc('mouseup', frameEvent(-4000, -4000))
+    assert.equal(ctx.storage.get('settings').videoWindowX, 8, 'the frame went off the left edge')
+    assert.equal(ctx.storage.get('settings').videoWindowY, 8, 'the frame went off the top edge')
+
+    // A remount (another plugin, a restart) comes back where it was dropped.
+    const frame = frameTreeOf(ctx)
+    assert.equal(frame.props.style.left, '8px', 'the frame forgot its position on remount')
+    assert.equal(frame.props.style.top, '8px', 'the frame forgot its position on remount')
+  } finally {
+    dispose()
+  }
+})
+
+record('the frame bar\'s own controls are not drag handles', () => {
+  const ctx = frameScenario()
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const bar = frameBarOf(frameTreeOf(ctx))
+    const before = tx.videoWindowPointForTest()
+    const ownButton = { getAttribute: name => (name === 'aria-label' ? 'Pop out to desktop' : null) }
+    bar.props.onMouseDown(frameEvent(300, 300, ownButton))
+    fireDoc('mousemove', frameEvent(700, 700))
+    fireDoc('mouseup', frameEvent(700, 700))
+    const after = tx.videoWindowPointForTest()
+    assert.equal(after.x, before.x, 'a press on a bar control dragged the frame')
+    assert.equal(after.y, before.y, 'a press on a bar control dragged the frame')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('pop out: the status says available, so the button asks /window/open', async () => {
+  const ctx = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/a.mp4' })
+  const seen = []
+  const original = ctx.ctx.rest
+  ctx.ctx.rest = async (route, options = {}) => {
+    seen.push({ route, options })
+    return original(route, options)
+  }
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await primeLive()
+    const tree = renderDeep(renderContribution(ctx.contributions.find(c => c.area === 'routes')))
+    pageAria(tree, 'Pop out to desktop').props.onClick()
+    await sleep(80)
+    assert.ok(seen.some(entry => entry.route === '/window'),
+      'the button never asked the server whether it has a window')
+    const open = seen.find(entry => entry.route === '/window/open')
+    assert.ok(open, 'available:true did not reach /window/open')
+    assert.equal(open.options.method, 'POST', 'the window was not asked for with POST')
+    assert.equal(open.options.body.url, 'https://example.test/a.mp4', 'the film url was not sent')
+    assert.equal(ctx.storage.get('settings').videoWindow === true, false,
+      'a successful pop-out left the in-app frame on as well')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('pop out: an error reply shows the server reason and moves nothing', async () => {
+  const ctx = frameScenario()
+  const original = ctx.ctx.rest
+  ctx.ctx.rest = async (route, options = {}) => {
+    if (route === '/window') return { ok: true, available: true, open: false }
+    if (route === '/window/open') {
+      throw new Error('503: {"ok":false,"error":"no Chrome or Chromium found; install one"}')
+    }
+    return original(route, options)
+  }
+  const saidBefore = sdk.calls.notifications.length
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await primeLive()
+    const tree = renderDeep(renderContribution(ctx.contributions.find(c => c.area === 'routes')))
+    pageAria(tree, 'Pop out to desktop').props.onClick()
+    await sleep(80)
+    const told = sdk.calls.notifications.slice(saidBefore).join('\n')
+    assert.match(told, /no Chrome or Chromium found/,
+      `the server's own reason was swallowed: ${told || '(nothing said)'}`)
+    assert.ok(tx.liveForTest().error.includes('no Chrome or Chromium found'),
+      'the settings page still shows a generic error instead of the reason')
+    // No silent fallback and no lost film: the frame still holds it.
+    assert.ok(ctx.contributions.find(c => c.id === 'watch'),
+      'the failed pop-out closed the frame instead of leaving the film alone')
+    assert.equal(tx.filmOwner(), 'window', 'the failed pop-out moved the film off its frame')
+    assert.equal(ctx.storage.get('settings').videoWindow, true, 'the failed pop-out changed the surface')
+    assert.equal(ctx.storage.get('settings').backdropMode, 'video', 'the failed pop-out changed the mode')
   } finally {
     dispose()
   }

@@ -628,7 +628,7 @@ const storageWasEmptyAtBoot = !freshA.storage.has('settings')
 const disposeA = pluginModule.default.register(freshA.ctx)
 await sleep(50)
 
-record('1. fresh install: Aura is enabled by default and the Right panel pane is registered, docked right, enforce: true', () => {
+await recordAsync('1. fresh install: Aura is enabled by default and the Right panel is a video-mode surface', async () => {
   assert.ok(storageWasEmptyAtBoot, 'the scenario did not start from EMPTY storage (no "settings" key)')
   assert.equal(freshA.requests.some(r => r.route === '/status'), true, 'the plugin never asked the server /status')
 
@@ -639,8 +639,16 @@ record('1. fresh install: Aura is enabled by default and the Right panel pane is
   assert.ok(enabledSwitch, 'the settings page has no Aura enabled switch')
   assert.equal(enabledSwitch.props.checked, true, 'Aura is not enabled by default on a fresh install')
 
+  // A fresh install is in VISUALISER mode, and the Right panel is a video
+  // surface: the owner's rule ("if you aren't in video mode the right panel
+  // should automatically disappear") means there is no panel here at all.
+  assert.equal(freshA.contributions.find(c => c.area === 'panes'), undefined,
+    'a fresh install (visualiser mode) contributes a Right panel')
+
+  // …and video mode brings it back on its own, docked right and enforced.
+  await pluginModule.__test.setBackdropMode('video')
   const pane = freshA.contributions.find(c => c.area === 'panes')
-  assert.ok(pane, 'no Right panel pane on a fresh install')
+  assert.ok(pane, 'video mode did not bring the Right panel back')
   assert.equal(pane.id, 'panel')
   assert.equal(pane.data.placement, 'right', 'the pane must prefer the right')
   assert.deepEqual(
@@ -648,6 +656,11 @@ record('1. fresh install: Aura is enabled by default and the Right panel pane is
     { pane: 'workspace', pos: 'right', enforce: true },
     'a new user must get the pane docked right even if their layout disagrees'
   )
+
+  // Leaving video mode takes it away again, without a restart.
+  await pluginModule.__test.setBackdropMode('aura')
+  assert.equal(freshA.contributions.find(c => c.area === 'panes'), undefined,
+    'the Right panel stayed after visualiser mode came back')
 })
 
 record('2. fresh install: the sidebar row (SIDEBAR_NAV_AREA) and the /aura route (ROUTES_AREA) are registered', () => {
@@ -679,7 +692,7 @@ record('3. fresh install: the status-bar quick menu is registered and renders a 
   assert.ok(body.includes('abcdef12'), 'the chip is not the shared build line from /version')
 })
 
-record('4. fresh install: the starter films are offered on the page and in the panel source list', () => {
+await recordAsync('4. fresh install: the starter films are offered on the page, and in the panel once video mode is on', async () => {
   const tree = pageTree(freshA)
   const chips = []
   walk(tree, node => {
@@ -691,6 +704,11 @@ record('4. fresh install: the starter films are offered on the page and in the p
   assert.ok(chips.includes('Play Sintel · Blender film'), 'Sintel is not offered on the page')
   assert.ok(chips.includes('Play Big Buck Bunny · Blender film'), 'Big Buck Bunny is not offered on the page')
 
+  // The Right panel is a video surface, so a fresh install has none to mount:
+  // the starter list has to be there in video mode, where the panel lives.
+  assert.equal(freshA.contributions.find(c => c.area === 'panes'), undefined,
+    'the Right panel is contributed in visualiser mode')
+  await pluginModule.__test.setBackdropMode('video')
   const hostNode = mountPane(freshA)
   const cards = panelCards(hostNode)
   // The A menu's card list is capped at PANEL_SCORE_MAX (12) sources.
@@ -698,6 +716,7 @@ record('4. fresh install: the starter films are offered on the page and in the p
   assert.ok(cards.some(card => cardTitle(card).includes('Sintel')), 'the pane card list has no Sintel')
   const kinds = domFindAll(hostNode, node => node.className === 'ap-kind').map(node => node.textContent)
   assert.ok(kinds.includes('youtube'), 'the pane does not label the starter cards as youtube sources')
+  await pluginModule.__test.setBackdropMode('aura')
 })
 
 safeDispose('the registration scenario (A)', disposeA)
@@ -742,14 +761,19 @@ safeDispose('the page-pick scenario (B)', disposeB)
 
 // ===================================================================
 // Scenario C: a new user picks a starter film from the RIGHT PANEL.
-// (Test 6 — EXPECTED TO FAIL: known bug #3.)
+// (Test 6 — the panel only exists in video mode now, which is where a user
+// with a film open picks their next one.)
 // ===================================================================
 
 const freshC = makeCtx()
 const disposeC = pluginModule.default.register(freshC.ctx)
 await tickPoll(freshC)
 
-await recordAsync('6. fresh install: picking a starter film from the RIGHT PANEL switches to video mode and plays it', async () => {
+await recordAsync('6. fresh install: picking a starter film from the RIGHT PANEL plays it in the panel', async () => {
+  // No panel in visualiser mode; video mode is what puts one on screen.
+  assert.equal(freshC.contributions.find(c => c.area === 'panes'), undefined,
+    'the Right panel is contributed in visualiser mode')
+  await pluginModule.__test.setBackdropMode('video')
   const hostNode = mountPane(freshC)
   const cards = panelCards(hostNode)
   const sintel = cards.find(card => cardTitle(card).includes('Sintel'))
@@ -758,14 +782,19 @@ await recordAsync('6. fresh install: picking a starter film from the RIGHT PANEL
   await sleep(60)
   const saved = freshC.storage.get('settings')
   assert.ok(saved, 'a pane pick never persisted any settings')
-  // The url itself does get applied on this commit; the mode is what is
-  // missing. Assert url first so the failing line is the mode, as evidence.
   assert.equal(saved.videoUrl, SINTEL_URL, 'the pane pick did not save the picked film url')
-  assert.equal(saved.backdropMode, 'video', 'the pane pick did not switch to video mode: the pane shows a stage that plays nothing')
+  assert.equal(saved.backdropMode, 'video', 'the pane pick did not keep video mode: the pane shows a stage that plays nothing')
   assert.ok(
     freshC.controls.some(patch => patch && patch.backdrop_mode === 'video'),
     `no /control patch with backdrop_mode 'video' from the pane (got ${JSON.stringify(freshC.controls)})`
   )
+  // "plays it": the one frame inside the panel is the local player page for the
+  // picked film.
+  clearFrames()
+  renderSurface(freshC, 'panel')
+  const frames = playerFrames()
+  assert.equal(frames.length, 1, `the pane pick should mount exactly one player, got ${frames.length}`)
+  assert.ok(decodeURIComponent(frames[0].src).includes(SINTEL_URL), 'the panel player is not showing the picked film')
 })
 
 safeDispose('the pane-pick scenario (C)', disposeC)
@@ -892,14 +921,19 @@ const disposeF = pluginModule.default.register(freshF.ctx)
 
 await recordAsync('9. fresh install: dispose leaves nothing behind - no contributions, no timers, no listeners, no frames', async () => {
   await tickPoll(freshF)
-  const hostNode = mountPane(freshF)
 
-  // Live a little first: a new user picks a film so a player and the video
-  // bar actually exist and have to be taken down.
+  // Visualiser mode has no Right panel (it is a video surface), so nothing is
+  // mounted into a pane box yet — and none of it may survive dispose either.
+  assert.equal(freshF.contributions.find(c => c.area === 'panes'), undefined,
+    'the Right panel is contributed in visualiser mode')
+
+  // Live a little first: a new user picks a film on the page. That starts video
+  // mode, which is what brings the panel and a player with it.
   const card = pageAria(pageTree(freshF), 'Play Sintel · Blender film')
   assert.ok(card, 'no starter source to pick')
   card.props.onClick()
   await sleep(60)
+  const hostNode = mountPane(freshF)
   clearFrames()
   renderSurface(freshF, 'panel')
   assert.ok(playerFrames().length >= 1, 'precondition: no player drawn to clean up')
