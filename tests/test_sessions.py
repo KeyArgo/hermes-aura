@@ -1,109 +1,73 @@
-"""Dynamic intensity from active chat sessions — CONTRACT.md §9.6."""
+"""Review 4 — no private active-session reads, and no per-chat boost.
+
+The reviewed commit (90e8b80) imported ``hermes_cli.active_sessions`` and read
+``runtime/active_sessions.json`` to make Aura louder as more chats opened. Both
+were private: the module can move on any release and the file layout is nobody's
+public promise. Nous asked for them to go.
+
+These tests fail on 90e8b80 and pass after the removal. They also pin the
+consequence, so the boost cannot come back by accident: the number of open chats
+does not change the rendered intensity, and the wire keeps publishing
+``session_boost`` at 1.0 so the pages do not lose a key.
+"""
 
 from __future__ import annotations
 
-import json
-import os
+import inspect
 import pathlib
 import sys
-
-import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from aura_core import sessions  # noqa: E402
+from aura_core import server, sessions  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# boost math
-# ---------------------------------------------------------------------------
-
-def test_zero_sessions_is_base():
-    assert sessions.boost_multiplier(0) == 1.0
-    assert sessions.dynamic_intensity(0.5, count=0) == 0.5
-
-
-def test_one_session_boosts_by_15_percent():
-    assert sessions.boost_multiplier(1) == pytest.approx(1.15)
-    assert sessions.dynamic_intensity(0.4, count=1) == pytest.approx(0.46)
-
-
-def test_five_sessions_boost_by_75_percent():
-    assert sessions.boost_multiplier(5) == pytest.approx(1.75)
-    assert sessions.dynamic_intensity(0.4, count=5) == pytest.approx(0.7)
+def _code_only(source: str) -> str:
+    """Source minus docstrings and comments — what a reviewer greps for."""
+    stripped = []
+    in_doc = False
+    for line in source.splitlines():
+        text = line.strip()
+        if text.count('"""') == 1:
+            in_doc = not in_doc
+            continue
+        if in_doc or text.startswith("#"):
+            continue
+        stripped.append(line.split("  #")[0])
+    return "\n".join(stripped)
 
 
-def test_ten_sessions_cap_multiplier_then_saturate():
-    assert sessions.boost_multiplier(10) == pytest.approx(2.5)
-    # base * 2.5 = 1.25, saturated to the 0..1 contract range
-    assert sessions.dynamic_intensity(0.5, count=10) == 1.0
-    assert sessions.boost_multiplier(50) == pytest.approx(2.5)
+def test_sessions_module_imports_nothing_private():
+    code = _code_only(inspect.getsource(sessions))
+    assert "hermes_cli" not in code, "a core module is imported again"
+    assert "active_sessions" not in code, "the private registry file is read again"
+    assert "active_session_registry_snapshot" not in code
 
 
-def test_low_base_stays_under_one_at_max_boost():
-    assert sessions.dynamic_intensity(0.3, count=10) == pytest.approx(0.75)
+def test_the_server_starts_no_session_poll_thread():
+    code = _code_only(inspect.getsource(server))
+    assert "_session_boost_loop" not in code, "the 2 s registry poll is still there"
+    assert "aura-sessions" not in code, "a session thread is still started"
+    assert "active_session_registry_snapshot" not in code
 
 
-def test_bad_counts_and_bases_are_tolerated():
-    assert sessions.boost_multiplier(None) == 1.0
-    assert sessions.boost_multiplier(-4) == 1.0
-    assert sessions.boost_multiplier("loud") == 1.0
-    assert sessions.dynamic_intensity(None, count=2) == 0.0
-    assert sessions.dynamic_intensity(2.0, count=0) == 1.0
-    assert sessions.dynamic_intensity(True, count=0) == 0.0
-
-
-# ---------------------------------------------------------------------------
-# session registry
-# ---------------------------------------------------------------------------
-
-def test_registry_fallback_counts_live_entries(tmp_path, monkeypatch):
-    runtime = tmp_path / "runtime"
-    runtime.mkdir()
-    entries = [
-        {"lease_id": "a", "session_id": "s1", "pid": os.getpid(), "surface": "cli"},
-        {"lease_id": "b", "session_id": "s2", "pid": os.getpid(), "surface": "desktop"},
-        # A dead pid must not count when the Hermes snapshot helper is absent.
-        {"lease_id": "c", "session_id": "s3", "pid": 999_999_999, "surface": "cli"},
-    ]
-    (runtime / "active_sessions.json").write_text(
-        json.dumps({"entries": entries}), encoding="utf-8"
-    )
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # Force the stdlib fallback even when the agent package is importable.
-    monkeypatch.setitem(sys.modules, "hermes_cli.active_sessions", None)
-    assert sessions.active_session_count() == 2
-
-
-def test_server_config_event_carries_session_boost():
-    from aura_core import server
-
-    with server._STATE.lock:
-        old_count, old_boost = server._STATE.session_count, server._STATE.session_boost
-        server._STATE.session_count, server._STATE.session_boost = 3, 1.45
-    try:
-        event = server._config_event()
-        assert event["type"] == "config"
-        assert event["sessions"] == 3
-        assert event["session_boost"] == pytest.approx(1.45)
-        # The user's saved intensity is untouched by the boost.
-        assert event["intensity"] == 0.5
-    finally:
-        with server._STATE.lock:
-            server._STATE.session_count, server._STATE.session_boost = old_count, old_boost
-
-
-def test_missing_registry_is_zero(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    assert sessions._read_registry_entries() == []
+def test_session_count_is_zero_and_the_boost_is_a_no_op():
     assert sessions.active_session_count() == 0
+    assert sessions.boost_multiplier(0) == 1.0
+    assert sessions.boost_multiplier(9) == 1.0, "open chats still change the visual"
+    assert sessions.dynamic_intensity(0.5, count=9) == 0.5
 
 
-def test_corrupt_registry_is_zero(tmp_path, monkeypatch):
-    runtime = tmp_path / "runtime"
-    runtime.mkdir()
-    (runtime / "active_sessions.json").write_text("{not json", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    assert sessions._read_registry_entries() == []
+def test_intensity_still_clamps_to_the_contract_range():
+    assert sessions.dynamic_intensity(2.0) == 1.0
+    assert sessions.dynamic_intensity(-1) == 0.0
+    assert sessions.dynamic_intensity("nonsense") == 0.0
+    assert sessions.dynamic_intensity(True) == 0.0
+
+
+def test_the_wire_still_carries_session_boost():
+    snapshot = server._session_boost_snapshot()
+    assert snapshot["session_boost"] == 1.0
+    assert snapshot["sessions"] == 0

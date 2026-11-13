@@ -44,7 +44,7 @@ try:  # POSIX leader election; Windows keeps today's single-process behaviour.
 except ImportError:  # pragma: no cover - exercised only on Windows
     fcntl = None  # type: ignore[assignment]
 
-from . import analysis, behavior, config, radio, redact, sessions
+from . import analysis, behavior, config, radio, redact
 from . import window as desktop_window
 from .capture import base as capture
 
@@ -489,35 +489,6 @@ def _mood_tick(now: float) -> None:
         with _STATE.lock:
             _STATE.mood_last_sent = now
 
-
-def _session_boost_loop(stop_event: threading.Event) -> None:
-    """Poll the live chat-session count and push a config event on change (§9.6).
-
-    The boost is computed here rather than in the page so every connected page
-    sees the same value, and the config event stays the only carrier of the
-    user's saved intensity. Polling is cheap (one small JSON read) and only a
-    change broadcasts, so an idle desktop is not chattered at every 2 s.
-    """
-    while not stop_event.is_set():
-        try:
-            count = sessions.active_session_count()
-            boost = sessions.boost_multiplier(count)
-            with _STATE.lock:
-                changed = (count != _STATE.session_count
-                           or boost != _STATE.session_boost)
-                _STATE.session_count = count
-                _STATE.session_boost = boost
-            if changed and _clients_snapshot():
-                _broadcast_event(_config_event())
-        except Exception as exc:  # noqa: BLE001 - never kill the server loop
-            _log("aura: session boost poll failed (%s)", type(exc).__name__)
-        if stop_event.wait(2.0):
-            break
-
-
-# ---------------------------------------------------------------------------
-# capture / feature pump
-# ---------------------------------------------------------------------------
 
 def _audio_wanted() -> bool:
     """Capture runs only while Aura is on and the motion source is audio."""
@@ -1736,11 +1707,6 @@ def _start_server() -> None:
         _STATE.session_count = 0
         _STATE.session_boost = 1.0
     cap_thread.start()
-    session_thread = threading.Thread(target=_session_boost_loop, args=(stop_event,),
-                                      name="aura-sessions", daemon=True)
-    with _STATE.lock:
-        _STATE.session_thread = session_thread
-    session_thread.start()
     _write_lease(token, port)
     # A window left behind by a previous server holds a dead token: close it,
     # before it plays audio nobody can control.
