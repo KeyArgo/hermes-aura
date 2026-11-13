@@ -142,11 +142,15 @@ def _spawn(tmp_path: Path, home: Path, mode: str, override: Path | None = None) 
     env["PYTHONUNBUFFERED"] = "1"
     if override is not None:
         env["AURA_TEST_OVERRIDE_HOME"] = str(override)
-    return subprocess.Popen(
+    log = open(tmp_path / f"helper-{mode}.err", "w+", encoding="utf-8")
+    proc = subprocess.Popen(
         [sys.executable, str(script), mode, str(ROOT)],
         cwd=str(ROOT), env=env, stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, text=True, bufsize=1,
+        stderr=log, text=True, bufsize=1,
     )
+    proc._aura_stderr = log
+    _SPAWNED.append(proc)
+    return proc
 
 
 def _reader(proc: subprocess.Popen) -> queue.Queue:
@@ -163,11 +167,25 @@ def _reader(proc: subprocess.Popen) -> queue.Queue:
     return lines
 
 
+_SPAWNED: list = []
+
+
 def _next(lines: queue.Queue, timeout: float) -> dict:
     try:
         line = lines.get(timeout=timeout)
     except queue.Empty:
-        pytest.fail("helper produced no line within %.1fs" % timeout)
+        tail = ""
+        for proc in reversed([p for p in _SPAWNED if p.poll() is not None][-2:]):
+            log = getattr(proc, "_aura_stderr", None)
+            try:
+                if log is not None:
+                    log.flush()
+                    log.seek(0)
+                    tail = log.read()[-1500:]
+            except Exception:  # noqa: BLE001
+                tail = ""
+        pytest.fail("helper produced no line within %.1fs%s" % (
+            timeout, (" — helper stderr:\n" + tail) if tail else ""))
     tag, _, raw = line.partition(" ")
     return {"tag": tag, "data": json.loads(raw)}
 
