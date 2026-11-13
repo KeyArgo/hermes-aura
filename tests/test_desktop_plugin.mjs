@@ -540,10 +540,20 @@ function makeChildList(children) {
     }
   }
 }
+// The strip's own document-level gestures (drag move/up, resize) are attached
+// to the document, exactly as a floating control has to: a drag that leaves the
+// strip still has to follow the pointer. Recorded here so a test can fire them.
+const docHandlers = new Map()
+function fireDoc(type, event = {}) {
+  for (const fn of [...(docHandlers.get(type) || [])]) fn(event)
+}
+const docListeners = type => (docHandlers.get(type) || []).length
 globalThis.document = {
   hidden: false,
   visibilityState: 'visible',
   documentElement,
+  // A settable viewport, so clamping can be exercised at more than one size.
+  defaultView: { innerWidth: 1400, innerHeight: 900 },
   head: makeChildList(headChildren),
   body: makeChildList(bodyChildren),
   createElement(tagName) {
@@ -598,8 +608,15 @@ globalThis.document = {
     createdElements.push(node)
     return node
   },
-  addEventListener() {},
-  removeEventListener() {}
+  addEventListener(type, fn) {
+    const list = docHandlers.get(type) || []
+    list.push(fn)
+    docHandlers.set(type, list)
+  },
+  removeEventListener(type, fn) {
+    const list = docHandlers.get(type) || []
+    docHandlers.set(type, list.filter(entry => entry !== fn))
+  }
 }
 const FAKE_VARS = {
   '--ui-accent': '#8b7cff',
@@ -2750,7 +2767,10 @@ record('review 1: nothing measures or queries the app\'s composer', () => {
   assert.ok(!/querySelectorAll\(\s*['"]textarea/.test(source), 'the composer scan is back')
   assert.ok(!/contenteditable/.test(source), 'the composer scan is back')
   assert.ok(!/composerRect/.test(source), 'the composer-rect measuring helper is back')
-  assert.ok(!/position:\s*'fixed'\s*,\s*left/.test(source), 'a fixed-positioned strip is back')
+  // The strip floats over the app (owner: it must sit where it was dropped), but
+  // its coordinates are the user's own — never derived from the app's markup.
+  assert.ok(!/elementsFromPoint|elementFromPoint/.test(source), 'the strip measures the app again')
+  assert.match(source, /videoBarX/, 'the strip has no saved position of its own')
 })
 
 record('review 3: the film is an SDK SandboxedFrame, never a raw iframe', () => {
@@ -3066,6 +3086,221 @@ await recordAsync('a stale backend is named, not left looking broken', async () 
   } finally {
     dispose()
   }
+})
+
+// ------------------------------------- lane strip-drag: the strip is the user's
+// Two bugs, one cause: the transport strip was not the user's to place. The ⠿
+// grip popped the film out into window mode (older code called
+// writeSettings({ videoWindow: true }) from the drag), and the strip parked
+// itself by scanning the app's composer, so a new panel with text inputs shoved
+// it up over the chat. Now: a drag moves the strip and nothing else, the
+// position is the user's (videoBarX / videoBarY), and no app markup is read.
+
+const stripSettingsOf = ctx => ctx.storage.get('settings') || {}
+// The strip is a singleton (one transport, one player); the host slot it lives
+// in is the one React hands the plugin, stood in for here by a plain div.
+const stripSlot = document.createElement('div')
+document.body.appendChild(stripSlot)
+const mountStrip = () => {
+  const bar = tx.mountVideoBarForTest(stripSlot)
+  assert.ok(bar, 'the strip did not mount')
+  return bar
+}
+const stripEvent = (node, x, y) => ({
+  button: 0, clientX: x, clientY: y, target: node,
+  preventDefault() {}, stopPropagation() {}
+})
+const pressOn = (node, x, y) => {
+  const event = stripEvent(node, x, y)
+  for (const fn of node.__handlers.mousedown || []) fn(event)
+}
+// A press that lands on a control inside the strip: the bar's own handler is
+// what runs, so the "is this empty chrome?" test sees the real target.
+const pressBarTargeting = (bar, target, x, y) => {
+  const event = stripEvent(target, x, y)
+  for (const fn of bar.__handlers.mousedown || []) fn(event)
+}
+const movePointer = (x, y) => fireDoc('mousemove', stripEvent(null, x, y))
+const dropPointer = (x, y) => fireDoc('mouseup', stripEvent(null, x, y))
+const resetGrip = grip => {
+  for (const fn of grip.__handlers.dblclick || []) fn({ preventDefault() {} })
+}
+
+const dragScenario = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  windowVisual: true,
+  panelEnabled: false,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+pluginModule.default.register(dragScenario.ctx)
+dragScenario.timers.find(t => t.ms === 250).fn()
+await sleep(40)
+
+record('strip-drag: dragging the grip moves the strip and leaves every mode alone', () => {
+  const bar = mountStrip()
+  const settingsAtom = pluginModule.wiringTest.settings
+  const before = { ...settingsAtom.get() }
+  assert.equal(before.videoWindow, false, 'the film was already in window mode')
+  const home = tx.videoBarPointForTest()
+  const grip = findByLabel(bar, 'Drag to move the controls')
+  assert.ok(grip, 'the grip has no drag handle')
+  pressOn(grip, 120, 300)
+  movePointer(200, 260)
+  dropPointer(200, 260)
+  const after = { ...settingsAtom.get() }
+  assert.equal(after.videoWindow, false, 'dragging the grip popped the film into window mode')
+  assert.equal(tx.videoBarElForTest().style.left, `${home.x + 80}px`, 'the strip did not move right')
+  assert.equal(tx.videoBarElForTest().style.top, `${home.y - 40}px`, 'the strip did not move up')
+  // A drag writes the position and NOTHING else.
+  const changed = Object.keys(after).filter(key => after[key] !== before[key]).sort()
+  assert.deepEqual(changed, ['videoBarX', 'videoBarY'], `a drag changed other settings: ${changed.join(', ')}`)
+  assert.equal(stripSettingsOf(dragScenario).videoBarX, home.x + 80, 'the drop did not reach storage')
+})
+
+record('strip-drag: the same drag in window mode keeps the film in window mode', () => {
+  // "Every mode": with the film in its own floating window the grip still drags
+  // the controls only — it must not slam the film in or out of the window.
+  tx.setVideoWindow(true)
+  try {
+    assert.equal(stripSettingsOf(dragScenario).videoWindow, true, 'the film did not go to window mode')
+    const bar = tx.videoBarElForTest()
+    const grip = findByLabel(bar, 'Drag to move the controls')
+    const before = tx.videoBarPointForTest()
+    pressOn(grip, 60, 60)
+    movePointer(100, 90)
+    dropPointer(100, 90)
+    assert.equal(stripSettingsOf(dragScenario).videoWindow, true, 'a drag took the film out of its window')
+    assert.notEqual(tx.videoBarPointForTest().x, before.x, 'the strip did not move in window mode')
+  } finally {
+    tx.setVideoWindow(false)
+  }
+})
+
+record('strip-drag: the pop-out button is the only thing that pops the film out', () => {
+  const bar = tx.videoBarElForTest()
+  const popOut = findByLabel(bar, 'Pop out')
+  assert.ok(popOut, 'the strip has no pop-out button')
+  for (const fn of popOut.__handlers.click || []) fn({ preventDefault() {} })
+  assert.equal(stripSettingsOf(dragScenario).videoWindow, true, 'the pop-out button no longer pops out')
+  const before = tx.videoBarPointForTest()
+  const grip = findByLabel(bar, 'Drag to move the controls')
+  pressOn(grip, 300, 120)
+  movePointer(340, 150)
+  dropPointer(340, 150)
+  assert.equal(stripSettingsOf(dragScenario).videoWindow, true, 'a drag after popping out slammed the film back in')
+  assert.notEqual(tx.videoBarPointForTest().x, before.x, 'the strip did not move while popped out')
+  tx.setVideoWindow(false)
+})
+
+record('strip-drag: empty strip area drags too, and the controls never do', () => {
+  const bar = tx.videoBarElForTest()
+  const before = tx.videoBarPointForTest()
+  pressOn(bar, 40, 40)
+  movePointer(80, 20)
+  dropPointer(80, 20)
+  const after = tx.videoBarPointForTest()
+  assert.equal(after.x, before.x + 40, 'the empty strip area did not drag')
+  assert.equal(after.y, before.y - 20, 'the empty strip area did not drag')
+  assert.equal(stripSettingsOf(dragScenario).videoWindow, false, 'the empty-area drag changed the mode')
+
+  // A press that lands on Play (or the scrubber) belongs to that control.
+  const play = findByLabel(bar, 'Play')
+  pressBarTargeting(bar, play, 10, 10)
+  movePointer(400, 400)
+  dropPointer(400, 400)
+  assert.equal(tx.videoBarPointForTest().x, after.x, 'pressing a control started a drag')
+})
+
+record('strip-drag: a new panel with text inputs does not move the strip', () => {
+  const bar = tx.videoBarElForTest()
+  const left = bar.style.left
+  const top = bar.style.top
+  // The app grows a panel with an input and a rich-text box, exactly the shape
+  // the old composer scan was looking for.
+  const textarea = document.createElement('textarea')
+  document.body.appendChild(textarea)
+  const editable = document.createElement('div')
+  editable.setAttribute('contenteditable', 'true')
+  document.body.appendChild(editable)
+  dragScenario.timers.find(t => t.ms === 250).fn()
+  assert.equal(bar.style.left, left, 'the strip jumped sideways when a text field appeared')
+  assert.equal(bar.style.top, top, 'the strip jumped up over the chat when a text field appeared')
+  // Nothing in the plugin reads the app's composer at all.
+  assert.ok(!/composerRect/.test(source), 'the composer-rect measuring helper is back')
+  assert.ok(!/querySelectorAll\(\s*['"]textarea/.test(source), 'the composer scan is back')
+  assert.ok(!/contenteditable/.test(source), 'the composer scan is back')
+  assert.match(source, /videoBarX/, 'the strip has no saved position of its own')
+})
+
+record('strip-drag: the dropped position is remembered, and double-click resets it', () => {
+  const dropped = tx.videoBarPointForTest()
+  const saved = stripSettingsOf(dragScenario)
+  assert.equal(saved.videoBarX, dropped.x, 'the drop did not persist')
+  assert.equal(saved.videoBarY, dropped.y, 'the drop did not persist')
+  // A remount (another plugin, a restart) comes back where it was dropped.
+  tx.removeVideoBar()
+  const bar = mountStrip()
+  assert.equal(bar.style.left, `${saved.videoBarX}px`, 'the strip forgot its position on remount')
+  assert.equal(bar.style.top, `${saved.videoBarY}px`, 'the strip forgot its position on remount')
+
+  const grip = findByLabel(bar, 'Drag to move the controls')
+  assert.ok(grip, 'the grip vanished')
+  assert.equal(grip.title, 'Drag to move the controls (double-click to reset)',
+    'the grip tooltip does not say how to reset')
+  resetGrip(grip)
+  const home = tx.videoBarHomeForTest()
+  assert.equal(stripSettingsOf(dragScenario).videoBarX, null, 'the reset did not clear the saved x')
+  assert.equal(stripSettingsOf(dragScenario).videoBarY, null, 'the reset did not clear the saved y')
+  assert.equal(bar.style.left, `${home.x}px`, 'the reset did not put the strip back')
+  assert.equal(bar.style.top, `${home.y}px`, 'the reset did not put the strip back')
+  assert.equal(home.x, 16, 'the home corner is not 16px from the left edge')
+})
+
+record('strip-drag: the strip stays inside the window at drop and on resize', () => {
+  const bar = tx.videoBarElForTest()
+  const size = tx.videoBarSizeForTest()
+  const view = document.defaultView
+  view.innerWidth = 640
+  view.innerHeight = 480
+  fireDoc('resize')
+  assert.equal(bar.style.left, '16px', 'a resize left the strip outside the window')
+  assert.ok(parseInt(bar.style.top, 10) + size.height <= 480 - 16, 'the strip hangs off the bottom after a resize')
+
+  // Drag past the right and bottom edges: the drop clamps, it does not park the
+  // strip off screen for the next start.
+  const grip = findByLabel(bar, 'Drag to move the controls')
+  pressOn(grip, 20, 20)
+  movePointer(5000, 5000)
+  dropPointer(5000, 5000)
+  const maxX = 640 - size.width - 16
+  const maxY = 480 - size.height - 16
+  assert.equal(tx.videoBarPointForTest().x, maxX, 'the drop was not clamped to the right edge')
+  assert.equal(tx.videoBarPointForTest().y, maxY, 'the drop was not clamped to the bottom edge')
+  assert.equal(stripSettingsOf(dragScenario).videoBarX, maxX, 'the saved position is off screen')
+
+  // And past the top-left corner.
+  pressOn(grip, 20, 20)
+  movePointer(-5000, -5000)
+  dropPointer(-5000, -5000)
+  assert.equal(tx.videoBarPointForTest().x, 16, 'the drop was not clamped to the left edge')
+  assert.equal(tx.videoBarPointForTest().y, 16, 'the drop was not clamped to the top edge')
+
+  // A temporarily smaller window does not destroy the saved position.
+  const savedX = stripSettingsOf(dragScenario).videoBarX
+  view.innerWidth = 520
+  view.innerHeight = 420
+  fireDoc('resize')
+  assert.ok(parseInt(bar.style.left, 10) + size.width <= 520 - 16, 'the strip stayed off screen after a shrink')
+  assert.ok(parseInt(bar.style.top, 10) + size.height <= 420 - 16, 'the strip stayed off screen after a shrink')
+  assert.equal(stripSettingsOf(dragScenario).videoBarX, savedX, 'a resize rewrote the stored position')
+
+  view.innerWidth = 1400
+  view.innerHeight = 900
+  fireDoc('resize')
+  tx.removeVideoBar()
+  assert.equal(docListeners('mousemove'), 0, 'the drag listeners outlived the strip')
+  assert.equal(docListeners('resize'), 0, 'the resize listener outlived the strip')
 })
 
 // --------------------------------------------------------------- reporting
