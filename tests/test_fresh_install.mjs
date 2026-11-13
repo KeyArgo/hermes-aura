@@ -756,6 +756,50 @@ await recordAsync('6. fresh install: picking a starter film from the RIGHT PANEL
 safeDispose('the pane-pick scenario (C)', disposeC)
 
 // ===================================================================
+// Scenario G: the Right panel stays out of the way. Its film never sits over
+// the host's menus or status bar, and one click hides the panel.
+// ===================================================================
+
+const freshG = makeCtx(new Map([['settings', {
+  enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: SINTEL_URL
+}]]))
+const disposeG = pluginModule.default.register(freshG.ctx)
+await tickPoll(freshG)
+const paneG = mountPane(freshG)
+// A pane scrolled so its stage hangs 130 px below the pane, over the status bar.
+const panelBoxG = domFind(paneG, node => node.attributes && node.attributes.id === 'aura-panel')
+const stageG = domFind(paneG, node => node.className === 'ap-stage')
+if (panelBoxG) panelBoxG.getBoundingClientRect = () => ({ left: 1180, top: 40, width: 340, height: 760, right: 1520, bottom: 800 })
+if (stageG) stageG.getBoundingClientRect = () => ({ left: 1200, top: 760, width: 300, height: 170, right: 1500, bottom: 930 })
+await tickPoll(freshG)
+
+record('10. the Right panel film sits below the host menus (status-bar menu on top)', () => {
+  const frame = hostIframes()[0]
+  assert.ok(frame, 'no film frame mounted for the Right panel')
+  assert.ok(Number(frame.style.zIndex) < 50,
+    `the panel film is at z-index ${frame.style.zIndex}, above the host's popovers (z-50)`)
+})
+
+record('11. the Right panel film is clipped to the panel, never over the status bar', () => {
+  const frame = hostIframes()[0]
+  assert.ok(frame, 'no film frame mounted for the Right panel')
+  assert.match(String(frame.style.clipPath || ''), /inset\(0px 0px 130px 0px\)/,
+    `the film is not clipped to the panel (clip-path: ${frame.style.clipPath || 'none'})`)
+})
+
+await recordAsync('12. one click on the panel header hides the Right panel, Aura stays on', async () => {
+  const hide = domFind(paneG, node => node.attributes && node.attributes['aria-label'] === 'Hide the Right panel')
+  assert.ok(hide, 'the Right panel header has no hide button')
+  clickDom(hide)
+  await sleep(40)
+  const saved = freshG.storage.get('settings')
+  assert.equal(saved.panelEnabled, false, 'the hide button did not hide the Right panel')
+  assert.equal(saved.enabled, true, 'hiding the panel turned Aura off')
+})
+
+safeDispose('the out-of-the-way scenario (G)', disposeG)
+
+// ===================================================================
 // Scenario D: pop out from the page / bring back on a fresh install.
 // (Test 7)
 // ===================================================================

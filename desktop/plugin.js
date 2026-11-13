@@ -2963,6 +2963,7 @@ function applyBackdropLayout() {
     return
   }
   style.display = ''
+  style.clipPath = 'none'
   // The full page's stage outranks everything: it is the one place the film is
   // meant to be watched, and the page is only open while the user is there.
   if (pageVisible() && current.backdropMode === 'video' && !current.videoClosed) {
@@ -3001,7 +3002,12 @@ function applyBackdropLayout() {
       style.border = '0'
       style.boxShadow = 'none'
       style.overflow = 'hidden'
-      style.zIndex = '999991'
+      // Above the pane's own content, below the host's menus and popovers (z-50):
+      // the status-bar Aura menu opens over the Right panel and must stay on top.
+      style.zIndex = String(PANEL_FILM_Z)
+      // Trimmed to the visible pane, so a scrolled pane never draws the film
+      // over the status bar or the title bar.
+      style.clipPath = panelClipPath(slot)
       style.background = '#000'
       return
     }
@@ -3021,8 +3027,9 @@ function applyBackdropLayout() {
     style.boxShadow = '0 14px 40px rgba(0,0,0,0.5)'
     style.overflow = 'hidden'
     // Above the app so the film is not read through by chat text, below the
-    // control strip. Still click-through: the strip is the remote.
-    style.zIndex = '999997'
+    // host's menus (z-50) so the status-bar Aura menu still opens over it.
+    // Still click-through: the strip is the remote.
+    style.zIndex = String(WATCH_WINDOW_Z)
     style.background = '#000'
   } else {
     style.inset = '0'
@@ -3440,10 +3447,16 @@ function panelCss() {
       color: rgba(243,236,226,0.72); font: inherit; font-size: 10.5px; font-weight: 600;
       padding: 4px 9px; border-radius: 999px; cursor: pointer; min-width: 34px;
     }
-    .ap-power[data-on="true"] {
+    .ap-power[data-on="on"] {
       border-color: rgba(255,190,120,0.5); color: #ffd9a8; background: rgba(255,190,120,0.12);
     }
     .ap-power:hover { border-color: rgba(255,255,255,0.32); }
+    .ap-hide {
+      appearance: none; border: 1px solid rgba(255,255,255,0.14); background: transparent;
+      color: rgba(243,236,226,0.72); font: inherit; font-size: 12px; line-height: 1;
+      padding: 4px 8px; border-radius: 999px; cursor: pointer;
+    }
+    .ap-hide:hover { border-color: rgba(255,255,255,0.32); color: #f3ece2; }
 
     /* stage -------------------------------------------------------------- */
     .ap-stage {
@@ -3852,6 +3865,19 @@ function mountPanelInto(hostNode) {
     void setEnabled(!on)
   })
 
+  // Hide the panel, not Aura: the visual and a film behind the window keep
+  // running. The status-bar menu and Ctrl+Shift+H bring it back.
+  const hidePanel = doc.createElement('button')
+  hidePanel.type = 'button'
+  hidePanel.className = 'ap-hide'
+  hidePanel.textContent = '⇥'
+  hidePanel.setAttribute('aria-label', 'Hide the Right panel')
+  hidePanel.title = 'Hide the Right panel (Aura keeps running). Bring it back from the Aura menu or with Ctrl+Shift+H.'
+  hidePanel.addEventListener('click', event => {
+    if (event && event.preventDefault) event.preventDefault()
+    setPanelEnabled(false)
+  })
+
   const spacer = doc.createElement('span')
   spacer.className = 'ap-spacer'
 
@@ -3859,6 +3885,7 @@ function mountPanelInto(hostNode) {
   head.appendChild(mode)
   head.appendChild(spacer)
   head.appendChild(power)
+  head.appendChild(hidePanel)
 
   // ---- stage -------------------------------------------------------------
   const body = doc.createElement('div')
@@ -4037,6 +4064,23 @@ function removePanel() {
 }
 
 /** The rect the film should occupy inside the panel, or null. */
+// Host menus and popovers sit at z-50; the film frames stay under them.
+const PANEL_FILM_Z = 40
+const WATCH_WINDOW_Z = 45
+
+/** The part of the film's slot that lies outside the visible pane, as a
+ *  clip-path, or 'none' when the whole slot is inside it. */
+function panelClipPath(slot) {
+  const box = panelEl && typeof panelEl.getBoundingClientRect === 'function' ? panelEl.getBoundingClientRect() : null
+  if (!slot || !box || !box.width || !box.height) return 'none'
+  const top = Math.max(0, Math.round(box.top - slot.top))
+  const left = Math.max(0, Math.round(box.left - slot.left))
+  const right = Math.max(0, Math.round((slot.left + slot.width) - (box.left + box.width)))
+  const bottom = Math.max(0, Math.round((slot.top + slot.height) - (box.top + box.height)))
+  if (!top && !left && !right && !bottom) return 'none'
+  return `inset(${top}px ${right}px ${bottom}px ${left}px)`
+}
+
 function panelVideoSlot() {
   const parts = panelParts
   if (!parts || !parts.stage || !parts.stage.getBoundingClientRect) return null
