@@ -890,7 +890,7 @@ await recordAsync('8. fresh install: pasting a YouTube playlist link on the page
 const freshF = makeCtx()
 const disposeF = pluginModule.default.register(freshF.ctx)
 
-await recordAsync('9. fresh install: dispose leaves nothing behind - no contributions, no timers, no listeners, no iframes', async () => {
+await recordAsync('9. fresh install: dispose leaves nothing behind - no contributions, no timers, no listeners, no frames', async () => {
   await tickPoll(freshF)
   const hostNode = mountPane(freshF)
 
