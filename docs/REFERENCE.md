@@ -193,12 +193,12 @@ four of them — `readable`, `readableSize` (`s`/`m`/`l`/`xl`), `readableFont`
 Subtitles live there too: `videoCaptions` (boolean, default `false`) and
 `videoCaptionLang` (a language tag such as `fr` or `en-US`; empty means
 "the machine's language, then English"). See
-[USAGE.md](USAGE.md#subtitles-cc) and §14 of [CONTRACT.md](../CONTRACT.md).
+[USAGE.md](USAGE.md#subtitles-cc) and §15 of [CONTRACT.md](../CONTRACT.md).
 
 Quality settings: `videoQuality` — the standing rule for archive.org films,
 `auto` (the file the source names), `smallest` or `largest`; default `auto`.
 A specific choice for the film playing now is the new `videoUrl`, with its
-bookmark copied across. See [USAGE.md](USAGE.md#quality) and §15 of
+bookmark copied across. See [USAGE.md](USAGE.md#quality) and §16 of
 [CONTRACT.md](../CONTRACT.md).
 
 Environment variables: `HERMES_HOME`, `AURA_CAPTURE`, `AURA_RADIO_BROWSER_SERVERS`,

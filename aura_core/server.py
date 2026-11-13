@@ -102,11 +102,11 @@ _STATIC_TYPES = {
     # [listen lane] The audio channel (radio / direct audio URLs) loaded by
     # both the visualiser page and the video backdrop page.
     "/audio.js": "text/javascript; charset=utf-8",
-    # [subtitles] The CC rules (embed query + live player commands), loaded by
-    # the video backdrop page and exercised by its contract test.
+    # The CC rules (embed query + live player commands), loaded by the video
+    # backdrop page and exercised by its contract test.
     "/captions.js": "text/javascript; charset=utf-8",
-    # [quality] What a quality switch is: YouTube's one honest answer, and the
-    # swap rule that keeps the position. Loaded by the same page.
+    # What a quality switch is: YouTube's one honest answer, and the swap rule
+    # that keeps the position. Loaded by the same page.
     "/quality.js": "text/javascript; charset=utf-8",
 }
 _VENDOR_TYPES = {
@@ -286,9 +286,9 @@ class _State:
         # agent tool) writes commands that the desktop window polls for.
         self.player: dict = {}
         self.player_seq = 0
-        # [savelist lane] The owner's saved library as the desktop last
-        # reported it (playlists + films). ``None`` until a desktop reports:
-        # "not reported yet" is not the same answer as "your list is empty".
+        # The desktop's saved library (playlists + films) as it last reported
+        # it. ``None`` until a desktop reports: "not reported yet" is not the
+        # same answer as "your list is empty".
         self.library: list | None = None
         self.commands: list = []
         self.command_seq = 0
@@ -726,13 +726,13 @@ def _capture_loop(stop_event: threading.Event) -> None:
 
 PLAYER_COMMANDS = ("play", "pause", "toggle", "next", "prev", "seek",
                    "volume", "load", "watch_window", "bring_back",
-                   # [subtitles] the CC switch; the active player answers it
+                   # the CC switch; the active player answers it
                    "captions",
-                   # [quality] switch the film to one of its real files (or set
-                   # the standing smallest/largest rule); the time is kept
+                   # switch the film to one of its real files (or set the
+                   # standing smallest/largest rule); the time is kept
                    "quality",
-                   # [savelist lane] the owner's own saved library: the agent
-                   # queues one of these and the desktop writes its settings.
+                   # the saved library: the agent queues one of these and the
+                   # desktop writes its own settings.
                    "save", "remove")
 MAX_QUEUED_COMMANDS = 64
 MAX_LIBRARY_ITEMS = 200
@@ -747,7 +747,7 @@ def _player_text(value: Any, limit: int = _PLAYER_TEXT_MAX) -> str:
 
 
 def _player_library(value: Any) -> list | None:
-    """The owner's saved library as the desktop reported it (or ``None``).
+    """The saved library as the desktop reported it (or ``None``).
 
     One entry per saved source: ``{label, url, kind}`` with ``kind`` either
     ``playlist`` or ``film``. Anything malformed is dropped rather than
@@ -827,7 +827,7 @@ def report_player(data: Any) -> dict:
             player["videoId"] = _player_text(data["videoId"], 64)
         if isinstance(data.get("kind"), str):
             player["kind"] = _player_text(data.get("kind"), 32)
-        # [quality] the standing smallest/largest rule the desktop holds, so
+        # the standing smallest/largest rule the desktop holds, so
         # aura_watch action=quality can report it with the film's choices.
         if isinstance(data.get("quality"), str):
             preference = _player_text(data["quality"], 16).strip().lower()
@@ -835,7 +835,7 @@ def report_player(data: Any) -> dict:
                 player["quality"] = preference
         if isinstance(data.get("desktop"), bool):
             player["desktop"] = bool(data["desktop"])
-        # [finding 7] A transport command that the active player could not
+        # A transport command that the active player could not
         # apply (next/prev on a single file) says so; the agent reads it back
         # on the following status instead of claiming the skip worked.
         if isinstance(data.get("applied"), bool):
@@ -843,9 +843,9 @@ def report_player(data: Any) -> dict:
         command = _player_text(data.get("last_command"), 32)
         if command:
             player["last_command"] = command
-        # [savelist lane] The desktop's saved library rides its report, so
-        # aura_watch action=list reads the owner's real list (and remove can
-        # resolve a title to a url). A report without a library leaves the
+        # The desktop's saved library rides its report, so aura_watch
+        # action=list reads the real list (and remove can resolve a title to a
+        # url). A report without a library leaves the
         # last known one alone — the pop-out page has no library to send.
         library = _player_library(data.get("library"))
         if library is not None:
@@ -869,7 +869,7 @@ def enqueue_command(data: Any) -> dict:
         if key in data and data[key] is not None:
             if key == "value":
                 number = _player_number(data[key])
-                # [subtitles] the CC switch is a boolean at the tool's edge; it
+                # the CC switch is a boolean at the tool's edge; it
                 # travels as 0/1 so the page has one shape to read.
                 if cmd == "captions" and isinstance(data[key], bool):
                     number = 1.0 if data[key] else 0.0
@@ -883,7 +883,7 @@ def enqueue_command(data: Any) -> dict:
                 if re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?", text):
                     command["lang"] = text
             elif key == "preference":
-                # [quality] the standing rule, one of three words; anything else
+                # the standing rule, one of three words; anything else
                 # is refused rather than stored.
                 text = _player_text(data[key], 16).strip().lower()
                 if text not in quality.PREFERENCES:
@@ -907,14 +907,14 @@ def enqueue_command(data: Any) -> dict:
     # own-origin rule as the pop-out, whatever sent it.
     if cmd in ("load", "watch_window") and command.get("url"):
         _check_film_url(command["url"])
-    # [savelist lane] save/remove always name their target: a url is enough to
-    # remove; the desktop also resolves a unique label when it is all it gets.
+    # save/remove always name their target: a url is enough to remove; the
+    # desktop also resolves a unique label when that is all it gets.
     if cmd == "save" and not command.get("url"):
         raise ValueError("save needs a url")
     if cmd == "remove" and not (command.get("url") or command.get("label")):
         raise ValueError("remove needs a url or a label")
-    # [quality] one of the item's real files, or the standing rule — never a
-    # command with nothing to do.
+    # One of the item's real files, or the standing rule: never a command with
+    # nothing to do.
     if cmd == "quality" and not (command.get("url") or command.get("preference")):
         raise ValueError("quality needs a url or a preference")
     with _STATE.lock:
@@ -999,7 +999,7 @@ def open_window(data: Any) -> dict:
         playing = reported.get("playing")
     if playing is False:
         options["paused"] = True
-    # [subtitles] The window starts with the owner's caption choice.
+    # The window starts with the saved caption choice.
     if isinstance(body.get("captions"), bool):
         options["captions"] = body["captions"]
         lang = body.get("lang")
@@ -1200,7 +1200,7 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/player":
                 self._send_json(player_payload())
             elif path == "/api/quality":
-                # [quality] The film's real versions. The desktop never talks to
+                # The film's real versions. The desktop never talks to
                 # archive.org itself: this is the one door, it validates the URL,
                 # and it answers from a small cache with a short timeout.
                 query = parse_qs(urlsplit(self.path).query)

@@ -321,12 +321,12 @@ No recorder is opened unless the visual actually needs audio:
 
 ## 13. Readable text through the theme contract (additive, 2026-11-13)
 
-The owner asked for the chat text to be changeable in font and colour so it can be read over a
-film. The supported door is the host theme contract (`DesktopTheme.typography` +
-`colors.foreground` / `mutedForeground`), never host markup: Aura contributes `aura-live` and
-re-registers that ONE contribution when a Readable choice changes, which the host treats as a
-theme change and repaints in place. No selector, stylesheet or style rule is added, and the host
-`html`/`body`/root styles are still never written (§11).
+Chat text has to be changeable in font and colour so it can be read over a film. The supported
+door is the host theme contract (`DesktopTheme.typography` + `colors.foreground` /
+`mutedForeground`), never host markup: Aura contributes `aura-live` and re-registers that ONE
+contribution when a Readable choice changes, which the host treats as a theme change and repaints
+in place. No selector, stylesheet or style rule is added, and the host `html`/`body`/root styles
+are still never written (§11).
 
 - Choices (`readable`, `readableSize`, `readableFont`, `readableInk` in the plugin's own settings
   record) map to tokens: size → `typography.baseSize` + `typography.lineHeight`; font →
@@ -341,7 +341,7 @@ theme change and repaints in place. No selector, stylesheet or style rule is add
   the Readable group links to it instead of overriding it.
 
 
-## 13. Where reaction strength and opacity draw (additive, 2026-11-13)
+## 14. Where reaction strength and opacity draw (additive, 2026-11-13)
 
 Both controls are first-run `0.25`; a saved config keeps its own value.
 
@@ -358,7 +358,7 @@ Both controls are first-run `0.25`; a saved config keeps its own value.
   is the exception — `web/player.html` has no opacity of its own, so its frame carries the
   adaptive video transparency.
 
-## 14. Subtitles (additive, 2026-11-13)
+## 15. Subtitles (additive, 2026-11-13)
 
 Ownership is unchanged: the page owns the player, the desktop half owns the choice.
 
@@ -377,14 +377,14 @@ Ownership is unchanged: the page owns the player, the desktop half owns the choi
   video id, because YouTube resets captions per video.
 - **Where the track list comes from.** The player's own `apiInfoDelivery` message
   (`{namespaces:['captions'], captions:{track, tracklist}}`), which it posts whether or not captions
-  are showing. Measured: a Netflix/BBC Earth upload publishes 17 tracks; ambient uploads publish no
-  captions namespace at all.
+  are showing. A captioned upload publishes many tracks; an ambient one publishes no captions
+  namespace at all.
 - **Direct files.** `<video>.textTracks[i].mode` is `showing` for the chosen track and `hidden` for
   the rest.
 - **Not detectable, and stated as such:** subtitles burned into the picture. No player API exposes
   them, so the CC switch cannot remove them; the README and USAGE say so.
 
-## 15. Quality (additive, 2026-11-13)
+## 16. Quality (additive, 2026-11-13)
 
 Ownership is unchanged: the server asks archive.org, the desktop half owns the choice, the page owns
 the picture.
@@ -398,10 +398,9 @@ the picture.
     and answers are cached per item for 10 min (32 items). A short timeout here can only cost the
     list — the film keeps playing on the url it already has.
   - `{ok: true, mode: "youtube", choices: [{url: "", label: "Auto (YouTube decides)", auto: true}],
-    smallest: "", largest: ""}`. Measured: the embed publishes `playbackQuality`,
-    `availableQualityLevels` and `preferredQuality` but ignores `setPlaybackQuality` (sent
-    `small`/`medium`/`hd720`/`hd1080`/`large`/`default`; `playbackQuality` stayed `hd1080`,
-    `preferredQuality` stayed `auto`). No `vq` parameter is ever added.
+    smallest: "", largest: ""}`. The embed publishes `playbackQuality`, `availableQualityLevels`
+    and `preferredQuality` but ignores `setPlaybackQuality` (see LIMITS.md). No `vq` parameter is
+    ever added.
   - `{ok: true, mode: "single", choices: [one file]}` for a direct media file, or
     `{ok: false, error: "not_a_film"}`.
   - Only `archive.org`/`www.archive.org` hosts are contacted; a lookalike host is not archive.org.

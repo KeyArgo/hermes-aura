@@ -75,9 +75,8 @@ offers none.
   cached per item) rather than by the desktop. Files a browser cannot play
   (`.avi`, `.gif`, posters, the archive's metadata files) are not offered.
 - **Switching keeps your place.** Choosing another file swaps the source in the
-  player at the same second and keeps playing — measured in headless Chromium:
-  a film at 124.5 s swapped to another derivative and carried on from 124.5 s.
-  The bookmark moves with it, so a reload resumes there too.
+  player at the same second and keeps playing; the bookmark moves with it, so a
+  reload resumes there too.
 - **New films: Auto / Smallest / Largest.** The second, smaller control is the
   rule for the *next* archive.org film: `Auto` plays exactly the file the source
   names; `Smallest` / `Largest` pick the smallest or largest version the item

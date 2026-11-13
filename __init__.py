@@ -484,8 +484,8 @@ def _player_snapshot() -> dict:
         snapshot["player"] = player.get("player") if isinstance(player.get("player"), dict) else {}
         if "seq" in player:
             snapshot["command_seq"] = player.get("seq")
-        # [savelist lane] The desktop reports the owner's saved library with
-        # its player report; ``None`` means it has not reported one yet.
+        # The desktop reports its saved library with the player report;
+        # ``None`` means it has not reported one yet.
         library = player.get("library")
         snapshot["library"] = library if isinstance(library, list) else None
     window = _get("/api/window")
@@ -1105,12 +1105,12 @@ SCHEMA_AURA_LISTEN = {
 # ---------------------------------------------------------------------------
 
 _WATCH_ACTIONS = ("search", "browse", "play", "now", "save", "remove", "list",
-                  # [quality] what this film's source can really offer, and the
-                  # one command that switches it without losing the place
+                  # what this film's source can really offer, and the one
+                  # command that switches it without losing the place
                   "quality")
 _WATCH_SEARCH_LIMIT = 10
 _WATCH_BROWSE_LIMIT = 10
-#: [quality] The standing rule a film is opened with. ``auto`` plays the file the
+#: The standing rule a film is opened with. ``auto`` plays the file the
 #: source names; the other two pick from the item's real derivatives.
 _WATCH_QUALITY_PREFERENCES = ("auto", "smallest", "largest")
 #: The committed shelf catalogue. Browsing is offline and instant: the file is
@@ -1357,13 +1357,13 @@ def _action_watch_play(args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# [savelist lane] the owner's own Aura library — save, remove, list
+# the saved Aura library — save, remove, list
 #
-# YouTube's own playlists are off-limits; this is the saved list the desktop
-# writes into its settings (``videoPlaylists`` / ``videoSources``), the same one
-# the Library's Add and Remove buttons edit. The agent never touches settings
+# YouTube's own playlists are off-limits; this is the list the desktop keeps in
+# its settings (``videoPlaylists`` / ``videoSources``), the same one the
+# Library's Add and Remove buttons edit. The agent never touches settings
 # itself: it queues one command on the player queue and the desktop's own
-# helpers write it, so the page updates live and there is one owner of truth.
+# helpers write it, so the page updates live.
 # ---------------------------------------------------------------------------
 
 _WATCH_LIBRARY_LIMIT = 200
@@ -1401,7 +1401,7 @@ def _watch_row_line(index: int, row: dict) -> str:
 
 
 def _watch_match(rows: list, args: dict) -> dict:
-    """Resolve the one saved row the owner means.
+    """Resolve the one saved row meant.
 
     ``url`` wins when given; otherwise the label must match exactly (ignoring
     case) or by one unique partial match. Anything ambiguous answers with every
@@ -1441,7 +1441,7 @@ def _watch_match(rows: list, args: dict) -> dict:
 
 
 def _action_watch_save(args: dict) -> dict:
-    """Add the given url (or what is playing) to the owner's saved library."""
+    """Add the given url (or what is playing) to the saved library."""
     snapshot = _player_snapshot()
     player_raw = snapshot.get("player")
     player: dict = player_raw if isinstance(player_raw, dict) else {}
@@ -1461,8 +1461,8 @@ def _action_watch_save(args: dict) -> dict:
     url = str(checked.get("url") or "")
     label = args.get("label")
     if not isinstance(label, str) or not label.strip():
-        # Default to the title the player already knows, so the owner's list
-        # reads like their list instead of a wall of urls.
+        # Default to the title the player already knows, so the saved list
+        # reads like a list instead of a wall of urls.
         known = player.get("label") or player.get("title") or ""
         label = str(known).strip()
     else:
@@ -1562,7 +1562,7 @@ def _action_watch_remove(args: dict) -> dict:
 
 
 def _action_watch_list() -> dict:
-    """The owner's saved library, as the desktop last reported it."""
+    """The saved library, as the desktop last reported it."""
     snapshot = _player_snapshot()
     if not snapshot:
         return {
@@ -1646,7 +1646,7 @@ def _action_watch_quality(args: dict) -> dict:
     single honest "Auto (YouTube decides)" for YouTube. ``set`` queues one
     ``quality`` command for the desktop: a choice's url, or the standing
     ``auto``/``smallest``/``largest`` rule. A YouTube film can never be given a
-    fake level — the command was measured to be ignored, so nothing is queued.
+    fake level: its embed ignores the command, so nothing is queued.
     """
     snapshot = _player_snapshot()
     if not snapshot:

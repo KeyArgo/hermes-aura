@@ -111,7 +111,7 @@ def test_player_url_carries_desktop_auth_and_position():
 
 def test_player_url_carries_the_caption_switch():
     # The popped-out window is a player surface too: it must start with the
-    # owner's caption choice, not with YouTube's default.
+    # saved caption choice, not with YouTube's default.
     off = window.player_url(4567, "s3cret", "https://youtu.be/abc")
     assert "captions=" not in off and "cc_lang=" not in off
     on = window.player_url(4567, "s3cret", "https://youtu.be/abc", captions=True, lang="fr")

@@ -780,10 +780,9 @@ record('contributes the Aura page route and its sidebar row', () => {
   assert.equal(a.contributions.some(c => c.area === 'palette'), false, 'no palette command is wanted')
 })
 
-// The pane itself is a VIDEO surface now (owner 04:50): its layout and its
-// settings drawer are proven on a video-mode context in the "Right panel is a
-// video surface" block further down, and in visualizer mode there is no pane to
-// check at all.
+// The pane is a video surface: its layout and its settings drawer are proven on
+// a video-mode context in "the Right panel is a VIDEO surface" block below, and
+// in visualizer mode there is no pane to check at all.
 record('in visualizer mode the Right panel is not contributed at all', () => {
   // Scenario A is visualizer mode with the "Right panel" switch on, and the
   // panel still must not exist: it is a film surface, and no film is on.
@@ -2110,8 +2109,8 @@ record('the starter pack grew, and every source is unique and well-formed', () =
   for (const { label, url } of starterEntries) {
     assert.ok(label.trim().length >= 3, `starter label is too short for ${url}`)
     assert.doesNotMatch(url, /\s/, `starter url contains whitespace: ${url}`)
-    // The owner's own playlist must never ship. Only a hash of its id prefix is
-    // kept here, so this guard cannot leak the id it guards.
+    // A real playlist must never ship. Only a hash of its id prefix is kept
+    // here, so this guard cannot leak the id it guards.
     const listId = (url.match(/[?&]list=([\w-]+)/) || [])[1] || ''
     assert.notEqual(createHash('sha256').update(listId.slice(0, 13)).digest('hex'), 'e5ae157250010ee61f730d5febabf21442331cd454557858b3f37493a8d3863a',
       `a real playlist id leaked into the pack: ${url}`)
@@ -2693,8 +2692,8 @@ await recordAsync('page buttons: Frame in Hermes floats inside Hermes, Pop out t
   void frames
 
   // A host with no browser: the server says so, so the film falls back to its
-  // frame inside Hermes — and the user is told. Owner 04:50: the fallback is
-  // allowed only on available:false, and it is never silent.
+  // frame inside Hermes and the user is told. The fallback is allowed only on
+  // available:false, and it is never silent.
   const y = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/one.mp4' })
   const originalY = y.ctx.rest
   y.ctx.rest = async (route, options = {}) => {
@@ -2890,8 +2889,8 @@ record('review 1: nothing measures or queries the app\'s composer', () => {
   assert.ok(!/querySelectorAll\(\s*['"]textarea/.test(source), 'the composer scan is back')
   assert.ok(!/contenteditable/.test(source), 'the composer scan is back')
   assert.ok(!/composerRect/.test(source), 'the composer-rect measuring helper is back')
-  // The strip floats over the app (owner: it must sit where it was dropped), but
-  // its coordinates are the user's own — never derived from the app's markup.
+  // The strip floats over the app and sits where it was dropped, but its
+  // coordinates are the user's own — never derived from the app's markup.
   assert.ok(!/elementsFromPoint|elementFromPoint/.test(source), 'the strip measures the app again')
   assert.match(source, /videoBarX/, 'the strip has no saved position of its own')
 })
@@ -2938,8 +2937,8 @@ await recordAsync('quality: Aura (visualiser) mode frames the local visualiser o
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
     await primeLive()
-    // Owner 04:50: the Right panel is a film surface, so visualizer mode has no
-    // pane at all. The Aura page is the surface that frames the visualiser.
+    // The Right panel is a film surface, so visualizer mode has no pane at all.
+    // The Aura page is the surface that frames the visualiser.
     assert.equal(ctx.contributions.find(c => c.area === 'panes'), undefined,
       'the Right panel is contributed while the Aura visual is the backdrop')
     pageStage(1200, 400)
@@ -3194,10 +3193,9 @@ await recordAsync('the chip shows nothing until the backend answers, then copies
 })
 
 await recordAsync('cold start: the film appears when the server answers, with no toggling', async () => {
-  // Owner's blocker: "it doesn't even play at all ... I had to toggle aura on and
-  // off and then visualizer and video". A cold start must mount the player as
-  // soon as the backend answers — the user touches nothing. The Right panel is
-  // the film's surface (owner 04:50), so this is the video-mode cold start.
+  // A cold start must mount the player as soon as the backend answers, with the
+  // user touching nothing. The Right panel is the film's surface, so this is the
+  // video-mode cold start.
   const ctx = makeCtx({
     enabled: true,
     backdropMode: 'video',
@@ -3231,7 +3229,7 @@ await recordAsync('a stale backend is named, not left looking broken', async () 
   // Hermes keeps the Python module it loaded: after an update the pane can be new
   // while the server is old. Its /version then has no `line`, and the pane says
   // so — "restart Hermes to finish the update" — instead of drawing nothing.
-  // The pane is a video-mode surface (owner 04:50), so that is where its note lives.
+  // The pane is a video-mode surface, so that is where its note lives.
   const ctx = makeCtx({ enabled: true, backdropMode: 'video' })
   const dispose = pluginModule.default.register(ctx.ctx)
   try {
@@ -3271,13 +3269,12 @@ await recordAsync('a stale backend is named, not left looking broken', async () 
   }
 })
 
-// ------------------------------------- lane strip-drag: the strip is the user's
+// ------------------------------------- strip-drag: the strip is the user's
 // Two bugs, one cause: the transport strip was not the user's to place. The ⠿
-// grip popped the film out into window mode (older code called
-// writeSettings({ videoWindow: true }) from the drag), and the strip parked
-// itself by scanning the app's composer, so a new panel with text inputs shoved
-// it up over the chat. Now: a drag moves the strip and nothing else, the
-// position is the user's (videoBarX / videoBarY), and no app markup is read.
+// grip popped the film out into window mode, and the strip parked itself by
+// scanning the app's composer, so a new panel with text inputs shoved it up over
+// the chat. Now a drag moves the strip and nothing else, the position is the
+// user's (videoBarX / videoBarY), and no app markup is read.
 
 const stripSettingsOf = ctx => ctx.storage.get('settings') || {}
 // The strip is a singleton (one transport, one player); the host slot it lives
@@ -3487,11 +3484,11 @@ record('strip-drag: the strip stays inside the window at drop and on resize', ()
 })
 
 // ------------------------------------------------------------- scenario NP
-// Now playing (owner ask): whatever film plays — starter, any YouTube video or
-// playlist item, direct file — says its title, and its channel when the player
-// knows it, on the Aura page next to the big player, large and clear. The
-// status-bar item that carries the "A" is bold and full contrast, accent while
-// Aura is active, and includes the same "Watching …" line.
+// Now playing: whatever film plays — starter, any YouTube video or playlist
+// item, direct file — says its title, and its channel when the player knows it,
+// on the Aura page next to the big player, large and clear. The status-bar item
+// that carries the "A" is bold and full contrast, accent while Aura is active,
+// and includes the same "Watching …" line.
 
 const npUrl = 'https://www.youtube.com/watch?v=JK9x0zqldsE'
 // The host window is a browser, so `message` events have a real target. The
@@ -3625,11 +3622,10 @@ record('dispose from the now-playing scenario is clean', () => {
 })
 
 // ------------------------------------------------------------ readable text
-// Owner ask: "change the font and color of the hermes chat text so we can make
-// it much easier to read". The only supported door is the host theme contract —
-// typography (baseSize/fontSans/fontUrl) and colours (foreground/
-// mutedForeground) on Aura's OWN contributed theme. Nothing here may restyle
-// host markup, so the DOM checks below are part of the scenario, not an aside.
+// Chat text has to be readable over a film, and the only supported door is the
+// host theme contract — typography (baseSize/fontSans/fontUrl) and colours
+// (foreground/mutedForeground) on Aura's OWN contributed theme. Nothing here may
+// restyle host markup, so the DOM checks below are part of the scenario.
 
 sdk.themeState.name = 'nous'
 const rd = makeCtx({ enabled: true, themeOptIn: false })
@@ -3653,8 +3649,8 @@ const rdControl = label => {
   assert.ok(node, `no Readable control labelled "${label}"`)
   return node
 }
-// Relative luminance, so "easy to read over a film" is measured, not asserted
-// by vibes: the readable inks are the ones that stay bright on a dark surface.
+// Relative luminance, so "easy to read over a film" is measured rather than
+// asserted: the readable inks are the ones that stay bright on a dark surface.
 const luminance = hex => {
   const channels = [1, 3, 5].map(at => parseInt(String(hex).slice(at, at + 2), 16) / 255)
     .map(v => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
@@ -3793,11 +3789,11 @@ record('dispose from the readable scenario is clean', () => {
 })
 
 // ----------------------------------------- the Right panel is a VIDEO surface
-// Owner 04:50: "the right panel shows ONLY in video mode". It used to be
-// contributed whenever the "Right panel" switch was on, so it sat over the Aura
-// visual with no film to show and stayed there after the film was closed. Now
-// the pane exists exactly while video mode holds the film, comes back with it,
-// and the switch means "show it in video mode".
+// The panel shows ONLY in video mode. It used to be contributed whenever the
+// "Right panel" switch was on, so it sat over the Aura visual with no film to
+// show and stayed there after the film was closed. Now the pane exists exactly
+// while video mode holds the film, comes back with it, and the switch means
+// "show it in video mode".
 const rightPanelScenario = extra => makeCtx({
   enabled: true,
   backdropMode: 'video',
@@ -3902,7 +3898,7 @@ await recordAsync('right panel: video mode shows it, the Aura visual takes it aw
   try {
     assert.ok(hasRightPanel(ctx), 'video mode did not contribute the Right panel')
     assert.equal(tx.panelVisible(), true, 'a video-mode panel is not counted as on screen')
-    // The real switch the owner would use, not a settings poke.
+    // The real switch a user would flip, not a settings poke.
     await tx.setBackdropMode('aura')
     assert.equal(hasRightPanel(ctx), false, 'the panel stayed after switching to the Aura visual')
     assert.equal(tx.panelVisible(), false, 'a removed panel still counts as on screen')
@@ -3932,11 +3928,11 @@ await recordAsync('right panel: closing the film takes the panel away, reopening
 })
 
 // ------------------------------------------------------ narrow-surface layout
-// Owner screenshots: the quick menu's bottom row overflowed its right edge, and
-// the docked pane squashed its play button, spread its volume slider past the
-// card and clipped film titles to "Yo...". These tests pin the rule for both
-// boxes: nothing may be wider than the box it sits in, and the two pop-out
-// buttons say the same words on every surface.
+// Neither box may be wider than the box it sits in: the quick menu's bottom row
+// overflowed its right edge, and the docked pane squashed its play button,
+// spread its volume slider past the card and clipped film titles to "Yo...".
+// These tests pin that rule for both, and that the two pop-out buttons say the
+// same words on every surface.
 
 // Each scenario below registers its own context: registering replaces the
 // plugin's global settings, so a shared one would leak between tests.
@@ -4754,12 +4750,10 @@ record('subtitles: the Aura page and the panel carry the same CC control', () =>
   }
 })
 
-// ------------------------------------------- lane popout: the frame and the window
-// Owner, live on the hackathon build: "small frame in hermes has no drag bar.
-// pop out to its own window doesn't do anything". Two separate failures, so two
-// sets of tests: the frame must BE a frame (own bar, own position, draggable),
-// and the pop-out must either open the OS window or say the server's own reason
-// out loud — never quietly do something else.
+// ------------------------------------------- popout: the frame and the window
+// Two separate failures, so two sets of tests: the frame must BE a frame (own
+// bar, own position, draggable), and the pop-out must either open the OS window
+// or say the server's own reason out loud — never quietly do something else.
 
 // The frame starts at a free point well inside the viewport, so a drag has room
 // to move in every direction (the corner presets park it against an edge).
@@ -4961,10 +4955,9 @@ await recordAsync('pop out: an error reply shows the server reason and moves not
 })
 
 // ------------------------------------------- watching with Aura switched off
-// Owner: "even if aura is off you should be able to play in the aura app, the
-// on and off is for being able to overlay on your chat … not inside the plugin".
 // The page, the Right panel, the film frame, the pop-outs and the strip are
-// Aura's own surfaces. Aura's switch owns the overlay painted on the chat.
+// Aura's own surfaces and play with Aura switched off; the switch owns only the
+// overlay painted on the chat.
 
 const offWatchUrl = 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
 const offCtx = makeCtx({
@@ -5041,9 +5034,8 @@ record('aura off: the control strip is there to play the film with', () => {
 disposeOffStrip()
 
 // ------------------------------------------- the sidebar row is optional
-// Owner: "there should be an option in there to remove the menu option and
-// only have in status tray". Off removes the sidebar row only: the page stays
-// registered, and the status-bar menu carries the way in.
+// Off removes the sidebar row only: the page stays registered, and the
+// status-bar menu carries the way in.
 
 const navCtx = makeCtx({
   enabled: true,
@@ -5094,9 +5086,8 @@ record('sidebar: switching it back on puts the row back and drops the menu link'
 disposeNav()
 
 // ------------------------------------------- one-click "Play a film"
-// Owner: playing a film from the status bar took three switches. One control
-// resumes the last film where it stopped (or starts the first pick), and it
-// puts Aura into video mode itself.
+// One control resumes the last film where it stopped (or starts the first
+// pick), and it puts Aura into video mode itself.
 
 const playLastUrl = 'https://example.com/last-night.mp4'
 const playCtx = makeCtx({
@@ -5245,12 +5236,12 @@ record('stall: a film that reports playing is never called stuck', () => {
 pageStage(null)
 disposeReady()
 
-// --------------------------------------- lane controlbar: the strip, redesigned
-// Owner ask, in his words: "seek bar across the whole top, times on the bottom;
-// big bottom controls; both pop-out buttons on the bottom row; X on the left,
-// under the drag bar but low enough that moving the bar can't hit it;
-// transparency, and mouse wheel / hover / keyboard control like the volume."
-// These pin the layout and the three gestures, not a screenshot.
+// --------------------------------------- controlbar: the strip, redesigned
+// The layout, not a screenshot: seek bar across the whole top, times on the
+// bottom, big bottom controls, both pop-out buttons on the bottom row, X on the
+// left under the drag bar but low enough that moving the bar cannot hit it, plus
+// transparency and mouse wheel / hover / keyboard control like the volume. The
+// three gestures are pinned here too.
 
 const barUrl = 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
 const barSettings = extra => Object.assign({
@@ -5307,7 +5298,7 @@ record('control bar: the seek bar spans the whole strip, times on their own row'
     assert.equal(timeRow.children[0], elapsed, 'the elapsed clock is not on the left')
     assert.equal(timeRow.children[timeRow.children.length - 1], remaining,
       'the remaining clock is not on the right')
-    // The seek row comes before the clocks — the owner's order, top to bottom.
+    // The seek row comes before the clocks, top to bottom.
     const order = stripRows(bar).indexOf(seekRow)
     assert.equal(stripRows(bar).indexOf(timeRow), order + 1, 'the clocks are not directly under the seek bar')
   })
@@ -5503,10 +5494,10 @@ record('control bar: every button is named, and a 320px window wraps instead of 
 })
 
 // ---------------------------------------------------------------- quality
-// The owner asked for a quality picker that is honest about each source:
-// archive.org's real derivatives as choices, YouTube's one honest answer ("Auto
-// (YouTube decides)" — measured: the embed ignores setPlaybackQuality), and
-// nothing at all for a single direct file. No control goes on the strip.
+// A quality picker that is honest about each source: archive.org's real
+// derivatives as choices, YouTube's one honest answer ("Auto (YouTube decides)"
+// — the embed ignores setPlaybackQuality), and nothing at all for a single
+// direct file. No control goes on the strip.
 
 const ARCHIVE_ITEM = 'The_General_Buster_Keaton'
 const ARCHIVE_BASE = `https://archive.org/download/${ARCHIVE_ITEM}/`
@@ -5583,7 +5574,7 @@ await recordAsync('quality: the A menu lists the film\'s real archive.org files'
     const page = pageOf(ctx)
     assert.ok(qualitySelect(page, 'Quality (settings)'), 'the Aura page has no Quality control')
     assert.ok(qualitySelect(page, 'Quality rule (settings)'), 'the page has no quality rule control')
-    // And it is NOT on the floating strip (another lane owns that strip).
+    // And it is NOT on the floating strip, which carries the transport only.
     const strip = layoutMountPanel(ctx)
     walk(strip, node => {
       assert.notEqual(node.props && node.props['aria-label'], 'Quality', 'the quality control is on the strip')

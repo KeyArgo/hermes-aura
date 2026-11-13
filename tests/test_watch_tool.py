@@ -130,8 +130,8 @@ def online(plugin, monkeypatch):
     return recorder
 
 
-# What the desktop reports as the owner's saved library: playlists first, then
-# films, each already carrying the label the desktop shows.
+# What the desktop reports as its saved library: playlists first, then films,
+# each already carrying the label the desktop shows.
 LIBRARY = [
     {"label": "Full octopus documentaries",
      "url": "https://www.youtube.com/playlist?list=PLabcdefghijklmnopqrstuvwxyz012345",
@@ -174,8 +174,8 @@ def test_schema_is_valid_and_unmissable(plugin):
     for phrase in ("action=search", "numbered", "stop", "wait", "action=play",
                    "action=now", "title, channel, length and link"):
         assert phrase in description, f"the description must say {phrase!r}"
-    # The new library actions are discoverable from the description alone, in
-    # the owner's own words.
+    # The library actions are discoverable from the description alone, in the
+    # user's own words.
     for phrase in ("action=save", "action=remove", "action=list", "save this",
                    "add the octopus one to my list", "remove nosferatu",
                    "what's on my list?"):
@@ -455,7 +455,7 @@ def test_tool_never_raises_when_the_player_layer_breaks(plugin, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# save / remove / list — the owner's own Aura library
+# save / remove / list — the saved Aura library
 # ---------------------------------------------------------------------------
 
 def test_save_queues_exactly_one_save_for_the_given_url(plugin, online):
@@ -718,10 +718,10 @@ def test_dashboard_search_survives_a_broken_module(dashboard, monkeypatch):
 # ---------------------------------------------------------------------------
 # quality — what the film can really be shown at
 #
-# Measured, not assumed: archive.org items have real files (with size and
-# resolution), YouTube's embed publishes its levels but ignores the command to
-# change them, and a direct file is one file. The choices themselves come from
-# the server's /api/quality, so the tool is exercised against a recorder.
+# archive.org items have real files (size and resolution), YouTube publishes its
+# levels but ignores the command to change them, and a direct file is one file.
+# The choices come from the server's /api/quality, so the tool is exercised
+# against a recorder.
 # ---------------------------------------------------------------------------
 
 from aura_core import quality as quality_mod  # noqa: E402

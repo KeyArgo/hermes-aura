@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml"><img alt="CI: tests" src="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml/badge.svg?branch=main"></a>
-  <a href="TESTING.md"><img alt="755 tests passing" src="https://img.shields.io/badge/tests-755%20passing-2ea44f?style=flat-square"></a>
+  <a href="TESTING.md"><img alt="864 tests passing" src="https://img.shields.io/badge/tests-864%20passing-2ea44f?style=flat-square"></a>
   <a href="https://github.com/NousResearch/hermes-agent/pull/154027"><img alt="Hermes plugin catalog: in review" src="https://img.shields.io/badge/plugin%20catalog-in%20review-f59e0b?style=flat-square"></a>
   <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/license-MIT-2f6bff?style=flat-square"></a>
   <a href="https://github.com/NousResearch/hermes-agent"><img alt="Hermes Agent 0.22.5 or newer" src="https://img.shields.io/badge/Hermes%20Agent-%E2%89%A5%200.22.5-7c3aed?style=flat-square"></a>
@@ -101,40 +101,29 @@ streams audio from the backend, and that stream is what keeps capture awake on a
   and fall back to your saved sources when the current source is a single video.
 - **Auto-skip.** A playlist item that forbids embedding (or has been deleted)
   would otherwise break the whole list, so Aura resolves the playlist
-  server-side and moves to the next playable episode. A film that simply never
-  starts is not a blocked one: after 20 s with no picture the stage says *This
-  film isn't loading* and offers **Try again** and **Pick another**, instead of
-  spinning forever.
+  server-side and moves to the next playable episode. A film that never starts
+  at all says so after 20 s and offers **Try again** or **Pick another**.
 - **Manage a playlist where it lives.** `☰` hands the list to the pop-out
   window — real Chromium on its own profile — so YouTube's own page opens and
   adding, removing and reordering work with your own session. No API scope, no
   OAuth review, no second account.
-- **Subtitles you control.** A **CC** button on the control strip, the pane, the
-  Aura page and the A menu turns the film's captions on and off, and the choice
-  is remembered. When a video has several caption tracks the menu lists the ones
-  it actually has and switches between them (Automatic means your machine's
-  language, then English); YouTube forgets captions per video, so Aura
-  re-applies the choice on every episode. A video with no caption track greys
-  the button out — *No subtitles for this video*. **Subtitles burned into the
-  picture cannot be turned off**: no player API exposes them, so the CC button
-  cannot remove them. That is the upload's choice, not a setting of ours.
+- **Subtitles you control.** A **CC** button on the strip, the pane, the Aura
+  page and the A menu turns the film's captions on and off, remembers the
+  choice, and offers the tracks the video itself publishes. A video with none
+  greys it out; subtitles burned into the picture cannot be turned off. See
+  [docs/USAGE.md](docs/USAGE.md#subtitles-cc).
 - **Quality that is honest about the source.** A **Quality** control in the A
-  menu and on the Aura page lists the files the film really has: an archive.org
-  item's own derivatives (`640×480 · 393 MB · h.264`, `320×240 · …`) with the
-  size and resolution from the item's metadata, and a **New films** rule
-  (Auto / Smallest / Largest) applied to the next archive.org film. Switching
-  keeps the exact second. YouTube *publishes* its levels but ignores the command
-  to change them, so its one choice reads **Auto (YouTube decides)** — no level
-  is faked. A direct MP4 has one file and therefore no picker.
+  menu and on the Aura page lists the files the film really has — an archive.org
+  item's own derivatives, plus a **New films** rule (Auto / Smallest / Largest) —
+  and switching keeps the exact second. YouTube publishes its levels but ignores
+  the command to change them, so its one choice reads **Auto (YouTube decides)**;
+  a direct MP4 has no picker. See [docs/USAGE.md](docs/USAGE.md#quality).
 - **Free placement.** The floating watch window drags anywhere and remembers its
-  spot; 320 / 480 / 640 wide. Its control strip is four rows — the drag bar, a
-  seek bar across the full width, elapsed on the left and time-left over the
-  length on the right, then one big row of 36px controls (Close at the far left,
-  transport, volume, CC, and both pop-out buttons together) — stays inside the
-  viewport, wraps instead of overflowing, is translucent at rest and solid under
-  the pointer or keyboard, seeks ±5 s on the wheel over the seek bar, changes the
-  level ±5% over the volume, and answers Left/Right, Up/Down, Space, C and Escape
-  while it holds the focus. It dims when idle instead of vanishing.
+  spot; 320 / 480 / 640 wide. Its control strip is four rows — drag bar, seek bar
+  across the full width, the clocks, then one big row of 36px controls — stays
+  inside the viewport, wraps instead of overflowing, and dims when idle instead
+  of vanishing. Wheel, keyboard and see-through: see
+  [docs/USAGE.md](docs/USAGE.md#the-control-strip).
 - **An Aura page in the sidebar — the whole product in one place.** The same
   film in a big 16:9 frame with the transport, volume and source picker, a
   **Library** of poster cards (add, rename, remove, hide starters, clear
@@ -564,9 +553,9 @@ node --test tests/test_desktop_plugin.mjs
 
 | Suite | Result at this commit |
 |---|---|
-| Python (capture, analysis, server, hooks, tools, radio, search, catalogue, quality) | **567 passed** |
-| Desktop contract (menu, pane, transport, resume, mode gating, shelf, quality) | **188 passed, 0 failed** |
-| **Total** | **755 passed** |
+| Python (capture, analysis, server, hooks, tools, radio, search, catalogue, quality) | **578 passed** |
+| Desktop contract, every `tests/*.mjs` (menu, pane, transport, resume, mode gating, shelf, quality) | **286 checks, 0 failed** |
+| **Total** | **864** |
 
 The end-to-end visualiser tests drive a real headless Chrome and measure the
 canvas. They skip themselves when the machine is too loaded to sample reliably

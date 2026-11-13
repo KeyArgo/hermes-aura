@@ -191,12 +191,12 @@ const DEFAULT_SETTINGS = Object.freeze({
   audioLabel: '',
   audioVolume: 0.7,
   videoMuted: false,
-  // [subtitles] Captions are off unless asked for: YouTube picks for itself
+  // Captions are off unless asked for: YouTube picks for itself
   // otherwise. The language is the viewer's own choice from the list the
   // player publishes; empty means "the machine's language, then English".
   videoCaptions: false,
   videoCaptionLang: '',
-  // [quality] The standing rule for archive.org films (auto / smallest /
+  // The standing rule for archive.org films (auto / smallest /
   // largest). A specific choice for the film playing now lives in videoUrl.
   videoQuality: 'auto',
   // Highest audio_request seq this install has consumed. A new seq plays;
@@ -245,10 +245,10 @@ const DEFAULT_SETTINGS = Object.freeze({
 })
 
 // ---- Readable: chat text you can read over a film -------------------------
-// The host theme contract is the SUPPORTED door for how text looks
-// (DesktopTheme.typography + colors.foreground / mutedForeground). Every choice
-// below becomes a token on Aura's contributed theme; the host paints it. This
-// file never styles host markup to get there.
+// The host theme contract is the supported door for how text looks
+// (DesktopTheme.typography + colors.foreground / mutedForeground): every choice
+// below becomes a token on Aura's contributed theme and the host paints it.
+// Nothing here styles host markup.
 const READABLE_SIZES = Object.freeze(['s', 'm', 'l', 'xl'])
 const READABLE_SIZE_LABELS = Object.freeze({ s: 'S', m: 'M', l: 'L', xl: 'XL' })
 // The host's own root size is 1rem (`--dt-base-size` in styles.css), so M is
@@ -336,9 +336,9 @@ const STARTER_SOURCES = Object.freeze([
   { label: 'Wildlife Takeover: Chernobyl · documentary', url: 'https://www.youtube.com/watch?v=XaUNhqnpiOE' },
   { label: 'Destination Wild: Wild Islands · documentary', url: 'https://www.youtube.com/watch?v=JMI_jWFLET0' },
   // The long, quiet half of the pack: things worth leaving running behind
-  // work. Every entry is the rights-holder's own upload and was checked with
-  // YouTube's oEmbed endpoint (200 = this video may be framed; 401/403/404 =
-  // it may not). Durations are the upload's own, from the same check.
+  // work. Every entry is the rights-holder's own upload, checked with YouTube's
+  // oEmbed endpoint (200 = may be framed; 401/403/404 = may not). Durations are
+  // the upload's own, from the same check.
   //
   // BBC Earth — the channel's own ambient oceanscape cuts, ten hours each.
   { label: 'Open Ocean (10 h) · oceanscape', url: 'https://www.youtube.com/watch?v=AgpWX18dby4' },
@@ -426,29 +426,29 @@ const MEDIA_FILE_RE = /\.(mp4|webm|ogg|ogv|m4v|mov|m3u8)(?:[?#]|$)/i
 const EMPTY_VIDEO = Object.freeze({
   kind: '', playing: false, position: 0, duration: 0, muted: true,
   title: '', author: '', controllable: false, reportedAt: 0,
-  // [subtitles] What the player says about its captions: {on, lang, current,
+  // What the player says about its captions: {on, lang, current,
   // known, tracks:[{code, name}]}. null until it has said anything.
   captions: null,
-  // [quality] The level YouTube reports it is playing ('' when it has not said,
+  // The level YouTube reports it is playing ('' when it has not said,
   // and always '' for a direct file).
   quality: ''
 })
 const VIDEO_URL_MAX = 2048
-// [subtitles] A caption language tag the player (and YouTube) will accept.
+// A caption language tag the player (and YouTube) will accept.
 // Anything else is dropped: it ends up in a query string and a third party.
 const CAPTION_LANG_RE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/
-// [quality] The standing rule a film is opened with: `auto` plays the file the
-// source names, the other two pick from the item's real derivatives (the server
-// lists them; the desktop never asks archive.org itself).
+// The standing rule a film is opened with: `auto` plays the file the source
+// names, the other two pick from the item's real derivatives (listed by the
+// server; the desktop never asks archive.org itself).
 const VIDEO_QUALITY_RULES = ['auto', 'smallest', 'largest']
 const VIDEO_QUALITY_LABELS = {
   auto: 'Auto',
   smallest: 'Smallest',
   largest: 'Largest'
 }
-// [quality] What YouTube can honestly be told, measured in headless Chromium:
-// the embed publishes its levels and ignores setPlaybackQuality, so this is the
-// only choice it gets — and there is no vq= hack anywhere in this plugin.
+// What YouTube can honestly be told: the embed publishes its levels and ignores
+// setPlaybackQuality, so this is the only choice it gets. There is no vq= hack
+// anywhere in this plugin.
 const QUALITY_AUTO_YOUTUBE = 'Auto (YouTube decides)'
 const EMPTY_QUALITY = Object.freeze({
   url: '', mode: '', choices: [], smallest: '', largest: '', note: '', loading: false, error: ''
@@ -637,7 +637,7 @@ const $staleServer = atom(false)
 // `loaded` is false until that fetch has succeeded, so a failed request is
 // retried on the next visit instead of being remembered as "no catalogue".
 const $catalog = atom({ loaded: false, error: '', items: [] })
-// [quality] The film's real versions, as the server reported them: {url, mode,
+// The film's real versions, as the server reported them: {url, mode,
 // choices:[{url,label,width,height,size_bytes,current}], smallest, largest}.
 // Keyed by the film's url so a switch cannot show the previous film's files.
 const $quality = atom({ ...EMPTY_QUALITY })
@@ -787,12 +787,10 @@ function shortLabel(url) {
   return file && file !== host ? host + ' / ' + decoded.slice(0, 40) : host
 }
 
-/** The title Aura already stores for a source URL, or ''. Sources the user
- *  added, saved playlists, the starter pack and recents all carry a label;
- *  shortLabel() is the last resort. A source picked from the starter pack also
- *  lands in recents with the generic shortLabel, so a real label always wins.
- *  Used so the page can name a film the instant a source is picked, before the
- *  player has reported anything. */
+/** The title Aura already stores for a source URL, or ''. Added sources, saved
+ *  playlists, the starter pack and recents all carry a label and shortLabel()
+ *  is the last resort, so a real label always wins. This lets the page name a
+ *  film the instant a source is picked, before the player has reported. */
 function storedSourceTitle(url) {
   const clean = typeof url === 'string' ? url.trim() : ''
   if (!clean) return ''
@@ -880,13 +878,13 @@ function readSettings(ctx) {
     if (Number.isFinite(raw.videoWindowX)) out.videoWindowX = Math.round(raw.videoWindowX)
     if (Number.isFinite(raw.videoWindowY)) out.videoWindowY = Math.round(raw.videoWindowY)
     if (typeof raw.videoClosed === 'boolean') out.videoClosed = raw.videoClosed
-    // [subtitles] A boolean and a language tag, each validated on its own so a
+    // A boolean and a language tag, each validated on its own so a
     // stale or hand-edited config can never reach the embed query.
     if (typeof raw.videoCaptions === 'boolean') out.videoCaptions = raw.videoCaptions
     if (typeof raw.videoCaptionLang === 'string' && CAPTION_LANG_RE.test(raw.videoCaptionLang.trim())) {
       out.videoCaptionLang = raw.videoCaptionLang.trim()
     }
-    // [quality] One of three words, validated here so a stale or hand-edited
+    // One of three words, validated here so a stale or hand-edited
     // config can never become a rule the picker invents.
     if (typeof raw.videoQuality === 'string' && VIDEO_QUALITY_RULES.includes(raw.videoQuality)) {
       out.videoQuality = raw.videoQuality
@@ -948,11 +946,10 @@ function setError(message) {
 
 /** Say something the user will actually see.
  *
- *  Three seats, because which one is on screen depends on the layout: the
- *  pane's stage line (`note`), the host's own notification (a toast outside any
- *  of our surfaces) and the settings page's server line. A pop-out failure used
- *  to reach the settings line only — which is why clicking "Pop out to desktop"
- *  looked like it did nothing at all. */
+ *  Three seats, because which one is on screen depends on the layout: the pane's
+ *  stage line (`note`), the host's own notification (a toast outside any of our
+ *  surfaces) and the settings page's server line. A failure has to reach every
+ *  seat the user might be looking at, or a click appears to do nothing. */
 function sayIt(text, ms) {
   const message = String(text || '').trim()
   if (!message) return
@@ -997,7 +994,7 @@ function backdropSrc(url, mode) {
     // [listen lane] A muted film must come back muted: the music channel is
     // what the user hears while it is.
     if (settings.videoMuted) query.append('mute', '1')
-    // [subtitles] The page asks the embed for captions only when the viewer
+    // The page asks the embed for captions only when the viewer
     // wants them, and in the language they chose (the page falls back to the
     // machine's own language when none is set).
     if (settings.videoCaptions) query.append('captions', '1')
@@ -1078,9 +1075,9 @@ function showEligible() {
   // backdrop/theme/accent paths below require `enabled`.
   // The full page is the same kind of surface, for the same reason.
   const pageFilm = pageVisible() && Boolean(settings.videoUrl) && !settings.videoClosed
-  // [finding 4] The audio channel lives inside this same page. Without this a
-  // default install (window visual off, no theme) mounted nothing, so
-  // playAudioSource posted into nothing and "playing" was a lie.
+  // The audio channel lives inside this same page. Without this a default
+  // install (window visual off, no theme) mounts nothing, so playAudioSource
+  // would post into nothing and "playing" would be a lie.
   const audio = audioChannelLive()
   // A pane or page film is Aura's own surface and needs no overlay permission;
   // everything else is the overlay and does.
@@ -1236,7 +1233,7 @@ function audioChannelLive() {
  *  Aura mode always shows the visualiser. Video mode shows the film while it is
  *  open, and falls back to the visualiser while it is closed but the music is
  *  not: `player.html` with no film would be a dead black box, while the
- *  visualiser page hosts the same audio channel AND draws the beat.
+ *  visualiser page hosts the same audio channel and draws the beat.
  */
 function filmPageMode() {
   const settings = $settings.get()
@@ -1250,17 +1247,16 @@ function filmPageMode() {
  *
  *  Precedence: the OS pop-out window wins (one film, one surface), then the
  *  page while it is open, then the docked pane, then the audio seat. Nothing
- *  renders while the film is closed AND no music needs a page, while no local
+ *  renders while the film is closed and no music needs a page, while no local
  *  server is up (no token, no page), or when the mode wants a source the user
  *  has not chosen.
  *
- *  The audio seat is last on purpose. The Right panel is a VIDEO surface
+ *  The audio seat is last on purpose. The Right panel is a video surface
  *  (panelModeAllows): in visualiser mode, with the film closed, or with the
- *  panel switched off, there is no visible surface at all — and the music,
- *  which lives inside this page (web/audio.js), then had no document and went
- *  silent. `audio` is the always-registered, invisible seat that exists for
- *  exactly that gap. It never competes with a visible surface: a page, pane or
- *  window that appears takes the film back and the seat renders nothing.
+ *  panel switched off there is no visible surface at all, and the music lives
+ *  inside this page (web/audio.js). `audio` is the always-registered, invisible
+ *  seat that exists for that gap. It never competes with a visible surface: a
+ *  page, pane or window that appears takes the film back and it renders nothing.
  */
 function filmOwner() {
   const settings = $settings.get()
@@ -1305,7 +1301,7 @@ function filmSrc() {
 
 // ---- a film that never loads --------------------------------------------
 // A blocked embed reports itself; a film that simply never starts says nothing
-// at all, so the stage used to spin forever. One watch per attempt: with no
+// at all, so the stage would spin forever. One watch per attempt: with no
 // ready/playing signal inside FILM_STALL_MS the surfaces say so and offer a way
 // out.
 const FILM_STALL_MS = 20000
@@ -1436,10 +1432,10 @@ const audioResumedFrames = new WeakSet()
 
 /** Hand the remembered music to a frame that has just appeared.
  *
- *  Nothing else re-issues a play when the ONE frame moves, which is why the
- *  music used to stop the moment a visible surface took the film back from the
- *  audio seat. web/audio.js ignores a repeat of the stream it is already
- *  playing, so sending it again is safe.
+ *  Nothing else re-issues a play when the one frame moves, so the music would
+ *  stop the moment a visible surface took the film back from the audio seat.
+ *  web/audio.js ignores a repeat of the stream it is already playing, so
+ *  sending it again is safe.
  */
 function resumeAudioChannel(node) {
   if (!node || audioResumedFrames.has(node)) return
@@ -1459,9 +1455,9 @@ function resumeAudioChannel(node) {
 /** The audio channel's own seat.
  *
  *  The music/radio channel lives inside the page (web/audio.js), so it needs a
- *  document of its own whenever no visible surface is showing one — in
- *  visualiser mode the Right panel does not exist at all (owner: it is a video
- *  surface), so radio played into nothing and went silent.
+ *  document of its own whenever no visible surface is showing one: in
+ *  visualiser mode the Right panel does not exist at all, so radio would play
+ *  into nothing.
  *
  *  It sits in the composer's underside slot, the same chrome-free seam the
  *  control strip uses, registered for the life of the plugin. It is invisible
@@ -1488,14 +1484,13 @@ function AuraAudioSeat() {
 
 
 // ------------------------------------------------- the floating watch window
-// "Pop out" in the owner's words: a small window that floats inside Hermes, so
+// A small window that floats inside Hermes, so
 // the film can be dragged over the work without leaving the app.
 //
-// It has to be OUR box. A pane is a tile in the host's layout (the SDK's
-// placements are main/left/right/top/bottom), so a pane can never float over
-// the chat and the host draws no bar to drag — which is exactly what the owner
-// saw: "small frame in hermes has no drag bar". The frame therefore lives in
-// the composer's `underside` slot — the same chrome-free seat the control strip
+// It has to be our own box. A pane is a tile in the host's layout (the SDK's
+// placements are main/left/right/top/bottom), so a pane can never float over the
+// chat and the host draws no bar to drag. The frame therefore lives in the
+// composer's `underside` slot — the same chrome-free seat the control strip
 // uses — as a fixed-position box with its own bar along the top edge (title,
 // grip, and the three controls). Its position is videoWindowX/videoWindowY,
 // clamped to the viewport; the strip keeps its own videoBarX/videoBarY, so
@@ -1731,12 +1726,12 @@ function AuraWatchWindow() {
 /** Opacity for the film surface: the video player's own transparency. The
  *  visualiser needs none — its page applies the user's opacity itself. */
 function filmOpacity(settings, video) {
-  // The visualiser page owns its own opacity, and it is the page in aura mode
-  // and in the audio-only fallback alike (filmPageMode). It dims the canvas and
-  // compensates its scrim from the same setting (CONTRACT.md §9.2). Dimming the
-  // frame as well applied the setting twice — 25% drew 6% — and dimmed the page
-  // chrome the contract keeps legible. The frame carries only the fade
-  // machine's factor.
+  // The visualiser page owns its own opacity, in aura mode and in the
+  // audio-only fallback alike (filmPageMode): it dims the canvas and compensates
+  // its scrim from the same setting (CONTRACT.md §9.2). Dimming the frame as
+  // well applies the setting twice (25% would draw 6%) and dims the page chrome
+  // the contract keeps legible. The frame carries only the fade machine's
+  // factor.
   if (filmPageMode() !== 'video') return 1
   const manual = Number(video && video.opacity)
   if (Number.isFinite(manual)) return manual
@@ -2099,9 +2094,9 @@ let desktopOwned = false
 // until we know whether a real window opened ("one or the other").
 let desktopPending = false
 let playerCursor = null
-// [savelist lane] Its own cursor for save/remove, so the library follows the
-// agent even while the OS window holds playback and this half stops polling
-// for transport commands.
+// Its own cursor for save/remove, so the library follows the agent even while
+// the OS window holds playback and this half stops polling for transport
+// commands.
 let libraryCursor = null
 let playerReportAt = 0
 let playerReportKey = ''
@@ -2124,7 +2119,7 @@ async function syncPlayerOwnership() {
       postToBackdrop({ cmd: 'pause' })
       if (player.desktop === true) {
         lastDesktopPlayer = player
-        // [subtitles] The window is the player while it is open: its caption
+        // The window is the player while it is open: its caption
         // report is what is on screen, so the app's switch follows it instead
         // of disagreeing with the picture.
         const windowCaptions = typeof player.captions === 'boolean' ? player.captions : null
@@ -2153,7 +2148,7 @@ async function syncPlayerOwnership() {
     // Library first, so this tick's report already describes the list after a
     // save/remove the agent queued.
     await applyLibraryCommands()
-    // [quality] Which files this film really has. Cheap: the atom is keyed by
+    // Which files this film really has. Cheap: the atom is keyed by
     // url, so this is one request per film, and the server caches the item.
     void refreshQuality()
     const settings = $settings.get()
@@ -2163,11 +2158,11 @@ async function syncPlayerOwnership() {
       title: video.title || '', videoId: video.videoId || '',
       playing: video.playing === true, position: Number(video.position) || 0,
       duration: Number(video.duration) || 0, volume: Number(settings.videoVolume) || 0,
-      // [quality] The standing rule, so aura_watch action=quality can report it
+      // The standing rule, so aura_watch action=quality can report it
       // with the film's real choices.
       quality: settings.videoQuality || 'auto',
-      // [savelist lane] What the owner has saved, so aura_watch action=list can
-      // answer "what's on my list?" with the real list.
+      // What is saved, so aura_watch action=list can answer "what's on my
+      // list?" with the real list.
       library: libraryReport()
     }
     const key = JSON.stringify([report.url, report.kind, report.title, report.videoId,
@@ -2187,14 +2182,14 @@ async function syncPlayerOwnership() {
       // settings, not the player, and keeping them out of this chain is what
       // stops a save from being mistaken for a transport verb.
       if (command.cmd === 'save' || command.cmd === 'remove') continue
-      // [quality] A quality switch is a real source swap at the same second, so
+      // A quality switch is a real source swap at the same second, so
       // it goes through the one function the picker uses.
       if (command.cmd === 'quality') {
         applyQualityCommand(command)
         continue
       }
-      // [subtitles] The CC switch is the owner's choice, not just a verb for
-      // the page: applying it through the one writer is what remembers it.
+      // The CC switch is the viewer's choice, not just a verb for the page:
+      // applying it through the one writer is what remembers it.
       if (command.cmd === 'captions') {
         setVideoCaptions(command.value === 1 || command.value === true, command.lang)
         continue
@@ -2380,9 +2375,9 @@ async function windowStatus() {
 /** The server's own sentence out of a thrown `ctx.rest` failure.
  *
  *  A non-2xx reply arrives as an exception whose message carries the body
- *  (`… 503: {"ok":false,"error":"no Chrome or Chromium found…"}`). Reporting
- *  "the server is not answering" for that is a lie the owner cannot act on, so
- *  the body's own reason is dug out here. Empty means "no usable sentence". */
+ *  (`… 503: {"ok":false,"error":"no Chrome or Chromium found…"}`), and that
+ *  reason is what the user can act on, so it is dug out here. Empty means "no
+ *  usable sentence". */
 function serverReason(cause) {
   if (!cause) return ''
   for (const key of ['body', 'payload', 'data', 'json']) {
@@ -2425,7 +2420,7 @@ async function openDesktopWindow() {
     label: typeof video.title === 'string' ? video.title : '',
     videoId: typeof video.videoId === 'string' ? video.videoId : '',
     playing: video.playing === true,
-    // [subtitles] The OS window is a player surface: it opens with the same
+    // The OS window is a player surface: it opens with the same
     // caption choice the in-app player had.
     captions: settings.videoCaptions === true
   }
@@ -2900,7 +2895,7 @@ async function setBackdropMode(next) {
   resetShow()
   removeBackdrop()
   // The Right panel is a video surface: leaving video mode takes it away on the
-  // click, and returning puts it back (owner 04:50).
+  // click, and returning puts it back.
   syncPanelPresence()
   if ($settings.get().showWhen === 'always') syncBackdrop()
   else updateShow()
@@ -3003,7 +2998,7 @@ async function applyVideoSource(url, label) {
   if (!videoUrl) return
   if ($settings.get().backdropMode !== 'video') await setBackdropMode('video')
   if ($settings.get().videoClosed) openVideo()
-  // [quality] The standing rule picks one of the item's real files before it
+  // The standing rule picks one of the item's real files before it
   // starts (auto plays exactly the file the source named).
   const preferred = await qualityRuleTarget(videoUrl)
   const target = preferred || videoUrl
@@ -3276,10 +3271,10 @@ function addVideoSource(url, name) {
   return true
 }
 
-/** The owner's saved library as the player report carries it: saved playlists
- *  first, then saved films, each with the label the Library shows. One entry
- *  per url. aura_watch action=list reads this straight back, so the agent
- *  answers with the owner's real list instead of guessing at it. */
+/** The saved library as the player report carries it: saved playlists first,
+ *  then saved films, each with the label the Library shows, one entry per url.
+ *  aura_watch action=list reads this straight back, so the agent answers with
+ *  the real list instead of guessing at it. */
 function libraryReport() {
   const settings = $settings.get()
   const rows = (list, kind) => (Array.isArray(list) ? list : [])
@@ -3575,9 +3570,9 @@ function setVideoMuted(muted) {
   syncVideoBar(true)
 }
 
-// [subtitles] Captions: one switch, one language list ----------------------
-// The player owns the truth about WHICH tracks a video has (YouTube publishes
-// them; a direct file carries them as textTracks). The settings own the
+// Captions: one switch, one language list -----------------------------------
+// The player owns the truth about which tracks a video has (YouTube publishes
+// them; a direct file carries them as textTracks) and the settings own the
 // choice. A CC button reads both, and it is disabled only when the player has
 // actually said "no tracks" — never because the answer has not arrived yet.
 
@@ -3673,15 +3668,13 @@ function captionLanguageValue(info) {
   return detail.lang
 }
 
-// [quality] A quality control that tells the truth about each source --------
-// YouTube: the embed publishes `playbackQuality`/`availableQualityLevels` but
-// ignores setPlaybackQuality (measured in headless Chromium; sending small,
-// medium, hd720, hd1080, large and default left it at hd1080 with
-// preferredQuality 'auto'), so its one choice is "Auto (YouTube decides)" and
-// nothing in this plugin ever sends that command or a `vq=` hack.
-// archive.org: the item's real files, listed by the SERVER (/api/quality, short
-// timeout + cache) — the desktop never asks archive.org itself.
-// A direct file: one file, no picker at all.
+// A quality control that tells the truth about each source ------------------
+// YouTube publishes `playbackQuality`/`availableQualityLevels` but ignores
+// setPlaybackQuality, so its one choice is "Auto (YouTube decides)"; nothing in
+// this plugin sends that command or a `vq=` hack. archive.org films get the
+// item's real files, listed by the server (/api/quality, short timeout +
+// cache) — the desktop never asks archive.org itself. A direct file is one
+// file, with no picker at all.
 
 /** The quality picture for the film playing now, as one object. */
 function qualityInfo() {
@@ -3945,7 +3938,7 @@ function qualityControls(info, which) {
  * 'invalid' | 'ignored' | 'none'.
  */
 function handleAudioRequests(frame) {
-  // [finding 3] The server keeps every request in order. Apply all unseen
+  // The server keeps every request in order. Apply all unseen
   // seqs instead of only the newest: play then mute_video must do both.
   const list = frame && typeof frame === 'object' && Array.isArray(frame.audio_requests)
     ? frame.audio_requests
@@ -4234,7 +4227,7 @@ function onBackdropMessage(event) {
     author: typeof data.author === 'string' ? data.author.slice(0, 120) : '',
     videoId: typeof data.videoId === 'string' ? data.videoId : '',
     blocked: data.blocked === true,
-    // [subtitles] The player's own answer about this video's captions: the
+    // The player's own answer about this video's captions: the
     // tracks it has, which one is playing, and whether it has answered at all.
     captions: data.captions && typeof data.captions === 'object'
       ? {
@@ -4245,7 +4238,7 @@ function onBackdropMessage(event) {
         tracks: Array.isArray(data.captions.tracks) ? data.captions.tracks.slice(0, 60) : []
       }
       : $video.get().captions,
-    // [quality] The level YouTube is really playing. Read from the player, never
+    // The level YouTube is really playing. Read from the player, never
     // requested: it is the detail behind "Auto (YouTube decides)".
     quality: data.quality && typeof data.quality === 'object' &&
       typeof data.quality.current === 'string'
@@ -4700,7 +4693,7 @@ function mountVideoBar(node) {
   scrub.setAttribute('role', 'slider')
   scrub.setAttribute('aria-label', 'Seek')
   Object.assign(scrub.style, {
-    // Strip-wide: the owner's "seek bar across the whole top".
+    // Strip-wide: the seek bar runs across the whole top.
     flex: 'none', width: '100%', minWidth: '0', height: '20px',
     display: 'flex', alignItems: 'center', cursor: 'pointer', boxSizing: 'border-box'
   })
@@ -4753,7 +4746,7 @@ function mountVideoBar(node) {
     setVideoVolume(current > 0 ? 0 : (VIDEO_VOLUME || 0.7))
   })
 
-  // [subtitles] CC: the film's own switch, on the strip people use while they
+  // CC: the film's own switch, on the strip people use while they
   // work. It is disabled — with the reason in the tooltip — only once the
   // player has actually said this video has no subtitles.
   const cc = videoBarButton('CC', 'Subtitles (CC)', 'captions', null, () => {
@@ -4853,8 +4846,8 @@ function mountVideoBar(node) {
   })
   close.addEventListener('click', () => closeVideo())
 
-  // Four rows, top to bottom (the owner's order): the drag bar, the seek bar
-  // across the whole strip, the clocks under it, then the big controls.
+  // Four rows, top to bottom: the drag bar, the seek bar across the whole
+  // strip, the clocks under it, then the big controls.
   const dragRow = doc.createElement('div')
   Object.assign(dragRow.style, {
     display: 'flex', alignItems: 'center', gap: '8px', minWidth: '0',
@@ -4933,8 +4926,8 @@ function mountVideoBar(node) {
 
   // Translucent at rest, solid under the pointer or while it has the keyboard.
   // The focus pair is ours alone, captured on the strip's own node: a focus that
-  // lands on a control inside the strip still counts (Nous's rule bans a
-  // document-level capture listener, not this one).
+  // lands on a control inside the strip still counts. The rule bans a
+  // document-level capture listener, not this one.
   bar.addEventListener('mouseenter', () => {
     videoBarSolid = true
     applyVideoBarAlpha()
@@ -5052,15 +5045,15 @@ function hostPaneVisible() {
 
 /** Is the Right panel part of the current surface at all?
  *
- *  Owner (04:50): the panel is a VIDEO surface. It shows while the backdrop is
- *  the video player and the film is open, and it goes away on its own in
- *  visualizer mode or with the film closed — coming back by itself when video
- *  mode returns. The user's "Right panel" switch still means "show it in video
- *  mode"; it is not a second, independent way to keep it on screen.
+ *  The panel is a video surface. It shows while the backdrop is the video player
+ *  and the film is open, and it goes away on its own in visualizer mode or with
+ *  the film closed — coming back by itself when video mode returns. The
+ *  "Right panel" switch still means "show it in video mode"; it is not a second,
+ *  independent way to keep it on screen.
  *
  *  Deliberately NOT gated on `enabled`: switching Aura off stops it painting on
  *  the chat (backdrop, accent, theme). It must not stop the player — a film in
- *  the pane is Aura's own surface and works on its own (owner's rule). */
+ *  the pane is Aura's own surface and works on its own. */
 function panelModeAllows(settings) {
   const current = settings || $settings.get()
   if (current.backdropMode !== 'video') return false
@@ -5759,8 +5752,6 @@ function mountPanelInto(hostNode) {
   // Two pop-out controls, named exactly as on every other surface. "Frame in
   // Hermes" is a toggle (pressed while the in-app frame holds the film);
   // "Pop out to desktop" reads "Bring back" while the desktop window does.
-  // The old single ⧉ glyph called a function that did not exist — a click
-  // threw and nothing happened.
   const frameBtn = doc.createElement('button')
   frameBtn.type = 'button'
   frameBtn.className = 'ap-popout'
@@ -5841,8 +5832,8 @@ function mountPanelInto(hostNode) {
   const opacityButtons = doc.createElement('div')
   opacityButtons.className = 'ap-pills'
   const opacityPills = []
-  // Auto first, then the four levels: all five stay on screen because the row
-  // wraps (owner: the five see-through choices must always be reachable).
+  // Auto first, then the four levels: the row wraps so all five see-through
+  // choices stay reachable.
   const autoPill = doc.createElement('button')
   autoPill.type = 'button'
   autoPill.className = 'ap-pill'
@@ -5870,7 +5861,7 @@ function mountPanelInto(hostNode) {
   opacityRow.appendChild(opacityLabel)
   opacityRow.appendChild(opacityButtons)
 
-  // [subtitles] The film's subtitles: the switch, and the language list the
+  // The film's subtitles: the switch, and the language list the
   // player publishes (only when this video has more than one track).
   const captionRow = doc.createElement('div')
   captionRow.className = 'ap-field'
@@ -6034,7 +6025,7 @@ function syncPanel(force) {
     }
   }
 
-  // [subtitles] CC: pressed state, the "no subtitles" answer, and the language
+  // CC: pressed state, the "no subtitles" answer, and the language
   // list — only when this video actually has a choice to offer.
   if (parts.ccBtn) {
     const info = captionInfo()
@@ -6186,10 +6177,9 @@ function disposePaneRegistration() {
   }
 }
 
-/** Follow the mode: the pane exists only while the Right panel belongs on
- *  screen (video mode, film open, switch on). Called from the poll tick and
- *  from every action that can change those three — so visualizer mode takes the
- *  panel away on the click, and coming back to video mode puts it back. */
+/** Follow the mode: the pane exists only while the Right panel belongs on screen
+ *  (video mode, film open, switch on). Called from the poll tick and from every
+ *  action that can change those three. */
 function syncPanelPresence() {
   if (!ctxRef || disposed) return
   const want = panelRequested()
@@ -6307,8 +6297,8 @@ function setPanelEnabled(on) {
   if (!ctxRef || disposed) return
   const next = Boolean(on)
   writeSettings({ panelEnabled: next })
-  // One owner for "does the pane exist": the switch only says WHERE it may
-  // show (video mode), and syncPanelPresence decides whether that is now.
+  // One rule for "does the pane exist": the switch only says WHERE it may show
+  // (video mode), and syncPanelPresence decides whether that is now.
   syncPanelPresence()
   if (next) {
     if ($settings.get().videoWindow === true) registerWatchPane(true)
@@ -6458,7 +6448,7 @@ function syncVideoBar(force) {
   const volumeLabel = volume === 0 ? '🔇' : `🔊 ${volume}%`
   if (parts.volume.textContent !== volumeLabel) parts.volume.textContent = volumeLabel
 
-  // [subtitles] The strip's CC button: pressed while captions are on, disabled
+  // The strip's CC button: pressed while captions are on, disabled
   // (with the reason) when this video has none.
   if (parts.cc) {
     const info = captionInfo()
@@ -6647,15 +6637,15 @@ function AuraQuickMenu() {
   const locked = filmBackdrop(settings)
   const auraTitle = locked ? AURA_LOCK_TITLE : undefined
   const showTitle = locked ? SHOW_LOCK_TITLE : undefined
-  // "Skipped episodes" only earns a row when something has been skipped: a
-  // permanent "0 hidden" line was noise the owner asked to lose.
+  // "Skipped episodes" only earns a row when something has been skipped; a
+  // permanent "0 hidden" line is noise.
   const skippedCount = Array.isArray(settings.videoHiddenIds) ? settings.videoHiddenIds.length : 0
   const SKIPPED_TITLE = 'Episodes you hid from your playlists. Aura skips them.'
-  // [subtitles] One read of the player's caption report for the whole menu.
+  // One read of the player's caption report for the whole menu.
   const captionState = captionInfo()
   const captionChoices = captionLanguageChoices(captionState)
   const captionTip = captionTooltip(captionState)
-  // [quality] The film's real files, read once for the whole menu.
+  // The film's real files, read once for the whole menu.
   useValue($quality)
   const qualityState = qualityInfo()
 
@@ -7035,7 +7025,7 @@ function AuraQuickMenu() {
                     children: videoSourceOptions(settings)
                   })
                 ),
-                // [subtitles] The CC switch, and the language list the player
+                // The CC switch, and the language list the player
                 // publishes for this video (only when there is a choice).
                 row(
                   'Subtitles',
@@ -7077,9 +7067,9 @@ function AuraQuickMenu() {
                     ]
                   })
                 ),
-                // [quality] The film's real versions (archive.org derivatives)
+                // The film's real versions (archive.org derivatives)
                 // and the rule for the next one. Not on the strip: the strip is
-                // the owner's transport, this is a settings choice.
+                // the transport, this is a settings choice.
                 qualityRowWanted(qualityState)
                   ? row('Quality', qualityControls(qualityState, 'film'))
                   : null,
@@ -8166,7 +8156,7 @@ function AuraPage() {
   }, [])
   const duration = Number(state.duration) || 0
   const progress = duration ? clamp01((Number(state.position) || 0) / duration) : 0
-  // [subtitles] The player's caption report, read once for the whole page.
+  // The player's caption report, read once for the whole page.
   const captionState = captionInfo()
   const captionChoices = captionLanguageChoices(captionState)
   // Subscribed so the watchdog's verdict redraws the stage with its two ways out.
@@ -8306,7 +8296,7 @@ function AuraPage() {
       jsx('span', { key: 't', style: { display: 'inline-flex' }, children: pageButton(playing ? '⏸' : '▶', playing ? 'Pause' : 'Play', () => videoCommand('toggle'), true) }),
       jsx('span', { key: 'f', style: { display: 'inline-flex' }, children: pageButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10)) }),
       jsx('span', { key: 'n', style: { display: 'inline-flex' }, children: pageButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next')) }),
-      // [subtitles] CC, and the language list this video actually offers.
+      // CC, and the language list this video actually offers.
       jsx(Button, {
         key: 'cc',
         size: 'micro',
@@ -8689,10 +8679,10 @@ function AuraSettings() {
   const settings = useValue($settings)
   const live = useValue($live)
   const applied = useValue($themeApplied)
-  // [subtitles] Subscribed so the CC row redraws when the player reports the
+  // Subscribed so the CC row redraws when the player reports the
   // tracks this video has (the language list is the player's, not a constant).
   useValue($video)
-  // [quality] Subscribed so the Quality row redraws when the server answers
+  // Subscribed so the Quality row redraws when the server answers
   // with this film's real files.
   useValue($quality)
 
@@ -9046,7 +9036,7 @@ function AuraSettings() {
                 ]
               })
             ),
-            // [subtitles] CC: the same switch the player surfaces carry, with
+            // CC: the same switch the player surfaces carry, with
             // the language list this video offers. Burned-in subtitles are part
             // of the picture — no API can remove them, so this says so.
             row(
@@ -9083,7 +9073,7 @@ function AuraSettings() {
                 ]
               })
             ),
-            // [quality] What the film can really be shown at: the archive.org
+            // What the film can really be shown at: the archive.org
             // item's own files, or YouTube's one honest answer. A direct file
             // gets no row (one file, nothing to pick).
             qualityRowWanted(qualityInfo())
@@ -9682,7 +9672,7 @@ function contributeAuraTheme() {
 
 /** Readable on = Aura's theme worn with the readable tokens; off = the user's
  *  own theme back. The tokens live IN the Aura theme, so Readable is that
- *  theme's opt-in and the two switches always tell the same story. */
+ *  theme's opt-in and the two switches always agree. */
 function setReadable(on) {
   if (!ctxRef || disposed) return
   const readable = Boolean(on)
@@ -9951,7 +9941,7 @@ export default {
     // the panel belongs on screen — video mode with the film open and the
     // "Right panel" switch on — so visualizer mode, a closed film or switching
     // it off disposes the contribution and the host removes the empty
-    // frame/tab/strip too (owner 04:50).
+    // frame/tab/strip too.
     track(disposePaneRegistration)
     // `restore: true` on registration: the host also remembers its own "pane
     // closed" state per layout, and that outlives our setting. With the panel
@@ -10092,7 +10082,7 @@ export const __test = {
   setCatalogSearchForTest: value => { catalogSearch = String(value) },
   applyVideoSource,
   applyUrlBox,
-  // [quality] The one switch the picker, the A menu and the agent's queued
+  // The one switch the picker, the A menu and the agent's queued
   // command all go through.
   applyQualityCommand,
   setVideoQuality,
@@ -10146,7 +10136,7 @@ export const __test = {
   videoBarHomeForTest: () => videoBarHome(),
   videoBarSizeForTest: () => videoBarSize(),
   setVideoBarOpacity,
-  // [subtitles] The CC switch and what it reads, so a headless test can drive
+  // The CC switch and what it reads, so a headless test can drive
   // the same writer every surface's button uses.
   setVideoCaptions,
   setVideoCaptionLang,

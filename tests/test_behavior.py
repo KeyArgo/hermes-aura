@@ -115,7 +115,7 @@ def test_saved_config_keeps_its_values_and_only_fills_missing_keys(tmp_path, mon
 
 
 def test_new_install_defaults_are_a_quarter_for_intensity_and_opacity():
-    """Owner ask: a new install starts at 25% reaction and 25% opacity.
+    """A new install starts at 25% reaction and 25% opacity.
 
     Defaults are first-run only; a saved value is kept as it is, and every value
     still clamps to 0..1 (CONTRACT.md §9.1).

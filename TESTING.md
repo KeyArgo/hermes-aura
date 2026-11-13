@@ -8,9 +8,9 @@ Applies to Aura 1.0.0 · revised 2026-11-13
 
 | Suite | Command | Result |
 |---|---|---|
-| Python | `python3 -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration` | **567 passed** |
-| Desktop contract | `node --test tests/test_desktop_plugin.mjs` | **188 passed, 0 failed** |
-| **Total** | both of the above | **755 passed** |
+| Python | `python3 -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration` | **578 passed** |
+| Desktop contract | `node --test tests/*.mjs` | **286 checks in 11 files, 0 failed** |
+| **Total** | both of the above | **864** |
 
 The README badge counts this total. CI runs the same two commands.
 
@@ -25,7 +25,7 @@ progress dots. Add `-o addopts=""` to see the final summary line:
 
 ```bash
 python3 -m pytest tests -q -o addopts="" -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration
-# 528 passed
+# 578 passed
 ```
 
 Covers capture backends and the idle gate, the FFT and feature extractor, the
@@ -43,17 +43,17 @@ when the change touches those paths.
 ## Desktop contract suite
 
 ```bash
-node --test tests/test_desktop_plugin.mjs
+node --test tests/*.mjs
 ```
 
-Runs `desktop/plugin.js` against a fake host DOM: the status menu, the docked
-pane, transport, per-film resume, mode gating, the settings page, the page
-pop-out and playlist management.
-
-Further Node suites exist for the web bridge and catalogue
-(`tests/test_web_*.mjs`, `tests/test_quality.mjs`, `tests/test_presets_catalog.mjs`,
-`tests/test_page_gate_and_catalog.mjs`, `tests/test_fresh_install.mjs`,
-`tests/test_listen_desktop.mjs`). They are not part of the CI job.
+`tests/test_desktop_plugin.mjs` runs `desktop/plugin.js` against a fake host DOM:
+the status menu, the docked pane, transport, per-film resume, mode gating, the
+settings page, the page pop-out and playlist management. The other files cover
+the web bridge and catalogue (`tests/test_web_*.mjs`, `tests/test_presets_catalog.mjs`,
+`tests/test_quality.mjs`), the page gate and catalogue, a fresh install, and the
+desktop half of the audio channel (`tests/test_listen_desktop.mjs`,
+`tests/test_fresh_install.mjs`). Each file is its own harness and prints one
+`PASS` line per check.
 
 ## What CI runs
 
@@ -62,7 +62,7 @@ Further Node suites exist for the web bridge and catalogue
 | Job | Command |
 |---|---|
 | `python suite` | `python -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration` (Python 3.12) |
-| `desktop contract suite` | `node --test tests/test_desktop_plugin.mjs` (Node 20) |
+| `desktop contract suite` | `node --test tests/*.mjs` — every file, discovered (Node 20) |
 | `manifest gate` | greps the required `plugin.yaml` fields, prints `manifest ok` |
 
 ## Verify it yourself

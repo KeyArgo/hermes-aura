@@ -439,8 +439,8 @@ await record('audio-only still mounts the backdrop that hosts audio.js', async (
     audioUrl: 'https://ice.example/audio-only.mp3',
     audioLabel: 'Audio only'
   })
-  // Visualiser mode: no Right panel (owner: it disappears outside video mode),
-  // so the page that hosts the music is the audio seat's, and there is one.
+  // Visualiser mode: no Right panel, so the page that hosts the music is the
+  // audio seat's, and there is one.
   assert.equal(bucket.contributions.find(c => c.id === 'panel'), undefined,
     'the Right panel is contributed while the Aura visual is the backdrop')
   assert.ok(bucket.contributions.find(c => c.id === 'audio-surface'),
@@ -486,8 +486,8 @@ await record('music keeps its page when the film is closed in visualiser mode', 
 })
 
 await record('audio: radio plays with no Right panel, and the one frame moves to the panel in video mode', async () => {
-  // The owner's ask: the Right panel exists ONLY in video mode. The music does
-  // not get to disappear with it — radio played into nothing and went silent.
+  // The Right panel exists ONLY in video mode, and the music must not disappear
+  // with it: radio would play into nothing and go silent.
   const radio = 'https://ice.example/radio.mp3'
   const filmUrl = 'https://example.test/film.mp4'
   const dispose = await remount({ backdropMode: 'aura', audioUrl: radio, audioLabel: 'Radio', videoUrl: filmUrl })

@@ -17,8 +17,7 @@ Aura's own player page: sending `small`, `medium`, `hd720`, `hd1080`, `large` an
 `default` left `playbackQuality` at `hd1080` and `preferredQuality` at `auto`, and
 `getAvailableQualityLevels` has no return channel at all. The Quality control therefore
 shows one disabled line — *Auto (YouTube decides)* — and Aura sends no quality command
-and no `vq=` parameter, because a hack that pretends to work is worse than a control
-that says what it can do. archive.org films are the opposite: their files are real, so
+and no `vq=` parameter. archive.org films are the opposite: their files are real, so
 they are listed and switchable.
 
 ## Subtitles burned into the picture cannot be switched off

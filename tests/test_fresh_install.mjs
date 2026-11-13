@@ -640,8 +640,7 @@ await recordAsync('1. fresh install: Aura is enabled by default and the Right pa
   assert.equal(enabledSwitch.props.checked, true, 'Aura is not enabled by default on a fresh install')
 
   // A fresh install is in VISUALISER mode, and the Right panel is a video
-  // surface: the owner's rule ("if you aren't in video mode the right panel
-  // should automatically disappear") means there is no panel here at all.
+  // surface, so there is no panel here at all.
   assert.equal(freshA.contributions.find(c => c.area === 'panes'), undefined,
     'a fresh install (visualiser mode) contributes a Right panel')
 

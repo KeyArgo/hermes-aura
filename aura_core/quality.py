@@ -1,26 +1,20 @@
-"""Quality choices for the film Aura is playing — measured, not assumed.
+"""Quality choices for the film Aura is playing.
 
-Three kinds of source, three honest answers:
+Three kinds of source, three different answers:
 
-* **archive.org** items carry real derivatives *and* an original, each with its
-  own size and resolution (``The_General.mp4`` 640×480, ``The_General.ogv``
-  400×300, ``The_General_512kb.mp4`` 320×240 on the item this module's fixture
-  was recorded from). Those are offered as choices, parsed from
-  ``https://archive.org/metadata/<id>``: a short timeout, a small read cap and a
-  per-item cache, so a picker cannot stall the player or hammer the archive.
-* **YouTube** gives the embed no working choice. Measured in headless Chromium
-  against ``web/player.html`` (video ``EF8C4v7JIbA``): ``apiInfoDelivery`` /
-  ``infoDelivery`` publish ``playbackQuality``, ``availableQualityLevels`` and
-  ``preferredQuality``, but sending ``setPlaybackQuality`` with ``small``,
-  ``medium``, ``hd720``, ``hd1080``, ``large`` and ``default`` changed nothing —
-  ``playbackQuality`` stayed ``hd1080`` and ``preferredQuality`` stayed
-  ``auto``. So YouTube's one honest choice is "Auto (YouTube decides)"; there is
-  no ``vq`` parameter here, because that is a hack that can break playback.
-* **a direct file** is one file: one choice, and the UI offers no picker.
+* **archive.org** items carry real derivatives and an original, each with its
+  own size and resolution, read from ``https://archive.org/metadata/<id>``.
+  Those are the choices.
+* **YouTube** publishes the level it picked but ignores ``setPlaybackQuality``,
+  so its one honest choice is "Auto (YouTube decides)". No ``vq`` parameter is
+  used: it is a hack that can break playback.
+* **a direct file** is one file, so the UI offers no picker.
 
 Only archive.org is ever contacted, and only for an item id taken out of a
 ``/download/<id>/...`` or ``/details/<id>`` URL: the URL comes from a model or a
-user, so it is validated here rather than trusted.
+user, so it is validated here rather than trusted. The lookup has a short
+timeout, a small read cap and a per-item cache, so a picker cannot stall the
+player or hammer the archive.
 """
 
 from __future__ import annotations
@@ -69,9 +63,8 @@ def clear_cache() -> None:
         _CACHE.clear()
 
 
-# ---------------------------------------------------------------------------
 # URLs
-# ---------------------------------------------------------------------------
+
 
 def _host(url: str) -> str:
     try:
@@ -124,9 +117,8 @@ def _download_url(item: str, file_name: str) -> str:
     return f"https://archive.org/download/{quote(item)}/{quote(file_name)}"
 
 
-# ---------------------------------------------------------------------------
 # metadata -> choices
-# ---------------------------------------------------------------------------
+
 
 def _number(value: Any) -> int | None:
     """A non-negative integer from archive.org's stringly-typed metadata."""
@@ -241,9 +233,8 @@ def choices_from_metadata(metadata: Any, item_id: str, current_url: str = "") ->
     }
 
 
-# ---------------------------------------------------------------------------
 # fetching (cached, short timeout, small read)
-# ---------------------------------------------------------------------------
+
 
 def _fetch_metadata(item_id: str) -> dict | None:
     """``/metadata/<id>`` as JSON, or ``None``. Never raises; never logged."""
@@ -280,9 +271,8 @@ def metadata_for(item_id: str) -> dict | None:
     return payload
 
 
-# ---------------------------------------------------------------------------
 # the one entry point
-# ---------------------------------------------------------------------------
+
 
 def choices_for(url: Any) -> dict:
     """What quality choices this film honestly has.
@@ -300,8 +290,8 @@ def choices_for(url: Any) -> dict:
             "hint": "Send the film's http(s) URL.",
         }
     if is_youtube(raw):
-        # Measured, not assumed: the embed publishes its levels but ignores the
-        # command to change them (see this module's docstring).
+        # The embed publishes its levels but ignores the command to change them
+        # (see this module's docstring).
         return {
             "ok": True,
             "mode": "youtube",

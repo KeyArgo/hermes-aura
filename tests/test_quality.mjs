@@ -1,17 +1,11 @@
 /**
  * Quality rules for Aura's film player (web/quality.js) plus the page wiring.
  *
- * What this proves and what it does NOT:
- *
- *   - it runs the shipped rules as written (the same file web/player.html
- *     loads), so the picker's answers cannot drift from the page's behaviour;
- *   - it proves a source swap keeps the position and the play state, which is
- *     the whole point of a quality switch mid-film;
- *   - it proves YouTube's one honest answer is "Auto (YouTube decides)" and
- *     that nothing in the page pretends to force a level (no `vq`, no
- *     setPlaybackQuality call) — measured: the embed ignores that command;
- *   - it does NOT play video. Playback itself is a browser thing; the measured
- *     claims live in REPORT.md.
+ * The rules are run as shipped, from the same file web/player.html loads, so a
+ * picker answer cannot drift from the page's behaviour. A source swap has to
+ * keep the position and the play state, and YouTube's one honest answer is
+ * "Auto (YouTube decides)" (no `vq`, no setPlaybackQuality call). Nothing here
+ * plays video.
  *
  * Run: node tests/test_quality.mjs
  */
@@ -51,8 +45,8 @@ await record('quality: YouTube is auto-only, a file is not', () => {
 })
 
 await record('quality: what the player really reports is read, junk is dropped', () => {
-  // A real infoDelivery frame from a measured embed (EF8C4v7JIbA, headless
-  // Chrome): the levels and the playing quality both travel here.
+  // A real infoDelivery frame: the levels and the playing quality both travel
+  // here.
   const real = {
     playbackQuality: 'hd1080',
     preferredQuality: 'auto',
@@ -122,8 +116,8 @@ await record('quality: the page swaps the source in place, at the same second', 
 })
 
 await record('quality: nothing tries to force a YouTube level', () => {
-  // The comment in the page names the command (it explains why it is not used),
-  // so this checks for a real call: the quoted name, which only code carries.
+  // The page's comments name the command too, so this checks for a real call:
+  // the quoted name, which only code carries.
   assert.ok(!/['"]setPlaybackQuality['"]/.test(pageSource),
     'the page still sends setPlaybackQuality, which the embed ignores')
   assert.ok(!/[?&]vq=/.test(pageSource),

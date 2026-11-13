@@ -1,23 +1,13 @@
 /**
  * Caption (CC) rules for Aura's film player.
  *
- * YouTube decides captions for itself unless it is told: `cc_load_policy=1` in
- * the embed query turns them on for the document, and the live player answers
- * the documented postMessage pair `loadModule`/`unloadModule` for the captions
- * module. Every new video in a playlist is a fresh captions context, so the
- * module has to be loaded again per video — that is why the rules live here,
- * in one place, instead of being spelled out at each call site.
- *
- * The available tracks come from the player itself, in an `apiInfoDelivery`
- * message: `{namespaces: ['captions'], captions: {track, tracklist}}`. Measured
- * on a captioned upload (17 tracks) and on ambient uploads (no captions
- * namespace at all), so "no subtitles" is a real answer here, not a guess.
- *
+ * `cc_load_policy=1` asks the embed for captions; the live player answers the
+ * documented `loadModule`/`unloadModule` pair, and each new video in a playlist
+ * is a fresh captions context, so the module is loaded again per video.
  * Burned-in subtitles are part of the picture: no player API can remove them.
- * The CC switch is about the caption track, and the README says so.
  *
- * Loaded by web/player.html as a plain script, and imported by the headless
- * contract test as a CommonJS module, so both run these exact rules.
+ * Loaded by web/player.html as a plain script, and imported by the contract
+ * test as a CommonJS module, so both run these exact rules.
  */
 (function (root) {
   'use strict'
