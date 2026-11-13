@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — the two pop-outs actually work
+
+- **The frame in Hermes is a real frame with its own bar.** A title, a grip and
+  its own **Bring back** / **Pop out to desktop** / **close** sit along its top
+  edge, so it is obvious how to move it and how to leave it. Dragging the bar
+  moves the frame (and only the frame): its position is its own, clamped to the
+  window, and remembered across a restart. It used to be contributed as a pane
+  with `placement: 'floating'` — a placement the plugin SDK does not have, so
+  the host laid it out as an ordinary tile and it had no handle to drag.
+- **The frame no longer goes missing for the rest of a session.** A hot reload
+  left a stale registration handle behind, so `registerWatchPane` saw "already
+  registered" and contributed nothing: Frame in Hermes did nothing at all until
+  Hermes was restarted.
+- **"Pop out to desktop" opens the window or says why.** The button asks the
+  server whether this machine has a browser; only a plain `available:false`
+  falls back to the frame inside Hermes, and that is announced. Otherwise the
+  server's own reason is shown in a visible note (the pane's stage line, the
+  host notification and the settings server line), and the film stays exactly
+  where it was — the in-app frame is parked only after the window has answered.
+- **The right panel is the film's panel.** It is on screen only in video mode
+  with the film open: switching to the Aura visual, or closing the film, takes
+  it away on the click, and it comes back on its own when video mode returns.
+  The **Right panel** switch now means "show it in video mode".
+
 ## Unreleased — Hermes can edit your own list
 
 - **`aura_watch` can save, remove and list the owner's Aura library** (the
