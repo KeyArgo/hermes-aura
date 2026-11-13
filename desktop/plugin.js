@@ -6826,22 +6826,26 @@ function AuraSettings() {
           })
         )
       }),
+          ]
+        }),
+      // Both modes: in video mode this is what lets the film fill the window with
+      // the Right panel closed, so it cannot live with the visualiser-only rows.
       jsx('div', {
         key: 'windowVisual',
         children: row(
           'Visual behind the app',
           settings.windowVisual && !auraOn
             ? 'Aura is off - turn it on to see the visual'
-            : 'Show the moving Aura visual behind the whole window. Turn off to restore your theme.',
+            : settings.backdropMode === 'video'
+              ? 'Show the film behind the whole window when the Right panel is closed. Turn off to restore your theme.'
+              : 'Show the moving Aura visual behind the whole window. Turn off to restore your theme.',
           jsx(Switch, {
             checked: settings.windowVisual,
             'aria-label': 'Visual behind the app',
             onCheckedChange: value => setWindowVisual(value)
           })
         )
-      })
-          ]
-        }),
+      }),
       // The pane switch is workspace furniture, not a visualiser control: it stays
       // visible in both modes.
       jsx('div', {

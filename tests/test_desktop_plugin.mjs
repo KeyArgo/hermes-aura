@@ -2059,6 +2059,24 @@ await recordAsync('Aura off draws nothing behind the window, panel or not', asyn
   }
 })
 
+await recordAsync('the "Visual behind the app" switch is on the settings page in video mode too', async () => {
+  // In video mode it is the switch that lets the film fill the window with the
+  // Right panel closed, so hiding it with the visualiser-only controls left no way
+  // to turn it on from the mode that needs it.
+  const scenario = makeCtx({ enabled: true, backdropMode: 'video', panelEnabled: false,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
+  const dispose = pluginModule.default.register(scenario.ctx)
+  try {
+    await sleep(40)
+    const page = scenario.contributions.find(c => c.area === 'settings.plugins')
+    assert.ok(page, 'no settings page')
+    assert.ok(findSwitch(renderContribution(page), 'Visual behind the app'),
+      'video mode hides the switch the full-window film depends on')
+  } finally {
+    dispose()
+  }
+})
+
 await recordAsync('a film in the Right panel is always full strength', async () => {
   // See-through is for the film behind the app. Inside its own box a 75% film is
   // a dim player, and the 250 ms tick used to pull it back to 75% after mount set
@@ -2179,9 +2197,12 @@ record('the page renders the player, the setup and the REVamp card', () => {
   }
   assert.ok(pageAria(tree, 'Aura enabled'), 'the page does not render AuraSettings')
   // This page is Video mode: the visualiser-only rows are hidden by the owner's
-  // rule, so "Visual behind the app" is deliberately absent here.
-  assert.equal(pageAria(tree, 'Visual behind the app'), null,
+  // rule. "Visual behind the app" is not one of them: it is what lets the film
+  // fill the window with the Right panel closed, so video mode shows it too.
+  assert.equal(pageAria(tree, 'Behaviour profile'), null,
     'a visualiser-only row leaked onto the film page')
+  assert.ok(pageAria(tree, 'Visual behind the app'),
+    'the film page hides the switch the full-window film depends on')
   assert.match(body, /Aura setup/, 'the page has no setup section')
   assert.match(body, /Big Buck Bunny/, 'the page does not offer the starter sources')
   assert.match(body, /Winamp-style player for Hermes/, 'the REVamp card is missing')
