@@ -10,8 +10,11 @@ what a caller sees, not how the handler is written.
 from __future__ import annotations
 
 import http.client
+import importlib
 import json
 import socket
+import sys
+import types
 
 import pytest
 
@@ -77,6 +80,44 @@ def raw_request(port, target: bytes, token: str) -> bytes:
     finally:
         sock.close()
     return b"".join(chunks).split(b"\r\n", 1)[0]
+
+
+@pytest.fixture()
+def dashboard():
+    """Import dashboard/plugin_api.py with a tiny fastapi stand-in."""
+
+    class Router:
+        def _record(self, _method):
+            def decorator(path):
+                def register(fn):
+                    return fn
+                return register
+            return decorator
+
+        def get(self, path):
+            return self._record("GET")(path)
+
+        def post(self, path):
+            return self._record("POST")(path)
+
+        def delete(self, path):
+            return self._record("DELETE")(path)
+
+    fake = types.ModuleType("fastapi")
+    fake.APIRouter = Router
+    fake.Request = object
+    responses = types.ModuleType("fastapi.responses")
+    responses.JSONResponse = lambda payload, status_code=200: (status_code, payload)
+    fake.responses = responses
+    sys.modules["fastapi"] = fake
+    sys.modules["fastapi.responses"] = responses
+    try:
+        sys.modules.pop("dashboard.plugin_api", None)
+        module = importlib.import_module("dashboard.plugin_api")
+    finally:
+        sys.modules.pop("fastapi", None)
+        sys.modules.pop("fastapi.responses", None)
+    return module
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +212,18 @@ def test_manage_window_refuses_auras_own_page(monkeypatch):
         with pytest.raises(ValueError):
             server.manage_window({"url": own})
     assert opened == []
+
+
+# ---------------------------------------------------------------------------
+# playlist episodes: a video id becomes part of a URL in the page
+# ---------------------------------------------------------------------------
+
+def test_playlist_items_drop_a_video_id_that_is_not_a_video_id(dashboard):
+    renderers = [{"playlistVideoRenderer": {"videoId": vid, "title": {"simpleText": "t"}}}
+                 for vid in ("abcdefghijk", "../../etc/x", "abc/defghij")]
+    out: list = []
+    dashboard._walkPlaylist({"contents": renderers}, out)
+    assert [item["videoId"] for item in out] == ["abcdefghijk"]
 
 
 # ---------------------------------------------------------------------------
