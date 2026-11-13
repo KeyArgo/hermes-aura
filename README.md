@@ -283,7 +283,7 @@ automatically there; macOS needs a virtual audio device.
 
 1. Install and enable Aura (above).
 2. Open the status-bar **A** menu and pick a film, or paste a YouTube video or
-   playlist URL.
+   playlist URL. The Aura page names what is playing above the big player.
 3. Work. The film plays in the right-hand pane.
 4. Switch the film off and the same audio paints the visualiser behind the
    interface.

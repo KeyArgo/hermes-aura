@@ -1467,7 +1467,8 @@ await recordAsync('the quick menu on/off switch drives /control, storage and the
   const dot = quickDot(quickTree())
   assert.equal(dot.props.style.opacity, 0, 'the dot keeps breathing while Aura is off')
   const dim = quickTrigger(quickTree())
-  assert.match(dim.props.style.color, /--ui-text-tertiary/, 'trigger does not dim when off')
+  assert.match(dim.props.style.color, /--ui-text-primary/,
+    'the trigger is not full contrast while Aura is off')
   const back = findByAria(quickTree(), 'Aura enabled')
   back.props.onCheckedChange(true)
   await sleep(30)
@@ -3066,6 +3067,144 @@ await recordAsync('a stale backend is named, not left looking broken', async () 
   } finally {
     dispose()
   }
+})
+
+// ------------------------------------------------------------- scenario NP
+// Now playing (owner ask): whatever film plays — starter, any YouTube video or
+// playlist item, direct file — says its title, and its channel when the player
+// knows it, on the Aura page next to the big player, large and clear. The
+// status-bar item that carries the "A" is bold and full contrast, accent while
+// Aura is active, and includes the same "Watching …" line.
+
+const npUrl = 'https://www.youtube.com/watch?v=JK9x0zqldsE'
+// The host window is a browser, so `message` events have a real target. The
+// plugin registers its bridge through that target; give Node the same door.
+if (typeof globalThis.addEventListener !== 'function') globalThis.addEventListener = () => {}
+
+// Aura off: the status-bar item must stay bold and full contrast (the faint
+// tertiary token is what made it unreadable). Registered and disposed on its
+// own — the module is single-instance, so two live instances would fight.
+const byClass = (tree, className) => {
+  let found = null
+  walk(tree, node => {
+    if (!found && node.props && node.props.className === className) found = node
+  })
+  return found
+}
+
+record('status bar: with Aura off the label stays bold and full contrast', () => {
+  const off = makeCtx({ enabled: false, backdropMode: 'video', videoUrl: npUrl })
+  const disposeOff = pluginModule.default.register(off.ctx)
+  try {
+    const menu = () => renderContribution(off.contributions.find(c => c.id === 'quick-menu'))
+    const trigger = quickTrigger(menu())
+    assert.ok(trigger, 'the status-bar trigger vanished while Aura is off')
+    assert.ok(Number(trigger.props.style.fontWeight) >= 600, 'the off label is not bold')
+    assert.match(trigger.props.style.color, /--ui-text-primary/,
+      `the off label is not full contrast: ${trigger.props.style.color}`)
+    const watching = byClass(menu(), 'aura-status-title')
+    assert.ok(watching, 'the watching label is missing while Aura is off')
+    assert.ok(Number(watching.props.style.fontWeight) >= 600, 'the watching label is not bold')
+    assert.match(watching.props.style.color, /--ui-text-primary/,
+      'the watching label is not full contrast')
+  } finally {
+    disposeOff()
+  }
+})
+
+const np = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: npUrl, panelEnabled: false })
+const disposeNP = pluginModule.default.register(np.ctx)
+
+const npPage = () => renderDeep(renderContribution(np.contributions.find(c => c.area === 'routes')))
+const npMenu = () => renderContribution(np.contributions.find(c => c.id === 'quick-menu'))
+const nowTitle = () => {
+  const block = byClass(npPage(), 'aura-now-title')
+  assert.ok(block, 'the Aura page has no now-playing title')
+  return texts(block)
+}
+const nowChannel = () => {
+  const block = byClass(npPage(), 'aura-now-channel')
+  return block ? texts(block) : ''
+}
+const playerMessage = data => {
+  const listener = np.listeners.find(entry => entry.type === 'message' && !entry.removed)
+  assert.ok(listener, 'no message bridge listener')
+  listener.fn({ source: npFrame.contentWindow, data })
+}
+const npFrame = { contentWindow: { postMessage() {} } }
+tx.setBackdropForTest(npFrame)
+
+record('now playing: the page names the source before the player reports', () => {
+  // The stored title for the source, never the raw URL.
+  assert.match(nowTitle(), /Nosferatu \(1922\)/, `wrong idle title: ${nowTitle()}`)
+  const body = texts(byClass(npPage(), 'aura-now'))
+  assert.ok(!body.includes('youtube.com/watch'), 'the page shows the URL as a title')
+})
+
+record('now playing: the player title and channel land on the page', () => {
+  playerMessage({
+    aura: 'video-state', url: npUrl, kind: 'youtube', playing: true, position: 12,
+    duration: 5400, muted: true, title: 'Nosferatu (1922) full film',
+    author: 'Internet Archive', videoId: 'JK9x0zqldsE', controllable: true
+  })
+  assert.equal(nowTitle(), 'Nosferatu (1922) full film', 'the reported title did not reach the page')
+  assert.equal(nowChannel(), 'Internet Archive', 'the channel did not reach the page')
+})
+
+record('now playing: a playlist moving to the next item updates the page', () => {
+  playerMessage({
+    aura: 'video-state', url: npUrl, kind: 'playlist', playing: true, position: 4,
+    duration: 600, muted: true, title: 'The Cabinet of Dr. Caligari (1920)',
+    author: 'Silent Film Archive', videoId: 'ZqB2l4V6a1c', controllable: true
+  })
+  assert.equal(nowTitle(), 'The Cabinet of Dr. Caligari (1920)', 'the next episode did not replace the title')
+  assert.equal(nowChannel(), 'Silent Film Archive', 'the next episode did not replace the channel')
+})
+
+await recordAsync('now playing: a source change shows the new source, not the last film', async () => {
+  await tx.applyVideoSource('https://www.youtube.com/watch?v=R6MlUcmOul8')
+  await sleep(30)
+  assert.match(nowTitle(), /Tears of Steel/, `the previous film is still named: ${nowTitle()}`)
+  assert.equal(nowChannel(), '', 'the old channel survived the source change')
+})
+
+record('status bar: the label is bold, full contrast, and names the film', () => {
+  const trigger = quickTrigger(npMenu())
+  assert.ok(trigger, 'the status-bar trigger vanished')
+  assert.ok(Number(trigger.props.style.fontWeight) >= 600, 'the status-bar label is not bold')
+  assert.match(trigger.props.style.color, /--ui-accent/, 'an active Aura label is not accent-coloured')
+  const word = (() => {
+    let found = null
+    walk(trigger, node => {
+      if (!found && (node.key === 'word' || (node.props && node.props.key === 'word'))) found = node
+    })
+    return found
+  })()
+  assert.ok(word, 'the Aura wordmark is missing')
+  // The mark and word sit in one bold wrapper that inherits the trigger colour.
+  const markWrap = (() => {
+    let found = null
+    walk(trigger, node => {
+      if (!found && node.props && node.props.style && node.props.style.fontSize === 12 && node.props.style.fontWeight) {
+        found = node
+      }
+    })
+    return found
+  })()
+  assert.ok(markWrap, 'the mark wrapper is missing')
+  assert.ok(Number(markWrap.props.style.fontWeight) >= 600, 'the wordmark is not bold')
+  assert.equal(markWrap.props.style.color, 'inherit', 'the wordmark does not follow the trigger colour')
+  assert.ok(!/tertiary/.test(String(word.props.style.color || '')),
+    'the wordmark is drawn in the faint tertiary token')
+  assert.match(texts(npMenu()), /Watching/, 'the status bar does not say what is being watched')
+  assert.match(texts(npMenu()), /Tears of Steel/, 'the status-bar label does not name the film')
+})
+
+record('dispose from the now-playing scenario is clean', () => {
+  tx.setBackdropForTest(null)
+  disposeNP()
+  assert.equal(np.contributions.length, 0, 'a contribution survived dispose')
+  assert.ok(np.listeners.every(entry => entry.removed), 'a listener survived dispose')
 })
 
 // --------------------------------------------------------------- reporting
