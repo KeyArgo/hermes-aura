@@ -388,12 +388,17 @@ that rule; the film moves, and the surface that loses it does not keep a copy.
 
 <p align="center"><img src="assets/three-surfaces.svg" alt="The docked pane, the Aura page, and the pop-out window" width="100%"></p>
 
-### Pop out to its own window
+### Frame in Hermes, or pop out to desktop
 
-Click **Pop out** and the film leaves the Hermes window: a real OS window
-(Chrome/Chromium app mode) that you can drag to another monitor or full-screen.
-It opens at the exact second the in-app player had reached, and the in-app one
-pauses so two copies never play with sound. **Pop in** closes it again.
+Two buttons, the same words on the quick menu, the right panel, the Aura page
+and the floating control strip. **Frame in Hermes** keeps the film in a movable
+frame inside Hermes (the button stays pressed while it does). **Pop out to
+desktop** sends it to a real OS window — Chrome/Chromium app mode — that you can
+drag to another monitor or full-screen. While that window holds the film the
+button reads **Bring back**.
+
+Pop-out opens at the exact second the in-app player had reached, and the in-app
+one pauses so two copies never play with sound.
 
 The pop-out needs Chrome or Chromium. If none is installed Aura says so plainly;
 set `AURA_DESKTOP_BROWSER=/path/to/chrome` to point it at one. The window uses

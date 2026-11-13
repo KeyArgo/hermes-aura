@@ -1893,7 +1893,8 @@ record('the page renders the player, the setup and the REVamp card', () => {
     'Seek',
     'Film volume',
     'Film URL',
-    'Pop out'
+    'Frame in Hermes',
+    'Pop out to desktop'
   ]) {
     assert.ok(pageAria(tree, label), `the page is missing "${label}"`)
   }
@@ -2675,7 +2676,7 @@ await recordAsync('savelist: save/remove commands write the library, the report 
   dispose()
 })
 
-await recordAsync('page buttons: Pop out floats inside Hermes, Own window opens the OS window', async () => {
+await recordAsync('page buttons: Frame in Hermes floats inside Hermes, Pop out to desktop opens the OS window', async () => {
   const x = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/one.mp4' })
   const calls = []
   const frames = []
@@ -2694,19 +2695,19 @@ await recordAsync('page buttons: Pop out floats inside Hermes, Own window opens 
   await sleep(40)
   const route = x.contributions.find(c => c.area === 'routes')
   const tree = renderDeep(renderContribution(route))
-  // "Pop out": the floating pane appears, and no OS window is asked for.
-  pageAria(tree, 'Pop out').props.onClick()
+  // "Frame in Hermes": the floating pane appears, and no OS window is asked for.
+  pageAria(tree, 'Frame in Hermes').props.onClick()
   await sleep(40)
-  assert.ok(!calls.includes('/window/open'), 'Pop out opened an OS window')
-  assert.ok(x.contributions.find(c => c.id === 'watch'), 'Pop out did not register the floating pane')
+  assert.ok(!calls.includes('/window/open'), 'Frame in Hermes opened an OS window')
+  assert.ok(x.contributions.find(c => c.id === 'watch'), 'Frame in Hermes did not register the floating pane')
   assert.equal(x.storage.get('settings').videoWindow, true, 'the floating window was not remembered')
 
-  // "Own window": now the OS window, and the floating pane goes away.
+  // "Pop out to desktop": now the OS window, and the floating pane goes away.
   const tree2 = renderDeep(renderContribution(route))
-  pageAria(tree2, 'Own window').props.onClick()
+  pageAria(tree2, 'Pop out to desktop').props.onClick()
   await sleep(60)
-  assert.ok(calls.includes('/window/open'), 'Own window did not ask the server for a window')
-  assert.ok(!x.contributions.find(c => c.id === 'watch'), 'the floating pane survived Own window')
+  assert.ok(calls.includes('/window/open'), 'Pop out to desktop did not ask the server for a window')
+  assert.ok(!x.contributions.find(c => c.id === 'watch'), 'the floating pane survived Pop out to desktop')
   assert.notEqual((x.storage.get('settings') || {}).videoWindow, true, 'the floating window stayed on')
   dispose()
   void frames
@@ -2725,7 +2726,7 @@ await recordAsync('page buttons: Pop out floats inside Hermes, Own window opens 
   const disposeY = pluginModule.default.register(y.ctx)
   await sleep(40)
   const routeY = y.contributions.find(c => c.area === 'routes')
-  pageAria(renderDeep(renderContribution(routeY)), 'Own window').props.onClick()
+  pageAria(renderDeep(renderContribution(routeY)), 'Pop out to desktop').props.onClick()
   await sleep(60)
   // A never-set key is absent, not false: what matters is that the floating
   // surface was not switched on by a failed OS window.
@@ -3313,10 +3314,10 @@ record('strip-drag: the same drag in window mode keeps the film in window mode',
   }
 })
 
-record('strip-drag: the pop-out button is the only thing that pops the film out', () => {
+record('strip-drag: the Frame in Hermes button is the only thing that pops the film out', () => {
   const bar = tx.videoBarElForTest()
-  const popOut = findByLabel(bar, 'Pop out')
-  assert.ok(popOut, 'the strip has no pop-out button')
+  const popOut = findByLabel(bar, 'Frame in Hermes')
+  assert.ok(popOut, 'the strip has no Frame in Hermes button')
   for (const fn of popOut.__handlers.click || []) fn({ preventDefault() {} })
   assert.equal(stripSettingsOf(dragScenario).videoWindow, true, 'the pop-out button no longer pops out')
   const before = tx.videoBarPointForTest()
@@ -3743,6 +3744,281 @@ record('readable: nothing was written to the host DOM', () => {
 record('dispose from the readable scenario is clean', () => {
   disposeRd()
   assert.equal(rd.contributions.length, 0, 'a contribution survived dispose')
+})
+
+// ------------------------------------------------------ narrow-surface layout
+// Owner screenshots: the quick menu's bottom row overflowed its right edge, and
+// the docked pane squashed its play button, spread its volume slider past the
+// card and clipped film titles to "Yo...". These tests pin the rule for both
+// boxes: nothing may be wider than the box it sits in, and the two pop-out
+// buttons say the same words on every surface.
+
+// Each scenario below registers its own context: registering replaces the
+// plugin's global settings, so a shared one would leak between tests.
+
+const layoutVideo = extra => makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  panelEnabled: true,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ',
+  ...extra
+})
+const layoutMenuOf = ctx => renderContribution(ctx.contributions.find(c => c.id === 'quick-menu'))
+const layoutPageOf = ctx => renderDeep(renderContribution(ctx.contributions.find(c => c.area === 'routes')))
+const layoutMountPanel = ctx => {
+  // Two panes share the "panes" area (the player panel and the floating watch
+  // window), so pick the one that carries the settings drawer.
+  const panes = ctx.contributions.filter(c => c.area === 'panes')
+  assert.ok(panes.length, 'the docked pane is not registered')
+  let ref = null
+  for (const pane of panes) {
+    const tree = renderContribution(pane)
+    let isPanel = false
+    let candidate = null
+    walk(tree, node => {
+      if (node.props && node.props['aria-label'] === 'Aura settings') isPanel = true
+      if (!candidate && node.props && node.props.key === 'theatre') candidate = node.props.ref
+    })
+    if (isPanel && candidate) { ref = candidate; break }
+  }
+  assert.equal(typeof ref, 'function', 'the pane has no theatre ref')
+  const host = document.createElement('div')
+  ref(host)
+  const panel = host.children.find(node => node.attributes && node.attributes.id === 'aura-panel')
+  assert.ok(panel, 'the panel did not mount')
+  return panel
+}
+const layoutDescendants = (node, out = []) => {
+  if (!node || typeof node !== 'object') return out
+  out.push(node)
+  for (const child of node.children || []) layoutDescendants(child, out)
+  return out
+}
+const layoutPx = value => {
+  const match = /^(-?\d+(?:\.\d+)?)px$/.exec(String(value == null ? '' : value).trim())
+  return match ? Number(match[1]) : null
+}
+// A one-class-per-rule stylesheet, so the declarations a class gives an element
+// can be read straight out of the text (the fake DOM has no cascade).
+const layoutRules = css => {
+  const rules = new Map()
+  const re = /([.#][a-z0-9-]+)\s*\{([^}]*)\}/gi
+  let match = re.exec(css)
+  while (match) {
+    const decls = {}
+    for (const part of match[2].split(';')) {
+      const at = part.indexOf(':')
+      if (at < 0) continue
+      const name = part.slice(0, at).trim()
+      if (name) decls[name] = part.slice(at + 1).trim()
+    }
+    rules.set(match[1].toLowerCase(), decls)
+    match = re.exec(css)
+  }
+  return rules
+}
+
+record('quick menu: every row fits the menu, and no control is wider than it', () => {
+  const width = tx.quickMenuWidth
+  assert.ok(Number.isFinite(width) && width > 0, 'the quick menu has no declared width')
+  // The popover is given that width (the SDK stub drops PopoverContent's style,
+  // so the source is what says so).
+  assert.match(source, /minWidth: QUICK_MENU_WIDTH,\s*width: QUICK_MENU_WIDTH/,
+    'the popover is not laid out at QUICK_MENU_WIDTH')
+  const ctx = layoutVideo({ panelEnabled: false })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const tree = layoutMenuOf(ctx)
+    let rows = 0
+    walk(tree, node => {
+      const style = (node.props && node.props.style) || {}
+      for (const key of ['width', 'minWidth']) {
+        const value = layoutPx(style[key])
+        if (value != null) {
+          assert.ok(value <= width, `a quick-menu control is ${value}px wide inside a ${width}px menu`)
+        }
+      }
+      if (style.justifyContent === 'space-between' && style.flexWrap === 'wrap') {
+        rows += 1
+        const children = Array.isArray(node.props && node.props.children)
+          ? node.props.children
+          : [node.props && node.props.children]
+        const label = children[0] && children[0].props && children[0].props.style
+        const control = children[1] && children[1].props && children[1].props.style
+        assert.ok(label, 'a quick-menu row has no label box')
+        assert.equal(label.minWidth, 0, 'a row label cannot shrink inside the menu')
+        assert.equal(label.overflow, 'hidden', 'a row label cannot ellipsis')
+        assert.equal(label.textOverflow, 'ellipsis', 'a row label has no ellipsis')
+        assert.ok(control, 'a quick-menu row has no control box')
+        assert.equal(control.minWidth, 0, 'a row control cannot shrink inside the menu')
+      }
+    })
+    assert.ok(rows >= 6, `only ${rows} quick-menu rows are shrinkable; the rows are not all fixed`)
+    const frame = findByAria(tree, 'Frame in Hermes')
+    const pop = findByAria(tree, 'Pop out to desktop')
+    assert.ok(frame, 'the quick menu has no Frame in Hermes button')
+    assert.ok(pop, 'the quick menu has no Pop out to desktop button')
+    for (const node of [frame, pop]) {
+      assert.equal(node.props.style.flex, '1 1 0', 'the two pop-out buttons are not equal width')
+      assert.equal(node.props.style.minWidth, 0, 'a pop-out button cannot shrink')
+    }
+  } finally {
+    dispose()
+  }
+})
+
+record('skipped episodes: no row at zero, a "Show all N again" row at two', () => {
+  const empty = layoutVideo({ panelEnabled: false })
+  const disposeEmpty = pluginModule.default.register(empty.ctx)
+  try {
+    assert.ok(!texts(layoutMenuOf(empty)).includes('Skipped episodes'),
+      'the skipped-episodes row is shown at zero')
+  } finally {
+    disposeEmpty()
+  }
+
+  const two = layoutVideo({ panelEnabled: false, videoHiddenIds: ['aaaaaaaaaaa', 'bbbbbbbbbbb'] })
+  const disposeTwo = pluginModule.default.register(two.ctx)
+  try {
+    const tree = layoutMenuOf(two)
+    assert.ok(texts(tree).includes('Skipped episodes'), 'the skipped-episodes row is missing at two')
+    assert.ok(!texts(tree).includes('Hidden episodes'), 'the old "Hidden episodes" words are back')
+    assert.ok(texts(tree).includes('Show all 2 again'), 'the row does not offer "Show all 2 again"')
+    const button = findByAria(tree, 'Show all 2 skipped episodes again')
+    assert.ok(button, 'the skipped-episodes button has no label of its own')
+    assert.equal(button.props.title, 'Episodes you hid from your playlists. Aura skips them.',
+      'the skipped-episodes tooltip does not explain itself')
+    button.props.onClick()
+    assert.deepEqual(two.storage.get('settings').videoHiddenIds, [], 'show all again did not clear the list')
+  } finally {
+    disposeTwo()
+  }
+})
+
+await recordAsync('the two pop-out buttons: same words, same jobs, on every surface', async () => {
+  const ctx = makeCtx({
+    enabled: true,
+    backdropMode: 'video',
+    panelEnabled: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  await sleep(40)
+  try {
+    const words = ['Frame in Hermes', 'Pop out to desktop']
+    const menu = renderContribution(ctx.contributions.find(c => c.id === 'quick-menu'))
+    const page = layoutPageOf(ctx)
+    for (const label of words) {
+      assert.ok(findByAria(menu, label), `the quick menu has no "${label}" button`)
+      assert.ok(pageAria(page, label), `the Aura page has no "${label}" button`)
+    }
+    // The panel and the strip build DOM, not descriptors.
+    const panelButtons = () => layoutDescendants(layoutMountPanel(ctx)).filter(node => node.className === 'ap-popout')
+    const panelWords = panelButtons().map(node => node.getAttribute('aria-label')).sort()
+    assert.deepEqual(panelWords, [...words].sort(), 'the right panel does not carry both pop-out buttons')
+    const strip = tx.videoBarElForTest() || tx.mountVideoBarForTest(document.createElement('div'))
+    for (const label of words) assert.ok(findByLabel(strip, label), `the control strip has no "${label}" button`)
+
+    // Frame in Hermes toggles the in-app frame and never opens an OS window.
+    const opened = ctx.requests.filter(entry => entry.route === '/window/open').length
+    const frameBtn = panelButtons().find(node => node.className === 'ap-popout')
+    for (const fn of frameBtn.__handlers.click || []) fn({ preventDefault() {} })
+    assert.equal(pluginModule.wiringTest.settings.get().videoWindow, true,
+      'Frame in Hermes did not switch the in-app frame on')
+    assert.equal(ctx.requests.filter(entry => entry.route === '/window/open').length, opened,
+      'Frame in Hermes opened a desktop window')
+    const pressed = panelButtons().find(node => node.getAttribute('aria-label') === 'Frame in Hermes')
+    assert.equal(pressed.getAttribute('aria-pressed'), 'true', 'the frame toggle is not pressed when it is on')
+
+    // Pop out to desktop asks the server for the OS window, and then reads
+    // "Bring back" — the only button that says those words.
+    const ownBtn = panelButtons().find(node => node.getAttribute('aria-label') === 'Pop out to desktop')
+    assert.ok(ownBtn, 'the panel lost its Pop out to desktop button')
+    for (const fn of ownBtn.__handlers.click || []) fn({ preventDefault() {} })
+    await sleep(60)
+    assert.ok(ctx.requests.filter(entry => entry.route === '/window/open').length > opened,
+      'Pop out to desktop did not ask the server for a window')
+    const back = panelButtons().find(node => node.getAttribute('aria-label') === 'Bring back')
+    assert.ok(back, 'an open desktop window does not read "Bring back"')
+    assert.equal(back.textContent, 'Bring back', 'the desktop button text did not follow its state')
+  } finally {
+    tx.setVideoWindow(false)
+    await tx.setOwnWindow(false)
+    dispose()
+  }
+})
+
+record('right panel: no fixed width wider than a 260px pane, and it wraps instead', () => {
+  const ctx = layoutVideo({})
+  const dispose = pluginModule.default.register(ctx.ctx)
+  const panel = layoutMountPanel(ctx)
+  const css = (panelStyles()[panelStyles().length - 1] || {}).textContent || ''
+  assert.ok(css.includes('.ap-card'), 'the panel stylesheet is empty')
+  // Every fixed px width in the panel's own stylesheet fits the narrowest pane
+  // under test: the layout flexes, it does not assume 320px.
+  const narrowest = 260
+  for (const match of css.matchAll(/(?:^|;|\{)\s*(min-width|max-width|width)\s*:\s*(\d+(?:\.\d+)?)px/g)) {
+    assert.ok(Number(match[2]) <= narrowest,
+      `.${match[1]}: ${match[2]}px is wider than a ${narrowest}px pane`)
+  }
+  const rules = layoutRules(css)
+  assert.ok(rules.has('.ap-transport'), 'no transport rule')
+  assert.match(rules.get('.ap-transport')['flex-wrap'] || '', /wrap/, 'the transport row cannot wrap')
+  assert.match(rules.get('.ap-transport')['justify-content'] || '', /space-evenly/,
+    'the transport buttons are not evenly spaced')
+  assert.match(rules.get('.ap-volume')['max-width'] || '', /100%/, 'the volume slider is not contained')
+  assert.equal(rules.get('.ap-volume')['min-width'], '0', 'the volume slider cannot shrink')
+  assert.match(rules.get('.ap-field')['flex-wrap'] || '', /wrap/, 'the see-through row cannot wrap')
+  assert.match(rules.get('.ap-pills')['flex-wrap'] || '', /wrap/, 'the see-through presets cannot wrap')
+  assert.equal(rules.get('.ap-card')['flex-direction'], 'column', 'the film card is not stacked')
+  assert.match(rules.get('.ap-thumb').width || '', /100%/, 'the thumbnail is not card-wide')
+  assert.match(rules.get('.ap-title')['-webkit-line-clamp'] || '', /2/, 'the film title is not clamped to 2 lines')
+
+  // At each width, no child of the panel asks for more than the panel has.
+  for (const width of [260, 320, 400]) {
+    panel.style.width = `${width}px`
+    for (const node of layoutDescendants(panel)) {
+      for (const key of ['width', 'minWidth']) {
+        const value = layoutPx(node.style && node.style[key])
+        if (value != null) {
+          assert.ok(value <= width, `a panel child is ${value}px wide inside a ${width}px pane`)
+        }
+      }
+      const className = String(node.className || '').split(/\s+/).filter(Boolean)
+      for (const name of className) {
+        const rule = rules.get(`.${name}`)
+        if (!rule) continue
+        for (const key of ['width', 'min-width']) {
+          const value = layoutPx(rule[key])
+          if (value != null) {
+            assert.ok(value <= width, `.${name} is ${value}px wide inside a ${width}px pane`)
+          }
+        }
+      }
+    }
+  }
+
+  // The five see-through choices are all there, and the card puts its title
+  // under the thumbnail rather than beside it.
+  const pills = layoutDescendants(panel).filter(node => node.className === 'ap-pill')
+  assert.deepEqual(pills.map(node => node.textContent), ['Auto', '25%', '50%', '75%', '100%'])
+  const card = layoutDescendants(panel).find(node => node.className === 'ap-card')
+  assert.ok(card, 'the panel has no film card')
+  assert.ok(card.children[0].className === 'ap-thumb', 'the thumbnail is not the card’s first block')
+  assert.ok(card.children[1] && card.children[1].className === 'ap-meta', 'the card has no title block')
+  assert.equal(layoutDescendants(card).find(node => node.className === 'ap-title') !== undefined, true,
+    'the card has no title')
+
+  // The transport row's five buttons fit side by side at the narrowest width:
+  // five 28px minimums plus four 4px gaps against the pane's inner width.
+  const inner = narrowest - 2 * 14 - 2 * 12
+  const transportButtons = layoutDescendants(panel)
+    .filter(node => node.tagName === 'BUTTON' && node.parentNode && node.parentNode.className === 'ap-transport')
+  assert.equal(transportButtons.length, 5, 'the transport row does not have five buttons')
+  const needed = 5 * 28 + 4 * 4
+  assert.ok(needed <= inner, `the transport buttons need ${needed}px inside ${inner}px`)
+  dispose()
+  assert.equal(ctx.contributions.length, 0, 'a contribution survived dispose')
 })
 
 // --------------------------------------------------------------- reporting

@@ -51,6 +51,28 @@
   single in-place theme contribution, and that no host DOM node or style is
   written.
 
+
+## Unreleased — narrow surfaces, and two named pop-out buttons
+
+- **The quick menu can no longer overflow.** The popover is laid out at a fixed
+  288px (`QUICK_MENU_WIDTH`); every row wraps, its label ellipsises, and its
+  control may shrink. The old "Open on a screen" button that hung past the right
+  edge is gone.
+- **Two pop-out buttons with the same words on every surface** (quick menu,
+  right panel, Aura page, floating control strip): **Frame in Hermes** (a toggle,
+  pressed while the in-app frame holds the film) and **Pop out to desktop**
+  (which reads **Bring back** while the desktop window holds it). The right
+  panel's ⧉ glyph called a function that did not exist; it now opens the frame,
+  and the panel has both buttons.
+- **"Skipped episodes"** replaces "Hidden episodes": the row only appears when
+  something is skipped, its button reads "Show all N again", and its tooltip is
+  "Episodes you hid from your playlists. Aura skips them."
+- **The right panel works at 260px.** Five evenly spaced transport buttons that
+  flex instead of overlapping, a volume slider contained by the card, the five
+  see-through choices (Auto/25/50/75/100) wrapping onto two lines, and film
+  cards stacked with the title under a card-wide thumbnail, clamped to two lines.
+  Every child is `border-box`, so a 1px border cannot cause a horizontal scroll.
+
 ## Unreleased — the control strip is the user's
 
 - **Dragging the strip moves the strip.** The ⠿ grip (and any empty part of the
