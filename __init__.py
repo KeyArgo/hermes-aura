@@ -483,6 +483,10 @@ def _player_snapshot() -> dict:
         snapshot["player"] = player.get("player") if isinstance(player.get("player"), dict) else {}
         if "seq" in player:
             snapshot["command_seq"] = player.get("seq")
+        # [savelist lane] The desktop reports the owner's saved library with
+        # its player report; ``None`` means it has not reported one yet.
+        library = player.get("library")
+        snapshot["library"] = library if isinstance(library, list) else None
     window = _get("/api/window")
     if isinstance(window, dict) and window:
         snapshot["window"] = window
@@ -509,7 +513,11 @@ def _action_transport(action: str, args: dict, extra: dict | None = None,
         return {"ok": False, "error": (result or {}).get("error", "command_rejected"),
                 "command": action}
     payload = {"ok": True, "command": action, "seq": result.get("seq"), "delivery": "queued"}
-    payload.update(_player_snapshot())
+    snapshot = _player_snapshot()
+    # The saved library is not player state: it would only bloat every
+    # transport result. action=save/remove/list read it for themselves.
+    snapshot.pop("library", None)
+    payload.update(snapshot)
     player = payload.get("player")
     if isinstance(player, dict):
         # The player reports on its next tick; the status call a moment later
@@ -1059,7 +1067,7 @@ SCHEMA_AURA_LISTEN = {
 # only tells it what to load.
 # ---------------------------------------------------------------------------
 
-_WATCH_ACTIONS = ("search", "play", "now")
+_WATCH_ACTIONS = ("search", "play", "now", "save", "remove", "list")
 _WATCH_SEARCH_LIMIT = 10
 
 
@@ -1160,6 +1168,252 @@ def _action_watch_play(args: dict) -> dict:
     return payload
 
 
+# ---------------------------------------------------------------------------
+# [savelist lane] the owner's own Aura library — save, remove, list
+#
+# YouTube's own playlists are off-limits; this is the saved list the desktop
+# writes into its settings (``videoPlaylists`` / ``videoSources``), the same one
+# the Library's Add and Remove buttons edit. The agent never touches settings
+# itself: it queues one command on the player queue and the desktop's own
+# helpers write it, so the page updates live and there is one owner of truth.
+# ---------------------------------------------------------------------------
+
+_WATCH_LIBRARY_LIMIT = 200
+
+
+def _watch_kind(checked: dict) -> str:
+    """Which saved list a playable url belongs in.
+
+    A YouTube ``/playlist`` link is a playlist; a single video or a direct
+    media file is a film — exactly the split the desktop's Add button makes
+    (``isPlaylistUrl``), so the two cannot drift apart.
+    """
+    url = str(checked.get("url") or "")
+    if "/playlist" in url and "list=" in url:
+        return "playlist"
+    return "film"
+
+
+def _watch_library(snapshot: dict) -> list | None:
+    """The reported library as clean rows, or ``None`` when not reported."""
+    library = snapshot.get("library")
+    if not isinstance(library, list):
+        return None
+    rows = []
+    for row in library[:_WATCH_LIBRARY_LIMIT]:
+        if isinstance(row, dict) and str(row.get("url") or "").strip():
+            rows.append({"label": str(row.get("label") or row["url"]),
+                         "url": str(row["url"]),
+                         "kind": str(row.get("kind") or "film")})
+    return rows
+
+
+def _watch_row_line(index: int, row: dict) -> str:
+    return f"{index}. {row['label']} · {row['kind']} · {row['url']}"
+
+
+def _watch_match(rows: list, args: dict) -> dict:
+    """Resolve the one saved row the owner means.
+
+    ``url`` wins when given; otherwise the label must match exactly (ignoring
+    case) or by one unique partial match. Anything ambiguous answers with every
+    candidate and changes nothing — a wrong film must never be dropped.
+    """
+    raw_url = args.get("url")
+    if isinstance(raw_url, str) and raw_url.strip():
+        target = raw_url.strip()
+        if _search is not None:
+            checked = _search.check_play_url(target)
+            if checked.get("ok"):
+                target = str(checked.get("url") or target)
+        for row in rows:
+            if row["url"] == target:
+                return {"ok": True, "row": row}
+        return {"ok": False, "error": "not_in_library", "matches": [],
+                "text": f"{target} is not in your Aura library."}
+    raw_label = args.get("label")
+    if not isinstance(raw_label, str) or not raw_label.strip():
+        return {"ok": False, "error": "remove needs a url or a label",
+                "matches": [],
+                "text": "Tell me which one: its link, or the title as it appears "
+                        "in your list."}
+    wanted = raw_label.strip().lower()
+    exact = [row for row in rows if row["label"].strip().lower() == wanted]
+    hits = exact or [row for row in rows if wanted in row["label"].lower()]
+    if len(hits) == 1:
+        return {"ok": True, "row": hits[0]}
+    if not hits:
+        return {"ok": False, "error": "not_in_library", "matches": [],
+                "text": f'Nothing in your Aura library is called "{raw_label.strip()}".'}
+    return {"ok": False, "error": "ambiguous", "matches": hits,
+            "text": ("That matches more than one saved item, so nothing was "
+                     "removed:\n"
+                     + "\n".join(_watch_row_line(n + 1, row)
+                                 for n, row in enumerate(hits)))}
+
+
+def _action_watch_save(args: dict) -> dict:
+    """Add the given url (or what is playing) to the owner's saved library."""
+    snapshot = _player_snapshot()
+    player_raw = snapshot.get("player")
+    player: dict = player_raw if isinstance(player_raw, dict) else {}
+    if _search is None:
+        return _watch_error("search module unavailable")
+    raw = args.get("url")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        playing = player.get("url")
+        if not isinstance(playing, str) or not playing.strip():
+            return _watch_error(
+                "nothing is playing to save — name the film's link, or play it "
+                "first")
+        raw = playing
+    checked = _search.check_play_url(raw)
+    if not checked.get("ok"):
+        return _watch_error(str(checked.get("error") or "that url cannot be saved"))
+    url = str(checked.get("url") or "")
+    label = args.get("label")
+    if not isinstance(label, str) or not label.strip():
+        # Default to the title the player already knows, so the owner's list
+        # reads like their list instead of a wall of urls.
+        known = player.get("label") or player.get("title") or ""
+        label = str(known).strip()
+    else:
+        label = label.strip()
+    label = label[:200]
+    extra: dict = {"url": url}
+    if label:
+        extra["label"] = label
+    try:
+        _ensure()  # Aura starts on first use; a stopped server is started here.
+    except Exception:  # noqa: BLE001 - _request below reports honestly
+        pass
+    payload = _action_transport(
+        "save", args, extra=extra,
+        hint=("Aura's server is not running. Aura starts on first use: turn it on "
+              "with aura_control action=on, then call action=save again."),
+    )
+    if payload.get("ok") is not True:
+        return payload
+    kind = _watch_kind(checked)
+    saved = _watch_library(snapshot)
+    already = bool(saved) and any(row["url"] == url for row in saved)
+    horizon = "playlists" if kind == "playlist" else "films"
+    payload.update({
+        "saved": True,
+        "url": url,
+        "label": label or url,
+        "kind": kind,
+        "already_in_library": already,
+        "text": (f"Saved to your Aura library ({horizon}): "
+                 f"{label or url}"),
+        "note": ("Queued for the desktop, which writes it into your saved "
+                 f"{horizon} on its next poll (~0.25 s) and the Library page "
+                 "updates live."),
+    })
+    return payload
+
+
+def _action_watch_remove(args: dict) -> dict:
+    """Remove one saved item, chosen by url or by its title."""
+    snapshot = _player_snapshot()
+    if not snapshot:
+        return {
+            "ok": False,
+            "running": False,
+            "playing": False,
+            "error": "server not running",
+            "hint": ("Aura's server is not running. It starts on first use — turn "
+                     "it on with aura_control action=on, then ask again."),
+        }
+    rows = _watch_library(snapshot)
+    if rows is None:
+        return {
+            "ok": False,
+            "error": "library_not_reported",
+            "matches": [],
+            "text": "Your Aura library is not reported yet.",
+            "note": ("Your Aura library is not reported yet — the desktop sends it "
+                     "with its player report, so Aura's page in Hermes Desktop has "
+                     "to poll once (or the app was just started). Try again in a "
+                     "moment, or call action=list to check."),
+        }
+    match = _watch_match(rows, args)
+    if not match.get("ok"):
+        payload = {"ok": False, "error": match.get("error"),
+                   "matches": match.get("matches") or [],
+                   "text": match.get("text", "")}
+        if payload["matches"]:
+            payload["text_lines"] = [_watch_row_line(n + 1, row)
+                                     for n, row in enumerate(payload["matches"])]
+            payload["note"] = ("Nothing was removed. Ask the owner which one, or "
+                               "call action=remove again with that item's url.")
+        return payload
+    row = match["row"]
+    try:
+        _ensure()
+    except Exception:  # noqa: BLE001
+        pass
+    extra = {"url": row["url"], "label": row["label"]}
+    payload = _action_transport(
+        "remove", args, extra=extra,
+        hint=("Aura's server is not running. Aura starts on first use: turn it on "
+              "with aura_control action=on, then call action=remove again."),
+    )
+    if payload.get("ok") is not True:
+        return payload
+    payload.update({
+        "removed": True,
+        "url": row["url"],
+        "label": row["label"],
+        "kind": row["kind"],
+        "text": f"Removed from your Aura library: {row['label']}",
+        "note": ("Queued for the desktop, which writes the change on its next "
+                 "poll (~0.25 s)."),
+    })
+    return payload
+
+
+def _action_watch_list() -> dict:
+    """The owner's saved library, as the desktop last reported it."""
+    snapshot = _player_snapshot()
+    if not snapshot:
+        return {
+            "ok": False,
+            "running": False,
+            "error": "server not running",
+            "hint": ("Aura's server is not running. It starts on first use — turn "
+                     "it on with aura_control action=on, then ask again."),
+        }
+    rows = _watch_library(snapshot)
+    if rows is None:
+        return {
+            "ok": True,
+            "reported": False,
+            "count": 0,
+            "items": [],
+            "text": "",
+            "note": ("Your Aura library is not reported yet — the desktop sends "
+                     "it with its player report, so Aura's page in Hermes Desktop "
+                     "has to poll once. Nothing is assumed about what you saved."),
+        }
+    items = [dict(row, n=index + 1) for index, row in enumerate(rows)]
+    playlist_count = sum(1 for row in rows if row["kind"] == "playlist")
+    film_count = len(rows) - playlist_count
+    payload = {
+        "ok": True,
+        "reported": True,
+        "count": len(items),
+        "playlists": playlist_count,
+        "films": film_count,
+        "items": items,
+        "text": "\n".join(_watch_row_line(item["n"], item) for item in items),
+    }
+    if not items:
+        payload["text"] = ""
+        payload["note"] = "Your Aura library is empty — nothing saved yet."
+    return payload
+
+
 def _action_watch_now() -> dict:
     snapshot = _player_snapshot()
     if not snapshot:
@@ -1199,6 +1453,12 @@ def _tool_aura_watch(args: dict, **kw) -> str:
             payload = _action_watch_search(args)
         elif action == "play":
             payload = _action_watch_play(args)
+        elif action == "save":
+            payload = _action_watch_save(args)
+        elif action == "remove":
+            payload = _action_watch_remove(args)
+        elif action == "list":
+            payload = _action_watch_list()
         else:  # now
             payload = _action_watch_now()
         return _dump(payload)
@@ -1218,8 +1478,21 @@ SCHEMA_AURA_WATCH = {
         "non-YouTube sources you may use your own web search and pass the direct "
         "link to action=play. action=play accepts YouTube watch/youtu.be/shorts/"
         "embed/playlist links and direct .mp4/.webm/.m3u8/.mov files. action=now "
-        "reports what is playing. Returns JSON. Nothing is ever autoplayed, and "
-        "if Aura's server is not running it says so plainly."
+        "reports what is playing. "
+        "THE USER'S OWN SAVED LIBRARY (Aura's list, not YouTube's): action=save "
+        "adds a film to it — 'save this' means the film playing now (url may be "
+        "left out), 'add the octopus one to my list' means that option's url plus "
+        "its title as the label; a playlist link is saved as a playlist, anything "
+        "else as a film, and the same url is never saved twice. action=list "
+        "answers 'what's on my list?' with every saved item (label, url, kind). "
+        "action=remove takes a url or a title, e.g. 'remove Nosferatu': an exact "
+        "or unique case-insensitive match is removed, and if the title matches "
+        "more than one saved item it returns the matches and changes NOTHING — "
+        "ask the user which one. A title that was never saved changes nothing "
+        "either. action=list and action=remove read the library the desktop "
+        "reports; if it has not reported one yet they say so instead of guessing. "
+        "Returns JSON. Nothing is ever autoplayed, and if Aura's server is not "
+        "running it says so plainly."
     ),
     "parameters": {
         "type": "object",
@@ -1228,7 +1501,9 @@ SCHEMA_AURA_WATCH = {
                 "type": "string",
                 "enum": list(_WATCH_ACTIONS),
                 "description": "search to offer choices; play to start the chosen "
-                               "one; now to ask what is playing (default search).",
+                               "one; now to ask what is playing; save/remove to "
+                               "change the user's saved Aura library; list to read "
+                               "it (default search).",
             },
             "q": {
                 "type": "string",
@@ -1243,12 +1518,16 @@ SCHEMA_AURA_WATCH = {
             },
             "url": {
                 "type": "string",
-                "description": "for play: the chosen option's url (or a direct link "
-                               "the user gave you)",
+                "description": "for play/save: the chosen option's url (or a direct "
+                               "link the user gave you); for save it may be left "
+                               "out to save what is playing now; for remove it "
+                               "names the saved item",
             },
             "label": {
                 "type": "string",
-                "description": "for play: the title to show in Aura",
+                "description": "for play/save: the title to show in Aura (save "
+                               "defaults to the playing film's title); for remove: "
+                               "the saved item's title",
             },
         },
         "required": ["action"],

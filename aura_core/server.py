@@ -233,6 +233,10 @@ class _State:
         # agent tool) writes commands that the desktop window polls for.
         self.player: dict = {}
         self.player_seq = 0
+        # [savelist lane] The owner's saved library as the desktop last
+        # reported it (playlists + films). ``None`` until a desktop reports:
+        # "not reported yet" is not the same answer as "your list is empty".
+        self.library: list | None = None
         self.commands: list = []
         self.command_seq = 0
         # [listen lane] Audio channel requests for the desktop half:
@@ -668,8 +672,12 @@ def _capture_loop(stop_event: threading.Event) -> None:
 # ---------------------------------------------------------------------------
 
 PLAYER_COMMANDS = ("play", "pause", "toggle", "next", "prev", "seek",
-                   "volume", "load", "watch_window", "bring_back")
+                   "volume", "load", "watch_window", "bring_back",
+                   # [savelist lane] the owner's own saved library: the agent
+                   # queues one of these and the desktop writes its settings.
+                   "save", "remove")
 MAX_QUEUED_COMMANDS = 64
+MAX_LIBRARY_ITEMS = 200
 _PLAYER_TEXT_MAX = 2000
 
 
@@ -678,6 +686,34 @@ def _player_text(value: Any, limit: int = _PLAYER_TEXT_MAX) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip()[:limit]
+
+
+def _player_library(value: Any) -> list | None:
+    """The owner's saved library as the desktop reported it (or ``None``).
+
+    One entry per saved source: ``{label, url, kind}`` with ``kind`` either
+    ``playlist`` or ``film``. Anything malformed is dropped rather than
+    guessed at, a missing label falls back to the url, and a url is listed
+    once — the same de-duplication the desktop's own list applies.
+    """
+    if not isinstance(value, list):
+        return None
+    rows: list = []
+    seen: set = set()
+    for entry in value[:MAX_LIBRARY_ITEMS]:
+        if not isinstance(entry, dict):
+            continue
+        url = _player_text(entry.get("url"))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        kind = _player_text(entry.get("kind"), 32).lower()
+        rows.append({
+            "label": _player_text(entry.get("label"), 120) or url,
+            "url": url,
+            "kind": kind if kind in ("playlist", "film") else "film",
+        })
+    return rows
 
 
 def _player_number(value: Any) -> float | None:
@@ -694,6 +730,7 @@ def player_payload() -> dict:
     with _STATE.lock:
         player = dict(_STATE.player)
         seq = _STATE.command_seq
+        library = list(_STATE.library) if isinstance(_STATE.library, list) else None
         stale = (time.time() - float(player.get("ts") or 0)) > 15.0
     if stale and player:
         # A window that stopped reporting (closed, or the server restarted
@@ -701,7 +738,7 @@ def player_payload() -> dict:
         player["playing"] = False
         player["stale"] = True
     return {"ok": True, "player": player, "seq": seq,
-            "window": desktop_window.status()}
+            "library": library, "window": desktop_window.status()}
 
 
 def report_player(data: Any) -> dict:
@@ -742,6 +779,13 @@ def report_player(data: Any) -> dict:
         command = _player_text(data.get("last_command"), 32)
         if command:
             player["last_command"] = command
+        # [savelist lane] The desktop's saved library rides its report, so
+        # aura_watch action=list reads the owner's real list (and remove can
+        # resolve a title to a url). A report without a library leaves the
+        # last known one alone — the pop-out page has no library to send.
+        library = _player_library(data.get("library"))
+        if library is not None:
+            _STATE.library = library
         player["ts"] = time.time()
         _STATE.player = player
         _STATE.player_seq += 1
@@ -777,6 +821,12 @@ def enqueue_command(data: Any) -> dict:
         command["value"] = max(0.0, min(1.0, command["value"]))
     if cmd == "load" and not command.get("url"):
         raise ValueError("load needs a url")
+    # [savelist lane] save/remove always name their target: a url is enough to
+    # remove; the desktop also resolves a unique label when it is all it gets.
+    if cmd == "save" and not command.get("url"):
+        raise ValueError("save needs a url")
+    if cmd == "remove" and not (command.get("url") or command.get("label")):
+        raise ValueError("remove needs a url or a label")
     with _STATE.lock:
         _STATE.command_seq += 1
         command["seq"] = _STATE.command_seq
@@ -1694,6 +1744,7 @@ def _start_server() -> None:
         _STATE.capture_lost_reported = False
         _STATE.player = {}
         _STATE.player_seq = 0
+        _STATE.library = None
         _STATE.commands = []
         _STATE.command_seq = 0
         _STATE.audio_requests = []
