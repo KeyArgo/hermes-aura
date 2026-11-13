@@ -43,6 +43,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -2153,7 +2154,11 @@ record('the starter pack grew, and every source is unique and well-formed', () =
   for (const { label, url } of starterEntries) {
     assert.ok(label.trim().length >= 3, `starter label is too short for ${url}`)
     assert.doesNotMatch(url, /\s/, `starter url contains whitespace: ${url}`)
-    assert.doesNotMatch(url, /PLKcvhYw9tgjI/, `a real playlist id leaked into the pack: ${url}`)
+    // The owner's own playlist must never ship. Only a hash of its id prefix is
+    // kept here, so this guard cannot leak the id it guards.
+    const listId = (url.match(/[?&]list=([\w-]+)/) || [])[1] || ''
+    assert.notEqual(createHash('sha256').update(listId.slice(0, 13)).digest('hex'), 'e5ae157250010ee61f730d5febabf21442331cd454557858b3f37493a8d3863a',
+      `a real playlist id leaked into the pack: ${url}`)
     let parsed = null
     try {
       parsed = new URL(url)
