@@ -821,7 +821,8 @@ function showEligible() {
   // The docked pane is itself a surface for the film: without this a judge with
   // the default settings (window visual off, not on the Aura theme) sees a pane
   // whose stage plays nothing, because nothing ever mounts.
-  const paneFilm = panelVisible() && Boolean(settings.videoUrl) && !settings.videoClosed
+  const paneFilm = panelVisible() && settings.backdropMode === 'video' &&
+    Boolean(settings.videoUrl) && !settings.videoClosed
   // A pane film is not an overlay: it may mount with Aura switched off. Only the
   // backdrop/theme/accent paths below require `enabled`.
   // The full page is the same kind of surface, for the same reason.
@@ -1115,6 +1116,12 @@ function applyVideoOpacity() {
     return
   }
   if (videoWindowOn()) {
+    backdropEl.style.opacity = '1'
+    return
+  }
+  // So is the Right panel. Without this the tick pulled the pane film back to the
+  // see-through level a moment after mount set it to full, and it pulsed.
+  if (panelVisible()) {
     backdropEl.style.opacity = '1'
     return
   }

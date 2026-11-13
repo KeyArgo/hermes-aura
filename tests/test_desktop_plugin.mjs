@@ -1984,6 +1984,97 @@ await recordAsync('the docked pane alone mounts the film', () => {
   // returns 1 whenever the pane is showing — verified in the app, not here.
 })
 
+// ------------------------------------- surfaces without the Right panel
+// The Right panel is the film's box and most people keep it closed. Drawing behind
+// the window stays opt-in ("Visual behind the app"); with that on, the visualiser
+// and a loaded film fill the window whether or not the panel is open. The panel's
+// own exception is for the film only: it used to mount the visualiser too, so the
+// visualiser seemed to need the panel, and vanished when the panel was closed.
+
+const frameSrc = node => String(node.src || (node.attributes && node.attributes.src) || '')
+const tick = scenario => scenario.timers.filter(t => t.ms === 250).forEach(t => t.fn())
+
+// The plugin keeps ONE frame for the module and re-points it, and earlier
+// scenarios may leave theirs mounted, so classify the frames by what they show
+// instead of counting new elements.
+async function surfaceScenario(settings) {
+  const scenario = makeCtx({ themeOptIn: false, windowVisual: false, ...settings })
+  const dispose = pluginModule.default.register(scenario.ctx)
+  tick(scenario)
+  await sleep(80)
+  tick(scenario)
+  await sleep(40)
+  const all = hostIframes()
+  const films = all.filter(node => frameSrc(node).includes('/player.html'))
+  const visuals = all.filter(node => frameSrc(node) && !frameSrc(node).includes('/player.html'))
+  return { films, visuals, all, dispose }
+}
+
+await recordAsync('with the Right panel closed, the opted-in visualiser fills the window', async () => {
+  const { visuals, films, dispose } = await surfaceScenario({
+    enabled: true, backdropMode: 'aura', panelEnabled: false, windowVisual: true
+  })
+  try {
+    assert.equal(visuals.length, 1, 'no visualiser mounted with the Right panel closed')
+    assert.equal(films.length, 0, 'a film player is mounted in visualiser mode')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('the Right panel alone does not draw the visualiser behind the app', async () => {
+  // A film box is no consent to paint the whole window: the visualiser waits for
+  // its own opt-in, so it behaves the same with the panel open or closed.
+  const { all, dispose } = await surfaceScenario({
+    enabled: true, backdropMode: 'aura', panelEnabled: true, windowVisual: false,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  try {
+    assert.equal(all.length, 0, 'the Right panel let the visualiser paint without the opt-in')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('with the Right panel closed, an opted-in film fills the window behind the app', async () => {
+  const { films, visuals, dispose } = await surfaceScenario({
+    enabled: true, backdropMode: 'video', panelEnabled: false, windowVisual: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ', videoOpacity: 0.75, videoOpacityAuto: false
+  })
+  try {
+    assert.equal(films.length, 1, 'no film mounted with the Right panel closed')
+    assert.equal(visuals.length, 0, 'a visualiser is mounted in video mode')
+    assert.equal(String(films[0].style.opacity), '0.75', 'the full-window film lost the see-through setting')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('Aura off draws nothing behind the window, panel or not', async () => {
+  const { all, dispose } = await surfaceScenario({ enabled: false, backdropMode: 'aura', panelEnabled: false })
+  try {
+    assert.equal(all.length, 0, 'an off Aura still painted behind the app')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('a film in the Right panel is always full strength', async () => {
+  // See-through is for the film behind the app. Inside its own box a 75% film is
+  // a dim player, and the 250 ms tick used to pull it back to 75% after mount set
+  // it to 100%, so the picture visibly pulsed.
+  const { films, dispose } = await surfaceScenario({
+    enabled: true, backdropMode: 'video', panelEnabled: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ', videoOpacity: 0.75, videoOpacityAuto: false
+  })
+  try {
+    assert.equal(films.length, 1, 'the pane film did not mount')
+    assert.equal(String(films[0].style.opacity), '1', 'the pane film follows the see-through setting')
+  } finally {
+    dispose()
+  }
+})
+
 // ------------------------------------------------------------ left panel
 const panelCtx = makeCtx({
   enabled: true,
