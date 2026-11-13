@@ -1,0 +1,82 @@
+{
+  "_recorded": {
+    "what": "archive.org /metadata/<id> for an Aura catalogue film, trimmed to the fields Aura reads",
+    "source": "https://archive.org/metadata/The_General_Buster_Keaton",
+    "recorded_at": "2026-11-13",
+    "why": "so the quality tests never touch the network"
+  },
+  "metadata": {
+    "identifier": "The_General_Buster_Keaton",
+    "title": "The General (complete & clearer) (1926)",
+    "mediatype": "movies"
+  },
+  "dir": "/0/items/The_General_Buster_Keaton",
+  "files": [
+    {
+      "name": "The_General.avi",
+      "source": "original",
+      "format": "Cinepack",
+      "size": "128861318",
+      "length": "4723.85"
+    },
+    {
+      "name": "The_General.mp4",
+      "source": "derivative",
+      "format": "h.264",
+      "size": "412400222",
+      "height": "480",
+      "width": "640",
+      "length": "4723.85"
+    },
+    {
+      "name": "The_General.ogv",
+      "source": "derivative",
+      "format": "Ogg Video",
+      "size": "304061885",
+      "height": "300",
+      "width": "400",
+      "length": "4722.73"
+    },
+    {
+      "name": "The_General_512kb.mp4",
+      "source": "derivative",
+      "format": "512Kb MPEG4",
+      "size": "302790246",
+      "height": "240",
+      "width": "320",
+      "length": "4723.81"
+    },
+    {
+      "name": "The_General.gif",
+      "source": "derivative",
+      "format": "Animated GIF",
+      "size": "9098615"
+    },
+    {
+      "name": "General-still.jpg",
+      "source": "original",
+      "format": "JPEG",
+      "size": "96908",
+      "height": "480",
+      "width": "640"
+    },
+    {
+      "name": "The_General_Buster_Keaton.thumbs/The_General_000001.jpg",
+      "source": "derivative",
+      "format": "Thumbnail",
+      "size": "4664"
+    },
+    {
+      "name": "The_General_Buster_Keaton_files.xml",
+      "source": "metadata",
+      "format": "Metadata",
+      "size": "26012"
+    },
+    {
+      "name": "The_General_Buster_Keaton_archive.torrent",
+      "source": "metadata",
+      "format": "Archive BitTorrent",
+      "size": "8203"
+    }
+  ]
+}
