@@ -1095,11 +1095,13 @@ def test_mood_mapping_drives_visible_behaviour_without_touching_audio(chrome, au
         assert float(tint.strip() or 0) > 0, "error must show the red settle tint"
         assert snap["intensity"] >= 0.6
 
-        # streaming: brighter energy than thinking
+        # streaming: brighter energy than thinking. The draw gain is the setting
+        # itself (CONTRACT.md §13), so compare against the live baseline rather
+        # than an absolute floor that only the old 0.2 + 1.8 × curve cleared.
         aura.send_mood("streaming", intensity=0.8, ttl_ms=8000)
         snap = expect_mood(tab, "streaming")
         print("streaming: mood=%s gain=%s" % (snap["mood"], snap["sampleGain"]), flush=True)
-        assert snap["sampleGain"] > 1.5, "streaming must raise the energy"
+        assert snap["sampleGain"] > idle_gain * 1.3, "streaming must raise the energy"
 
         # done: one short settle, then idle (≤1.5 s)
         aura.send_mood("done", intensity=0.5, ttl_ms=1500)

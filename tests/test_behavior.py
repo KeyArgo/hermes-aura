@@ -79,7 +79,7 @@ def test_profile_families_exist_in_the_page_catalogue():
 
 def test_config_defaults_include_display_controls():
     cfg = config.normalise({})
-    assert cfg["opacity"] == 0.35
+    assert cfg["opacity"] == 0.25
     assert cfg["behavior"] == "balanced"
     assert cfg["mood_reactive"] is True
     assert cfg["accent_pulse"] is False
@@ -88,13 +88,13 @@ def test_config_defaults_include_display_controls():
 
 
 def test_first_run_defaults_are_agent_led_and_gentle():
-    # New users land on: agent+music motion, mid intensity, balanced profile,
-    # low opacity (CONTRACT.md §9.1).
+    # New users land on: agent+music motion, a quarter reaction, balanced
+    # profile, quarter opacity (CONTRACT.md §9.1).
     cfg = config.normalise({})
     assert cfg["motion"] == "agent_music"
-    assert cfg["intensity"] == 0.5
+    assert cfg["intensity"] == 0.25
     assert cfg["behavior"] == "balanced"
-    assert cfg["opacity"] == 0.35
+    assert cfg["opacity"] == 0.25
     assert cfg == config.DEFAULTS
 
 
@@ -112,6 +112,25 @@ def test_saved_config_keeps_its_values_and_only_fills_missing_keys(tmp_path, mon
     # Only the keys the file never had fall back to the new defaults.
     assert cfg["reduced_motion"] is config.DEFAULTS["reduced_motion"]
     assert cfg["mood_reactive"] is config.DEFAULTS["mood_reactive"]
+
+
+def test_new_install_defaults_are_a_quarter_for_intensity_and_opacity():
+    """Owner ask: a new install starts at 25% reaction and 25% opacity.
+
+    Defaults are first-run only; a saved value is kept as it is, and every value
+    still clamps to 0..1 (CONTRACT.md §9.1).
+    """
+    assert config.DEFAULTS["intensity"] == 0.25
+    assert config.DEFAULTS["opacity"] == 0.25
+    fresh = config.normalise({})
+    assert (fresh["intensity"], fresh["opacity"]) == (0.25, 0.25)
+
+    saved = config.normalise({"intensity": 0.9, "opacity": 0.8})
+    assert (saved["intensity"], saved["opacity"]) == (0.9, 0.8)
+
+    clamped = config.normalise({"intensity": 4, "opacity": -1})
+    assert clamped["intensity"] == 1.0
+    assert clamped["opacity"] == 0.0
 
 
 def test_theme_effects_are_opt_in_and_can_be_enabled_explicitly():
@@ -151,5 +170,5 @@ def test_config_coerces_bad_display_values_instead_of_raising():
     assert cfg["behavior"] == "calm"
 
     cfg = config.normalise({"opacity": True, "behavior": 7})
-    assert cfg["opacity"] == 0.35
+    assert cfg["opacity"] == 0.25
     assert cfg["behavior"] == "balanced"

@@ -152,8 +152,10 @@ const VIDEO_WINDOW_DEFAULT_SIZE = 'medium'
 
 const DEFAULT_SETTINGS = Object.freeze({
   enabled: true,
-  intensity: 0.5,
-  opacity: 0.35,
+  // First-run only: a quarter reaction and a quarter opacity, so a new install
+  // starts as a quiet wash behind the work. Saved settings keep their own values.
+  intensity: 0.25,
+  opacity: 0.25,
   behavior: 'balanced',
   moodReactive: true,
   accentPulse: false,
@@ -1267,15 +1269,19 @@ function AuraWatchWindow() {
   })
 }
 
-/** Opacity for the film surface: the video's own transparency, or the Aura
- *  backdrop's for the visualiser. Never above the user's saved setting. */
+/** Opacity for the film surface: the video player's own transparency. The
+ *  visualiser needs none — its page applies the user's opacity itself. */
 function filmOpacity(settings, video) {
   if (settings.backdropMode === 'video') {
     const manual = Number(video && video.opacity)
     if (Number.isFinite(manual)) return manual
     return Number(settings.videoOpacity) || 1
   }
-  return Number(settings.opacity) || 0.5
+  // The visualiser page owns its own opacity: it dims the canvas and compensates
+  // its scrim from the same setting (CONTRACT.md §9.2). Dimming the frame as
+  // well applied the setting twice — 25% drew 6% — and dimmed the page chrome
+  // the contract keeps legible. The frame carries only the fade machine's factor.
+  return 1
 }
 
 /** The video-URL box: one controlled draft, one apply path.

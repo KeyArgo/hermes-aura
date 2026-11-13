@@ -145,8 +145,8 @@ function makeCtx(storageMap) {
   const serverSettings = {
     motion: 'agent_music',
     behavior: 'balanced',
-    intensity: 0.5,
-    opacity: 0.35,
+    intensity: 0.25,
+    opacity: 0.25,
     reduced_motion: false
   }
   const serverFrame = {

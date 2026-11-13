@@ -148,7 +148,7 @@ Additive to §1/§2/§4. No existing field changed meaning. New config keys are 
 
 | key | type | default | validation |
 |---|---|---|---|
-| `opacity` | number 0..1 | 0.35 | non-numeric/bool -> `opacity_must_be_number`; outside 0..1 -> `opacity_out_of_range` |
+| `opacity` | number 0..1 | 0.25 | non-numeric/bool -> `opacity_must_be_number`; outside 0..1 -> `opacity_out_of_range` |
 | `behavior` | `"calm"` \| `"balanced"` \| `"intense"` | `"balanced"` | non-string -> `behavior_must_be_string`; unknown -> `bad_behavior` |
 | `mood_reactive` | bool | `true` | non-bool -> `mood_reactive_must_be_bool` |
 | `accent_pulse` | bool | `false` | non-bool -> `accent_pulse_must_be_bool` |
@@ -339,3 +339,21 @@ theme change and repaints in place. No selector, stylesheet or style rule is add
   on an idle window would undo the text exactly when the user goes back to reading chat.
 - Hermes' own chat face (`desktop.font_family`, Settings ▸ Appearance ▸ Chat font) is left alone;
   the Readable group links to it instead of overriding it.
+
+
+## 13. Where reaction strength and opacity draw (additive, 2026-11-13)
+
+Both controls are first-run `0.25`; a saved config keeps its own value.
+
+- **Reaction strength** (`intensity`, §1/§9.1) is the scale the page hands to the visualizer:
+  `sampleGain = effectiveIntensity` (0..1, and `× 0.75` under reduced motion). `0` therefore
+  draws no audio reaction and `0.25` draws a quarter. It is not remapped by a floor or a curve:
+  the value on the slider is the value that draws. The page's auto-gain still normalises a quiet
+  capture up to `AGC_TARGET_PEAK`; it never attenuates loud audio, and it does not cancel the
+  setting (the gain is applied after it).
+- **Opacity** is applied **once**, by the visualizer page, to its own canvas (§9.2), with the
+  scrim compensated from the same number. The desktop half must not dim the visualizer frame as
+  well: doing that squared the setting (25% drew 6%) and dimmed the page chrome §9.2 keeps
+  legible. The frame element carries only the "Only while active" fade factor. A **film** frame
+  is the exception — `web/player.html` has no opacity of its own, so its frame carries the
+  adaptive video transparency.

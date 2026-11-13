@@ -97,6 +97,8 @@ function makeElement(id, tag, gl) {
     },
     getBoundingClientRect: () => ({ width: 800, height: 450, left: 0, top: 0, right: 800, bottom: 450 }),
     querySelector: () => makeElement(id + '-label', 'span', gl),
+    appendChild(child) { el.children = (el.children || []).concat([child]); return child },
+    removeChild(child) { el.children = (el.children || []).filter(c => c !== child); return child },
     getContext: () => gl
   }
   return el
@@ -201,6 +203,11 @@ async function loadPage(opts = {}) {
       constructor() { this.port = { onmessage: null, postMessage() {} } }
       connect() {}
       disconnect() {}
+    },
+    // The page's fetch timeout needs a controller; the real browser has one.
+    AbortController: class FakeAbortController {
+      constructor() { this.signal = { aborted: false } }
+      abort() { this.signal.aborted = true }
     },
     WebSocket: class FakeWebSocket {
       constructor(url) {
@@ -383,6 +390,57 @@ await record('an empty presets.json falls back to the vendored preset pack', asy
   assert.equal(missingSnap.presetCount > 0, true, 'a 404 presets.json lost the catalog too')
   assert.equal(missingSnap.presetFamily, 'misc')
   assert.ok(missing.vizCalls().length > 0, 'no preset loaded after a 404 presets.json')
+})
+
+await record('intensity: the drawn reaction is the slider value, not a floor plus a curve', async () => {
+  const page = await loadPage({ motion: 'music', config: { intensity: 1 } })
+  page.openSocket()
+  page.sendPcm({ seq: 11 })
+  assert.equal(page.snap().badFrames, 0, 'the §2 frame was rejected: ' + JSON.stringify(page.snap().errors))
+
+  // Let the slow auto-gain envelope settle at each level: it normalises quiet
+  // capture, so it must not be what makes the numbers move.
+  const settle = level => {
+    page.aura.setIntensityUI(level)
+    for (let i = 0; i < 60; i += 1) {
+      page.sendPcm({ seq: 12 + i, silence: false })
+      page.advance(20)
+    }
+    return page.aura._drawnPcmPeak()
+  }
+
+  const full = settle(1)
+  const half = settle(0.5)
+  const quarter = settle(0.25)
+  const off = settle(0)
+
+  assert.ok(full > 0.05, `the full setting drew nothing (peak ${full})`)
+  assert.equal(off, 0, `intensity 0 still handed ${off.toFixed(3)} to the visualizer: ` +
+    'a 0 setting must mean no audio reaction')
+  assert.ok(Math.abs(half / full - 0.5) < 0.05,
+    `intensity 0.5 drew ${(half / full).toFixed(3)} of what 1.0 drew, not 0.500: ` +
+    'the slider value is being remapped before it reaches the visualizer')
+  assert.ok(Math.abs(quarter / full - 0.25) < 0.05,
+    `intensity 0.25 drew ${(quarter / full).toFixed(3)} of what 1.0 drew, not 0.250: ` +
+    'the slider value is being remapped before it reaches the visualizer')
+})
+
+await record('opacity: the page applies the setting to its canvas exactly once', async () => {
+  const page = await loadPage({ motion: 'music', config: { opacity: 0.25 } })
+  page.openSocket()
+  page.sendPcm({ seq: 21 })
+  const lit = page.snap()
+  assert.equal(lit.opacity, 0.25, 'the saved opacity was not applied to the page')
+  assert.equal(lit.canvasOpacity, '0.25',
+    'the canvas does not carry the setting itself: ' + lit.canvasOpacity)
+  assert.equal(Number(lit.scrimOpacity), 0.8875,
+    'the scrim compensation broke: ' + lit.scrimOpacity)
+
+  page.aura.setOpacityUI(0.4)
+  page.sendPcm({ seq: 22 })
+  const moved = page.snap()
+  assert.equal(moved.canvasOpacity, '0.4', 'moving the slider did not reach the canvas')
+  assert.equal(Number(moved.scrimOpacity), 0.91, 'the scrim did not follow the slider')
 })
 
 console.log(results.join('\n'))

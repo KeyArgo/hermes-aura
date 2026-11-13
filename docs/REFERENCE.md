@@ -16,7 +16,7 @@ Turn Aura on/off, read status, set intensity/preset/mood, drive the film.
 | Parameter | Type | Required | Notes |
 |---|---|---|---|
 | `action` | string enum | yes | `on`, `off`, `status`, `intensity`, `preset`, `mood`, `pause`, `resume`, `next`, `prev`, `seek`, `popout`, `popin` |
-| `intensity` | number 0..1 | for `intensity` | Render cap. |
+| `intensity` | number 0..1 | for `intensity` | Reaction strength: the fraction of the normalised audio reaction the visualizer draws (`0` = none). A new install starts at `0.25`. |
 | `preset` | string or null | for `preset` | Name from `web/presets.json`; `null` resets. |
 | `mood` | string enum | for `mood` | `idle`, `thinking`, `tool`, `approval`, `error`, `streaming`, `done` |
 | `position` | number ≥ 0 | for `seek` / `popout` | Seconds. |

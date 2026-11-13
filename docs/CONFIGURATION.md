@@ -2,7 +2,7 @@
 
 One line: every setting Aura actually reads, its default, and what it changes.
 
-Applies to Aura 1.0.0 · revised 2026-11-11
+Applies to Aura 1.0.0 · revised 2026-11-13
 
 Aura reads one JSON file and a small set of environment variables. Unknown
 keys are ignored; wrong types fall back to the default. The file is written
@@ -16,11 +16,11 @@ atomically with mode `0600` (`aura_core/config.py`).
 |---|---|---|---|
 | `enabled` | boolean | `false` | The kill switch. Off means no capture, no backdrop, no mood painting; hooks become no-ops. |
 | `listen_background` | boolean | `false` | Keep analysing audio with no Aura page open. Off saves roughly 4% of one core when idle. |
-| `intensity` | number 0..1 | `0.5` | Upper bound on the render gain. |
+| `intensity` | number 0..1 | `0.25` | Reaction strength: the fraction of the normalised audio reaction the visualizer draws. `0` draws no audio reaction, `1` the full level. First-run only. |
 | `preset` | string or null | `null` | A named preset from `web/presets.json`; `null` lets the server pick. |
 | `reduced_motion` | boolean | `false` | Lowers intensity, avoids strobe presets, disables the accent pulse. |
 | `theme_opt_in` | boolean | `false` | Published in `/api/config` for compatibility; no renderer reads it at this commit. The host theme is only changed through the SDK's sanctioned accent path. |
-| `opacity` | number 0..1 | `0.35` | Dims the canvas and its scrim together. |
+| `opacity` | number 0..1 | `0.25` | Dims the canvas and its scrim together. Applied once, by the visualizer page; first-run only. |
 | `behavior` | `calm` \| `balanced` \| `intense` | `balanced` | Named render profile; see the table below. |
 | `mood_reactive` | boolean | `true` | Let agent moods pick scene, motion and reaction strength. |
 | `accent_pulse` | boolean | `false` | Opt-in: pulse the host accent with the audio. |

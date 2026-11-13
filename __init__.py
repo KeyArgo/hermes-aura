@@ -741,7 +741,9 @@ SCHEMA_AURA_CONTROL = {
         "the server is running, its port, capture backend, current mood and "
         "intensity, a redacted URL, and what the film is doing (film.player: url, "
         "title, playing, position, duration; film.window: open). action=on/off "
-        "toggles Aura; intensity sets the 0..1 cap; preset picks a visualizer "
+        "toggles Aura; intensity sets reaction strength 0..1 (0 = no audio "
+        "reaction, 1 = full; a new install starts at 0.25); preset picks a "
+        "visualizer "
         "preset (null = server default); mood sets the agent mood (idle, thinking, "
         "tool, approval, error, streaming, done). Transport of the active player "
         "(in-app or its own window): action=pause, resume, next, prev, or seek "
@@ -767,7 +769,7 @@ SCHEMA_AURA_CONTROL = {
                 "type": "number",
                 "minimum": 0.0,
                 "maximum": 1.0,
-                "description": "for intensity: cap 0..1",
+                "description": "for intensity: reaction strength 0..1, where 0 draws no audio reaction",
             },
             "preset": {
                 "type": ["string", "null"],
