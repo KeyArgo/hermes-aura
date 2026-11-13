@@ -490,6 +490,150 @@ const videoMode = (extra = {}) => makeCtx({
   ...extra
 })
 
+// ============================================================== 1. transport
+// The command must follow the glyph the surface is drawing, and a command that
+// never reached the frame must not flip that glyph.
+
+record('playPauseIntent reads the glyph the control is drawing', () => {
+  assert.equal(tx.playPauseIntent({ textContent: '⏸' }), 'pause')
+  assert.equal(tx.playPauseIntent({ textContent: '▶' }), 'play')
+  assert.equal(tx.playPauseIntent(null), 'play')
+})
+
+await recordAsync('the docked panel sends play/pause from its own glyph, never a toggle', async () => {
+  const bucket = videoMode({ filmFullWindow: false })
+  const dispose = pluginModule.default.register(bucket.ctx)
+  try {
+    await primeLive(bucket)
+    const { panel } = mountPane(bucket)
+    const sent = []
+    tx.setBackdropForTest({ contentWindow: { postMessage: message => sent.push(message) } })
+    const play = findByAria(panel, 'Play')
+    assert.ok(play, 'the panel has no play button')
+    assert.equal(play.textContent, '▶', 'the panel starts drawing a play button')
+
+    play.click()
+    await sleep(10)
+    assert.deepEqual(sent.map(m => m.cmd), ['play'], 'the panel did not send an explicit play')
+
+    // The player reports it started: the panel now draws a pause glyph.
+    atoms.video.set({ ...atoms.video.get(), playing: true })
+    tx.syncPanel(true)
+    assert.equal(play.textContent, '⏸', 'the panel did not redraw as a pause button')
+    play.click()
+    await sleep(10)
+    assert.deepEqual(sent.map(m => m.cmd), ['play', 'pause'], 'the panel did not send an explicit pause')
+
+    // A duplicate press is the same command, not a flip back.
+    play.click()
+    await sleep(10)
+    assert.deepEqual(sent.map(m => m.cmd), ['play', 'pause', 'pause'],
+      'a repeated press flipped the command instead of repeating it')
+
+    // The belief one report behind: the panel still draws ⏸ but the plugin has
+    // already been told the film stopped. The press must follow the glyph.
+    atoms.video.set({ ...atoms.video.get(), playing: false })
+    assert.equal(play.textContent, '⏸', 'the drawn glyph moved without a repaint')
+    play.click()
+    await sleep(10)
+    assert.deepEqual(sent.map(m => m.cmd), ['play', 'pause', 'pause', 'pause'],
+      'a press went the wrong way because the believed state was one report behind')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('the page and the floating strip send the intent they are drawing', async () => {
+  const bucket = videoMode({ filmFullWindow: false, panelEnabled: false })
+  const dispose = pluginModule.default.register(bucket.ctx)
+  try {
+    await primeLive(bucket)
+    const sent = []
+    tx.setBackdropForTest({ contentWindow: { postMessage: message => sent.push(message) } })
+    atoms.video.set({ ...atoms.video.get(), playing: false })
+
+    // The page: it draws "Play" while paused, "Pause" while playing.
+    const route = bucket.contributions.find(c => c.area === 'routes')
+    let tree = renderContribution(route)
+    let button = null
+    walk(tree, node => {
+      if (!button && node.props && node.props['aria-label'] === 'Play') button = node
+    })
+    assert.ok(button, 'the page has no transport button')
+    button.props.onClick()
+    await sleep(10)
+    assert.deepEqual(sent.map(m => m.cmd), ['play'], 'the page did not send an explicit play')
+
+    atoms.video.set({ ...atoms.video.get(), playing: true })
+    tree = renderContribution(route)
+    button = null
+    walk(tree, node => {
+      if (!button && node.props && node.props['aria-label'] === 'Pause') button = node
+    })
+    assert.ok(button, 'the page still draws a play button while playing')
+    // The belief lands one report behind the picture: the page is still drawing
+    // Pause, so the press must still mean pause.
+    atoms.video.set({ ...atoms.video.get(), playing: false })
+    button.props.onClick()
+    await sleep(10)
+    assert.deepEqual(sent.map(m => m.cmd), ['play', 'pause'],
+      'the page sent a toggle computed from a state it was not drawing')
+
+    // The floating strip: same rule, read from its own drawn glyph.
+    sent.length = 0
+    let slot = null
+    const strip = bucket.contributions.find(c => c.id === 'strip')
+    if (strip) {
+      walk(renderContribution(strip), node => {
+        if (!slot && node.props && node.props.ref) slot = node.props.ref
+      })
+    }
+    if (typeof slot === 'function') {
+      const node = makeElement('div')
+      slot(node)
+      const bar = tx.videoBarElForTest()
+      assert.ok(bar, 'the strip did not mount')
+      const play = findByAria(bar, 'Play') || findByAria(bar, 'Pause')
+      assert.ok(play, 'the strip has no play button')
+      play.click()
+      await sleep(10)
+      const drawn = play.textContent === '⏸' ? 'pause' : 'play'
+      assert.equal(sent.length, 1, 'the strip sent no transport command')
+      assert.equal(sent[0].cmd, drawn, 'the strip sent a toggle instead of the intent it draws')
+    }
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('a command that cannot reach the frame does not flip the glyph, and retries once', async () => {
+  const bucket = videoMode({ filmFullWindow: false })
+  const dispose = pluginModule.default.register(bucket.ctx)
+  try {
+    await primeLive(bucket)
+    // A frame mid-reload: there is no contentWindow to post to.
+    tx.setBackdropForTest({ contentWindow: null })
+    atoms.video.set({ ...atoms.video.get(), playing: false })
+    const before = atoms.video.get().playing
+    tx.videoCommand('play')
+    await sleep(10)
+    assert.equal(atoms.video.get().playing, before,
+      'the plugin claimed success (and flipped the glyph) with nothing listening')
+    const retry = bucket.timers.find(t => t.kind === 'timeout' && t.ms === 250 && !t.fired)
+    assert.ok(retry, 'no retry was scheduled for the failed command')
+
+    const sent = []
+    tx.setBackdropForTest({ contentWindow: { postMessage: message => sent.push(message) } })
+    retry.fired = true
+    retry.fn()
+    await sleep(10)
+    assert.deepEqual(sent.map(m => m.cmd), ['play'], 'the retry did not deliver the command')
+    assert.equal(atoms.video.get().playing, true, 'the glyph was not brought in step after the retry')
+  } finally {
+    dispose()
+  }
+})
+
 // ================================================ 2. the panel is a window
 // The opacity writer runs four times a second; a panel-held film must stay at
 // full strength instead of being dimmed to the behind-the-app wash.

@@ -3516,11 +3516,36 @@ function videoCommand(cmd, value) {
   }
   if (cmd === 'play' || cmd === 'pause' || cmd === 'toggle') {
     const state = $video.get()
-    const playing = cmd === 'toggle' ? !state.playing : cmd === 'play'
-    postToBackdrop({ cmd: playing ? 'play' : 'pause' })
+    // Every caller passes the intent it is DRAWING (the glyph the user is
+    // looking at) rather than a blind flip: a toggle decided from a believed
+    // state is how "pause" became "play" whenever that belief was one report
+    // behind. The command sent is idempotent, so a duplicate press costs
+    // nothing.
+    const wantPlaying = cmd === 'toggle' ? !state.playing : cmd === 'play'
+    const target = wantPlaying ? 'play' : 'pause'
+    if (!postToBackdrop({ cmd: target })) {
+      if (!filmFrame) {
+        // No frame here at all: the film is not on this screen (it is handing
+        // off to the OS window, or the page is closed), so nothing can
+        // contradict the belief and there is nothing to retry against.
+        $video.set({ ...state, playing: wantPlaying, reportedAt: Date.now() })
+        return
+      }
+      // The frame is mounted but not listening: mid re-point, or still booting.
+      // Retry once instead of flipping the glyph — a control that reports
+      // success while doing nothing is worse than one that acts a quarter of a
+      // second later, and a flipped glyph turns the next press into the wrong
+      // direction.
+      setShowTimer(() => {
+        if (disposed) return
+        if (!postToBackdrop({ cmd: target })) return
+        $video.set({ ...$video.get(), playing: wantPlaying, reportedAt: Date.now() })
+      }, 250)
+      return
+    }
     // Optimistic: the player confirms within a tick, but the glyph should not
     // lag behind the click.
-    $video.set({ ...state, playing, reportedAt: Date.now() })
+    $video.set({ ...state, playing: wantPlaying, reportedAt: Date.now() })
     return
   }
   postToBackdrop({ cmd, value })
@@ -4641,7 +4666,7 @@ function onVideoBarKeyDown(event) {
   else if (key === 'ArrowRight') videoCommand('seek', VIDEO_BAR_SEEK_STEP)
   else if (key === 'ArrowUp') setVideoVolume(clamp01(volume + VIDEO_BAR_VOLUME_STEP))
   else if (key === 'ArrowDown') setVideoVolume(clamp01(volume - VIDEO_BAR_VOLUME_STEP))
-  else if (key === ' ' || key === 'Spacebar' || key === 'Space') videoCommand('toggle')
+  else if (key === ' ' || key === 'Spacebar' || key === 'Space') videoCommand(playPauseIntent(videoBarParts && videoBarParts.play))
   else if (key === 'c' || key === 'C') setVideoCaptions(!$settings.get().videoCaptions)
   else if (key === 'Escape') returnFocusToComposer()
   else handled = false
@@ -4715,6 +4740,14 @@ function videoBarActive() {
   return true
 }
 
+/** The play/pause intent a control must send: read from the glyph it is
+ *  DRAWING, never from a believed state. A control showing ⏸ sends "pause"
+ *  and one showing ▶ sends "play", so the command and the picture cannot
+ *  disagree, and a repeated press is a no-op instead of a flip. */
+function playPauseIntent(node) {
+  return node && node.textContent === '⏸' ? 'pause' : 'play'
+}
+
 function videoBarButton(label, aria, cmd, value, onClick) {
   const el = doc.createElement('button')
   el.type = 'button'
@@ -4780,7 +4813,7 @@ function mountVideoBar(node) {
   }
 
   const prev = videoBarButton('⏮', 'Previous source', 'prev')
-  const play = videoBarButton('▶', 'Play', 'toggle')
+  const play = videoBarButton('▶', 'Play', 'play', undefined, () => videoCommand(playPauseIntent(play)))
   const next = videoBarButton('⏭', 'Next source', 'next')
 
   // The seek bar: full width across the strip, so a film is navigable by eye.
@@ -5815,7 +5848,7 @@ function mountPanelInto(hostNode) {
   transport.className = 'ap-transport'
   const prev = panelButton('⏮', 'Previous (episode in a playlist, else previous source)', () => videoCommand('prev'))
   const back = panelButton('⏪', 'Back 10 seconds', () => videoCommand('seek', -10))
-  const play = panelButton('▶', 'Play', () => videoCommand('toggle'), true)
+  const play = panelButton('▶', 'Play', () => videoCommand(playPauseIntent(play)), true)
   const fwd = panelButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10))
   const next = panelButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next'))
   for (const node of [prev, back, play, fwd, next]) transport.appendChild(node)
@@ -7122,7 +7155,7 @@ function AuraQuickMenu() {
                         'aria-label': videoState.playing ? 'Pause' : 'Play',
                         title: videoState.playing ? 'Pause' : 'Play',
                         style: transportStyle,
-                        onClick: () => videoCommand('toggle'),
+                        onClick: () => videoCommand(videoState.playing ? 'pause' : 'play'),
                         children: videoState.playing ? '⏸' : '▶'
                       }),
                       jsx(Button, {
@@ -8423,7 +8456,7 @@ function AuraPage() {
     children: [
       jsx('span', { key: 'p', style: { display: 'inline-flex' }, children: pageButton('⏮', 'Previous (episode in a playlist, else previous source)', () => videoCommand('prev')) }),
       jsx('span', { key: 'b', style: { display: 'inline-flex' }, children: pageButton('⏪', 'Back 10 seconds', () => videoCommand('seek', -10)) }),
-      jsx('span', { key: 't', style: { display: 'inline-flex' }, children: pageButton(playing ? '⏸' : '▶', playing ? 'Pause' : 'Play', () => videoCommand('toggle'), true) }),
+      jsx('span', { key: 't', style: { display: 'inline-flex' }, children: pageButton(playing ? '⏸' : '▶', playing ? 'Pause' : 'Play', () => videoCommand(playing ? 'pause' : 'play'), true) }),
       jsx('span', { key: 'f', style: { display: 'inline-flex' }, children: pageButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10)) }),
       jsx('span', { key: 'n', style: { display: 'inline-flex' }, children: pageButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next')) }),
       // CC, and the language list this video actually offers.
@@ -10187,6 +10220,10 @@ export const __test = {
   poll,
   filmOwner,
   filmSrc,
+  // One entry point for every transport control.
+  videoCommand,
+  playPauseIntent,
+  syncPanel,
   // The full-window host: the setting, the decision, the layout it applies and
   // the per-tick opacity writer that used to force the panel's film to 20%.
   filmOpen,
