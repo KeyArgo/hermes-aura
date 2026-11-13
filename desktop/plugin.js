@@ -6213,6 +6213,9 @@ function VersionChip(props) {
       .catch(() => {})            // no guess beats a wrong number
     return () => { alive = false }
   }, [live.ok])
+  // Nothing to show until /version answers. Reading the null build here threw,
+  // and the host's error boundary blanked the whole Right panel on first paint.
+  if (!build) return null
   const sha = build.commit_short || build.commit || ''
   const line = compact
     ? ['v' + build.version].concat(sha ? [String(sha).slice(0, 8)] : []).join(' · ')

@@ -595,7 +595,27 @@ async function tickPoll(bucket) {
 const freshA = makeCtx()
 const storageWasEmptyAtBoot = !freshA.storage.has('settings')
 const disposeA = pluginModule.default.register(freshA.ctx)
+// The app's first paint: Aura's surfaces render before /version has answered.
+// The Right panel's drawer embeds the same settings section (with its build
+// chip), so the settings contribution stands in for it here.
+let earlyPaneError = null
+try {
+  for (const area of ['panes', 'settings.plugins']) {
+    const early = freshA.contributions.find(c => c.area === area)
+    if (early) renderDeep(renderContribution(early))
+  }
+} catch (error) {
+  earlyPaneError = error
+}
 await sleep(50)
+
+record('0. fresh install: the Right panel renders before the server reports its version', () => {
+  // VersionChip read build.commit_short while the build was still null; the
+  // host's error boundary then blanked the whole pane, and the film fell back
+  // to filling the window because the pane had no stage.
+  assert.equal(earlyPaneError, null,
+    `the Right panel threw on first paint: ${earlyPaneError && earlyPaneError.message}`)
+})
 
 record('1. fresh install: Aura is enabled by default and the Right panel pane is registered, docked right, enforce: true', () => {
   assert.ok(storageWasEmptyAtBoot, 'the scenario did not start from EMPTY storage (no "settings" key)')
