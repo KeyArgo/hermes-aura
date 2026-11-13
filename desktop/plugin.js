@@ -208,6 +208,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   videoBarX: null,
   videoBarY: null,
   videoWindow: false,
+  // A playing film fills the app window behind everything (the panel keeps its
+  // controls on top of it). Off puts the picture back in whatever box holds it.
+  filmFullWindow: true,
   videoWindowSize: VIDEO_WINDOW_DEFAULT_SIZE,
   videoWindowCorner: VIDEO_WINDOW_DEFAULT_CORNER,
   videoWindowX: null,
@@ -868,6 +871,7 @@ function readSettings(ctx) {
     if (Number.isFinite(raw.videoBarX)) out.videoBarX = Math.round(raw.videoBarX)
     if (Number.isFinite(raw.videoBarY)) out.videoBarY = Math.round(raw.videoBarY)
     if (typeof raw.videoWindow === 'boolean') out.videoWindow = raw.videoWindow
+    if (typeof raw.filmFullWindow === 'boolean') out.filmFullWindow = raw.filmFullWindow
     if (typeof raw.videoWindowSize === 'string' && Object.prototype.hasOwnProperty.call(VIDEO_WINDOW_SIZES, raw.videoWindowSize)) {
       out.videoWindowSize = raw.videoWindowSize
     }
@@ -1268,8 +1272,70 @@ function filmOwner() {
   if (settings.videoWindow === true) return 'window'
   if (pageVisible()) return 'page'
   if (panelVisible()) return 'pane'
+  // No visible surface of its own: a playing film fills the app window instead
+  // of living in the invisible audio seat.
+  if (filmFullWindowOn()) return 'fullwindow'
   if (audioChannelLive()) return 'audio'
   return ''
+}
+
+// ---- the full-window film host -------------------------------------------
+// A playing film belongs behind the whole app — the chat is a wash over it and
+// the docked panel keeps its controls on top — rather than in a small box. It
+// is still ONE frame (one surface draws it); only the layout changes.
+
+/** Is a film open (video mode, a source, not closed)? */
+function filmOpen(settings) {
+  const current = settings || $settings.get()
+  return current.backdropMode === 'video' &&
+    Boolean(String(current.videoUrl || '').trim()) &&
+    current.videoClosed !== true
+}
+
+/** Should the film fill the app window? The default, and what the setting is
+ *  for.
+ *
+ *  Not while the page or the OS pop-out window owns the picture: those are
+ *  watch surfaces of their own. The `videoWindow` (floating frame) flag is
+ *  deliberately ignored here — a stray one left from an earlier session must
+ *  not decide where the film goes; only the surface that is actually open
+ *  does, and the floating frame draws its own box.
+ */
+function filmFullWindowOn() {
+  const settings = $settings.get()
+  if (settings.filmFullWindow === false) return false
+  if (pageVisible() || desktopOwned || desktopPending) return false
+  return filmOpen(settings)
+}
+
+/** Is the picture a wash behind the app right now? That is the host the
+ *  see-through setting and the panel's own transparency describe; in a box
+ *  (the floating frame, the page) the film is full strength. */
+function filmBehindApp() {
+  return filmFullWindowOn() && !videoWindowOn()
+}
+
+// A fixed, click-through layer at the very back: it fills the window, follows
+// the app's own scroll and resize for free, and never takes a click — the
+// transport lives in the panel, the strip and the A menu.
+const FULL_WINDOW_FILM_Z = -1
+function fullWindowFilmStyle() {
+  return {
+    position: 'fixed', inset: 0, left: 0, top: 0,
+    width: '100vw', height: '100vh', maxWidth: 'none', maxHeight: 'none',
+    margin: 0, padding: 0, border: 0, borderRadius: 0, aspectRatio: 'auto',
+    overflow: 'visible',
+    background: '#000', zIndex: FULL_WINDOW_FILM_Z, pointerEvents: 'none'
+  }
+}
+
+/** The layout picker for the one frame: the window-filling branch wins over the
+ *  panel and over a watch-window flag, and a surface that is a watch window of
+ *  its own (the page, the floating frame) keeps its box. Returns null when the
+ *  caller's own layout applies. */
+function filmHostStyle(surface) {
+  if (surface === 'page' || surface === 'window') return null
+  return filmFullWindowOn() ? fullWindowFilmStyle() : null
 }
 
 /** The page the invisible audio seat loads: always the visualiser, whatever the
@@ -1400,7 +1466,10 @@ function AuraFilm({ surface, style }) {
     }
   }, [surface])
   if (!src || owner !== surface) return null
-  const opacity = clamp01(filmOpacity(settings, video))
+  const opacity = clamp01(filmOpacity(settings, video, surface))
+  // The layout picker's answer: a fixed, click-through layer filling the window
+  // when the film is behind the app, or the surface's own box.
+  const host = filmHostStyle(surface)
   return jsx(SandboxedFrame, {
     src,
     title: 'Aura film',
@@ -1409,7 +1478,8 @@ function AuraFilm({ surface, style }) {
       width: '100%', height: '100%', border: 0,
       opacity,
       pointerEvents: 'auto',
-      ...(style || {})
+      ...(style || {}),
+      ...(host || {})
     },
     ref: node => {
       if (node) {
@@ -1467,16 +1537,26 @@ function resumeAudioChannel(node) {
  *  become a second frame.
  */
 function AuraAudioSeat() {
+  // Subscribe, so the seat turns into the window-filling host (and back) as the
+  // film opens, closes or moves to another surface.
+  useValue($settings)
+  useValue($live)
+  const owner = filmOwner()
+  // With no visible surface of its own, a playing film fills the app window
+  // from this always-mounted seat instead of playing into a 0×0 box.
+  const host = owner === 'fullwindow'
   return jsx('div', {
     key: 'audio-seat',
     'data-aura-audio': '1',
     'aria-hidden': 'true',
-    style: {
-      position: 'absolute', width: 0, height: 0, overflow: 'hidden',
-      opacity: 0, pointerEvents: 'none', border: 0
-    },
+    style: host
+      ? { position: 'fixed', inset: 0, width: '100vw', height: '100vh', overflow: 'hidden', opacity: 1, pointerEvents: 'none', border: 0, zIndex: FULL_WINDOW_FILM_Z }
+      : {
+        position: 'absolute', width: 0, height: 0, overflow: 'hidden',
+        opacity: 0, pointerEvents: 'none', border: 0
+      },
     children: jsx(AuraFilm, {
-      surface: 'audio',
+      surface: host ? 'fullwindow' : 'audio',
       style: { width: '100%', height: '100%', border: 0, pointerEvents: 'none' }
     })
   })
@@ -1724,8 +1804,12 @@ function AuraWatchWindow() {
 }
 
 /** Opacity for the film surface: the video player's own transparency. The
- *  visualiser needs none — its page applies the user's opacity itself. */
-function filmOpacity(settings, video) {
+ *  visualiser needs none — its page applies the user's opacity itself.
+ *
+ *  A film behind the whole app is a WASH: it follows the pinned or automatic
+ *  transparency, capped so body text stays readable. In a box (the pane, the
+ *  frame, the page) it is a window and stays at full strength. */
+function filmOpacity(settings, video, surface) {
   // The visualiser page owns its own opacity, in aura mode and in the
   // audio-only fallback alike (filmPageMode): it dims the canvas and compensates
   // its scrim from the same setting (CONTRACT.md §9.2). Dimming the frame as
@@ -1733,6 +1817,9 @@ function filmOpacity(settings, video) {
   // the contract keeps legible. The frame carries only the fade machine's
   // factor.
   if (filmPageMode() !== 'video') return 1
+  if (surface !== 'window' && surface !== 'page' && filmBehindApp()) {
+    return Math.min(effectiveVideoOpacity(), 0.45)
+  }
   const manual = Number(video && video.opacity)
   if (Number.isFinite(manual)) return manual
   return Number(settings.videoOpacity) || 1
@@ -1864,8 +1951,8 @@ function effectiveVideoOpacity() {
   return autoVideoOpacity()
 }
 
-/** Push the effective level onto a mounted backdrop. Cheap, so the poll tick
- *  can call it every 250 ms and the backdrop follows the music. */
+/** Push the effective level onto a mounted frame. Cheap, so the poll tick can
+ *  call it every 250 ms and the film follows the music. */
 function applyVideoOpacity() {
   const settings = $settings.get()
   if (!filmFrame || settings.backdropMode !== 'video' || settings.showWhen !== 'always') return
@@ -1875,6 +1962,15 @@ function applyVideoOpacity() {
     return
   }
   if (videoWindowOn()) {
+    filmFrame.style.opacity = '1'
+    return
+  }
+  // The docked panel is a window too — but only while it holds the picture. A
+  // film at 20% inside its own box reads as a black player, and this runs four
+  // times a second, so without this the full-strength value set at mount was
+  // overwritten a quarter second later. When the film fills the window behind
+  // the panel instead, it is a wash and follows the transparency below.
+  if (panelVisible() && !filmBehindApp()) {
     filmFrame.style.opacity = '1'
     return
   }
@@ -1891,7 +1987,8 @@ function backdropOpacity(settings) {
   // So is the full page.
   if (pageVisible()) return 1
   // The pane is a window too — a film at 20% inside its own box is a stain.
-  if (panelVisible()) return 1
+  // Unless the film is filling the window behind it: then it is a wash.
+  if (panelVisible() && !filmBehindApp()) return 1
   return effectiveVideoOpacity()
 }
 
@@ -5091,6 +5188,21 @@ function panelCss() {
     /* The host owns the box; we fill it. Every child is border-box, so a 1px
        border can never push a 260px pane into a horizontal scroll. */
     #aura-panel, #aura-panel * { box-sizing: border-box; }
+    /* The full-window film host: the panel is a pane of glass over a film
+       filling the app window. The picture is a wash behind text, so the panel
+       lightens instead of hiding it, and the stage box gives way to the
+       window-sized picture behind. */
+    #aura-panel[data-glass="true"] {
+      background: linear-gradient(180deg, rgba(22,17,31,0.74) 0%, rgba(27,20,24,0.72) 52%, rgba(36,26,18,0.70) 100%);
+      backdrop-filter: blur(10px) saturate(1.08);
+      -webkit-backdrop-filter: blur(10px) saturate(1.08);
+      border: 1px solid rgba(255,255,255,0.10);
+    }
+    #aura-panel[data-glass="true"] .ap-stage { display: none; }
+    #aura-panel[data-glass="true"] .ap-controls {
+      background: rgba(255,255,255,0.07);
+      border-color: rgba(255,255,255,0.11);
+    }
     /* header ------------------------------------------------------------- */
     .ap-head { display: flex; align-items: center; gap: 8px; position: relative; z-index: 1; flex-wrap: wrap; min-width: 0; }
     .ap-name { font-weight: 650; letter-spacing: 0.3px; font-size: 15px; }
@@ -5915,7 +6027,7 @@ function mountPanelInto(hostNode) {
   panelParts = {
     panel, body, stage, hint, stall, track, fill, time, play, list, vol,
     power, modeButtons, frameBtn, ownBtn, source, opacityPills, opacityButtons,
-    ccBtn, captionSelect
+    opacityRow, ccBtn, captionSelect
   }
   syncPanel(true)
 }
@@ -6023,6 +6135,20 @@ function syncPanel(force) {
         : (!auto && current === preset ? 'true' : 'false')
       if (pill.getAttribute('data-active') !== active) pill.setAttribute('data-active', active)
     }
+  }
+  if (parts.opacityRow) {
+    // See-through describes a film behind the app. While the panel holds the
+    // picture itself the setting does nothing (a box is always full strength),
+    // so the row is hidden rather than left there pretending to work.
+    const display = filmBehindApp() ? '' : 'none'
+    if (parts.opacityRow.style.display !== display) parts.opacityRow.style.display = display
+  }
+  if (parts.panel) {
+    // The glass: the panel's own background goes translucent so the film
+    // filling the window shows through it. Only then — an opaque panel over an
+    // opaque box is the normal look.
+    const glass = filmBehindApp() ? 'true' : 'false'
+    if (parts.panel.getAttribute('data-glass') !== glass) parts.panel.setAttribute('data-glass', glass)
   }
 
   // CC: pressed state, the "no subtitles" answer, and the language
@@ -7094,37 +7220,41 @@ function AuraQuickMenu() {
                     })
                   })
                   : null,
-                row(
-                  'Transparency',
-                  jsxs('div', {
-                    style: { display: 'flex', alignItems: 'center', gap: 2 },
-                    children: [
-                      jsx(Button, {
-                        size: 'micro',
-                        variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
-                        'aria-label': 'Automatic video transparency',
-                        title: 'Automatic: 20% working, 30% with music, +3% per extra chat',
-                        style: presetStyle,
-                        onClick: () => setVideoOpacityAuto(),
-                        children: 'Auto'
-                      }),
-                      ...VIDEO_OPACITY_PRESETS.map(preset =>
+                // See-through only describes a film behind the app. While a box
+                // holds the picture it does nothing, so it is not offered.
+                filmBehindApp()
+                  ? row(
+                    'Transparency',
+                    jsxs('div', {
+                      style: { display: 'flex', alignItems: 'center', gap: 2 },
+                      children: [
                         jsx(Button, {
-                          key: preset,
                           size: 'micro',
-                          variant: settings.videoOpacityAuto === false &&
-                            Math.round(clamp01(settings.videoOpacity) * 100) === preset
-                            ? 'default'
-                            : 'ghost',
-                          'aria-label': `${preset}% video transparency`,
+                          variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
+                          'aria-label': 'Automatic video transparency',
+                          title: 'Automatic: 20% working, 30% with music, +3% per extra chat',
                           style: presetStyle,
-                          onClick: () => setVideoOpacity(preset / 100),
-                          children: `${preset}%`
-                        })
-                      )
-                    ]
-                  })
-                ),
+                          onClick: () => setVideoOpacityAuto(),
+                          children: 'Auto'
+                        }),
+                        ...VIDEO_OPACITY_PRESETS.map(preset =>
+                          jsx(Button, {
+                            key: preset,
+                            size: 'micro',
+                            variant: settings.videoOpacityAuto === false &&
+                              Math.round(clamp01(settings.videoOpacity) * 100) === preset
+                              ? 'default'
+                              : 'ghost',
+                            'aria-label': `${preset}% video transparency`,
+                            style: presetStyle,
+                            onClick: () => setVideoOpacity(preset / 100),
+                            children: `${preset}%`
+                          })
+                        )
+                      ]
+                    })
+                  )
+                  : null,
                 row('Video URL', jsx(VideoUrlBox, { settings })),
                 isFrameBlocked(settings.videoUrl)
                   ? jsx('div', {
@@ -8940,35 +9070,38 @@ function AuraSettings() {
               'Paste a YouTube link (https://youtube.com/watch?v=...), a direct video file (.mp4/.webm/.ogg) or any embeddable page. Leave empty for a hint.',
               jsx(VideoUrlBox, { settings, wide: true })
             ),
-            row(
-              'Video transparency',
-              'Automatic by default: 20% while you work, 30% when audio is playing, plus 3% for every extra active chat. Pick a fixed level to override.',
-              jsxs('div', {
-                style: { display: 'flex', alignItems: 'center', gap: 4 },
-                children: [
-                  jsx(Button, {
-                    size: 'micro',
-                    variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
-                    'aria-label': 'Automatic video transparency',
-                    onClick: () => setVideoOpacityAuto(),
-                    children: 'Auto'
-                  }),
-                  ...VIDEO_OPACITY_PRESETS.map(preset =>
+            // Only a film behind the app has a transparency to set.
+            filmBehindApp()
+              ? row(
+                'Video transparency',
+                'Automatic by default: 20% while you work, 30% when audio is playing, plus 3% for every extra active chat. Pick a fixed level to override.',
+                jsxs('div', {
+                  style: { display: 'flex', alignItems: 'center', gap: 4 },
+                  children: [
                     jsx(Button, {
-                      key: preset,
                       size: 'micro',
-                      variant: settings.videoOpacityAuto === false &&
-                        Math.round(clamp01(settings.videoOpacity) * 100) === preset
-                        ? 'default'
-                        : 'ghost',
-                      'aria-label': `${preset}% video transparency`,
-                      onClick: () => setVideoOpacity(preset / 100),
-                      children: `${preset}%`
-                    })
-                  )
-                ]
-              })
-            ),
+                      variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
+                      'aria-label': 'Automatic video transparency',
+                      onClick: () => setVideoOpacityAuto(),
+                      children: 'Auto'
+                    }),
+                    ...VIDEO_OPACITY_PRESETS.map(preset =>
+                      jsx(Button, {
+                        key: preset,
+                        size: 'micro',
+                        variant: settings.videoOpacityAuto === false &&
+                          Math.round(clamp01(settings.videoOpacity) * 100) === preset
+                          ? 'default'
+                          : 'ghost',
+                        'aria-label': `${preset}% video transparency`,
+                        onClick: () => setVideoOpacity(preset / 100),
+                        children: `${preset}%`
+                      })
+                    )
+                  ]
+                })
+              )
+              : null,
             row(
               'Source',
               'Saved sources and anything you have played recently. Prev/next in the controls walks this list.',
@@ -10054,6 +10187,21 @@ export const __test = {
   poll,
   filmOwner,
   filmSrc,
+  // The full-window host: the setting, the decision, the layout it applies and
+  // the per-tick opacity writer that used to force the panel's film to 20%.
+  filmOpen,
+  filmFullWindowOn,
+  filmBehindApp,
+  filmHostStyle,
+  filmOpacity,
+  applyVideoOpacity,
+  videoOpacityPresets: VIDEO_OPACITY_PRESETS,
+  panelCss,
+  panelGlassForTest: () => (panelEl ? panelEl.getAttribute('data-glass') : null),
+  panelOpacityRowForTest: () => {
+    const row = panelParts && panelParts.opacityRow
+    return row ? String(row.style.display || '') : null
+  },
   liveUrlForTest: () => liveUrl(),
   filmGates: () => ({
     closed: $settings.get().videoClosed === true,
@@ -10062,6 +10210,8 @@ export const __test = {
     pane: panelVisible(),
     page: pageVisible(),
     audio: audioChannelLive(),
+    full: filmFullWindowOn(),
+    behind: filmBehindApp(),
     mode: $settings.get().backdropMode,
     hasUrl: Boolean(String($settings.get().videoUrl || '').trim())
   }),
