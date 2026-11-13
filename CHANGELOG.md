@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — reaction strength and opacity that mean what they say
+
+- **Reaction strength now draws what the slider says.** The page used to remap the setting
+  (`gain = 0.2 + 1.8 × intensity`), so a 25% setting drew 65% and a 0% setting still drew a
+  fifth of the range: the slider could not be turned off and never matched the picture. The
+  gain is now the setting itself (`0` = no audio reaction, `0.25` = a quarter), with the
+  auto-gain still lifting a quiet capture and reduced motion still scaling it down.
+- **Opacity is applied once, not twice.** The visualizer page dims its own canvas and
+  compensates its scrim for it (CONTRACT.md §9.2), and the desktop half dimmed the whole frame
+  on top of that — so a 25% setting drew 6% and the page's legible chrome dimmed with it. The
+  frame now carries only the fade factor; a film frame still carries the video's adaptive
+  transparency.
+- **New installs start at 25% reaction strength and 25% opacity** (was 50% and 35%). First-run
+  defaults only: a saved `config.json` or plugin storage keeps its own values.
+
 ## Unreleased — the control strip is the user's
 
 - **Dragging the strip moves the strip.** The ⠿ grip (and any empty part of the
