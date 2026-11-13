@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — watching is the plugin, the overlay is the switch
+
+- **A film plays with Aura switched off.** The switch is the overlay painted on
+  the chat (backdrop, accent, theme); the Aura page, the Right panel, the film
+  frame, both pop-outs and the control strip are Aura's own surfaces and no
+  longer wait for it. The page's "Aura is off. Turn it on in the setup below"
+  refusal is gone, and so are the `enabled` gates on the page's film and on the
+  floating strip.
+- **Show Aura in the sidebar** (Settings, on by default). Off disposes the
+  `/aura` row through the SDK and keeps the page: the status-bar **A** menu
+  gains **Open Aura page** so nothing becomes unreachable.
+- **Play a film, one click.** The **A** menu starts the film on screen, else the
+  last one played, else the first pick, switching to video mode itself; a
+  bookmark carries the resume position.
+- **A film that never loads says so.** One watch per attempt on the page and the
+  pane: with no ready or playing signal inside 20 s the stage reads *This film
+  isn't loading* and offers **Try again** (a fresh player document) and **Pick
+  another** (the next source). A film that reports a picture cancels the watch.
+
 ## Unreleased — the music outlives the film, and CI runs every desktop suite
 
 - **Closing the film no longer takes the music with it.** The audio channel
