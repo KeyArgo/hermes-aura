@@ -1646,7 +1646,7 @@ def _action_watch_quality(args: dict) -> dict:
     single honest "Auto (YouTube decides)" for YouTube. ``set`` queues one
     ``quality`` command for the desktop: a choice's url, or the standing
     ``auto``/``smallest``/``largest`` rule. A YouTube film can never be given a
-    fake level — the command was measured to be ignored, so nothing is queued.
+    fake level: its embed ignores the command, so nothing is queued.
     """
     snapshot = _player_snapshot()
     if not snapshot:

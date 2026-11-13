@@ -235,7 +235,7 @@ def test_bad_commands_are_rejected(live, body):
 
 
 def test_library_commands_are_queued_with_their_url(live):
-    """[savelist lane] save/remove reach the desktop on the same queue."""
+    """save/remove reach the desktop on the same queue."""
     token, port = live["token"], live["port"]
     _s, saved = call(port, "POST", "/api/player/command", token,
                      {"cmd": "save", "url": "https://example.test/octopus.mp4",
@@ -254,7 +254,7 @@ def test_library_commands_are_queued_with_their_url(live):
 
 
 def test_a_reported_library_is_readable_and_sanitised(live):
-    """[savelist lane] the desktop's saved list rides the player report."""
+    """The desktop's saved list rides the player report."""
     port, token = live["port"], live["token"]
     status, _body = call(port, "POST", "/api/player/report", token, {
         "library": [
