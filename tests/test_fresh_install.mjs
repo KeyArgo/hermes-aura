@@ -822,12 +822,77 @@ for (const [mode, expectControls] of [['aura', true], ['video', false]]) {
   })
 
   record(`14. ${mode} mode: the film stage is ${expectControls ? 'hidden' : 'shown'} in the Right panel`, () => {
-    assert.ok(body, 'the panel has no film body')
+    const stage = domFind(paneH, node => node.className === 'ap-stage')
+    assert.ok(body && stage, 'the panel has no film body or stage')
     assert.equal(body.style.display === 'none', expectControls,
-      `${mode} mode: the film stage display is "${body.style.display || ''}"`)
+      `${mode} mode: the film controls display is "${body.style.display || ''}"`)
+    assert.equal(stage.style.display === 'none', expectControls,
+      `${mode} mode: the film stage display is "${stage.style.display || ''}"`)
   })
 
   safeDispose(`the panel-mode scenario (H, ${mode})`, disposeH)
+}
+
+// ===================================================================
+// Scenario I: "Watch in: Panel | Behind chat". With the Right panel open the
+// film can play behind the chat while the panel stays the remote, without a
+// second picture in the panel.
+// ===================================================================
+
+async function watchInScenario(filmBehind) {
+  const bucket = makeCtx(new Map([['settings', {
+    enabled: true, backdropMode: 'video', panelEnabled: true, windowVisual: false, filmBehind,
+    videoUrl: SINTEL_URL, videoOpacity: 0.25, videoOpacityAuto: false
+  }]]))
+  const dispose = pluginModule.default.register(bucket.ctx)
+  await tickPoll(bucket)
+  const pane = mountPane(bucket)
+  const panelBox = domFind(pane, node => node.attributes && node.attributes.id === 'aura-panel')
+  const stage = domFind(pane, node => node.className === 'ap-stage')
+  if (panelBox) panelBox.getBoundingClientRect = () => ({ left: 1180, top: 40, width: 340, height: 760, right: 1520, bottom: 800 })
+  if (stage) stage.getBoundingClientRect = () => ({ left: 1200, top: 90, width: 300, height: 170, right: 1500, bottom: 260 })
+  await tickPoll(bucket)
+  const seeThrough = domFind(pane, node => node.attributes && node.attributes['aria-label'] === '25% film see-through')
+  const seeThroughRow = seeThrough && seeThrough.parentNode && seeThrough.parentNode.parentNode
+  return { bucket, dispose, pane, stage, seeThroughRow }
+}
+
+{
+  const behind = await watchInScenario(true)
+  record('15. Behind chat: with the Right panel open the film fills the window behind the chat', () => {
+    const frame = hostIframes()[0]
+    assert.ok(frame, 'no film frame mounted')
+    assert.equal(frame.style.zIndex, '-1', `the film is not behind the app (z-index ${frame.style.zIndex})`)
+    assert.equal(frame.style.width, '100vw', `the film does not fill the window (width ${frame.style.width})`)
+    assert.equal(String(frame.style.opacity), '0.25', 'the film behind the chat lost the see-through setting')
+  })
+  record('16. Behind chat: the panel is the remote, with no second picture and its see-through shown', () => {
+    assert.ok(behind.stage, 'the panel has no stage')
+    assert.equal(behind.stage.style.display, 'none', 'the panel still draws a film stage while the film is behind the chat')
+    assert.ok(behind.seeThroughRow, 'the panel has no see-through row')
+    assert.notEqual(behind.seeThroughRow.style.display, 'none', 'see-through is hidden while it is the film behind the chat it controls')
+  })
+  safeDispose('the behind-chat scenario (I)', behind.dispose)
+}
+
+{
+  const inPanel = await watchInScenario(false)
+  record('17. Panel: the film plays in the Right panel at full strength, see-through hidden', () => {
+    const frame = hostIframes()[0]
+    assert.ok(frame, 'no film frame mounted')
+    assert.notEqual(frame.style.zIndex, '-1', 'the film went behind the app while set to play in the panel')
+    assert.equal(String(frame.style.opacity), '1', 'the panel film is not at full strength')
+    assert.ok(inPanel.seeThroughRow, 'the panel has no see-through row')
+    assert.equal(inPanel.seeThroughRow.style.display, 'none', 'see-through is shown while it cannot change anything')
+  })
+  await recordAsync('18. the panel switches the film behind the chat in one click', async () => {
+    const button = domFind(inPanel.pane, node => node.attributes && node.attributes['aria-label'] === 'Watch the film behind the chat')
+    assert.ok(button, 'the panel has no "Behind chat" choice')
+    clickDom(button)
+    await sleep(40)
+    assert.equal(inPanel.bucket.storage.get('settings').filmBehind, true, 'Behind chat was not saved')
+  })
+  safeDispose('the in-panel scenario (I)', inPanel.dispose)
 }
 
 // ===================================================================

@@ -181,6 +181,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   // switch leaves only the tray.
   panelEnabled: true,
   panelCollapsed: false,
+  // "Watch in": the film plays in the Right panel (false) or behind the chat
+  // with the panel as its remote (true).
+  filmBehind: false,
   // The pane's own settings drawer starts closed: the film is the reason the
   // pane exists, and every control is still one click away.
   panelSettingsOpen: false,
@@ -620,6 +623,7 @@ function readSettings(ctx) {
     if (typeof raw.videoClosed === 'boolean') out.videoClosed = raw.videoClosed
     if (typeof raw.panelEnabled === 'boolean') out.panelEnabled = raw.panelEnabled
     if (typeof raw.panelCollapsed === 'boolean') out.panelCollapsed = raw.panelCollapsed
+    if (typeof raw.filmBehind === 'boolean') out.filmBehind = raw.filmBehind
     if (typeof raw.panelSettingsOpen === 'boolean') out.panelSettingsOpen = raw.panelSettingsOpen
     out.videoSources = readSourceList(raw.videoSources)
     out.videoRecent = readSourceList(raw.videoRecent)
@@ -1043,7 +1047,7 @@ function mountBackdrop(url, opacity) {
   // Glass clears the chat surfaces so a full-bleed visual shows through. A film
   // in Aura's own pane or page is not full-bleed, and an off Aura paints nothing.
   const fullBleed = Boolean(settings.windowVisual || settings.audioUrl || knownTheme === THEME_NAME ||
-    (settings.backdropMode === 'video' && !panelVisible() && !pageVisible() && !videoWindowOn()))
+    (settings.backdropMode === 'video' && !filmInPanel() && !pageVisible() && !videoWindowOn()))
   if (auraOn && fullBleed) {
     if (!glassStyleEl) applyGlassStyle()
   } else if (glassStyleEl) {
@@ -1121,7 +1125,7 @@ function applyVideoOpacity() {
   }
   // So is the Right panel. Without this the tick pulled the pane film back to the
   // see-through level a moment after mount set it to full, and it pulsed.
-  if (panelVisible()) {
+  if (filmInPanel()) {
     backdropEl.style.opacity = '1'
     return
   }
@@ -1138,7 +1142,7 @@ function backdropOpacity(settings) {
   // So is the full page.
   if (pageVisible()) return 1
   // The pane is a window too — a film at 20% inside its own box is a stain.
-  if (panelVisible()) return 1
+  if (filmInPanel()) return 1
   return effectiveVideoOpacity()
 }
 
@@ -2988,7 +2992,7 @@ function applyBackdropLayout() {
     }
   }
   // Docked panel: the film lives inside the panel's stage, not behind the app.
-  if (panelVisible() && current.backdropMode === 'video' && !current.videoClosed && !videoWindowOn()) {
+  if (filmInPanel() && !current.videoClosed && !videoWindowOn()) {
     const slot = panelVideoSlot()
     if (slot) {
       style.inset = 'auto'
@@ -3411,6 +3415,22 @@ function panelVisible() {
   // the chat (backdrop, accent, theme). It must not stop the player — a film in
   // the pane is Aura's own surface and works on its own (owner's rule).
   return Boolean(doc && settings.panelEnabled !== false)
+}
+
+/** Does the film play inside the Right panel? Not when "Watch in" is set to
+ *  Behind chat: the film then fills the window and the panel is its remote. */
+function filmInPanel() {
+  const settings = $settings.get()
+  return panelVisible() && settings.backdropMode === 'video' && settings.filmBehind !== true
+}
+
+function setFilmBehind(on) {
+  if (!ctxRef || disposed) return
+  writeSettings({ filmBehind: Boolean(on) })
+  syncBackdrop()
+  applyBackdropLayout()
+  applyVideoOpacity()
+  syncPanel(true)
 }
 
 function panelCss() {
@@ -4031,6 +4051,36 @@ function mountPanelInto(hostNode) {
   opacityRow.appendChild(opacityLabel)
   opacityRow.appendChild(opacityButtons)
 
+  // Watch in: Panel | Behind chat. Behind chat lets the film fill the window
+  // while this panel stays the remote, with no second picture in it.
+  const watchInRow = doc.createElement('div')
+  watchInRow.className = 'ap-field'
+  const watchInLabel = doc.createElement('span')
+  watchInLabel.className = 'ap-field-label'
+  watchInLabel.textContent = 'Watch in'
+  const watchInButtons = doc.createElement('div')
+  watchInButtons.className = 'ap-pills'
+  const watchInPills = []
+  for (const [behind, label, aria] of [
+    [false, 'Panel', 'Watch the film in the Right panel'],
+    [true, 'Behind chat', 'Watch the film behind the chat']
+  ]) {
+    const pill = doc.createElement('button')
+    pill.type = 'button'
+    pill.className = 'ap-pill'
+    pill.textContent = label
+    pill.setAttribute('aria-label', aria)
+    pill.addEventListener('click', event => {
+      if (event && event.preventDefault) event.preventDefault()
+      setFilmBehind(behind)
+    })
+    watchInPills.push([behind, pill])
+    watchInButtons.appendChild(pill)
+  }
+  watchInRow.appendChild(watchInLabel)
+  watchInRow.appendChild(watchInButtons)
+
+  settingsBox.appendChild(watchInRow)
   settingsBox.appendChild(sourceRow)
   settingsBox.appendChild(opacityRow)
 
@@ -4051,7 +4101,8 @@ function mountPanelInto(hostNode) {
   panelEl = panel
   panelParts = {
     panel, body, stage, hint, track, fill, time, play, list, vol,
-    power, modeButtons, watch, source, opacityPills, opacityButtons
+    power, modeButtons, watch, source, opacityPills, opacityButtons,
+    opacityRow, watchInPills
   }
   syncPanel(true)
 }
@@ -4106,9 +4157,20 @@ function syncPanel(force) {
   const auraOn = liveNow.ok ? liveNow.enabled === true : settings.enabled
   // The film stage, transport and sources belong to video mode; in visualiser
   // mode the panel shows the visualiser's controls instead (AuraPane).
-  if (parts.body) {
-    const display = settings.backdropMode === 'video' ? '' : 'none'
-    if (parts.body.style.display !== display) parts.body.style.display = display
+  const videoMode = settings.backdropMode === 'video'
+  const behind = settings.filmBehind === true
+  const setDisplay = (node, shown) => {
+    const display = shown ? '' : 'none'
+    if (node && node.style.display !== display) node.style.display = display
+  }
+  setDisplay(parts.body, videoMode)
+  // No second picture: the stage only shows when the film actually plays here.
+  setDisplay(parts.stage, videoMode && !behind)
+  // See-through only changes a film behind the app; inside the panel it is 100%.
+  setDisplay(parts.opacityRow, behind)
+  for (const [value, pill] of parts.watchInPills || []) {
+    const flag = value === behind ? 'true' : 'false'
+    if (pill.getAttribute('data-active') !== flag) pill.setAttribute('data-active', flag)
   }
   if (parts.power) {
     const label = auraOn ? 'Aura on — click to turn off' : 'Aura off — click to turn on'
