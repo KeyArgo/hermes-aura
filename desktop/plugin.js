@@ -311,10 +311,12 @@ const FRAME_BLOCKED_HOSTS = Object.freeze([
 ])
 const MEDIA_FILE_RE = /\.(mp4|webm|ogg|ogv|m4v|mov|m3u8)(?:[?#]|$)/i
 
-// Transport state reported up by web/player.html at <= 4 Hz.
+// Transport state reported up by web/player.html at <= 4 Hz. `author` is the
+// channel the YouTube player reports through getVideoData(); it is empty for a
+// direct file and for a source the player has not described yet.
 const EMPTY_VIDEO = Object.freeze({
   kind: '', playing: false, position: 0, duration: 0, muted: true,
-  title: '', controllable: false, reportedAt: 0
+  title: '', author: '', controllable: false, reportedAt: 0
 })
 const VIDEO_URL_MAX = 2048
 
@@ -630,6 +632,49 @@ function shortLabel(url) {
     // A malformed percent escape (e.g. `%ZZ.mp4`) is still a usable label.
   }
   return file && file !== host ? host + ' / ' + decoded.slice(0, 40) : host
+}
+
+/** The title Aura already stores for a source URL, or ''. Sources the user
+ *  added, saved playlists, the starter pack and recents all carry a label;
+ *  shortLabel() is the last resort. A source picked from the starter pack also
+ *  lands in recents with the generic shortLabel, so a real label always wins.
+ *  Used so the page can name a film the instant a source is picked, before the
+ *  player has reported anything. */
+function storedSourceTitle(url) {
+  const clean = typeof url === 'string' ? url.trim() : ''
+  if (!clean) return ''
+  const generic = shortLabel(clean)
+  const settings = $settings.get()
+  const lists = [
+    ...(Array.isArray(settings.videoSources) ? settings.videoSources : []),
+    ...(Array.isArray(settings.videoPlaylists) ? settings.videoPlaylists : []),
+    ...STARTER_SOURCES,
+    ...(Array.isArray(settings.videoRecent) ? settings.videoRecent : [])
+  ]
+  for (const item of lists) {
+    if (!item || item.url !== clean) continue
+    const label = typeof item.label === 'string' ? item.label.trim() : ''
+    if (label && label !== generic) return label
+  }
+  return generic
+}
+
+/** What is playing, for the page and the status bar: the player's own title and
+ *  channel when it has reported them (getVideoData() through the existing
+ *  backdrop bridge), else the title already stored for the current source.
+ *  Nothing here fetches, and no URL leaves the app. */
+function nowPlaying(settings, video) {
+  const state = video && typeof video === 'object' ? video : {}
+  const played = typeof state.title === 'string' ? state.title.trim() : ''
+  const channel = typeof state.author === 'string' ? state.author.trim() : ''
+  const url = settings && typeof settings.videoUrl === 'string' ? settings.videoUrl.trim() : ''
+  return {
+    title: played || storedSourceTitle(url),
+    // A stored source label says nothing about who made it, so a channel only
+    // travels with the player's own title.
+    channel: played ? channel : '',
+    url
+  }
 }
 
 function readSettings(ctx) {
@@ -2158,6 +2203,15 @@ async function setVideoUrl(next) {
   saveCurrentPosition()
   if (!skippingEpisode) autoSkipCount = 0
   writeSettings({ videoUrl })
+  // A new source has a new title and channel: drop the last film's now, so the
+  // page can never label the next film with the previous one's name while the
+  // new player is still starting. The volume is the user's, not the film's.
+  const keptVolume = Number($video.get().volume)
+  $video.set({
+    ...EMPTY_VIDEO,
+    ...(Number.isFinite(keptVolume) ? { volume: keptVolume } : {}),
+    reportedAt: Date.now()
+  })
   resetShow()
   removeBackdrop()
   if ($settings.get().showWhen === 'always') syncBackdrop()
@@ -2968,6 +3022,7 @@ function onBackdropMessage(event) {
     duration,
     muted: data.muted !== false,
     title: typeof data.title === 'string' ? data.title.slice(0, 120) : '',
+    author: typeof data.author === 'string' ? data.author.slice(0, 120) : '',
     videoId: typeof data.videoId === 'string' ? data.videoId : '',
     blocked: data.blocked === true,
     controllable: data.controllable === true,
@@ -3835,6 +3890,25 @@ function uiCss() {
       overflow: hidden; text-overflow: ellipsis;
     }
     #aura-page .aura-watch { gap: 10px; }
+    /* Now playing: the film's own name, right above the player. */
+    #aura-page .aura-now {
+      display: flex; flex-direction: column; gap: 2px; min-width: 0;
+      padding: 0 2px;
+    }
+    #aura-page .aura-now-label {
+      font-size: 10px; font-weight: 650; letter-spacing: 0.26em; text-transform: uppercase;
+      color: #ffc79c;
+    }
+    #aura-page .aura-now-title {
+      font-size: 21px; line-height: 1.22; font-weight: 680; letter-spacing: -0.012em;
+      color: #fdf7ef;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden; word-break: break-word;
+    }
+    #aura-page .aura-now-channel {
+      font-size: 12.5px; line-height: 1.4; font-weight: 600; color: #ffd2a4;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
     #aura-page .aura-stage-wrap { display: flex; justify-content: center; width: 100%; }
     #aura-page .aura-stage {
       border: 1px solid rgba(255,190,140,0.24);
@@ -3958,6 +4032,7 @@ function uiCss() {
     @media (max-width: 760px) {
       #aura-page { padding: 20px 16px 40px; }
       #aura-page .aura-title { font-size: 22px; }
+      #aura-page .aura-now-title { font-size: 18px; }
       #aura-page .aura-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
       #aura-page .aura-panel { padding: 13px 13px 15px; border-radius: 14px; }
     }
@@ -4869,9 +4944,35 @@ function AuraQuickMenu() {
   const transportStyle = { minWidth: 24, padding: '0 4px', fontSize: 13, lineHeight: 1 }
   const presetStyle = { minWidth: 0, padding: '0 6px', fontSize: 11, lineHeight: 1.4 }
 
-  const glyphColor = auraOn ? 'var(--ui-accent)' : 'var(--ui-text-tertiary)'
+  // Full contrast in both themes: the theme's own primary text when Aura is
+  // off (never the faint tertiary token), the accent while it is active.
+  const glyphColor = auraOn ? 'var(--ui-accent)' : 'var(--ui-text-primary)'
+  const now = nowPlaying(settings, videoState)
+  // The status bar says what is being watched, in the theme's primary text so a
+  // light skin and a dark one both read it. The URL never appears here.
+  const statusTitle = now.title
+    ? (now.title.length > 46 ? now.title.slice(0, 45).trimEnd() + '…' : now.title)
+    : ''
+  const statusLabel = statusTitle
+    ? jsx('span', {
+      className: 'aura-status-title',
+      title: now.title,
+      style: {
+        fontSize: 11.5,
+        fontWeight: 600,
+        lineHeight: 1.2,
+        color: 'var(--ui-text-primary)',
+        maxWidth: 220,
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap'
+      },
+      children: `Watching ${statusTitle}`
+    })
+    : null
 
-  return jsxs(Popover, {
+  const popover = jsxs(Popover, {
     open,
     onOpenChange: setOpen,
     children: [
@@ -4889,7 +4990,8 @@ function AuraQuickMenu() {
             'aria-hidden': true,
             style: {
               display: 'inline-flex', alignItems: 'center', gap: 5,
-              fontSize: 12, lineHeight: 1, letterSpacing: 0.2, fontWeight: 600
+              fontSize: 12, lineHeight: 1, letterSpacing: 0.2, fontWeight: 700,
+              color: 'inherit'
             },
             children: [
               // The mark: a lit core with two aura rings falling away from it,
@@ -4907,12 +5009,12 @@ function AuraQuickMenu() {
                   jsx('path', {
                     d: 'M4.6 4.1a5.5 5.5 0 0 0 0 7.8',
                     stroke: 'currentColor', strokeWidth: 1.25, fill: 'none',
-                    strokeLinecap: 'round', opacity: 0.6
+                    strokeLinecap: 'round', opacity: 0.9
                   }),
                   jsx('path', {
                     d: 'M11.4 4.1a5.5 5.5 0 0 1 0 7.8',
                     stroke: 'currentColor', strokeWidth: 1.25, fill: 'none',
-                    strokeLinecap: 'round', opacity: 0.6
+                    strokeLinecap: 'round', opacity: 0.9
                   })
                 ]
               }),
@@ -5413,6 +5515,14 @@ function AuraQuickMenu() {
       })
     ]
   })
+
+  // One status-bar item: the "Watching …" line, then the Aura trigger. Both
+  // stay inside Aura's own contribution — no host DOM is restyled.
+  return jsxs('span', {
+    className: 'aura-status-item',
+    style: { display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 },
+    children: [statusLabel, popover]
+  })
 }
 
 // --------------------------------------------------------------- Aura page
@@ -5898,6 +6008,8 @@ function AuraPage() {
               ? 'This video cannot be embedded. Paste a different link, or pick another source.'
               : ''
 
+  const now = nowPlaying(settings, state)
+
   const filmStage = jsxs('div', {
     ref: pageStageRef,
     className: 'aura-stage',
@@ -6081,11 +6193,41 @@ function AuraPage() {
     ]
   })
 
+  // Now playing: the title (and its channel when the player knows one) sits
+  // directly above the big player, large and clear. The player's own report
+  // wins; before it arrives the stored title for the source is shown, so a
+  // source change never leaves the previous film's name on screen.
+  const nowLine = jsxs('div', {
+    key: 'now',
+    className: 'aura-now',
+    // Announced, not just drawn: when the playlist moves on, a screen reader
+    // hears the new title without hunting for it.
+    role: 'status',
+    'aria-live': 'polite',
+    children: [
+      jsx('span', {
+        key: 'label',
+        className: 'aura-now-label',
+        children: 'Now playing'
+      }),
+      jsx('span', {
+        key: 'title',
+        className: 'aura-now-title',
+        title: now.title || undefined,
+        children: now.title || 'Nothing playing yet'
+      }),
+      now.channel
+        ? jsx('span', { key: 'channel', className: 'aura-now-channel', children: now.channel })
+        : null
+    ]
+  })
+
   const watch = jsxs('section', {
     key: 'watch',
     className: 'aura-panel aura-watch',
     'aria-label': 'Now playing',
     children: [
+      nowLine,
       jsx('div', { key: 'stage', className: 'aura-stage-wrap', children: filmStage }),
       jsx('div', { key: 'scrub', children: scrub }),
       jsx('div', { key: 'transport', children: transport }),
@@ -7303,6 +7445,8 @@ export const __test = {
   // stage exactly the way a real render does.
   pageStageRef,
   shortLabel,
+  storedSourceTitle,
+  nowPlaying,
   videoQueue,
   applyVideoSource,
   applyUrlBox,

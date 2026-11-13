@@ -33,6 +33,24 @@
   "8 starters" now read the catalogue instead (`PANEL_SCORE_MAX` still caps the
   A-menu card list at 12).
 
+## Unreleased — readable status bar and a named film
+
+- **The status-bar item is readable.** The "A" trigger was drawn in the faint
+  tertiary text token and a 600-weight label. It is now weight 700 in the
+  theme's primary text colour when Aura is off and the accent when it is on, so
+  it reads in light and dark themes; only Aura's own contribution is styled.
+- **The status bar says what is playing.** A `Watching <title>` label sits
+  beside the A (truncated with the full title on hover), in the theme's primary
+  text colour, and never shows the URL.
+- **The Aura page names the film.** A **Now playing** block above the big player
+  shows the title in large type and the channel when one is known. The title
+  comes from the player's own `getVideoData()` through the existing backdrop
+  postMessage bridge, or from the title already stored for the source, and it
+  follows a playlist moving to the next episode. A source change clears the
+  previous film's title immediately. No URL is sent to any new service.
+- `web/player.html` forwards the channel (`author`) and names a direct file from
+  its own file name.
+
 ## Unreleased — quality review fixes
 
 - **The film frame is built from the live server again.** It was handed the

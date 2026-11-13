@@ -18,6 +18,9 @@ behaviour profile and motion source are the real controls at the bottom.*
 ## Play a film while you work
 
 1. Open the status-bar **A** menu and choose a saved source, or paste a URL.
+   The status bar names what is playing (**Watching …**) beside the A, in bold
+   full-contrast text — accent-coloured while Aura is on, the theme's own text
+   colour while it is off.
 2. The film opens in the docked theatre pane on the right: a 16:9 stage with a
    scrubber, transport, volume and a poster list of your sources.
 3. Close the pane and the film keeps playing; the status-bar menu brings it back.
@@ -79,7 +82,12 @@ your own session. No API scope, no OAuth review, no second account.
 ## The Aura page
 
 The sidebar **Aura** page puts the same player in a big 16:9 frame with the
-transport, volume and source picker. Under it:
+transport, volume and source picker. Directly above the frame, **Now playing**
+names the film — its title in large type and, when the player knows it, the
+channel underneath. It follows the film as it plays: a playlist moving to the
+next episode, or another source picked, retitles it at once. A source Aura has
+not opened yet shows the title it already stores for it; the URL is never used
+as a title. Under the player:
 
 - **Library** — poster cards; add, rename, remove, hide starters, clear recents.
 - **Playlist how-to** — the three steps above, in place.

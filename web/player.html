@@ -58,7 +58,7 @@
   var video = null       // the native <video>, when there is one
   var kind = 'frame'     // 'youtube' | 'playlist' | 'video' | 'frame'
   var state = {
-    playing: false, position: 0, duration: 0, muted: muted, title: '',
+    playing: false, position: 0, duration: 0, muted: muted, title: '', author: '',
     volume: 0.7, ended: false, videoId: '', blocked: false
   }
   var lastPost = 0
@@ -123,6 +123,9 @@
         duration: state.duration,
         muted: state.muted,
         title: state.title,
+        // The channel, when the player knows one. The host shows it under the
+        // title on the Aura page; a direct file has none.
+        author: state.author,
         volume: state.volume,
         ended: state.ended,
         videoId: state.videoId,
@@ -226,6 +229,16 @@
     stage.appendChild(el)
     video = el
     kind = 'video'
+    // A direct file carries no metadata feed, so its own file name is the
+    // title the host shows. The URL itself is never printed.
+    if (!state.title) {
+      try {
+        var fileName = decodeURIComponent(
+          src.split('?')[0].split('#')[0].split('/').filter(Boolean).pop() || ''
+        )
+        if (fileName) state.title = fileName
+      } catch (err) { /* a malformed escape is not worth a title */ }
+    }
   }
 
   function addUnknownFrame(src) {
@@ -259,6 +272,11 @@
         if (typeof info.muted === 'boolean') state.muted = info.muted
         if (info.videoData && typeof info.videoData.title === 'string') {
           state.title = info.videoData.title
+        }
+        // getVideoData() also names the channel; the Aura page shows it under
+        // the title. Nothing is fetched from YouTube for this.
+        if (info.videoData && typeof info.videoData.author === 'string') {
+          state.author = info.videoData.author
         }
         // Which episode of a playlist is playing — the bookmark needs this to
         // resume the right one, not just the list.
