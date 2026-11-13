@@ -1170,6 +1170,20 @@ function pageKey() {
   ].join('|')
 }
 
+/** What makes a frame a DIFFERENT page: where it is served from, and the token
+ *  that lets it answer. Everything else in the URL — the resume point, mute,
+ *  captions, the episode id — is state the live page owns, so rebuilding the
+ *  src for it re-pointed the element and restarted the film every few seconds
+ *  (the film's own resume point lands in the bookmark every 5 s). */
+function addressKey(url) {
+  try {
+    const parsed = new URL(String(url))
+    return `${parsed.origin}${parsed.pathname}?${parsed.searchParams.get('token') || ''}`
+  } catch {
+    return String(url)
+  }
+}
+
 /** Keep the caret where the user put it.
  *
  * A film page can call `window.focus()` — YouTube's own player does exactly
@@ -1357,19 +1371,44 @@ function audioSeatSrc() {
 /** The player/visualiser URL for the owning surface, or '' when there is nothing
  *  to show. Built from the LIVE SERVER url (origin + token), never from the
  *  film's own link: `backdropSrc` turns the server url into
- *  `<origin>/player.html?url=…&token=…`. */
+ *  `<origin>/player.html?url=…&token=…`.
+ *
+ *  The element keeps the URL it was given for as long as the PAGE it shows is
+ *  the same one: the same origin, path and token, the same film and mode. A
+ *  new src navigates the frame, so handing it a rebuilt URL on every change of
+ *  `resume=` (which the bookmark writes every 5 s) restarted the film twice a
+ *  minute — the stutter, not a reload. */
+let filmLoadedKey = ''
+let filmLoadedSrc = ''
+
+/** Forget what the frame was given: the next filmSrc() builds a fresh URL,
+ *  resume point and all. Called when the frame stops showing a page at all. */
+function forgetFilmSource() {
+  filmLoadedKey = ''
+  filmLoadedSrc = ''
+}
+
 function filmSrc() {
   const base = liveUrl()
   if (!base) return ''
   const mode = filmPageMode()
-  if (!mode) return ''
+  if (!mode) {
+    forgetFilmSource()
+    return ''
+  }
   const src = backdropSrc(base, mode)
   if (!src) return ''
   const retry = Number($filmRetry.get()) || 0
-  // A manual retry has to be a NEW document: reusing the same URL would keep
-  // the player that never started.
-  if (!retry || mode !== 'video') return src
-  return `${src}${src.includes('?') ? '&' : '?'}retry=${retry}`
+  const key = `${pageKey()}|${addressKey(src)}|${retry}`
+  if (key !== filmLoadedKey) {
+    filmLoadedKey = key
+    // A manual retry has to be a NEW document: reusing the same URL would keep
+    // the player that never started.
+    filmLoadedSrc = retry && mode === 'video'
+      ? `${src}${src.includes('?') ? '&' : '?'}retry=${retry}`
+      : src
+  }
+  return filmLoadedSrc
 }
 
 // ---- a film that never loads --------------------------------------------
@@ -10021,6 +10060,9 @@ export default {
     // to the instance that watched them.
     resetFilmStall()
     $filmRetry.set(0)
+    // The frame the previous instance loaded is gone with it: the next src is a
+    // fresh document, resume point included.
+    forgetFilmSource()
     // Bookmarks live in settings, so a remount (another plugin, another chat)
     // reads them straight back without any extra storage key.
 
@@ -10234,6 +10276,9 @@ export const __test = {
   // Bookmarks: what the player remembers between reloads.
   rememberPosition,
   saveCurrentPosition,
+  // What the frame may keep loading, and what counts as a new page.
+  forgetFilmSource,
+  addressKey,
   // The full-window host: the setting, the decision, the layout it applies and
   // the per-tick opacity writer that used to force the panel's film to 20%.
   filmOpen,

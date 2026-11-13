@@ -725,6 +725,53 @@ await recordAsync('saveCurrentPosition takes the pause from what the player repo
   }
 })
 
+// ================================================== 4. the frame's address
+// resume=<position> changes every 5 s; the element must not be re-pointed for
+// it, or the film restarts twice a minute.
+
+record('addressKey is origin + path + token, and nothing else', () => {
+  const a = tx.addressKey('http://127.0.0.1:4321/player.html?url=x&token=t&resume=10&mute=1&video=abc')
+  const b = tx.addressKey('http://127.0.0.1:4321/player.html?url=y&token=t&resume=99')
+  assert.equal(a, b, 'state the live page owns was treated as a new address')
+  assert.notEqual(a, tx.addressKey('http://127.0.0.1:4321/player.html?url=x&token=other'),
+    'a new token did not count as a new address')
+  assert.notEqual(a, tx.addressKey('http://127.0.0.1:9999/player.html?url=x&token=t'),
+    'a new port did not count as a new address')
+})
+
+await recordAsync('the frame keeps its URL while the resume point moves', async () => {
+  const bucket = videoMode({ filmFullWindow: false })
+  const dispose = pluginModule.default.register(bucket.ctx)
+  try {
+    await primeLive(bucket)
+    tx.rememberPosition(VIDEO, 30, 600, false, '', true, false)
+    tx.forgetFilmSource()
+    const first = tx.filmSrc()
+    assert.match(first, /resume=30/, 'the first URL has no resume point')
+
+    // The player gets further; the bookmark is rewritten mid-film.
+    tx.rememberPosition(VIDEO, 45, 600, false, '', true, false)
+    await tick(bucket)
+    assert.equal(tx.filmSrc(), first,
+      'the frame was re-pointed for a resume-point update, which restarts the film')
+
+    // A restarted server hands out a new token: that IS a new document.
+    bucket.setLiveToken('token-b')
+    await tick(bucket)
+    const moved = tx.filmSrc()
+    assert.notEqual(moved, first, 'a new server token did not re-point the frame')
+    assert.match(moved, /token-b/, 'the re-pointed frame kept the stale token')
+
+    // A different film is a different page too.
+    tx.forgetFilmSource()
+    atoms.settings.set({ ...atoms.settings.get(), videoUrl: 'https://example.test/other.mp4' })
+    const other = tx.filmSrc()
+    assert.match(other, /other\.mp4/, 'a source change did not rebuild the URL')
+  } finally {
+    dispose()
+  }
+})
+
 // ==================================================== 5. the full-window host
 // A playing film fills the app window behind everything, even with the panel
 // open; the see-through controls are offered only there.
