@@ -882,6 +882,10 @@ def enqueue_command(data: Any) -> dict:
         command["value"] = max(0.0, min(1.0, command["value"]))
     if cmd == "load" and not command.get("url"):
         raise ValueError("load needs a url")
+    # A load is a URL the page fetches and plays: it gets the same scheme and
+    # own-origin rule as the pop-out, whatever sent it.
+    if cmd in ("load", "watch_window") and command.get("url"):
+        _check_film_url(command["url"])
     # [savelist lane] save/remove always name their target: a url is enough to
     # remove; the desktop also resolves a unique label when it is all it gets.
     if cmd == "save" and not command.get("url"):
@@ -917,12 +921,13 @@ def window_payload() -> dict:
 
 
 def _check_film_url(url: str) -> None:
-    """Only an http(s) film, and never Aura's own token-bearing page.
+    """Only an http(s) page Aura itself loads, and never its own token-bearing one.
 
     The window's ``url`` parameter is shown on the user's screen and loaded by
     Chrome, not by Aura's checked opener, so a page the agent was reading could
-    otherwise pop out ``file:``, ``ftp:`` or Aura's own origin. Other LAN hosts
-    stay allowed: a NAS movie is still a film.
+    otherwise pop out ``file:``, ``ftp:`` or Aura's own origin. The player takes
+    a ``load`` the same way, from a page or a tool call, so both pass through
+    here. Other LAN hosts stay allowed: a NAS movie is still a film.
     """
     try:
         parsed = urlsplit(str(url or ""))
@@ -993,6 +998,8 @@ def manage_window(data: Any) -> dict:
     url = _player_text(body.get("url"), 400)
     if not url.lower().startswith(("http://", "https://")):
         raise ValueError("only http(s) pages can be opened")
+    # Same rule as the film: never hand Chrome Aura's own token-bearing page.
+    _check_film_url(url)
     result = desktop_window.open_page(url)
     result["ok"] = True
     result["window"] = desktop_window.status()
@@ -1419,7 +1426,9 @@ class _Handler(BaseHTTPRequestHandler):
             if not target.is_relative_to(WEB_DIR.resolve()) or not target.is_file():
                 raise OSError("outside web/ or missing")
             payload = target.read_bytes()
-        except OSError:
+        except (OSError, ValueError):
+            # A path with an embedded NUL byte makes resolve() raise ValueError;
+            # a hostile request is a refusal, never a 500.
             self._send_json({"ok": False, "error": "not_found"}, 404)
             return
         self.send_response(200)

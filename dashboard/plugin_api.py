@@ -380,6 +380,9 @@ def version_route() -> dict:
 _PLAYLIST_CACHE: dict[str, tuple[float, list[dict]]] = {}
 _PLAYLIST_TTL = 300.0
 _LIST_RE = re.compile(r"[A-Za-z0-9_-]{10,64}")
+# A video id is interpolated into the player's own URL and into a watch link, so
+# it must be an id and nothing else — the playlist page is third-party input.
+_VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
        "Chrome/124.0.0.0 Safari/537.36")
 _INITIAL_DATA_RE = re.compile(r"ytInitialData\s*=\s*(\{.*\});</script>", re.S)
@@ -401,7 +404,7 @@ def _walkPlaylist(node: Any, out: list[dict]) -> None:
             length_obj = renderer.get("lengthText")
             if isinstance(length_obj, dict) and isinstance(length_obj.get("simpleText"), str):
                 length = length_obj["simpleText"]
-            if isinstance(vid, str) and len(vid) == 11:
+            if isinstance(vid, str) and _VIDEO_ID_RE.fullmatch(vid):
                 out.append({"videoId": vid, "title": title.strip()[:160], "length": length})
         # YouTube's newer playlist UI: `lockupViewModel` carries the same facts.
         lockup = node.get("lockupViewModel")
@@ -427,7 +430,7 @@ def _walkPlaylist(node: Any, out: list[dict]) -> None:
                             break
                     if length:
                         break
-            if isinstance(vid, str) and len(vid) == 11:
+            if isinstance(vid, str) and _VIDEO_ID_RE.fullmatch(vid):
                 out.append({"videoId": vid, "title": title.strip()[:160], "length": length})
         for value in node.values():
             _walkPlaylist(value, out)
