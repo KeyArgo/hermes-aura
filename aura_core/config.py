@@ -30,7 +30,7 @@ DEFAULTS = {
     "listen_background": False,
     # First-run only (a saved config keeps its own values): a new install starts
     # gentle. Reaction strength 0.25 is a quarter of the normalised reaction and
-    # opacity 0.25 draws the canvas at 25%, the owner's ask for both.
+    # opacity 0.25 draws the canvas at 25%.
     "intensity": 0.25,
     "preset": None,
     "reduced_motion": False,

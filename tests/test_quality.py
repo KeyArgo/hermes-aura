@@ -1,14 +1,13 @@
-"""Quality choices — what each source actually allows, measured not assumed.
+"""Quality choices — what each source actually allows.
 
-Three sources, three honest answers:
+Three sources, three answers:
 
 * **archive.org** publishes real derivatives per item (``*_512kb.mp4``,
-  ``*.ogv``, the original), each with its own size and resolution. Those are
-  real choices, so they are offered — parsed from ``/metadata/<id>``, which the
-  Aura server fetches (short timeout, small cache), never the desktop.
-* **YouTube** ignores ``setPlaybackQuality`` (measured: sending small/medium/
-  hd720/hd1080/large left ``playbackQuality`` at hd1080 and ``preferredQuality``
-  at ``auto``), so its one honest choice is "Auto (YouTube decides)".
+  ``*.ogv``, the original), each with its own size and resolution, so those are
+  real choices. They come from ``/metadata/<id>``, which the Aura server fetches
+  (short timeout, small cache), never the desktop.
+* **YouTube** ignores ``setPlaybackQuality``, so its one honest choice is
+  "Auto (YouTube decides)".
 * **a direct file** is one file: no picker.
 
 No network: the item's metadata is a recorded fixture (a real archive.org

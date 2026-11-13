@@ -30,10 +30,10 @@
 <!-- [listen lane] The audio channel (music/radio) lives beside the film, not
      inside it: one <audio> element with its own volume, so the video can be
      muted while the music keeps playing. -->
-<!-- [subtitles] The captions rules (embed query + live player commands) are one
+<!-- The captions rules (embed query + live player commands) are one
      small file so the page and its contract test run the same logic. -->
 <script src="captions.js"></script>
-<!-- [quality] What a quality switch really is: YouTube's one honest answer, and
+<!-- What a quality switch really is: YouTube's one honest answer, and
      the swap rule that keeps the viewer's second. Same file, same test. -->
 <script src="quality.js"></script>
 <script src="audio.js"></script>
@@ -85,10 +85,9 @@
   var frame = null       // the YouTube iframe, when there is one
   var video = null       // the native <video>, when there is one
   var kind = 'frame'     // 'youtube' | 'playlist' | 'video' | 'frame'
-  // [subtitles] Captions are a per-video thing: YouTube keeps them per player
-  // document, so the choice is re-applied whenever the video changes. `known`
-  // says whether the player has answered yet — until it has, the app leaves the
-  // CC button alone instead of calling a captioned film "no subtitles".
+  // Captions are per-video: YouTube keeps the choice per player document, so it
+  // is re-applied whenever the video changes. `known` says the player has
+  // answered, so the app can leave the CC button alone until then.
   var captions = {
     on: params.get('captions') === '1',
     lang: AuraCaptions.language(params.get('cc_lang') || ''),
@@ -97,9 +96,8 @@
   var state = {
     playing: false, position: 0, duration: 0, muted: muted, title: '', author: '',
     volume: 0.7, ended: false, videoId: '', blocked: false,
-    // [quality] What the player is really playing. YouTube picks it and ignores
-    // the command to change it (measured), so this is reported upward, never
-    // forced — the app shows "Auto (YouTube decides)" and this is the detail.
+    // What the player is really playing. YouTube picks it and ignores the
+    // command to change it, so this is reported upward, never forced.
     quality: { current: '', preferred: '', levels: [] }
   }
   var lastPost = 0
@@ -171,9 +169,9 @@
         ended: state.ended,
         videoId: state.videoId,
         blocked: state.blocked,
-        // [subtitles] What the player says about captions: the tracks it has,
-        // which one is playing, and whether it has answered at all. The app
-        // disables the CC button only on a real "no tracks" answer.
+        // What the player says about captions: its tracks, which one is playing,
+        // and whether it answered at all. Only a real "no tracks" answer
+        // disables the CC button.
         captions: {
           on: captions.on,
           lang: captions.lang,
@@ -181,8 +179,8 @@
           known: captions.known,
           tracks: captions.tracks
         },
-        // [quality] What is really being played, so the app can show it next to
-        // "Auto (YouTube decides)" instead of inventing a level.
+        // What is really being played, so the app can show it next to "Auto
+        // (YouTube decides)" instead of inventing a level.
         quality: state.quality,
         controllable: kind !== 'frame'
       }, '*')
@@ -215,9 +213,9 @@
       kind = 'youtube'
     }
     if (muted) query.push('mute=1')
-    // [subtitles] Captions are the viewer's choice, so the embed asks for them
-    // only when they are on — and asks in the machine's language unless the
-    // viewer picked one. The rules live in web/captions.js.
+    // Captions are the viewer's choice, so the embed asks for them only when
+    // they are on, in the machine's language unless the viewer picked one. The
+    // rules live in web/captions.js.
     var ccParts = AuraCaptions.embedParams({
       on: captions.on,
       lang: captions.lang || (navigator.language || '')
@@ -257,9 +255,9 @@
   }
 
   // --- captions -----------------------------------------------------------
-  // [subtitles] Captions belong to the video, not to the page: YouTube keeps
-  // the choice per player document and quietly resets it when a playlist moves
-  // on, so the same commands are re-applied for every video id.
+  // Captions belong to the video: YouTube keeps the choice per player document
+  // and resets it when a playlist moves on, so the commands are re-applied for
+  // every video id.
 
   // The language to ask for: the viewer's choice, else the machine's own,
   // else English. web/captions.js owns that order.
@@ -317,7 +315,7 @@
     return true
   }
 
-  // The switch itself, whatever asked for it (the app's button or the agent).
+  // The switch itself, whatever asked for it (the app or the agent).
   function setCaptions(on, lang) {
     captions.on = Boolean(on)
     if (typeof lang === 'string') captions.lang = AuraCaptions.language(lang)
@@ -328,12 +326,10 @@
   }
 
   // --- quality ------------------------------------------------------------
-  // [quality] A quality switch is a source swap, and a source swap is only
-  // acceptable if it keeps the second the viewer is at. The rule for "where the
-  // film was" lives in web/quality.js (the contract test runs it too); this
-  // applies it to the <video>. YouTube has no equivalent: its embed publishes
-  // the level it chose but ignores setPlaybackQuality, so nothing here pretends
-  // to force one.
+  // A quality switch is a source swap, and it is only acceptable if it keeps
+  // the second the viewer is at. web/quality.js owns that rule (the contract
+  // test runs it too); this applies it to the <video>. YouTube has no
+  // equivalent: nothing here pretends to force a level.
   var qualityPlan = null
 
   function applyVideoQuality(url) {
@@ -386,17 +382,16 @@
     })
     el.addEventListener('loadedmetadata', function () {
       state.duration = isFinite(el.duration) ? el.duration : 0
-      // [quality] A swap lands where the viewer was, and keeps playing. This is
-      // the second half of the rule in web/quality.js: a source that is cold
-      // cannot seek before its metadata is in.
+      // A swap lands where the viewer was and keeps playing: a source that is
+      // cold cannot seek before its metadata is in.
       if (qualityPlan) {
         var plan = qualityPlan
         qualityPlan = null
         try { if (plan.position > 0) el.currentTime = plan.position } catch (err) { /* not seekable */ }
         if (plan.playing) el.play().catch(function () { })
       }
-      // [subtitles] Its tracks are known once the metadata is: apply the
-      // switch before the first frame is drawn, not after a click.
+      // Its tracks are known once the metadata is, so the switch is applied
+      // before the first frame is drawn, not after a click.
       applyVideoCaptions()
       postState(true)
     })
@@ -433,10 +428,10 @@
       if (typeof data === 'string') {
         try { data = JSON.parse(data) } catch (err) { return }
       }
-      // [subtitles] The player publishes its captions module on its own:
-      // namespaces + the tracklist + the track that is playing. That list is
-      // the language menu, and its absence is the honest "no subtitles" answer
-      // (ambient uploads never send it).
+      // The player publishes its captions module on its own: namespaces, the
+      // tracklist and the playing track. That is the language menu, and its
+      // absence is the honest "no subtitles" answer (ambient uploads never send
+      // it).
       if (data && data.event === 'apiInfoDelivery' && data.info) {
         var found = AuraCaptions.tracksFrom(data.info)
         if (found) {
@@ -470,15 +465,14 @@
         if (info.videoData && typeof info.videoData.video_id === 'string') {
           state.videoId = info.videoData.video_id
         }
-        // [quality] YouTube reports the level it chose, the levels it has and
-        // its own preference. Reading that is honest; sending
-        // setPlaybackQuality is not (measured: it is ignored), so the page only
-        // ever reports what it is told.
+        // YouTube reports the level it chose, the levels it has and its own
+        // preference. Sending setPlaybackQuality is ignored, so the page only
+        // reports what it is told.
         var saidQuality = AuraQuality.fromInfo(info)
         if (saidQuality.current) state.quality.current = saidQuality.current
         if (saidQuality.preferred) state.quality.preferred = saidQuality.preferred
         if (saidQuality.levels.length) state.quality.levels = saidQuality.levels
-        // [subtitles] A new video is a new captions context.
+        // A new video is a new captions context.
         applyCaptionsForVideo()
         postState(false)
       }
@@ -492,16 +486,16 @@
     var cmd = data.cmd
     var value = data.value
 
-    // [subtitles] The CC switch is its own verb: it means the same thing to a
-    // YouTube player and to a direct file, so it is handled before the
-    // per-kind transport branches.
+    // The CC switch is its own verb: it means the same thing to a YouTube
+    // player and to a direct file, so it is handled before the per-kind
+    // transport branches.
     if (cmd === 'captions') {
       setCaptions(value === 1 || value === true || value === 'on', data.lang)
       return
     }
 
-    // [quality] Switch the film to another one of its own files, at the same
-    // second. Only a direct file has versions to swap between.
+    // Switch the film to another one of its own files, at the same second. Only
+    // a direct file has versions to swap between.
     if (cmd === 'quality') {
       applyVideoQuality(String(data.url || value || ''))
       return
@@ -608,8 +602,8 @@
           volume: state.volume,
           last_command: lastCommand,
           applied: lastApplied,
-          // [subtitles] The window is a player too: the app reads this back so
-          // its own switch never disagrees with what is on screen.
+          // The window is a player too: the app reads this back so its own
+          // switch never disagrees with what is on screen.
           captions: captions.on
         })
       }).catch(function () { /* the server may be restarting */ })
@@ -636,8 +630,8 @@
     var next = new URLSearchParams()
     next.set('desktop', '1')
     next.set('url', String(url || ''))
-    // [subtitles] A new film in the same window keeps the viewer's caption
-    // choice: the page is replaced, so it has to be told again.
+    // A new film in the same window keeps the viewer's caption choice: the page
+    // is replaced, so it has to be told again.
     if (captions.on) next.set('captions', '1')
     if (captions.lang) next.set('cc_lang', captions.lang)
     try {
@@ -679,16 +673,16 @@
     if (name === 'seek') { markCommand(name, true); desktopSeek(command.value); return }
     if (name === 'volume') { markCommand(name, true); desktopVolume(command.value); return }
     if (name === 'captions') {
-      // [subtitles] The OS window owns the picture here, so the switch is
-      // applied in this page and reported back to the app.
+      // The OS window has the picture here, so the switch is applied in this
+      // page and reported back to the app.
       markCommand(name, true)
       setCaptions(command.value === 1 || command.value === true, command.lang)
       reportDesktop(true)
       return
     }
     if (name === 'quality') {
-      // [quality] The window is the player: the swap happens in this page so
-      // the film keeps the second it is at, and the app remembers the choice.
+      // The window is the player: the swap happens in this page so the film
+      // keeps the second it is at, and the app remembers the choice.
       markCommand(name, applyVideoQuality(String(command.url || '')))
       reportDesktop(true)
       return
@@ -780,10 +774,9 @@
   postState(true)
   if (desktopMode) startDesktopMode()
   setInterval(function () { postState(false) }, 250)
-  // [subtitles] The embed already asks for captions (web/captions.js built the
-  // query), but a player that is not ready yet ignores commands: keep
-  // re-applying for the first few seconds, and stop as soon as the player has
-  // published its captions module.
+  // The embed already asks for captions (web/captions.js built the query), but a
+  // player that is not ready yet ignores commands: keep re-applying for the
+  // first few seconds, and stop once it publishes its captions module.
   var captionPokes = 0
   var captionPoke = setInterval(function () {
     if (kind !== 'youtube' && kind !== 'playlist') { clearInterval(captionPoke); return }

@@ -1,24 +1,14 @@
 /**
  * Quality rules for Aura's film player.
  *
- * What each source allows, measured rather than assumed:
+ * YouTube publishes the level it is playing but ignores `setPlaybackQuality`,
+ * so its one honest answer is "Auto (YouTube decides)" — there is no `vq=`
+ * parameter and no fake level list. archive.org films have real files, so a
+ * switch there is a real source swap, and it must keep the second the viewer is
+ * at.
  *
- *   - **YouTube** publishes the level it is playing and the levels it has
- *     (`infoDelivery`: `playbackQuality`, `availableQualityLevels`,
- *     `preferredQuality`) but ignores the command to select one: measured in
- *     headless Chromium against this very page, sending `setPlaybackQuality`
- *     with `small`, `medium`, `hd720`, `hd1080`, `large` and `default` left
- *     `playbackQuality` at `hd1080` and `preferredQuality` at `auto` every
- *     time. So there is no `vq=` parameter here and no fake level list: the one
- *     honest answer is "Auto (YouTube decides)".
- *   - **archive.org** films have real files (the server lists them from the
- *     item's metadata), so a switch is a real source swap — and a source swap
- *     mid-film is only acceptable if it keeps the second the viewer is at.
- *     That rule lives here, in one place, because both the in-app page and the
- *     headless contract test run it.
- *
- * Loaded by web/player.html as a plain script, and imported by the headless
- * contract test as a CommonJS module, so both run these exact rules.
+ * Loaded by web/player.html as a plain script, and imported by the contract
+ * test as a CommonJS module, so both run these exact rules.
  */
 (function (root) {
   'use strict'

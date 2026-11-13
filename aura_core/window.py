@@ -98,8 +98,8 @@ def player_url(port: int, token: Optional[str], url: str, position: float = 0.0,
         query["paused"] = "1"
     if re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id or ""):
         query["video"] = video_id
-    # [subtitles] The window is a player surface: it starts with the owner's
-    # caption choice. Only a real language tag is forwarded.
+    # The window is a player surface, so it starts with the saved caption
+    # choice. Only a real language tag is forwarded.
     if captions:
         query["captions"] = "1"
         code = str(lang or "").strip()
