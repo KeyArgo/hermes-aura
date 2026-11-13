@@ -35,7 +35,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: node --test tests/test_desktop_plugin.mjs
+      # EVERY tests/*.mjs file, discovered rather than listed. Two suites
+      # (test_listen_desktop.mjs, test_fresh_install.mjs) crashed at import for
+      # weeks because this job named one file, so CI never ran them and their
+      # rot went unseen. A file that cannot even import now fails the job.
+      - name: every tests/*.mjs file
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(tests/*.mjs)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no tests/*.mjs files found - the glob is wrong" >&2
+            exit 1
+          fi
+          printf 'running %d files:\n' "${#files[@]}"
+          printf '  %s\n' "${files[@]}"
+          node --test "${files[@]}"
 
   manifest:
     name: manifest gate
