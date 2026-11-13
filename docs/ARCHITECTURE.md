@@ -96,11 +96,13 @@ Nothing else is written. Audio samples stay in memory.
 | `aura_core/capture/base.py` | Backend probing, the recorder/restart loop, idle-silence behaviour. |
 | `aura_core/radio.py` | Radio Browser search, favourites, `.pls`/`.m3u` resolution, SSRF guard. |
 | `aura_core/search.py` | Keyless YouTube search and play-URL validation. |
+| `aura_core/quality.py` | A film's real versions: archive.org `/metadata/<id>` parsing, short timeout, per-item cache; YouTube's honest auto answer. |
 | `aura_core/window.py` | Chromium app window: browser lookup, profile, tickets, close on exit. |
 | `dashboard/plugin_api.py` | Desktop-facing routes and playlist resolution. |
 | `desktop/plugin.js` | Hermes Desktop half: status menu, pane, page, window, backdrop, audio channel. |
 | `web/aura.js` | Visualiser, preset catalogue, mood rendering, WebSocket client. |
 | `web/player.html`, `web/audio.js` | Film stage and the separate audio channel. |
+| `web/quality.js` | The quality rules the page and its contract test both run: what YouTube can be told, and the source swap that keeps the second. |
 | `web/catalog.json` | The shelf catalogue (346 verified titles), built by `tools/build_catalog.py`. |
 
 Back to [docs/README.md](README.md).

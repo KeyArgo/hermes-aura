@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml"><img alt="CI: tests" src="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml/badge.svg?branch=main"></a>
-  <a href="TESTING.md"><img alt="703 tests passing" src="https://img.shields.io/badge/tests-703%20passing-2ea44f?style=flat-square"></a>
+  <a href="TESTING.md"><img alt="755 tests passing" src="https://img.shields.io/badge/tests-755%20passing-2ea44f?style=flat-square"></a>
   <a href="https://github.com/NousResearch/hermes-agent/pull/154027"><img alt="Hermes plugin catalog: in review" src="https://img.shields.io/badge/plugin%20catalog-in%20review-f59e0b?style=flat-square"></a>
   <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/license-MIT-2f6bff?style=flat-square"></a>
   <a href="https://github.com/NousResearch/hermes-agent"><img alt="Hermes Agent 0.22.5 or newer" src="https://img.shields.io/badge/Hermes%20Agent-%E2%89%A5%200.22.5-7c3aed?style=flat-square"></a>
@@ -115,6 +115,14 @@ streams audio from the backend, and that stream is what keeps capture awake on a
   the button out — *No subtitles for this video*. **Subtitles burned into the
   picture cannot be turned off**: no player API exposes them, so the CC button
   cannot remove them. That is the upload's choice, not a setting of ours.
+- **Quality that is honest about the source.** A **Quality** control in the A
+  menu and on the Aura page lists the files the film really has: an archive.org
+  item's own derivatives (`640×480 · 393 MB · h.264`, `320×240 · …`) with the
+  size and resolution from the item's metadata, and a **New films** rule
+  (Auto / Smallest / Largest) applied to the next archive.org film. Switching
+  keeps the exact second. YouTube *publishes* its levels but ignores the command
+  to change them, so its one choice reads **Auto (YouTube decides)** — no level
+  is faked. A direct MP4 has one file and therefore no picker.
 - **Free placement.** The floating watch window drags anywhere and remembers its
   spot; 320 / 480 / 640 wide. Its control strip is four rows — the drag bar, a
   seek bar across the full width, elapsed on the left and time-left over the
@@ -550,9 +558,9 @@ node --test tests/test_desktop_plugin.mjs
 
 | Suite | Result at this commit |
 |---|---|
-| Python (capture, analysis, server, hooks, tools, radio, search, catalogue) | **542 passed** |
-| Desktop contract (menu, pane, transport, resume, mode gating, shelf) | **188 passed, 0 failed** |
-| **Total** | **730 passed** |
+| Python (capture, analysis, server, hooks, tools, radio, search, catalogue, quality) | **567 passed** |
+| Desktop contract (menu, pane, transport, resume, mode gating, shelf, quality) | **188 passed, 0 failed** |
+| **Total** | **755 passed** |
 
 The end-to-end visualiser tests drive a real headless Chrome and measure the
 canvas. They skip themselves when the machine is too loaded to sample reliably

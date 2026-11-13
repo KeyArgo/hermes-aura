@@ -139,7 +139,7 @@ function renderContribution(contribution) {
   return typeof element.type === 'function' ? element.type(element.props) : element
 }
 
-function makeCtx(settings, catalog) {
+function makeCtx(settings, catalog, quality) {
   const contributions = []
   const timers = []
   const controls = []
@@ -288,6 +288,13 @@ function makeCtx(settings, catalog) {
         // route is as absent as it is on an old server, so the page must cope.
         if (!catalog) throw new Error('unexpected route /catalog')
         return catalog
+      }
+      if (String(route).startsWith('/quality')) {
+        // The quality picker asks the server for the film's real files. Only
+        // the quality scenarios hand in an answer; everywhere else the route is
+        // as absent as it is on an old server, so the control must cope.
+        if (!quality) throw new Error('unexpected route /quality')
+        return typeof quality === 'function' ? quality(String(route)) : quality
       }
       throw new Error(`unexpected route ${route}`)
     }
@@ -5210,7 +5217,238 @@ record('control bar: every button is named, and a 320px window wraps instead of 
   })
 })
 
-// --------------------------------------------------------------- reporting
+// ---------------------------------------------------------------- quality
+// The owner asked for a quality picker that is honest about each source:
+// archive.org's real derivatives as choices, YouTube's one honest answer ("Auto
+// (YouTube decides)" — measured: the embed ignores setPlaybackQuality), and
+// nothing at all for a single direct file. No control goes on the strip.
+
+const ARCHIVE_ITEM = 'The_General_Buster_Keaton'
+const ARCHIVE_BASE = `https://archive.org/download/${ARCHIVE_ITEM}/`
+const ARCHIVE_ORIGINAL = `${ARCHIVE_BASE}The_General.mp4`
+const ARCHIVE_OGV = `${ARCHIVE_BASE}The_General.ogv`
+const ARCHIVE_SMALL = `${ARCHIVE_BASE}The_General_512kb.mp4`
+const YOUTUBE_FILM = 'https://www.youtube.com/watch?v=EF8C4v7JIbA'
+
+const archiveQuality = {
+  ok: true, mode: 'archive', item: ARCHIVE_ITEM, current: ARCHIVE_ORIGINAL,
+  choices: [
+    { url: ARCHIVE_ORIGINAL, file: 'The_General.mp4', label: '640×480 · 393 MB · h.264', height: 480, width: 640, size_bytes: 412400222, current: true },
+    { url: ARCHIVE_OGV, file: 'The_General.ogv', label: '400×300 · 290 MB · Ogg Video', height: 300, width: 400, size_bytes: 304061885, current: false },
+    { url: ARCHIVE_SMALL, file: 'The_General_512kb.mp4', label: '320×240 · 289 MB · 512Kb MPEG4', height: 240, width: 320, size_bytes: 302790246, current: false }
+  ],
+  smallest: ARCHIVE_SMALL, largest: ARCHIVE_ORIGINAL, note: '3 files on archive.org'
+}
+const youtubeQuality = {
+  ok: true, mode: 'youtube', current: '', smallest: '', largest: '',
+  choices: [{ url: '', label: 'Auto (YouTube decides)', auto: true }],
+  note: 'YouTube chooses the quality itself; the embed API is deprecated.'
+}
+const singleQuality = {
+  ok: true, mode: 'single', current: 'https://example.org/films/octopus.mp4', smallest: '', largest: '',
+  choices: [{ url: 'https://example.org/films/octopus.mp4', label: 'The film\'s own file', current: true }],
+  note: 'A direct file is one file.'
+}
+
+const menuOf = ctx => renderContribution(ctx.contributions.find(c => c.id === 'quick-menu'))
+const pageOf = ctx => {
+  const route = ctx.contributions.find(c => c.area === 'routes')
+  assert.ok(route, 'the Aura page route vanished')
+  return renderDeep(renderContribution(route))
+}
+const qualitySelect = (tree, label) => {
+  let found = null
+  walk(tree, node => {
+    if (!found && node.type === 'select' && node.props && node.props['aria-label'] === label) found = node
+  })
+  return found
+}
+const optionText = (select, value) => {
+  const option = (select.props.children || []).flat(Infinity)
+    .find(node => node && node.props && node.props.value === value)
+  return option ? texts(option) : ''
+}
+
+await recordAsync('quality: the A menu lists the film\'s real archive.org files', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: ARCHIVE_OGV },
+    null, archiveQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    // The poll tick loads a film's quality choices in the real app; this
+    // harness has no /player route, so the same function is called directly.
+    await tx.refreshQuality(true)
+    const menu = menuOf(ctx)
+    const select = qualitySelect(menu, 'Quality (film)')
+    assert.ok(select, 'the A menu has no Quality control')
+    assert.ok(!select.props.disabled, 'an archive film with real choices is disabled')
+    assert.equal(optionText(select, ARCHIVE_ORIGINAL), '640×480 · 393 MB · h.264',
+      'the real resolution/size is not offered')
+    assert.equal(optionText(select, ARCHIVE_SMALL), '320×240 · 289 MB · 512Kb MPEG4')
+    assert.equal(select.props.value, ARCHIVE_ORIGINAL, 'the file playing is not the one shown')
+    // The rule for new films is its own small control, and persisting is a rule
+    // — not a fake file.
+    const rule = qualitySelect(menu, 'Quality rule (film)')
+    assert.ok(rule, 'the A menu has no quality rule control')
+    for (const value of ['auto', 'smallest', 'largest']) {
+      assert.ok(optionText(rule, value), `the ${value} rule is not offered`)
+    }
+    // The page carries the same control, in the setup section.
+    const page = pageOf(ctx)
+    assert.ok(qualitySelect(page, 'Quality (settings)'), 'the Aura page has no Quality control')
+    assert.ok(qualitySelect(page, 'Quality rule (settings)'), 'the page has no quality rule control')
+    // And it is NOT on the floating strip (another lane owns that strip).
+    const strip = layoutMountPanel(ctx)
+    walk(strip, node => {
+      assert.notEqual(node.props && node.props['aria-label'], 'Quality', 'the quality control is on the strip')
+    })
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('quality: a real choice switches the film and keeps the second', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: ARCHIVE_OGV },
+    null, archiveQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    const posts = []
+    const frame = { style: {}, contentWindow: { postMessage: message => posts.push(message) } }
+    tx.setBackdropForTest(frame)
+    // The page says where the film is; the switch has to keep that.
+    const listener = ctx.listeners.find(entry => entry.type === 'message' && !entry.removed)
+    listener.fn({
+      source: frame.contentWindow,
+      data: {
+        aura: 'video-state', url: ARCHIVE_OGV, kind: 'video', playing: true,
+        position: 412.5, duration: 4723, muted: false, title: 'The General'
+      }
+    })
+    await tx.refreshQuality(true)
+    const select = qualitySelect(menuOf(ctx), 'Quality (film)')
+    select.props.onChange({ target: { value: ARCHIVE_SMALL } })
+    await sleep(90)
+    assert.equal(ctx.storage.get('settings').videoUrl, ARCHIVE_SMALL,
+      'the chosen file did not become the film')
+    assert.deepEqual(posts.at(-1), { aura: 'transport', cmd: 'quality', url: ARCHIVE_SMALL },
+      'the page was not told to swap in place')
+    const marks = ctx.storage.get('settings').videoPositions || {}
+    assert.equal(marks[ARCHIVE_SMALL] && marks[ARCHIVE_SMALL].position, 412.5,
+      'the swap forgot where the film was, so a reload would restart it')
+  } finally {
+    tx.setBackdropForTest(null)
+    dispose()
+  }
+})
+
+await recordAsync('quality: "Smallest" is remembered and switches now', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: false, videoUrl: ARCHIVE_ORIGINAL },
+    null, archiveQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await tx.refreshQuality(true)
+    const rule = qualitySelect(menuOf(ctx), 'Quality rule (film)')
+    rule.props.onChange({ target: { value: 'smallest' } })
+    await sleep(90)
+    assert.equal(ctx.storage.get('settings').videoQuality, 'smallest', 'the preference was not persisted')
+    assert.equal(ctx.storage.get('settings').videoUrl, ARCHIVE_SMALL, 'the film did not switch now')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('quality: YouTube offers exactly one choice, and no fake command', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: YOUTUBE_FILM },
+    null, youtubeQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await tx.refreshQuality(true)
+    const select = qualitySelect(menuOf(ctx), 'Quality (film)')
+    assert.ok(select, 'YouTube has no Quality control at all')
+    const options = (select.props.children || []).flat(Infinity)
+      .filter(node => node && node.props && 'value' in node.props)
+    assert.equal(options.length, 1, `YouTube offered ${options.length} choices`)
+    assert.equal(texts(options[0]), 'Auto (YouTube decides)')
+    assert.equal(select.props.disabled, true, 'the YouTube control pretends it can change the level')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('quality: a direct file has no picker at all', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: 'https://example.org/films/octopus.mp4' },
+    null, singleQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await tx.refreshQuality(true)
+    assert.equal(tx.qualityInfoForTest().mode, 'single', 'a direct file was not recognised')
+    assert.equal(qualitySelect(menuOf(ctx), 'Quality (film)'), null,
+      'a single file was given a picker')
+    assert.equal(qualitySelect(pageOf(ctx), 'Quality (settings)'), null,
+      'the Aura page gave a single file a picker')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('quality: the preference is applied to the next archive.org film', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: false, videoUrl: ARCHIVE_OGV, videoQuality: 'largest' },
+    null, archiveQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await tx.applyVideoSource(ARCHIVE_SMALL)
+    assert.equal(ctx.storage.get('settings').videoUrl, ARCHIVE_ORIGINAL,
+      'the "largest" rule was not applied to the new film')
+  } finally {
+    dispose()
+  }
+
+  const auto = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: false, videoUrl: YOUTUBE_FILM, videoQuality: 'auto' },
+    null, archiveQuality
+  )
+  const d2 = pluginModule.default.register(auto.ctx)
+  try {
+    await tx.applyVideoSource(ARCHIVE_SMALL)
+    assert.equal(auto.storage.get('settings').videoUrl, ARCHIVE_SMALL,
+      '"auto" changed the file the source named')
+    assert.equal(auto.requests.filter(r => String(r.route).startsWith('/quality')).length, 0,
+      '"auto" still asked the server for a different file')
+  } finally {
+    d2()
+  }
+})
+
+await recordAsync('quality: a queued quality command from Hermes is applied', async () => {
+  const ctx = makeCtx(
+    { enabled: true, backdropMode: 'video', panelEnabled: false, videoUrl: ARCHIVE_OGV },
+    null, archiveQuality
+  )
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    // The same function the player-command poll calls for {cmd:'quality'}.
+    tx.applyQualityCommand({ cmd: 'quality', url: ARCHIVE_ORIGINAL })
+    assert.equal(ctx.storage.get('settings').videoUrl, ARCHIVE_ORIGINAL,
+      'the queued quality command did not switch the film')
+    tx.applyQualityCommand({ cmd: 'quality', preference: 'smallest' })
+    assert.equal(ctx.storage.get('settings').videoQuality, 'smallest',
+      'the queued preference was not remembered')
+  } finally {
+    dispose()
+  }
+})
+
 
 console.log(results.join('\n'))
 console.log(`\n${results.length - failed} passed, ${failed} failed`)

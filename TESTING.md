@@ -8,9 +8,9 @@ Applies to Aura 1.0.0 · revised 2026-11-13
 
 | Suite | Command | Result |
 |---|---|---|
-| Python | `python3 -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration` | **536 passed** |
-| Desktop contract | `node --test tests/test_desktop_plugin.mjs` | **167 passed, 0 failed** |
-| **Total** | both of the above | **703 passed** |
+| Python | `python3 -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration` | **567 passed** |
+| Desktop contract | `node --test tests/test_desktop_plugin.mjs` | **188 passed, 0 failed** |
+| **Total** | both of the above | **755 passed** |
 
 The README badge counts this total. CI runs the same two commands.
 
@@ -51,7 +51,7 @@ pane, transport, per-film resume, mode gating, the settings page, the page
 pop-out and playlist management.
 
 Further Node suites exist for the web bridge and catalogue
-(`tests/test_web_*.mjs`, `tests/test_presets_catalog.mjs`,
+(`tests/test_web_*.mjs`, `tests/test_quality.mjs`, `tests/test_presets_catalog.mjs`,
 `tests/test_page_gate_and_catalog.mjs`, `tests/test_fresh_install.mjs`,
 `tests/test_listen_desktop.mjs`). They are not part of the CI job.
 

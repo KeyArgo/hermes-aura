@@ -60,6 +60,39 @@ remembered for every film after it.
 By voice: *“turn the subtitles on”* → the agent calls `aura_control` with
 `action=captions`, `captions=on` (or `off`), and the same switch is applied.
 
+## Quality
+
+Aura offers the versions a film really has, and says so plainly when a source
+offers none.
+
+- **Where it is.** The **A** menu (**Quality**, in the film section) and the
+  Aura page / Settings ▸ Plugins ▸ Aura (**Quality**, under the film's
+  settings). Not on the floating control strip: that strip is the transport.
+- **archive.org films.** The item's own files, each with the resolution, size
+  and format the archive reports — e.g. `640×480 · 393 MB · h.264`,
+  `400×300 · 290 MB · Ogg Video`, `320×240 · 289 MB · 512Kb MPEG4`. The list
+  comes from the item's metadata, fetched by Aura's local server (short timeout,
+  cached per item) rather than by the desktop. Files a browser cannot play
+  (`.avi`, `.gif`, posters, the archive's metadata files) are not offered.
+- **Switching keeps your place.** Choosing another file swaps the source in the
+  player at the same second and keeps playing — measured in headless Chromium:
+  a film at 124.5 s swapped to another derivative and carried on from 124.5 s.
+  The bookmark moves with it, so a reload resumes there too.
+- **New films: Auto / Smallest / Largest.** The second, smaller control is the
+  rule for the *next* archive.org film: `Auto` plays exactly the file the source
+  names; `Smallest` / `Largest` pick the smallest or largest version the item
+  has. It is remembered across restarts.
+- **YouTube: Auto (YouTube decides).** YouTube's embed publishes the level it
+  is playing but ignores the command to change it, so the picker shows one
+  disabled line — *Auto (YouTube decides)* — and Aura never sends a quality
+  command or a `vq=` parameter that could break playback.
+- **Direct files.** One file, so no picker is shown at all.
+
+By voice: *“what quality can this film play at?”* → the agent calls
+`aura_watch` with `action=quality`; *“play the smallest version”* →
+`action=quality`, `preference=smallest`; *“use the 640×480 file”* →
+`action=quality`, `n=1` (or the file's url).
+
 ## The control strip
 
 The transport strip floats over the app, top to bottom: the **drag bar**, a
