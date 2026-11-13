@@ -186,6 +186,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   // player publishes; empty means "the machine's language, then English".
   videoCaptions: false,
   videoCaptionLang: '',
+  // [quality] The standing rule for archive.org films (auto / smallest /
+  // largest). A specific choice for the film playing now lives in videoUrl.
+  videoQuality: 'auto',
   // Highest audio_request seq this install has consumed. A new seq plays;
   // anything at or below it is history.
   audioRequestSeq: 0,
@@ -412,12 +415,31 @@ const EMPTY_VIDEO = Object.freeze({
   title: '', author: '', controllable: false, reportedAt: 0,
   // [subtitles] What the player says about its captions: {on, lang, current,
   // known, tracks:[{code, name}]}. null until it has said anything.
-  captions: null
+  captions: null,
+  // [quality] The level YouTube reports it is playing ('' when it has not said,
+  // and always '' for a direct file).
+  quality: ''
 })
 const VIDEO_URL_MAX = 2048
 // [subtitles] A caption language tag the player (and YouTube) will accept.
 // Anything else is dropped: it ends up in a query string and a third party.
 const CAPTION_LANG_RE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/
+// [quality] The standing rule a film is opened with: `auto` plays the file the
+// source names, the other two pick from the item's real derivatives (the server
+// lists them; the desktop never asks archive.org itself).
+const VIDEO_QUALITY_RULES = ['auto', 'smallest', 'largest']
+const VIDEO_QUALITY_LABELS = {
+  auto: 'Auto',
+  smallest: 'Smallest',
+  largest: 'Largest'
+}
+// [quality] What YouTube can honestly be told, measured in headless Chromium:
+// the embed publishes its levels and ignores setPlaybackQuality, so this is the
+// only choice it gets — and there is no vq= hack anywhere in this plugin.
+const QUALITY_AUTO_YOUTUBE = 'Auto (YouTube decides)'
+const EMPTY_QUALITY = Object.freeze({
+  url: '', mode: '', choices: [], smallest: '', largest: '', note: '', loading: false, error: ''
+})
 
 const BEHAVIORS = ['calm', 'balanced', 'intense']
 const BEHAVIOR_LABELS = { calm: 'Calm', balanced: 'Balanced', intense: 'Intense' }
@@ -592,6 +614,10 @@ const $staleServer = atom(false)
 // `loaded` is false until that fetch has succeeded, so a failed request is
 // retried on the next visit instead of being remembered as "no catalogue".
 const $catalog = atom({ loaded: false, error: '', items: [] })
+// [quality] The film's real versions, as the server reported them: {url, mode,
+// choices:[{url,label,width,height,size_bytes,current}], smallest, largest}.
+// Keyed by the film's url so a switch cannot show the previous film's files.
+const $quality = atom({ ...EMPTY_QUALITY })
 let catalogRequest = null
 let pulseIndex = 0
 
@@ -836,6 +862,11 @@ function readSettings(ctx) {
     if (typeof raw.videoCaptions === 'boolean') out.videoCaptions = raw.videoCaptions
     if (typeof raw.videoCaptionLang === 'string' && CAPTION_LANG_RE.test(raw.videoCaptionLang.trim())) {
       out.videoCaptionLang = raw.videoCaptionLang.trim()
+    }
+    // [quality] One of three words, validated here so a stale or hand-edited
+    // config can never become a rule the picker invents.
+    if (typeof raw.videoQuality === 'string' && VIDEO_QUALITY_RULES.includes(raw.videoQuality)) {
+      out.videoQuality = raw.videoQuality
     }
     if (typeof raw.panelEnabled === 'boolean') out.panelEnabled = raw.panelEnabled
     if (typeof raw.panelCollapsed === 'boolean') out.panelCollapsed = raw.panelCollapsed
@@ -1747,6 +1778,9 @@ async function syncPlayerOwnership() {
     // Library first, so this tick's report already describes the list after a
     // save/remove the agent queued.
     await applyLibraryCommands()
+    // [quality] Which files this film really has. Cheap: the atom is keyed by
+    // url, so this is one request per film, and the server caches the item.
+    void refreshQuality()
     const settings = $settings.get()
     const video = $video.get()
     const report = {
@@ -1754,12 +1788,15 @@ async function syncPlayerOwnership() {
       title: video.title || '', videoId: video.videoId || '',
       playing: video.playing === true, position: Number(video.position) || 0,
       duration: Number(video.duration) || 0, volume: Number(settings.videoVolume) || 0,
+      // [quality] The standing rule, so aura_watch action=quality can report it
+      // with the film's real choices.
+      quality: settings.videoQuality || 'auto',
       // [savelist lane] What the owner has saved, so aura_watch action=list can
       // answer "what's on my list?" with the real list.
       library: libraryReport()
     }
     const key = JSON.stringify([report.url, report.kind, report.title, report.videoId,
-      report.playing, report.volume, report.library])
+      report.playing, report.volume, report.quality, report.library])
     if (Date.now() - playerReportAt >= 1000 || key !== playerReportKey) {
       await ctxRef.rest('/player/report', { method: 'POST', body: report, timeoutMs: 3000 })
       playerReportAt = Date.now()
@@ -1775,6 +1812,12 @@ async function syncPlayerOwnership() {
       // settings, not the player, and keeping them out of this chain is what
       // stops a save from being mistaken for a transport verb.
       if (command.cmd === 'save' || command.cmd === 'remove') continue
+      // [quality] A quality switch is a real source swap at the same second, so
+      // it goes through the one function the picker uses.
+      if (command.cmd === 'quality') {
+        applyQualityCommand(command)
+        continue
+      }
       // [subtitles] The CC switch is the owner's choice, not just a verb for
       // the page: applying it through the one writer is what remembers it.
       if (command.cmd === 'captions') {
@@ -2514,8 +2557,12 @@ async function applyVideoSource(url, label) {
   if (!videoUrl) return
   if ($settings.get().backdropMode !== 'video') await setBackdropMode('video')
   if ($settings.get().videoClosed) openVideo()
-  rememberVideoSource(videoUrl, label)
-  await setVideoUrl(videoUrl)
+  // [quality] The standing rule picks one of the item's real files before it
+  // starts (auto plays exactly the file the source named).
+  const preferred = await qualityRuleTarget(videoUrl)
+  const target = preferred || videoUrl
+  rememberVideoSource(target, label)
+  await setVideoUrl(target)
 }
 
 /** A URL box: a nonempty value is a play, so it takes the same path as every
@@ -3145,6 +3192,271 @@ function captionLanguageValue(info) {
   return detail.lang
 }
 
+// [quality] A quality control that tells the truth about each source --------
+// YouTube: the embed publishes `playbackQuality`/`availableQualityLevels` but
+// ignores setPlaybackQuality (measured in headless Chromium; sending small,
+// medium, hd720, hd1080, large and default left it at hd1080 with
+// preferredQuality 'auto'), so its one choice is "Auto (YouTube decides)" and
+// nothing in this plugin ever sends that command or a `vq=` hack.
+// archive.org: the item's real files, listed by the SERVER (/api/quality, short
+// timeout + cache) — the desktop never asks archive.org itself.
+// A direct file: one file, no picker at all.
+
+/** The quality picture for the film playing now, as one object. */
+function qualityInfo() {
+  const info = $quality.get()
+  const settings = $settings.get()
+  const url = String(settings.videoUrl || '').trim()
+  const same = info.url === url
+  const choices = same && Array.isArray(info.choices)
+    ? info.choices.filter(choice => choice && typeof choice.url === 'string')
+    : []
+  const rule = VIDEO_QUALITY_RULES.includes(settings.videoQuality)
+    ? settings.videoQuality
+    : 'auto'
+  const mode = same && typeof info.mode === 'string' ? info.mode : ''
+  return {
+    url,
+    mode,
+    rule,
+    choices,
+    smallest: same && typeof info.smallest === 'string' ? info.smallest : '',
+    largest: same && typeof info.largest === 'string' ? info.largest : '',
+    note: same && typeof info.note === 'string' ? info.note : '',
+    error: same && typeof info.error === 'string' ? info.error : '',
+    // Only an archive.org item with more than one file has a real choice.
+    available: mode === 'archive' && choices.length > 1,
+    // A youtube embed still gets one honest line, so the app can say why there
+    // is nothing to pick instead of hiding the control.
+    youtube: mode === 'youtube'
+  }
+}
+
+/** Ask the server which files this film really has (cached per item there). */
+async function refreshQuality(force) {
+  if (!ctxRef || disposed) return
+  const url = String($settings.get().videoUrl || '').trim()
+  if (!url) {
+    if ($quality.get().url) $quality.set({ ...EMPTY_QUALITY })
+    return
+  }
+  const seen = $quality.get()
+  if (!force && seen.url === url && (seen.mode || seen.loading)) return
+  $quality.set({ ...EMPTY_QUALITY, url, loading: true })
+  try {
+    const payload = await ctxRef.rest('/quality?url=' + encodeURIComponent(url), { timeoutMs: 5000 })
+    // The film may have changed while this was in flight: never show one
+    // film's files under another film's name.
+    if (String($settings.get().videoUrl || '').trim() !== url) return
+    const clean = payload && typeof payload === 'object' ? payload : {}
+    $quality.set({
+      url,
+      loading: false,
+      mode: typeof clean.mode === 'string' ? clean.mode : '',
+      choices: Array.isArray(clean.choices)
+        ? clean.choices.filter(choice => choice && typeof choice.url === 'string')
+        : [],
+      smallest: typeof clean.smallest === 'string' ? clean.smallest : '',
+      largest: typeof clean.largest === 'string' ? clean.largest : '',
+      note: typeof clean.note === 'string' ? clean.note : '',
+      error: clean.ok === false ? String(clean.error || 'quality_unavailable') : ''
+    })
+  } catch {
+    // An old server has no /quality: say nothing was learned, keep the film.
+    if ($quality.get().url === url) {
+      $quality.set({ ...$quality.get(), loading: false, error: 'quality_unavailable' })
+    }
+  }
+}
+
+/** Switch the film to another of its own files, keeping the exact second.
+ *  The page swaps the source in place (a quality change must not restart the
+ *  film); the bookmark follows the new url so a reload resumes there too. */
+function setVideoQuality(url) {
+  if (!ctxRef || disposed) return false
+  const next = typeof url === 'string' ? url.trim().slice(0, VIDEO_URL_MAX) : ''
+  if (!next) return false
+  const settings = $settings.get()
+  const current = String(settings.videoUrl || '').trim()
+  if (next === current) return false
+  const state = $video.get()
+  const position = Number(state.position) || 0
+  const positions = { ...(settings.videoPositions || {}) }
+  if (position > 0) {
+    positions[next] = {
+      position,
+      duration: Number(state.duration) || 0,
+      at: Date.now(),
+      videoId: String(state.videoId || '')
+    }
+  }
+  handoffPlayback = null
+  // One write: the url the app remembers is the file it is really playing, and
+  // the place in the film moves with it.
+  writeSettings({ videoUrl: next, videoPositions: positions })
+  const body = { cmd: 'quality', url: next }
+  if (desktopOwned && ctxRef) {
+    // The OS window owns the picture: the swap is queued to it.
+    void ctxRef.rest('/player/command', { method: 'POST', body, timeoutMs: 4000 })
+      .catch(() => setError('Aura could not reach the film window.'))
+  } else {
+    postToBackdrop(body)
+  }
+  $quality.set({ ...EMPTY_QUALITY, url: next, loading: true })
+  void refreshQuality(true)
+  void pushControl({ video_url: next })
+  syncPanel(true)
+  syncVideoBar(true)
+  return true
+}
+
+/** Remember the rule for new archive.org films, and switch this one now. */
+function setVideoQualityRule(rule) {
+  if (!ctxRef || disposed) return
+  const videoQuality = VIDEO_QUALITY_RULES.includes(rule) ? rule : 'auto'
+  writeSettings({ videoQuality })
+  if (videoQuality !== 'auto') {
+    const info = qualityInfo()
+    const target = videoQuality === 'smallest' ? info.smallest : info.largest
+    if (target && target !== info.url) setVideoQuality(target)
+  }
+  syncPanel(true)
+  syncVideoBar(true)
+}
+
+/** Apply a queued {cmd:'quality'} from Hermes: a file, a rule, or both. */
+function applyQualityCommand(command) {
+  if (!command || command.cmd !== 'quality') return false
+  if (typeof command.preference === 'string' && VIDEO_QUALITY_RULES.includes(command.preference)) {
+    setVideoQualityRule(command.preference)
+  }
+  const url = String(command.url || '').trim()
+  if (url) setVideoQuality(url)
+  return true
+}
+
+/** What the standing rule means for the film about to be opened: its own file
+ *  (auto) or one of the item's real derivatives. '' means "leave the url". */
+async function qualityRuleTarget(url) {
+  const rule = $settings.get().videoQuality
+  if (rule !== 'smallest' && rule !== 'largest') return ''
+  if (!ctxRef || disposed) return ''
+  // Only an archive.org item has versions to choose between; asking about a
+  // YouTube link would be a wasted round trip on every play.
+  if (!/^https?:\/\/(?:www\.)?archive\.org\/(?:download|details)\//i.test(url)) return ''
+  try {
+    const payload = await ctxRef.rest('/quality?url=' + encodeURIComponent(url), { timeoutMs: 4000 })
+    if (!payload || payload.ok !== true || payload.mode !== 'archive') return ''
+    const choice = rule === 'smallest' ? payload.smallest : payload.largest
+    return typeof choice === 'string' && choice && choice !== url ? choice : ''
+  } catch {
+    // No answer: play what the source named rather than nothing at all.
+    return ''
+  }
+}
+
+/** The files the picker offers, as `[{value, label}]`. Only real choices. */
+function qualityFileChoices(info) {
+  const detail = info || qualityInfo()
+  if (!detail.available) return []
+  return detail.choices.map(choice => ({ value: choice.url, label: choice.label || 'file' }))
+}
+
+/** What the file picker should show: the url playing, when it is one of them. */
+function qualityFileValue(info) {
+  const detail = info || qualityInfo()
+  const match = detail.choices.find(choice => choice.current) ||
+    detail.choices.find(choice => choice.url === detail.url)
+  return match ? match.url : (detail.choices[0] ? detail.choices[0].url : '')
+}
+
+/** The honest one-line explanation of a source's quality rules. */
+function qualityHint(info) {
+  const detail = info || qualityInfo()
+  if (detail.youtube) {
+    return ('YouTube picks the level itself: the embed API used to force one is ' +
+            'deprecated and ignored, so this is the only honest choice.')
+  }
+  if (detail.mode === 'single') return 'A direct file is one file — nothing to pick.'
+  if (detail.error === 'quality_unavailable') {
+    return 'Aura could not read this item\'s file list; the film plays on the file it has.'
+  }
+  if (detail.loading) return 'Reading the versions archive.org has for this film…'
+  if (detail.available) return detail.note || 'The film\'s own versions on archive.org.'
+  if (detail.mode === 'archive') return 'This item has only one playable file.'
+  return 'Quality applies to archive.org films and YouTube.'
+}
+
+/** Does this film earn a Quality row at all? A direct file does not (one file,
+ *  no picker); YouTube does, so the app can say why it cannot be changed. */
+function qualityRowWanted(info) {
+  const detail = info || qualityInfo()
+  return detail.mode === 'archive' || detail.mode === 'youtube'
+}
+
+/** The Quality controls: this film's real files, and the rule for new films.
+ *  `which` only changes the aria-labels ('film' in the A menu, 'settings' on
+ *  the Aura page) so a test — and a screen reader — can tell them apart. */
+function qualityControls(info, which) {
+  const detail = info || qualityInfo()
+  const tag = which === 'settings' ? 'settings' : 'film'
+  const nothing = detail.youtube
+    ? QUALITY_AUTO_YOUTUBE
+    : (detail.mode === 'single' ? 'The film\'s own file' : 'No choice yet')
+  const files = detail.available
+    ? qualityFileChoices(detail)
+    : [{ value: detail.url || '', label: nothing }]
+  const selectStyle = {
+    font: 'inherit', fontSize: 11, color: 'var(--ui-text-primary)',
+    background: 'var(--ui-bg)', border: '1px solid var(--ui-stroke-secondary)',
+    borderRadius: 6, padding: '3px 6px', colorScheme: 'light'
+  }
+  const fileSelect = jsx('select', {
+    className: 'aura-select',
+    value: detail.available ? qualityFileValue(detail) : (detail.url || ''),
+    disabled: !detail.available,
+    'aria-label': `Quality (${tag})`,
+    title: qualityHint(detail),
+    style: { ...selectStyle, maxWidth: 180 },
+    onChange: event => {
+      setVideoQuality(String(event && event.target ? event.target.value : ''))
+    },
+    children: files.map(choice =>
+      jsx('option', {
+        key: choice.value || 'auto',
+        value: choice.value,
+        style: { background: '#f1f1f1', color: '#111111' },
+        children: choice.label
+      })
+    )
+  })
+  // The standing rule, applied when the next archive.org film is opened. One
+  // word each: what it means is the row's hint.
+  const ruleSelect = jsx('select', {
+    className: 'aura-select',
+    value: detail.rule,
+    'aria-label': `Quality rule (${tag})`,
+    title: 'What the next archive.org film plays: its own file, or the smallest / '
+      + 'largest version the item has',
+    style: { ...selectStyle, maxWidth: 90 },
+    onChange: event => {
+      setVideoQualityRule(String(event && event.target ? event.target.value : 'auto'))
+    },
+    children: VIDEO_QUALITY_RULES.map(rule =>
+      jsx('option', {
+        key: rule,
+        value: rule,
+        style: { background: '#f1f1f1', color: '#111111' },
+        children: VIDEO_QUALITY_LABELS[rule]
+      })
+    )
+  })
+  return jsxs('div', {
+    style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexWrap: 'wrap' },
+    children: [fileSelect, ruleSelect]
+  })
+}
+
 /**
  * Consume one `audio_request` from /api/state. Returns what it did, so the
  * contract test (and a future UI) can read the decision instead of guessing:
@@ -3450,6 +3762,12 @@ function onBackdropMessage(event) {
         tracks: Array.isArray(data.captions.tracks) ? data.captions.tracks.slice(0, 60) : []
       }
       : $video.get().captions,
+    // [quality] The level YouTube is really playing. Read from the player, never
+    // requested: it is the detail behind "Auto (YouTube decides)".
+    quality: data.quality && typeof data.quality === 'object' &&
+      typeof data.quality.current === 'string'
+      ? data.quality.current.slice(0, 20)
+      : ($video.get().quality || ''),
     controllable: data.controllable === true,
     reportedAt: Date.now()
   })
@@ -5644,6 +5962,9 @@ function AuraQuickMenu() {
   const captionState = captionInfo()
   const captionChoices = captionLanguageChoices(captionState)
   const captionTip = captionTooltip(captionState)
+  // [quality] The film's real files, read once for the whole menu.
+  useValue($quality)
+  const qualityState = qualityInfo()
 
   const setOpen = value => {
     if ($menuOpen.get() !== Boolean(value)) $menuOpen.set(Boolean(value))
@@ -6048,8 +6369,12 @@ function AuraQuickMenu() {
                     ]
                   })
                 ),
-                // The picker lists everything; editing lives on the page where
-                // there is room for names, removal and playlists.
+                // [quality] The film's real versions (archive.org derivatives)
+                // and the rule for the next one. Not on the strip: the strip is
+                // the owner's transport, this is a settings choice.
+                qualityRowWanted(qualityState)
+                  ? row('Quality', qualityControls(qualityState, 'film'))
+                  : null,
                 useHostNav
                   ? jsx('div', {
                     key: 'edit-sources',
@@ -7559,6 +7884,9 @@ function AuraSettings() {
   // [subtitles] Subscribed so the CC row redraws when the player reports the
   // tracks this video has (the language list is the player's, not a constant).
   useValue($video)
+  // [quality] Subscribed so the Quality row redraws when the server answers
+  // with this film's real files.
+  useValue($quality)
 
   const serverLine = live.ok
     ? `Server reachable on 127.0.0.1${live.port ? `:${live.port}` : ''}${live.capture ? ` · capture: ${live.capture}` : ''}`
@@ -7947,6 +8275,16 @@ function AuraSettings() {
                 ]
               })
             ),
+            // [quality] What the film can really be shown at: the archive.org
+            // item's own files, or YouTube's one honest answer. A direct file
+            // gets no row (one file, nothing to pick).
+            qualityRowWanted(qualityInfo())
+              ? row(
+                'Quality',
+                qualityHint(qualityInfo()),
+                qualityControls(qualityInfo(), 'settings')
+              )
+              : null,
             row(
               'Controls transparency',
               'How solid the floating control strip is over the film. The strip still fades out when the mouse rests.',
@@ -8913,6 +9251,13 @@ export const __test = {
   setCatalogSearchForTest: value => { catalogSearch = String(value) },
   applyVideoSource,
   applyUrlBox,
+  // [quality] The one switch the picker, the A menu and the agent's queued
+  // command all go through.
+  applyQualityCommand,
+  setVideoQuality,
+  setVideoQualityRule,
+  refreshQuality,
+  qualityInfoForTest: () => qualityInfo(),
   skipBlockedEpisode,
   panelVisible,
   // The quick menu's own width, so a layout test asserts against the number the
