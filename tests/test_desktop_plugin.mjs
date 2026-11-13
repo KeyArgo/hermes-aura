@@ -1902,6 +1902,120 @@ record('dispose removes the page contributions and leaves no player behind', () 
   )
 })
 
+// ------------------------------------------------------------- scenario P2
+// The page's own mode switch: the hero carries the same two options as the A
+// menu, opening the same door, and it follows a change made anywhere else.
+
+const pm = makeCtx({ enabled: true, backdropMode: 'aura', videoUrl: '' })
+const disposePM = pluginModule.default.register(pm.ctx)
+await sleep(60)
+
+const pmPage = () => renderDeep(renderContribution(pm.contributions.find(c => c.area === 'routes')))
+const pmMatches = (tree, label) => {
+  const out = []
+  walk(tree, node => {
+    if (node.props && node.props['aria-label'] === label) out.push(node)
+  })
+  return out
+}
+const pmSwitch = () => pmMatches(pmPage(), 'Mode')[0] || null
+const pmButtons = group => {
+  const out = []
+  walk(group, node => {
+    if (node.type === 'button') out.push(node)
+  })
+  return out
+}
+const pmButton = (group, label) => pmButtons(group).find(node => texts(node) === label) || null
+const pmHero = () => {
+  let hero = null
+  walk(pmPage(), node => {
+    if (!hero && node.props && node.props.className === 'aura-hero-status') hero = node
+  })
+  return hero
+}
+
+record('the page carries a Visualizer | Video switch next to the Aura on pill', () => {
+  const hero = pmHero()
+  assert.ok(hero, 'the page hero has no status row')
+  const kids = Array.isArray(hero.props.children) ? hero.props.children : [hero.props.children]
+  const pillIndex = kids.findIndex(
+    kid => kid && kid.props && typeof kid.props.className === 'string' &&
+      kid.props.className.includes('aura-pill')
+  )
+  assert.ok(pillIndex >= 0, 'the hero has no Aura on/off pill')
+  assert.match(texts(kids[pillIndex]), /Aura on/, 'the pill is not the Aura on one')
+  const group = pmSwitch()
+  assert.ok(group, 'the page has no "Mode" switch')
+  assert.equal(group.props.role, 'group', 'the switch is not a group')
+  let right = false
+  walk(kids[pillIndex + 1], node => {
+    if (node.props && node.props['aria-label'] === 'Mode') right = true
+  })
+  assert.ok(right, 'the switch does not sit next to the Aura on/off pill')
+  // One switch, not two: the lower Mode row is gone.
+  assert.equal(pmMatches(pmPage(), 'Mode').length, 1, 'the page carries two mode switches')
+  assert.doesNotMatch(texts(pmPage()), /One at a time/, 'the lower Mode row is still on the page')
+  const buttons = pmButtons(group)
+  assert.deepEqual(buttons.map(node => texts(node)), ['Visualizer', 'Video'], 'the switch is not Visualizer | Video')
+  for (const button of buttons) {
+    assert.equal(button.props.type, 'button', 'a switch half is not a real button')
+    assert.notEqual(button.props.tabIndex, -1, 'a switch half is out of the tab order')
+  }
+})
+
+await recordAsync('clicking Video on the page switches the backdrop and marks it pressed', async () => {
+  const group = pmSwitch()
+  const video = pmButton(group, 'Video')
+  assert.ok(video, 'the page has no Video half')
+  video.props.onClick()
+  await sleep(40)
+  assert.equal(pm.storage.get('settings').backdropMode, 'video', 'Video did not switch the backdrop')
+  assert.ok(
+    pm.controls.some(patch => patch && patch.backdrop_mode === 'video'),
+    'the mode change never reached /control'
+  )
+  const after = pmSwitch()
+  assert.equal(pmButton(after, 'Video').props['aria-pressed'], 'true', 'Video is not marked pressed')
+  assert.equal(pmButton(after, 'Visualizer').props['aria-pressed'], 'false', 'Visualizer is still marked pressed')
+})
+
+await recordAsync('clicking Visualizer on the page goes back to the Aura visual', async () => {
+  const visual = pmButton(pmSwitch(), 'Visualizer')
+  assert.ok(visual, 'the page has no Visualizer half')
+  visual.props.onClick()
+  await sleep(40)
+  assert.equal(pm.storage.get('settings').backdropMode, 'aura', 'Visualizer did not switch the backdrop back')
+  const after = pmSwitch()
+  assert.equal(pmButton(after, 'Visualizer').props['aria-pressed'], 'true', 'Visualizer is not marked pressed')
+  assert.equal(pmButton(after, 'Video').props['aria-pressed'], 'false', 'Video is still marked pressed')
+})
+
+await recordAsync('the page switch follows a mode change made in the A menu', async () => {
+  const menu = renderDeep(renderContribution(pm.contributions.find(c => c.id === 'quick-menu')))
+  const menuGroup = pmMatches(menu, 'Aura mode')[0]
+  assert.ok(menuGroup, 'the A menu has no mode switch')
+  const menuVideo = pmButton(menuGroup, 'Video')
+  assert.ok(menuVideo, 'the A menu has no Video half')
+  menuVideo.props.onClick()
+  await sleep(40)
+  assert.equal(pm.storage.get('settings').backdropMode, 'video', 'the A menu did not switch the mode')
+  const after = pmSwitch()
+  assert.equal(pmButton(after, 'Video').props['aria-pressed'], 'true', 'the page did not follow the A menu')
+  assert.equal(pmButton(after, 'Visualizer').props['aria-pressed'], 'false', 'the page kept Visualizer pressed')
+})
+
+record('the switch is there with Aura off too', () => {
+  disposePM()
+  const off = makeCtx({ enabled: false, backdropMode: 'aura', videoUrl: '' })
+  const disposeOff = pluginModule.default.register(off.ctx)
+  const tree = renderDeep(renderContribution(off.contributions.find(c => c.area === 'routes')))
+  const group = pmMatches(tree, 'Mode')[0]
+  assert.ok(group, 'the switch vanished with Aura off')
+  assert.equal(pmButtons(group).length, 2, 'the switch lost a half with Aura off')
+  disposeOff()
+})
+
 // ------------------------------------------------------------- scenario Q
 // Aura off must mean nothing draws, page open or not.
 
@@ -5725,6 +5839,186 @@ await recordAsync('quality: a queued quality command from Hermes is applied', as
   }
 })
 
+
+// ------------------------------------------------------- scenario: setup grid
+// The setup is a grid of titled cards: "Aura", the mode's own card ("Film" or
+// "Visualizer"), "Look" and "Where it shows". Every switch that existed before
+// the regrouping must still be there, inside one of those cards, under the
+// same accessible name — and the grid must fall to one column when the page is
+// narrower than the breakpoint.
+
+const setupCtx = mode => makeCtx({
+  enabled: true,
+  backdropMode: mode,
+  panelEnabled: false,
+  windowVisual: true,
+  themeOptIn: true,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+
+const writeSettingsPage = bucket => renderDeep(
+  renderContribution(bucket.contributions.find(c => c.area === 'settings.plugins'))
+)
+
+/** The cards of the setup grid, their titles, and which card holds each
+ *  accessible name. */
+const setupCards = tree => {
+  const grid = byClass(tree, 'aura-setup-grid')
+  assert.ok(grid, 'the setup is not laid out in an .aura-setup-grid')
+  const cards = []
+  walk(grid, node => {
+    if (node.props && typeof node.props['data-aura-card'] === 'string') cards.push(node)
+  })
+  const titles = cards.map(card => texts(card.props.children[0]))
+  const owner = new Map()
+  for (const card of cards) {
+    walk(card.props.children, node => {
+      const label = node.props && node.props['aria-label']
+      if (typeof label === 'string' && !owner.has(label)) owner.set(label, card.props['data-aura-card'])
+    })
+  }
+  return { grid, cards, titles, owner }
+}
+
+record('the setup renders grouped cards with their titles', () => {
+  const film = setupCtx('video')
+  const disposeFilm = pluginModule.default.register(film.ctx)
+  try {
+    const tree = writeSettingsPage(film)
+    const { grid, cards, titles } = setupCards(tree)
+    assert.deepEqual(titles, ['Aura', 'Where it shows', 'Film', 'Look'],
+      'the setup cards are not Aura / Where it shows / Film / Look')
+    assert.equal(cards.length, 4, 'the setup grid does not hold exactly four cards')
+    // Every card is a real section with its own rows.
+    for (const card of cards) {
+      assert.equal(card.type, 'section', 'a setup card is not a section')
+      const rows = byClass(card, 'aura-setup-rows')
+      assert.ok(rows, `the "${card.props['data-aura-card']}" card has no rows container`)
+    }
+    // The URL field gets the whole card: its row is the full-width one.
+    let urlRow = null
+    walk(grid, node => {
+      if (urlRow || !node.props || node.props.className !== 'aura-setup-row is-wide') return
+      if (texts(node).includes('Video URL')) urlRow = node
+    })
+    assert.ok(urlRow, 'the video URL row is not the full-width one')
+
+    // The REVamp hand-off is the line under the grid, not a card of its own.
+    let gridParent = null
+    walk(tree, node => {
+      if (gridParent || !node.props || !Array.isArray(node.props.children)) return
+      if (node.props.children.includes(grid)) gridParent = node
+    })
+    assert.ok(gridParent, 'the grid is not inside a container')
+    const after = gridParent.props.children[gridParent.props.children.indexOf(grid) + 1]
+    assert.ok(texts(after).includes('Winamp-style player for Hermes'),
+      'the REVamp line did not survive as the footer under the grid')
+  } finally {
+    disposeFilm()
+  }
+
+  const visual = setupCtx('aura')
+  const disposeVisual = pluginModule.default.register(visual.ctx)
+  try {
+    const { titles } = setupCards(writeSettingsPage(visual))
+    assert.deepEqual(titles, ['Aura', 'Where it shows', 'Visualizer', 'Look'],
+      'visualizer mode does not get the Visualizer card in the Film card’s place')
+  } finally {
+    disposeVisual()
+  }
+})
+
+// The full inventory: label -> the card it belongs to. Conditional rows
+// (quality, a saved playlist) are covered by their own tests.
+const SETUP_INVENTORY = {
+  aura: ['Aura enabled', 'Aura mode'],
+  film: [
+    'Video URL', 'Video source', 'Edit sources (settings)', 'Movie volume (settings)',
+    'Subtitles (CC) (settings)', 'Start this film over', 'Show demo videos'
+  ],
+  visualizer: [
+    'Reaction strength', 'Gentle motion (motion-sensitive)', 'Visual opacity', 'Motion source',
+    'While idle', 'Show', 'Behaviour profile', 'React to agent mood', 'Accent pulse',
+    'Automatic presets', 'Visual behind the app'
+  ],
+  look: [
+    'Use Aura theme', 'Keep my theme when idle', 'Readable text',
+    'Readable text size S', 'Readable text size M', 'Readable text size L', 'Readable text size XL',
+    'Readable text font', 'Readable text colour', 'Readable sample',
+    'Open Hermes chat font setting', 'Restore my theme'
+  ],
+  filmLook: [
+    'Automatic video transparency', '25% video transparency', '50% video transparency',
+    '75% video transparency', '100% video transparency', 'Controls transparency'
+  ],
+  places: ['Right panel', 'Show Aura in the sidebar'],
+  filmPlaces: ['Watch window (settings)', 'Watch window size (settings)', 'Watch window corner (settings)']
+}
+
+record('every previous setting is still present, in its card', () => {
+  const film = setupCtx('video')
+  const disposeFilm = pluginModule.default.register(film.ctx)
+  try {
+    const { owner } = setupCards(writeSettingsPage(film))
+    const expected = [
+      ...SETUP_INVENTORY.aura.map(label => [label, 'aura']),
+      ...SETUP_INVENTORY.film.map(label => [label, 'film']),
+      ...SETUP_INVENTORY.look.map(label => [label, 'look']),
+      ...SETUP_INVENTORY.filmLook.map(label => [label, 'look']),
+      ...SETUP_INVENTORY.places.map(label => [label, 'places']),
+      ...SETUP_INVENTORY.filmPlaces.map(label => [label, 'places'])
+    ]
+    for (const [label, card] of expected) {
+      assert.ok(owner.has(label), `"${label}" is missing from the setup`)
+      assert.equal(owner.get(label), card, `"${label}" moved out of the "${card}" card`)
+    }
+  } finally {
+    disposeFilm()
+  }
+
+  const visual = setupCtx('aura')
+  const disposeVisual = pluginModule.default.register(visual.ctx)
+  try {
+    const { owner } = setupCards(writeSettingsPage(visual))
+    for (const label of SETUP_INVENTORY.visualizer) {
+      assert.equal(owner.get(label), 'visualizer', `"${label}" is not in the Visualizer card`)
+    }
+    for (const label of ['Aura enabled', 'Aura mode', 'Restore my theme', 'Right panel']) {
+      assert.ok(owner.has(label), `"${label}" is missing in visualizer mode`)
+    }
+    // Film-only rows stay out of the visualizer's cards, and vice versa.
+    for (const label of [...SETUP_INVENTORY.film, ...SETUP_INVENTORY.filmLook, ...SETUP_INVENTORY.filmPlaces]) {
+      assert.equal(owner.has(label), false, `film-only "${label}" leaked into visualizer mode`)
+    }
+  } finally {
+    disposeVisual()
+  }
+})
+
+record('the setup grid is two cards wide, one column under the breakpoint', () => {
+  const bucket = setupCtx('video')
+  const dispose = pluginModule.default.register(bucket.ctx)
+  let css = ''
+  try {
+    const uiStyle = headChildren.find(node => node.attributes && node.attributes.id === 'aura-ui-style')
+    assert.ok(uiStyle, 'Aura ships no stylesheet for its own page')
+    css = String(uiStyle.textContent || '')
+  } finally {
+    dispose()
+  }
+  // One column by default…
+  assert.match(css, /\.aura-setup-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/,
+    'the setup grid does not start as a single column')
+  // …two from the breakpoint, which has to be the wide one (~880px).
+  const wide = /@media\s*\(min-width:\s*(\d+)px\)\s*\{\s*\.aura-setup-grid\s*\{\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/
+    .exec(css)
+  assert.ok(wide, 'no breakpoint puts two setup cards side by side')
+  assert.ok(Number(wide[1]) >= 880, `the two-card breakpoint is only ${wide[1]}px`)
+  // The row layout the cards rely on is Aura's own, so Settings and the Right
+  // panel drawer get it too.
+  assert.match(css, /\.aura-setup-row\s*\{[^}]*display:\s*flex/, 'no row layout for the setup')
+  assert.match(css, /\.aura-setup-control\s*\{[^}]*min-width:\s*11rem/, 'the control column has no width')
+})
 
 console.log(results.join('\n'))
 console.log(`\n${results.length - failed} passed, ${failed} failed`)

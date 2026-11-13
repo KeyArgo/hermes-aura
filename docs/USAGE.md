@@ -162,7 +162,10 @@ your own session. No API scope, no OAuth review, no second account.
 ## The Aura page
 
 The sidebar **Aura** page puts the same player in a big 16:9 frame with the
-transport, volume and source picker. Directly above the frame, **Now playing**
+transport, volume and source picker. Beside the **Aura on / Aura off** pill at
+the top sits the **Visualizer | Video** switch — the same one the **A** menu
+carries, showing which one is active and switching either way in one click.
+Directly above the frame, **Now playing**
 names the film — its title in large type and, when the player knows it, the
 channel underneath. It follows the film as it plays: a playlist moving to the
 next episode, or another source picked, retitles it at once. A source Aura has

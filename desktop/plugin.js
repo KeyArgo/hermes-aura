@@ -1785,7 +1785,9 @@ function VideoUrlBox({ settings, wide }) {
           border: '1px solid var(--ui-stroke-secondary)',
           borderRadius: 6,
           padding: '3px 6px',
-          width: 260
+          flex: '1 1 auto',
+          width: '100%',
+          minWidth: 0
         }
       : { font: 'inherit', fontSize: 11, width: 128 },
     onChange: event => type(event && event.target ? event.target.value : ''),
@@ -1797,7 +1799,9 @@ function VideoUrlBox({ settings, wide }) {
     }
   })
   return jsxs('div', {
-    style: { display: 'flex', alignItems: 'center', gap: 4 },
+    style: wide
+      ? { display: 'flex', alignItems: 'center', gap: 4, width: '100%', minWidth: 0 }
+      : { display: 'flex', alignItems: 'center', gap: 4 },
     children: [
       field,
       jsx(Button, {
@@ -5557,6 +5561,63 @@ function uiCss() {
     }
     #aura-page .aura-setup, #aura-page .aura-revamp { gap: 6px; }
     #aura-page .aura-setup > div:last-child { color: #f3ece2; }
+    /* ---- the setup grid: titled cards, two across on a wide page ---------
+       The same classes render in Settings and in the Right panel drawer, so
+       these rules are not scoped to #aura-page: one column until there is
+       room for two, and a control column that keeps its width. */
+    .aura-setup-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .aura-setup-grid {
+      display: grid; gap: 10px; align-items: start;
+      grid-template-columns: minmax(0, 1fr);
+      min-width: 0;
+    }
+    @media (min-width: 880px) {
+      .aura-setup-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    .aura-setup-card {
+      display: flex; flex-direction: column; gap: 2px; min-width: 0;
+      padding: 10px 13px 8px; border-radius: 12px;
+      border: 1px solid var(--ui-stroke-secondary);
+      background: var(--ui-bg-elevated, rgba(127,127,127,0.06));
+    }
+    .aura-setup-card-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding-bottom: 2px; }
+    .aura-setup-card-title {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase;
+      color: var(--ui-text-secondary); white-space: nowrap;
+    }
+    .aura-setup-group-note {
+      font-size: 10.5px; color: var(--ui-text-tertiary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .aura-setup-rows { display: flex; flex-direction: column; min-width: 0; }
+    .aura-setup-rows > * + * { border-top: 1px solid var(--ui-stroke-secondary); }
+    .aura-setup-row {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
+      padding: 7px 0; min-width: 0;
+    }
+    .aura-setup-label { flex: 1 1 190px; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+    .aura-setup-name { font-size: 12px; line-height: 1.3; color: var(--ui-text-primary); }
+    .aura-setup-hint { font-size: 11px; line-height: 1.35; color: var(--ui-text-tertiary); }
+    /* One control column: every control is a fixed-width box hard against the
+       card's right edge, so sliders, chips and switches line up. */
+    .aura-setup-control {
+      flex: 0 0 auto; margin-left: auto; min-width: 11rem; max-width: 100%;
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px;
+    }
+    .aura-setup-row.is-wide .aura-setup-label { flex: 1 1 100%; }
+    .aura-setup-row.is-wide .aura-setup-control {
+      flex: 1 1 100%; min-width: 0; justify-content: flex-start;
+    }
+    .aura-setup-note { padding: 4px 0 6px; font-size: 11px; line-height: 1.4; color: var(--ui-text-tertiary); }
+    .aura-setup-group {
+      display: flex; flex-direction: column; min-width: 0;
+      padding: 8px 0 2px; margin-top: 2px;
+    }
+    .aura-setup-sample {
+      margin: 2px 0 6px; padding: 6px 8px; border-radius: 6px;
+      background: var(--ui-bg);
+      border: 1px solid var(--ui-stroke-secondary);
+    }
     @media (max-width: 760px) {
       #aura-page { padding: 20px 16px 40px; }
       #aura-page .aura-title { font-size: 22px; }
@@ -6580,10 +6641,11 @@ function onPanelKeydown(event) {
  */
 /** Visualiser | Video. One at a time: picking either turns the other off, which
  *  is what the owner asked for instead of a Backdrop drop-down buried among
- *  unrelated rows. */
-function modeToggle(mode, compact) {
+ *  unrelated rows. `label` names the group for assistive tech; the page passes
+ *  "Mode", the A menu keeps "Aura mode". */
+function modeToggle(mode, compact, label) {
   compact = compact === true
-  const option = (value, label) =>
+  const option = (value, text) =>
     jsx('button', {
       type: 'button',
       'aria-pressed': mode === value ? 'true' : 'false',
@@ -6604,14 +6666,15 @@ function modeToggle(mode, compact) {
         cursor: mode === value ? 'default' : 'pointer',
         whiteSpace: 'nowrap'
       },
-      children: label
+      children: text
     })
   return jsx('div', {
     role: 'group',
-    'aria-label': 'Aura mode',
+    'aria-label': typeof label === 'string' && label ? label : 'Aura mode',
     style: {
       display: 'inline-flex', alignItems: 'center', gap: 4, padding: 3,
-      borderRadius: 999, background: 'var(--ui-surface-secondary, rgba(127,127,127,0.12))'
+      borderRadius: 999, background: 'var(--ui-surface-secondary, rgba(127,127,127,0.12))',
+      flexWrap: 'wrap', maxWidth: '100%', minWidth: 0
     },
     children: [option('aura', 'Visualizer'), option('video', 'Video')]
   })
@@ -8424,12 +8487,29 @@ function AuraPage() {
       jsxs('div', {
         key: 'status',
         className: 'aura-hero-status',
-        style: { display: 'flex', alignItems: 'center', gap: 10, flex: 'none' },
+        style: {
+          display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
+          gap: 10, flex: 'none', flexWrap: 'wrap', minWidth: 0
+        },
         children: [
           jsx('span', {
             key: 'flag',
             className: auraOn ? 'aura-pill is-on' : 'aura-pill',
             children: auraOn ? 'Aura on' : 'Aura off'
+          }),
+          // The page's one mode switch, right beside the pill: the same two
+          // options and the same door as the A menu. The page palette is
+          // remapped here because this row sits outside the setup card.
+          jsx('div', {
+            key: 'mode',
+            style: {
+              '--ui-text-secondary': '#ded4c8',
+              '--ui-stroke-secondary': 'rgba(255,255,255,0.16)',
+              '--ui-surface-secondary': 'rgba(255,255,255,0.06)',
+              '--ui-accent': '#ffbf8f',
+              display: 'flex', minWidth: 0, maxWidth: '100%'
+            },
+            children: modeToggle(settings.backdropMode, true, 'Mode')
           }),
           jsx(VersionChip, { key: 'build' })
         ]
@@ -8492,7 +8572,7 @@ function AuraPage() {
           jsx('span', { key: 'meta', className: 'aura-count', children: 'every switch Aura has' })
         ]
       }),
-      jsx(AuraSettings, { key: 'settings' })
+      jsx(AuraSettings, { key: 'settings', hideMode: true })
     ]
   })
 
@@ -8675,7 +8755,64 @@ function VersionChip(props) {
   })
 }
 
-function AuraSettings() {
+// Shared look for the setup rows' selects, so every dropdown in the grid is
+// the same box.
+const SETUP_SELECT_STYLE = {
+  font: 'inherit',
+  fontSize: 11,
+  color: 'var(--ui-text-primary)',
+  background: 'var(--ui-bg)',
+  border: '1px solid var(--ui-stroke-secondary)',
+  borderRadius: 6,
+  padding: '3px 6px'
+}
+
+/** One row of a setup card: name and one-line hint on the left, the control
+ *  right. `opts.wide` gives the control the whole card width (the URL field). */
+function setupRow(key, label, hint, control, opts) {
+  const wide = Boolean(opts && opts.wide === true)
+  return jsxs('div', {
+    key,
+    className: wide ? 'aura-setup-row is-wide' : 'aura-setup-row',
+    children: [
+      jsxs('div', {
+        key: 'label',
+        className: 'aura-setup-label',
+        children: [
+          jsx('span', { key: 'name', className: 'aura-setup-name', children: label }),
+          hint ? jsx('span', { key: 'hint', className: 'aura-setup-hint', children: hint }) : null
+        ]
+      }),
+      jsx('div', { key: 'control', className: 'aura-setup-control', children: control })
+    ]
+  })
+}
+
+/** One titled card in the setup grid. */
+function setupCard(id, title, body) {
+  return jsxs('section', {
+    key: id,
+    className: 'aura-setup-card',
+    'data-aura-card': id,
+    'aria-label': title,
+    children: [
+      jsx('div', {
+        key: 'head',
+        className: 'aura-setup-card-head',
+        children: jsx('span', { key: 'title', className: 'aura-setup-card-title', children: title })
+      }),
+      jsx('div', { key: 'rows', className: 'aura-setup-rows', children: body })
+    ]
+  })
+}
+
+/** The setup: a grid of titled cards (two across on a wide page), then the
+ *  REVamp line. Every switch lives in exactly one card, and every key and
+ *  handler is the one it always was. */
+function AuraSettings(props) {
+  // The /aura page draws its own mode switch in the hero, so the setup card
+  // leaves that row out there and keeps it everywhere else.
+  const hideMode = Boolean(props && props.hideMode)
   const settings = useValue($settings)
   const live = useValue($live)
   const applied = useValue($themeApplied)
@@ -8696,847 +8833,593 @@ function AuraSettings() {
   const locked = filmBackdrop(settings)
   const auraTitle = locked ? AURA_LOCK_TITLE : undefined
   const showTitle = locked ? SHOW_LOCK_TITLE : undefined
+  const videoMode = settings.backdropMode === 'video'
 
   // The Readable sample renders the real tokens the theme would paint.
   const tokens = readableTokens(settings)
 
-  const row = (label, hint, control) =>
+  // A slider and its value, at one width, so the numbers line up down a card.
+  const rangeRow = (key, label, hint, spec) => setupRow(key, label, hint,
     jsxs('div', {
-      style: { display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0' },
+      style: { display: 'flex', alignItems: 'center', gap: 6 },
       children: [
-        jsxs('div', {
-          key: 'label',
-          style: { flex: 1, minWidth: 0 },
-          children: [
-            jsx('div', { key: 'title', style: { fontSize: 12, color: 'var(--ui-text-primary)' }, children: label }),
-            jsx('div', { key: 'hint', style: { fontSize: 11, color: 'var(--ui-text-tertiary)' }, children: hint })
-          ]
+        jsx('input', {
+          type: 'range',
+          min: spec.min,
+          max: spec.max,
+          step: spec.step,
+          value: spec.value,
+          disabled: spec.disabled,
+          title: spec.title,
+          'aria-label': spec.aria,
+          style: { width: 140, accentColor: 'var(--ui-accent)' },
+          onChange: spec.onChange
         }),
-        jsx('div', { key: 'control', style: { flex: 'none', display: 'flex', alignItems: 'center' }, children: control })
+        jsx('span', {
+          style: {
+            fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30,
+            textAlign: 'right', fontVariantNumeric: 'tabular-nums'
+          },
+          children: spec.shown
+        })
       ]
-    })
+    }))
 
-  return jsxs('div', {
-    style: { display: 'flex', flexDirection: 'column', gap: 2, padding: '12px 4px', maxWidth: 640 },
+  // ---- Aura: the power, the mode, the build -----------------------------
+  const auraCard = setupCard('aura', 'Aura', [
+    setupRow('enabled', 'Aura enabled',
+      'Listens to system audio and drives the backdrop and the accent.',
+      jsx(Switch, {
+        checked: settings.enabled,
+        'aria-label': 'Aura enabled',
+        onCheckedChange: value => {
+          void setEnabled(value)
+        }
+      })),
+    hideMode ? null : setupRow('mode', 'Mode',
+      'Visualizer follows the audio; Video plays a film you pick. One at a time.',
+      modeToggle(settings.backdropMode, true)),
+    setupRow('version', 'Version', serverLine, jsx(VersionChip, {}))
+  ])
+
+  // ---- Film: everything about the picture ---------------------------------
+  const filmRows = [
+    setupRow('url', 'Video URL',
+      'A YouTube link, a direct video file or any embeddable page.',
+      jsx(VideoUrlBox, { settings, wide: true }), { wide: true }),
+    setupRow('source', 'Source',
+      'Saved sources and recent films. Prev/next walks this list.',
+      jsx('select', {
+        className: 'aura-select',
+        value: settings.videoUrl,
+        'aria-label': 'Video source',
+        style: {
+          ...SETUP_SELECT_STYLE,
+          maxWidth: 260,
+          // Chromium draws the dropdown popup itself and ignores the
+          // per-option colours; `color-scheme: light` is what makes it
+          // a light list with black text instead of the theme's
+          // white-on-white.
+          colorScheme: 'light'
+        },
+        onChange: event => {
+          const url = event && event.target ? String(event.target.value) : ''
+          void applyVideoSource(url)
+        },
+        children: videoSourceOptions(settings)
+      })),
+    setupRow('edit', 'Edit sources',
+      'Add, rename or remove sources and playlists on the Aura page.',
+      jsx(Button, {
+        size: 'micro',
+        variant: 'ghost',
+        'aria-label': 'Edit sources (settings)',
+        onClick: () => {
+          try {
+            host.navigate('/aura')
+          } catch {
+            // older hosts without navigate
+          }
+        },
+        children: 'Edit sources…'
+      })),
+    rangeRow('volume', 'Volume', 'The film’s own volume.', {
+      min: 0,
+      max: 100,
+      step: 1,
+      value: Math.round(clamp01(settings.videoVolume) * 100),
+      aria: 'Movie volume (settings)',
+      shown: `${Math.round(clamp01(settings.videoVolume) * 100)}%`,
+      onChange: event => {
+        setVideoVolume(Number(event && event.target ? event.target.value : 0) / 100)
+      }
+    }),
+    // What the film can really be shown at: the archive.org item's own files,
+    // or YouTube's one honest answer. A direct file gets no row.
+    qualityRowWanted(qualityInfo())
+      ? setupRow('quality', 'Quality', qualityHint(qualityInfo()), qualityControls(qualityInfo(), 'settings'))
+      : null,
+    // CC: the same switch the player surfaces carry, with the language list
+    // this video offers. Burned-in subtitles are part of the picture, so this
+    // hint says so instead of pretending otherwise.
+    setupRow('subtitles', 'Subtitles',
+      'Captions for the film. Burned-in subtitles cannot be switched off.',
+      jsxs('div', {
+        style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+        children: [
+          jsx(Switch, {
+            checked: settings.videoCaptions === true,
+            'aria-label': 'Subtitles (CC) (settings)',
+            title: captionTooltip(captionInfo()),
+            onCheckedChange: value => setVideoCaptions(value)
+          }),
+          captionLanguageChoices(captionInfo()).length > 1
+            ? jsx('select', {
+              className: 'aura-select',
+              value: captionLanguageValue(captionInfo()),
+              'aria-label': 'Subtitle language (settings)',
+              style: { ...SETUP_SELECT_STYLE, maxWidth: 170, colorScheme: 'light' },
+              onChange: event => {
+                setVideoCaptionLang(String(event && event.target ? event.target.value : ''))
+              },
+              children: captionLanguageChoices(captionInfo()).map(choice =>
+                jsx('option', {
+                  key: choice.value || 'auto',
+                  value: choice.value,
+                  style: { background: '#f1f1f1', color: '#111111' },
+                  children: choice.label
+                })
+              )
+            })
+            : null
+        ]
+      })),
+    setupRow('resume', 'Resume',
+      'Picks up where each film stopped; finished at the last seconds.',
+      jsx(Button, {
+        size: 'micro', variant: 'ghost',
+        'aria-label': 'Start this film over',
+        onClick: () => forgetVideoPosition(),
+        children: 'Start over'
+      })),
+    setupRow('picks', 'Picks',
+      'The built-in films and documentaries. Off once you have your own playlists.',
+      jsx(Switch, {
+        checked: !(Array.isArray(settings.videoHiddenStarters) && settings.videoHiddenStarters.length),
+        'aria-label': 'Show demo videos',
+        onCheckedChange: value => setDemosHidden(!value)
+      })),
+    ...(Array.isArray(settings.videoPlaylists) ? settings.videoPlaylists : []).map((item, index) =>
+      setupRow(`playlist-${index}`, item.label || shortLabel(item.url), '',
+        jsx(Button, {
+          size: 'micro', variant: 'ghost',
+          'aria-label': `Remove ${item.label || 'playlist'}`,
+          onClick: () => removeVideoSource(item.url),
+          children: 'Remove'
+        }))
+    )
+  ].filter(Boolean)
+
+  const filmCard = setupCard('film', 'Film', filmRows)
+
+  // ---- Visualizer: everything about the moving backdrop -------------------
+  const visualCard = setupCard('visualizer', 'Visualizer', [
+    rangeRow('intensity', 'Reaction strength',
+      'How strongly audio and mood move the backdrop and the accent. 0 keeps your theme’s own accent.', {
+        min: 0,
+        max: 1,
+        step: 0.05,
+        value: settings.intensity,
+        disabled: settings.motion === 'designs' || locked,
+        title: auraTitle,
+        aria: 'Reaction strength',
+        shown: `${Math.round(Number(settings.intensity || 0) * 100)}%`,
+        onChange: event => {
+          applyIntensity(event && event.target ? event.target.value : 0)
+        }
+      }),
+    // Gentle motion is an Aura-visual setting: next to Intensity, and locked
+    // with it while a film is the backdrop.
+    setupRow('gentle', 'Gentle motion (motion-sensitive)',
+      'Calmer reaction, no strobe, no pulsing, and the reduced-motion profile in the window backdrop.',
+      jsx(Switch, {
+        checked: settings.reducedMotion,
+        disabled: locked,
+        title: auraTitle,
+        'aria-label': 'Gentle motion (motion-sensitive)',
+        onCheckedChange: value => {
+          void setReducedMotion(value)
+        }
+      })),
+    rangeRow('opacity', 'Visual opacity',
+      'Dims the backdrop and its scrim; chat text and controls stay legible.', {
+        min: 0,
+        max: 100,
+        step: 1,
+        value: Math.round(settings.opacity * 100),
+        disabled: locked,
+        title: auraTitle,
+        aria: 'Visual opacity',
+        shown: `${Math.round(settings.opacity * 100)}%`,
+        onChange: event => {
+          const raw = Number(event && event.target ? event.target.value : 75)
+          const opacity = clamp01(raw / 100)
+          void setOpacity(opacity)
+        }
+      }),
+    setupRow('motion', 'Motion source',
+      'What moves the visual: playback and agent activity, music only, agent activity, or gentle designs.',
+      jsx('select', {
+        className: 'aura-select',
+        value: settings.motion,
+        'aria-label': 'Motion source',
+        style: SETUP_SELECT_STYLE,
+        onChange: event => {
+          const value = event && event.target ? String(event.target.value) : 'both'
+          void setMotion(value)
+        },
+        children: motionChoices(settings).map(name =>
+          jsx('option', { key: name, value: name, children: MOTION_LABELS[name] })
+        )
+      })),
+    setupRow('idle-motion', 'While idle',
+      'Between agent turns: dark, a low ember glow, or unchanged. An attention mood always shows.',
+      jsx('select', {
+        className: 'aura-select',
+        value: settings.idleMotion,
+        'aria-label': 'While idle',
+        style: SETUP_SELECT_STYLE,
+        onChange: event => {
+          const value = event && event.target ? String(event.target.value) : 'always'
+          void setIdleMotion(value)
+        },
+        children: IDLE_MOTIONS.map(name =>
+          jsx('option', { key: name, value: name, children: IDLE_MOTION_LABELS[name] })
+        )
+      })),
+    AUDIO_MOTIONS.includes(settings.motion) && settings.enabled && live.ok && live.capture === 'none'
+      ? jsx('div', {
+        key: 'no-capture',
+        'data-aura-hint': 'no-capture',
+        className: 'aura-setup-note',
+        children:
+          'No system audio found, so nothing is listening. Pick “Agent activity” to animate without audio, or start playing something.'
+      })
+      : null,
+    setupRow('show', 'Show',
+      'Always keeps the backdrop mounted; Only while active fades it in and out.',
+      jsx('select', {
+        className: 'aura-select',
+        value: settings.showWhen,
+        'aria-label': 'Show',
+        disabled: locked,
+        title: showTitle,
+        style: SETUP_SELECT_STYLE,
+        onChange: event => {
+          const value = event && event.target ? String(event.target.value) : 'always'
+          void setShowWhen(value)
+        },
+        children: SHOW_WHEN_OPTIONS.map(name =>
+          jsx('option', { key: name, value: name, children: SHOW_WHEN_LABELS[name] })
+        )
+      })),
+    setupRow('behavior', 'Behaviour profile',
+      'calm: lower ceiling, no strobe. intense: faster pulse, stronger mood shifts.',
+      jsx('select', {
+        className: 'aura-select',
+        value: settings.behavior,
+        'aria-label': 'Behaviour profile',
+        disabled: locked,
+        title: auraTitle,
+        style: SETUP_SELECT_STYLE,
+        onChange: event => {
+          const value = event && event.target ? String(event.target.value) : 'balanced'
+          void setBehavior(value)
+        },
+        children: BEHAVIORS.map(name =>
+          jsx('option', { key: name, value: name, children: name })
+        )
+      })),
+    setupRow('mood', 'React to agent mood',
+      'Thinking, tool, approval and error change the visual.',
+      jsx(Switch, {
+        checked: settings.moodReactive,
+        'aria-label': 'React to agent mood',
+        onCheckedChange: value => {
+          void setMoodReactive(value)
+        }
+      })),
+    setupRow('accent', 'Accent pulse',
+      'Pulses the accent of the theme you use; the hue is never replaced.',
+      jsx(Switch, {
+        checked: settings.accentPulse,
+        'aria-label': 'Accent pulse',
+        onCheckedChange: value => {
+          void setAccentPulse(value)
+        }
+      })),
+    setupRow('autoPreset', 'Automatic presets',
+      'Lets preset rotation follow the music and mood. Off keeps the current preset.',
+      jsx(Switch, {
+        checked: settings.autoPreset,
+        'aria-label': 'Automatic presets',
+        onCheckedChange: value => {
+          void setAutoPreset(value)
+        }
+      })),
+    setupRow('windowVisual', 'Visual behind the app',
+      settings.windowVisual && !auraOn
+        ? 'Aura is off - turn it on to see the visual'
+        : 'The moving Aura visual behind the whole window. Off gives your theme back.',
+      jsx(Switch, {
+        checked: settings.windowVisual,
+        'aria-label': 'Visual behind the app',
+        onCheckedChange: value => setWindowVisual(value)
+      }))
+  ].filter(Boolean))
+
+  // ---- Look: how the film and the text sit on screen ----------------------
+  // The Readable choices write a theme token, not a style rule: the host paints
+  // the theme, Aura never reaches into app markup (see the theme contract).
+  const readableBlock = jsxs('div', {
+    key: 'readable',
+    className: 'aura-setup-group',
+    'data-aura-group': 'readable',
     children: [
       jsxs('div', {
-        key: 'title',
-        style: { display: 'flex', alignItems: 'baseline', gap: 10 },
+        key: 'head',
+        className: 'aura-setup-card-head',
         children: [
-          jsx('h3', { key: 'h', style: { margin: 0, fontSize: 13, color: 'var(--ui-text-primary)' }, children: 'Aura' }),
-          jsx(VersionChip, { key: 'build' })
+          jsx('span', { key: 'title', className: 'aura-setup-card-title', children: 'Readable' }),
+          jsx('span', { key: 'note', className: 'aura-setup-group-note', children: 'Bigger, higher-contrast chat text' })
         ]
       }),
-      jsx('div', {
-        key: 'server',
-        style: { fontSize: 11, color: 'var(--ui-text-tertiary)', paddingBottom: 6 },
-        children: serverLine
-      }),
-      jsx('div', {
-        key: 'enabled',
-        children: row(
-          'Aura enabled',
-          'Listens to system audio and drives the backdrop and the accent.',
-          jsx(Switch, {
-            checked: settings.enabled,
-            'aria-label': 'Aura enabled',
-            onCheckedChange: value => {
-              void setEnabled(value)
-            }
-          })
-        )
-      }),
-      jsx('div', {
-        key: 'mode',
-        children: row(
-          'Mode',
-          'Visualizer: the audio-reactive visual behind the app. Video: a film you choose, in the right-hand pane. One at a time — switching either turns the other off.',
-          modeToggle(settings.backdropMode, true)
-        )
-      }),
-      settings.backdropMode === 'video'
-        ? null
-        : jsxs('div', {
-          key: 'visualRows',
-          style: { display: 'contents' },
-          children: [
-      jsx('div', {
-        key: 'intensity',
-        children: row(
-          'Reaction strength',
-          'How strongly audio and mood move the backdrop and the accent. 0 returns your theme’s own accent.',
-          jsx('input', {
-            type: 'range',
-            min: 0,
-            max: 1,
-            step: 0.05,
-            value: settings.intensity,
-            disabled: settings.motion === 'designs' || locked,
-            title: auraTitle,
-            'aria-label': 'Reaction strength',
-            style: { width: 160, accentColor: 'var(--ui-accent)' },
-            onChange: event => {
-              applyIntensity(event && event.target ? event.target.value : 0)
-            }
-          })
-        )
-      }),
-      // Gentle motion is an Aura-visual setting: next to Intensity, and locked
-      // with it while a film is the backdrop.
-      jsx('div', {
-        key: 'gentle',
-        children: row(
-          'Gentle motion (motion-sensitive)',
-          'The motion-sickness-friendly mode: calmer reaction, no strobe, no pulsing, and the reduced-motion visual profile in the window backdrop.',
-          jsx(Switch, {
-            checked: settings.reducedMotion,
-            disabled: locked,
-            title: auraTitle,
-            'aria-label': 'Gentle motion (motion-sensitive)',
-            onCheckedChange: value => {
-              void setReducedMotion(value)
-            }
-          })
-        )
-      }),
-      jsx('div', {
-        key: 'opacity',
-        children: row(
-          'Visual opacity',
-          'Dims the backdrop and its scrim together; chat text and controls stay fully legible.',
-          jsxs('div', {
-            style: { display: 'flex', alignItems: 'center', gap: 8 },
-            children: [
-              jsx('input', {
-                key: 'slider',
-                type: 'range',
-                min: 0,
-                max: 100,
-                step: 1,
-                value: Math.round(settings.opacity * 100),
-                'aria-label': 'Visual opacity',
-                disabled: locked,
-                title: auraTitle,
-                style: { width: 140, accentColor: 'var(--ui-accent)' },
-                onChange: event => {
-                  const raw = Number(event && event.target ? event.target.value : 75)
-                  const opacity = clamp01(raw / 100)
-                  void setOpacity(opacity)
-                }
-              }),
-              jsx('span', {
-                key: 'out',
-                style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 32, fontVariantNumeric: 'tabular-nums' },
-                children: `${Math.round(settings.opacity * 100)}%`
-              })
-            ]
-          })
-        )
-      }),
-      jsx('div', {
-        key: 'motion',
-        children: row(
-          'Motion source',
-          'Default (Agent + music) follows playback and agent activity; Music only settles in silence; Agent activity moves only while the agent works and pauses after 2.5 s idle; Music, or gentle designs rests on designs in silence.',
-          jsx('select', { className: 'aura-select',
-            value: settings.motion,
-            'aria-label': 'Motion source',
-            style: {
-              font: 'inherit',
-              fontSize: 11,
-              color: 'var(--ui-text-primary)',
-              background: 'var(--ui-bg)',
-              border: '1px solid var(--ui-stroke-secondary)',
-              borderRadius: 6,
-              padding: '3px 6px'
-            },
-            onChange: event => {
-              const value = event && event.target ? String(event.target.value) : 'both'
-              void setMotion(value)
-            },
-            children: motionChoices(settings).map(name =>
-              jsx('option', { key: name, value: name, children: MOTION_LABELS[name] })
-            )
-          })
-        )
-      }),
-      jsx('div', {
-        key: 'idle-motion',
-        children: row(
-          'While idle',
-          'Between agent turns: Stop goes dark, Ember leaves a low glow, Keep moving is unchanged. An attention mood (approval, error) always shows.',
-          jsx('select', { className: 'aura-select',
-            value: settings.idleMotion,
-            'aria-label': 'While idle',
-            style: {
-              font: 'inherit',
-              fontSize: 11,
-              color: 'var(--ui-text-primary)',
-              background: 'var(--ui-bg)',
-              border: '1px solid var(--ui-stroke-secondary)',
-              borderRadius: 6,
-              padding: '3px 6px'
-            },
-            onChange: event => {
-              const value = event && event.target ? String(event.target.value) : 'always'
-              void setIdleMotion(value)
-            },
-            children: IDLE_MOTIONS.map(name =>
-              jsx('option', { key: name, value: name, children: IDLE_MOTION_LABELS[name] })
-            )
-          })
-        )
-      }),
-      AUDIO_MOTIONS.includes(settings.motion) && settings.enabled && live.ok && live.capture === 'none'
-        ? jsx('div', {
-            key: 'no-capture',
-            'data-aura-hint': 'no-capture',
-            style: {
-              fontSize: 11,
-              color: 'var(--ui-text-tertiary)',
-              margin: '-4px 0 6px'
-            },
-            children:
-              'No system audio found, so nothing is listening. Pick “Agent activity” to animate without audio, or start playing something.'
-          })
-        : null,
-      jsx('div', {
-        key: 'show',
-        children: row(
-          'Show',
-          'Always keeps the backdrop and glass mounted. Only while active shows them just while the visual is moving, fading in after 300 ms of activity and removing the glass entirely after 2.5 s idle.',
-          jsx('select', { className: 'aura-select',
-            value: settings.showWhen,
-            'aria-label': 'Show',
-            disabled: locked,
-            title: showTitle,
-            style: {
-              font: 'inherit',
-              fontSize: 11,
-              color: 'var(--ui-text-primary)',
-              background: 'var(--ui-bg)',
-              border: '1px solid var(--ui-stroke-secondary)',
-              borderRadius: 6,
-              padding: '3px 6px'
-            },
-            onChange: event => {
-              const value = event && event.target ? String(event.target.value) : 'always'
-              void setShowWhen(value)
-            },
-            children: SHOW_WHEN_OPTIONS.map(name =>
-              jsx('option', { key: name, value: name, children: SHOW_WHEN_LABELS[name] })
-            )
-          })
-        )
-      })
-          ]
-        }),
-      settings.backdropMode === 'video'
-        ? jsxs('div', {
-          key: 'videoUrl',
-          children: [
-            row(
-              'Video URL',
-              'Paste a YouTube link (https://youtube.com/watch?v=...), a direct video file (.mp4/.webm/.ogg) or any embeddable page. Leave empty for a hint.',
-              jsx(VideoUrlBox, { settings, wide: true })
-            ),
-            row(
-              'Video transparency',
-              'Automatic by default: 20% while you work, 30% when audio is playing, plus 3% for every extra active chat. Pick a fixed level to override.',
-              jsxs('div', {
-                style: { display: 'flex', alignItems: 'center', gap: 4 },
-                children: [
-                  jsx(Button, {
-                    size: 'micro',
-                    variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
-                    'aria-label': 'Automatic video transparency',
-                    onClick: () => setVideoOpacityAuto(),
-                    children: 'Auto'
-                  }),
-                  ...VIDEO_OPACITY_PRESETS.map(preset =>
-                    jsx(Button, {
-                      key: preset,
-                      size: 'micro',
-                      variant: settings.videoOpacityAuto === false &&
-                        Math.round(clamp01(settings.videoOpacity) * 100) === preset
-                        ? 'default'
-                        : 'ghost',
-                      'aria-label': `${preset}% video transparency`,
-                      onClick: () => setVideoOpacity(preset / 100),
-                      children: `${preset}%`
-                    })
-                  )
-                ]
-              })
-            ),
-            row(
-              'Source',
-              'Saved sources and anything you have played recently. Prev/next in the controls walks this list.',
-              jsx('select', { className: 'aura-select',
-                value: settings.videoUrl,
-                'aria-label': 'Video source',
-                style: {
-                  font: 'inherit',
-                  fontSize: 11,
-                  color: 'var(--ui-text-primary)',
-                  background: 'var(--ui-bg)',
-                  border: '1px solid var(--ui-stroke-secondary)',
-                  borderRadius: 6,
-                  padding: '3px 6px',
-                  maxWidth: 260,
-                  // Chromium draws the dropdown popup itself and ignores the
-                  // per-option colours; `color-scheme: light` is what makes it
-                  // a light list with black text instead of the theme's
-                  // white-on-white.
-                  colorScheme: 'light'
-                },
-                onChange: event => {
-                  const url = event && event.target ? String(event.target.value) : ''
-                  void applyVideoSource(url)
-                },
-                children: videoSourceOptions(settings)
-              })
-            ),
-            row(
-              'Edit sources',
-              'Add, rename or remove sources, playlists and starter films on the Aura page.',
-              jsx(Button, {
-                size: 'micro',
-                variant: 'ghost',
-                'aria-label': 'Edit sources (settings)',
-                onClick: () => {
-                  try {
-                    host.navigate('/aura')
-                  } catch {
-                    // older hosts without navigate
-                  }
-                },
-                children: 'Edit sources…'
-              })
-            ),
-            row(
-              'Volume',
-              'The movie’s own volume. The visualizer reacts to whatever this plays.',
-              jsxs('div', {
-                style: { display: 'flex', alignItems: 'center', gap: 6 },
-                children: [
-                  jsx('input', {
-                    type: 'range', min: 0, max: 100, step: 1,
-                    value: Math.round(clamp01(settings.videoVolume) * 100),
-                    'aria-label': 'Movie volume (settings)',
-                    style: { width: 140, accentColor: 'var(--ui-accent)' },
-                    onChange: event => {
-                      setVideoVolume(Number(event && event.target ? event.target.value : 0) / 100)
-                    }
-                  }),
-                  jsx('span', {
-                    style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30, textAlign: 'right' },
-                    children: `${Math.round(clamp01(settings.videoVolume) * 100)}%`
-                  })
-                ]
-              })
-            ),
-            // CC: the same switch the player surfaces carry, with
-            // the language list this video offers. Burned-in subtitles are part
-            // of the picture — no API can remove them, so this says so.
-            row(
-              'Subtitles',
-              'Captions for the film: the player shows its own caption track. Subtitles burned into the picture cannot be switched off.',
-              jsxs('div', {
-                style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
-                children: [
-                  jsx(Switch, {
-                    checked: settings.videoCaptions === true,
-                    'aria-label': 'Subtitles (CC) (settings)',
-                    title: captionTooltip(captionInfo()),
-                    onCheckedChange: value => setVideoCaptions(value)
-                  }),
-                  captionLanguageChoices(captionInfo()).length > 1
-                    ? jsx('select', {
-                      className: 'aura-select',
-                      value: captionLanguageValue(captionInfo()),
-                      'aria-label': 'Subtitle language (settings)',
-                      style: { maxWidth: 170, colorScheme: 'light' },
-                      onChange: event => {
-                        setVideoCaptionLang(String(event && event.target ? event.target.value : ''))
-                      },
-                      children: captionLanguageChoices(captionInfo()).map(choice =>
-                        jsx('option', {
-                          key: choice.value || 'auto',
-                          value: choice.value,
-                          style: { background: '#f1f1f1', color: '#111111' },
-                          children: choice.label
-                        })
-                      )
-                    })
-                    : null
-                ]
-              })
-            ),
-            // What the film can really be shown at: the archive.org
-            // item's own files, or YouTube's one honest answer. A direct file
-            // gets no row (one file, nothing to pick).
-            qualityRowWanted(qualityInfo())
-              ? row(
-                'Quality',
-                qualityHint(qualityInfo()),
-                qualityControls(qualityInfo(), 'settings')
-              )
-              : null,
-            row(
-              'Controls transparency',
-              'How solid the floating control strip is over the film. The strip still fades out when the mouse rests.',
-              jsxs('div', {
-                style: { display: 'flex', alignItems: 'center', gap: 6 },
-                children: [
-                  jsx('input', {
-                    type: 'range', min: 20, max: 100, step: 5,
-                    value: Math.round(clampVideoBarOpacity(settings.videoBarOpacity) * 100),
-                    'aria-label': 'Controls transparency',
-                    style: { width: 140, accentColor: 'var(--ui-accent)' },
-                    onChange: event => {
-                      setVideoBarOpacity(Number(event && event.target ? event.target.value : 60) / 100)
-                    }
-                  }),
-                  jsx('span', {
-                    style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30, textAlign: 'right' },
-                    children: `${Math.round(clampVideoBarOpacity(settings.videoBarOpacity) * 100)}%`
-                  })
-                ]
-              })
-            ),
-            row(
-              'Frame in Hermes',
-              'Puts the film in its own 16:9 frame above the app instead of behind it, so you can watch it without text reading through.',
-              jsxs('div', {
-                style: { display: 'flex', alignItems: 'center', gap: 6 },
-                children: [
-                  jsx(Switch, {
-                    checked: settings.videoWindow === true,
-                    'aria-label': 'Watch window (settings)',
-                    onCheckedChange: value => setVideoWindow(value)
-                  }),
-                  jsx('select', { className: 'aura-select',
-                    value: settings.videoWindowSize,
-                    'aria-label': 'Watch window size (settings)',
-                    style: {
-                      font: 'inherit', fontSize: 11,
-                      color: 'var(--ui-text-primary)',
-                      background: 'var(--ui-bg)',
-                      border: '1px solid var(--ui-stroke-secondary)',
-                      borderRadius: 6, padding: '3px 6px',
-                      colorScheme: 'light'
-                    },
-                    onChange: event => {
-                      setVideoWindowSize(String(event && event.target ? event.target.value : 'medium'))
-                    },
-                    children: ['small', 'medium', 'large'].map(size =>
-                      jsx('option', {
-                        key: size,
-                        value: size,
-                        style: { background: '#f1f1f1', color: '#111111' },
-                        children: size
-                      })
-                    )
-                  }),
-                  jsx('select', { className: 'aura-select',
-                    value: settings.videoWindowCorner,
-                    'aria-label': 'Watch window corner (settings)',
-                    style: {
-                      font: 'inherit', fontSize: 11,
-                      color: 'var(--ui-text-primary)',
-                      background: 'var(--ui-bg)',
-                      border: '1px solid var(--ui-stroke-secondary)',
-                      borderRadius: 6, padding: '3px 6px',
-                      colorScheme: 'light'
-                    },
-                    onChange: event => {
-                      setVideoWindowCorner(String(event && event.target ? event.target.value : 'top-right'))
-                    },
-                    children: VIDEO_WINDOW_CORNER_OPTIONS.map(corner =>
-                      jsx('option', {
-                        key: corner,
-                        value: corner,
-                        style: { background: '#f1f1f1', color: '#111111' },
-                        children: corner === 'free' ? 'free (drag)' : corner
-                      })
-                    )
-                  })
-                ]
-              })
-            ),
-            row(
-              'Resume',
-              'Remembers where each film stopped and picks up there after an interruption. Counts as finished when it reaches the last seconds.',
-              jsx(Button, {
-                size: 'micro', variant: 'ghost',
-                'aria-label': 'Start this film over',
-                onClick: () => forgetVideoPosition(),
-                children: 'Start over'
-              })
-            ),
-            row(
-              'Picks',
-              'The built-in films and documentaries. Turn off once you have your own playlists.',
-              jsx(Switch, {
-                checked: !(Array.isArray(settings.videoHiddenStarters) && settings.videoHiddenStarters.length),
-                'aria-label': 'Show demo videos',
-                onCheckedChange: value => setDemosHidden(!value)
-              })
-            ),
-            (Array.isArray(settings.videoPlaylists) ? settings.videoPlaylists : []).length
-              ? jsx('div', {
-                key: 'playlists',
-                children: settings.videoPlaylists.map(item =>
-                  row(
-                    item.label || shortLabel(item.url),
-                    '',
-                    jsx(Button, {
-                      size: 'micro', variant: 'ghost',
-                      'aria-label': `Remove ${item.label || 'playlist'}`,
-                      onClick: () => removeVideoSource(item.url),
-                      children: 'Remove'
-                    })
-                  )
-                )
-              })
-              : null
-          ]
-        })
-        : null,
-      // The Music section's last line: Aura has no library of its own, and
-      // REVamp does — one click away, no prizes, no nagging.
-      jsx('div', {
-        key: 'revamp',
-        children: RevampLine()
-      }),
-      settings.backdropMode === 'video'
-        ? null
-        : jsxs('div', {
-          key: 'visualSettings',
-          style: { display: 'contents' },
-          children: [
-      jsx('div', {
-        key: 'behavior',
-        children: row(
-          'Behaviour profile',
-          'calm: lower ceiling, no strobe, no hard pulses. intense: faster pulse, stronger mood shifts.',
-          jsx('select', { className: 'aura-select',
-            value: settings.behavior,
-            'aria-label': 'Behaviour profile',
-            disabled: locked,
-            title: auraTitle,
-            style: {
-              font: 'inherit',
-              fontSize: 11,
-              color: 'var(--ui-text-primary)',
-              background: 'var(--ui-bg)',
-              border: '1px solid var(--ui-stroke-secondary)',
-              borderRadius: 6,
-              padding: '3px 6px'
-            },
-            onChange: event => {
-              const value = event && event.target ? String(event.target.value) : 'balanced'
-              void setBehavior(value)
-            },
-            children: BEHAVIORS.map(name =>
-              jsx('option', { key: name, value: name, children: name })
-            )
-          })
-        )
-      }),
-      jsx('div', {
-        key: 'mood',
-        children: row(
-          'React to agent mood',
-          'Lets thinking, tool, approval and error change the visual. Off drops any held mood.',
-          jsx(Switch, {
-            checked: settings.moodReactive,
-            'aria-label': 'React to agent mood',
-            onCheckedChange: value => {
-              void setMoodReactive(value)
-            }
-          })
-        )
-      }),
-      jsx('div', {
-        key: 'accent',
-        children: row(
-          'Accent pulse',
-          'Pulses the accent of the theme you are using; the hue is never replaced.',
-          jsx(Switch, {
-            checked: settings.accentPulse,
-            'aria-label': 'Accent pulse',
-            onCheckedChange: value => {
-              void setAccentPulse(value)
-            }
-          })
-        )
-      }),
-      jsx('div', {
-        key: 'autoPreset',
-        children: row(
-          'Automatic presets',
-          'Lets preset rotation follow the music and mood. Off keeps the current preset.',
-          jsx(Switch, {
-            checked: settings.autoPreset,
-            'aria-label': 'Automatic presets',
-            onCheckedChange: value => {
-              void setAutoPreset(value)
-            }
-          })
-        )
-      }),
-      jsx('div', {
-        key: 'windowVisual',
-        children: row(
-          'Visual behind the app',
-          settings.windowVisual && !auraOn
-            ? 'Aura is off - turn it on to see the visual'
-            : 'Show the moving Aura visual behind the whole window. Turn off to restore your theme.',
-          jsx(Switch, {
-            checked: settings.windowVisual,
-            'aria-label': 'Visual behind the app',
-            onCheckedChange: value => setWindowVisual(value)
-          })
-        )
-      })
-          ]
-        }),
-      // The pane switch is workspace furniture, not a visualiser control: it stays
-      // visible in both modes.
-      jsx('div', {
-        key: 'panel',
-        children: row(
-          'Aura panel',
-          'A docked theatre pane on the right: the film, a scrubber and your sources — the way in without a status bar. Off leaves only the Aura menu in the status tray.',
-          jsx(Switch, {
-            checked: settings.panelEnabled !== false,
-            'aria-label': 'Right panel',
-            onCheckedChange: value => setPanelEnabled(value)
-          })
-        )
-      }),
-      jsx('div', {
-        key: 'sidebar',
-        children: row(
-          'Show Aura in the sidebar',
-          'The Aura row in the sidebar. Off keeps the page: the Aura menu still opens it.',
-          jsx(Switch, {
-            checked: settings.sidebarPage !== false,
-            'aria-label': 'Show Aura in the sidebar',
-            onCheckedChange: value => setSidebarPage(value)
-          })
-        )
-      }),
-      jsx('div', {
-        key: 'theme',
-        children: row(
-          'Use Aura theme',
-          applied
-            ? 'Aura Live is active. Turning this off restores the theme you had before.'
-            : 'Optional deep-stage palette. Your current theme is restored when you turn it off.',
-          jsx(Switch, {
-            checked: settings.themeOptIn,
-            'aria-label': 'Use Aura theme',
-            onCheckedChange: value => setThemeOptIn(value)
-          })
-        )
-      }),
-      settings.themeOptIn
-        ? jsx('div', {
-          key: 'themeIdle',
-          children: row(
-            'Keep my theme when idle',
-            'Aura Live only while a film or visual is showing; an idle Aura gives your installed theme back.',
-            jsx(Switch, {
-              checked: settings.themeIdleRestore !== false,
-              'aria-label': 'Keep my theme when idle',
-              onCheckedChange: value => {
-                writeSettings({ themeIdleRestore: Boolean(value) })
-                syncThemeForActivity()
-              }
+      setupRow('readable-on', 'Readable text',
+        'Applies these choices through the Aura Live theme, so chat stays legible over a film.',
+        jsx(Switch, {
+          checked: settings.readable === true,
+          'aria-label': 'Readable text',
+          onCheckedChange: value => setReadable(value)
+        })),
+      setupRow('readable-size', 'Text size',
+        'M is the size the app already uses; line spacing grows with it.',
+        jsx('div', {
+          style: { display: 'flex', alignItems: 'center', gap: 4 },
+          children: READABLE_SIZES.map(size =>
+            jsx(Button, {
+              key: size,
+              size: 'micro',
+              variant: settings.readableSize === size ? 'default' : 'ghost',
+              disabled: settings.readable !== true,
+              'aria-label': `Readable text size ${READABLE_SIZE_LABELS[size]}`,
+              onClick: () => setReadableSize(size),
+              children: READABLE_SIZE_LABELS[size]
             })
           )
-        })
-        : null,
-      // ---- Readable: everything that makes chat legible over a film --------
-      // Each control writes a theme token, not a style rule: the host paints the
-      // theme, Aura never reaches into app markup (see the theme contract).
-      jsxs('div', {
-        key: 'readable',
-        'data-aura-group': 'readable',
-        style: {
-          display: 'flex',
-          flexDirection: 'column',
-          margin: '10px 0 4px',
-          padding: '8px 10px 6px',
-          border: '1px solid var(--ui-stroke-secondary)',
-          borderRadius: 8
-        },
-        children: [
-          jsxs('div', {
-            key: 'head',
-            style: { display: 'flex', alignItems: 'baseline', gap: 8 },
-            children: [
-              jsx('div', {
-                key: 'title',
-                style: { fontSize: 12, fontWeight: 600, color: 'var(--ui-text-primary)' },
-                children: 'Readable'
-              }),
-              jsx('div', {
-                key: 'note',
-                style: { fontSize: 11, color: 'var(--ui-text-tertiary)' },
-                children: 'Bigger, higher-contrast chat text'
-              })
-            ]
-          }),
-          jsx('div', {
-            key: 'on',
-            children: row(
-              'Readable text',
-              'Applies these choices through the Aura Live theme, so chat stays legible over a film. Off gives your own theme back.',
-              jsx(Switch, {
-                checked: settings.readable === true,
-                'aria-label': 'Readable text',
-                onCheckedChange: value => setReadable(value)
-              })
-            )
-          }),
-          jsx('div', {
-            key: 'size',
-            children: row(
-              'Text size',
-              'M is the size the app already uses; S, L and XL move away from it, and line spacing grows with the size. Paints the theme’s base size.',
-              jsxs('div', {
-                style: { display: 'flex', alignItems: 'center', gap: 4 },
-                children: READABLE_SIZES.map(size =>
-                  jsx(Button, {
-                    key: size,
-                    size: 'micro',
-                    variant: settings.readableSize === size ? 'default' : 'ghost',
-                    disabled: settings.readable !== true,
-                    'aria-label': `Readable text size ${READABLE_SIZE_LABELS[size]}`,
-                    onClick: () => setReadableSize(size),
-                    children: READABLE_SIZE_LABELS[size]
-                  })
-                )
-              })
-            )
-          }),
-          jsx('div', {
-            key: 'font',
-            children: row(
-              'Text font',
-              'The app-wide face, painted through the theme. Atkinson Hyperlegible is designed for low vision; System and Mono need no download.',
-              jsx('select', {
-                className: 'aura-select',
-                value: settings.readableFont,
-                'aria-label': 'Readable text font',
-                disabled: settings.readable !== true,
-                style: {
-                  font: 'inherit',
-                  fontSize: 11,
-                  color: 'var(--ui-text-primary)',
-                  background: 'var(--ui-bg)',
-                  border: '1px solid var(--ui-stroke-secondary)',
-                  borderRadius: 6,
-                  padding: '3px 6px'
-                },
-                onChange: event => {
-                  setReadableFont(String(event && event.target ? event.target.value : 'system'))
-                },
-                children: READABLE_FONTS.map(font =>
-                  jsx('option', { key: font, value: font, children: READABLE_FONT_LABELS[font] })
-                )
-              })
-            )
-          }),
-          jsx('div', {
-            key: 'ink',
-            children: row(
-              'Text colour',
-              'Paints the theme’s text colour and its quieter secondary together, so both survive the next repaint.',
-              jsx('select', {
-                className: 'aura-select',
-                value: settings.readableInk,
-                'aria-label': 'Readable text colour',
-                disabled: settings.readable !== true,
-                style: {
-                  font: 'inherit',
-                  fontSize: 11,
-                  color: 'var(--ui-text-primary)',
-                  background: 'var(--ui-bg)',
-                  border: '1px solid var(--ui-stroke-secondary)',
-                  borderRadius: 6,
-                  padding: '3px 6px'
-                },
-                onChange: event => {
-                  setReadableInk(String(event && event.target ? event.target.value : 'white'))
-                },
-                children: READABLE_INKS.map(ink =>
-                  jsx('option', { key: ink, value: ink, children: READABLE_INK_LABELS[ink] })
-                )
-              })
-            )
-          }),
-          // Aura's own node in Aura's own surface: a sample of the two tokens it
-          // can show safely (face and size). The colour comes from the live
-          // theme, so it is never a simulation of somebody else's markup.
-          jsx('div', {
-            key: 'sample',
-            'aria-label': 'Readable sample',
-            style: {
-              margin: '2px 0 6px',
-              padding: '6px 8px',
-              borderRadius: 6,
-              background: 'var(--ui-bg)',
-              border: '1px solid var(--ui-stroke-secondary)',
-              fontFamily: tokens.fontSans,
-              fontSize: tokens.baseSize,
-              lineHeight: tokens.lineHeight,
-              color: 'var(--theme-foreground)'
-            },
-            children: 'Handgloves: the quick brown fox jumps over the lazy dog.'
-          }),
-          jsx('div', {
-            key: 'chatfont',
-            children: row(
-              'Hermes chat font',
-              'Hermes keeps its own chat face in Settings ▸ Appearance ▸ Chat font. Readable sets the app-wide face through the theme; that setting overrides the chat alone.',
-              jsx(Button, {
-                size: 'micro',
-                variant: 'ghost',
-                'aria-label': 'Open Hermes chat font setting',
-                onClick: () => {
-                  try {
-                    host.navigate(CHAT_FONT_SETTINGS_PATH)
-                  } catch {
-                    // older hosts without navigate
-                  }
-                },
-                children: 'Open…'
-              })
-            )
-          })
-        ]
-      }),
+        })),
+      setupRow('readable-font', 'Text font',
+        'The app-wide face, painted through the theme. Atkinson Hyperlegible is designed for low vision.',
+        jsx('select', {
+          className: 'aura-select',
+          value: settings.readableFont,
+          'aria-label': 'Readable text font',
+          disabled: settings.readable !== true,
+          style: SETUP_SELECT_STYLE,
+          onChange: event => {
+            setReadableFont(String(event && event.target ? event.target.value : 'system'))
+          },
+          children: READABLE_FONTS.map(font =>
+            jsx('option', { key: font, value: font, children: READABLE_FONT_LABELS[font] })
+          )
+        })),
+      setupRow('readable-ink', 'Text colour',
+        'Paints the theme’s text colour and its quieter secondary together.',
+        jsx('select', {
+          className: 'aura-select',
+          value: settings.readableInk,
+          'aria-label': 'Readable text colour',
+          disabled: settings.readable !== true,
+          style: SETUP_SELECT_STYLE,
+          onChange: event => {
+            setReadableInk(String(event && event.target ? event.target.value : 'white'))
+          },
+          children: READABLE_INKS.map(ink =>
+            jsx('option', { key: ink, value: ink, children: READABLE_INK_LABELS[ink] })
+          )
+        })),
+      // Aura's own node in Aura's own surface: a sample of the two tokens it
+      // can show safely (face and size). The colour comes from the live theme,
+      // so it is never a simulation of somebody else's markup.
       jsx('div', {
-        key: 'restore',
-        children: row(
-          'Restore my theme',
-          'Turns off the window visual, the accent pulse and Aura Live, clears every override and restores your previous theme.',
-          jsx(Button, {
-            size: 'sm',
-            variant: 'outline',
-            'aria-label': 'Restore my theme',
-            onClick: () => {
-              void restoreMyTheme()
-            },
-            children: 'Restore my theme'
-          })
-        )
-      })
+        key: 'sample',
+        'aria-label': 'Readable sample',
+        className: 'aura-setup-sample',
+        style: {
+          fontFamily: tokens.fontSans,
+          fontSize: tokens.baseSize,
+          lineHeight: tokens.lineHeight,
+          color: 'var(--theme-foreground)'
+        },
+        children: 'Handgloves: the quick brown fox jumps over the lazy dog.'
+      }),
+      setupRow('chatfont', 'Hermes chat font',
+        'Hermes sets its own chat face in Settings ▸ Appearance ▸ Chat font; that one wins over the app-wide face.',
+        jsx(Button, {
+          size: 'micro',
+          variant: 'ghost',
+          'aria-label': 'Open Hermes chat font setting',
+          onClick: () => {
+            try {
+              host.navigate(CHAT_FONT_SETTINGS_PATH)
+            } catch {
+              // older hosts without navigate
+            }
+          },
+          children: 'Open…'
+        }))
+    ]
+  })
+
+  const lookCard = setupCard('look', 'Look', [
+    videoMode
+      ? setupRow('video-opacity', 'Video transparency',
+        'Auto: 20% while you work, 30% with audio, +3% per extra chat.',
+        jsx('div', {
+          style: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' },
+          children: [
+            jsx(Button, {
+              size: 'micro',
+              variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
+              'aria-label': 'Automatic video transparency',
+              onClick: () => setVideoOpacityAuto(),
+              children: 'Auto'
+            }),
+            ...VIDEO_OPACITY_PRESETS.map(preset =>
+              jsx(Button, {
+                key: preset,
+                size: 'micro',
+                variant: settings.videoOpacityAuto === false &&
+                  Math.round(clamp01(settings.videoOpacity) * 100) === preset
+                  ? 'default'
+                  : 'ghost',
+                'aria-label': `${preset}% video transparency`,
+                onClick: () => setVideoOpacity(preset / 100),
+                children: `${preset}%`
+              })
+            )
+          ]
+        }))
+      : null,
+    videoMode
+      ? rangeRow('bar-opacity', 'Controls transparency',
+        'How solid the floating control strip is over the film. It still fades out when the mouse rests.', {
+          min: 20,
+          max: 100,
+          step: 5,
+          value: Math.round(clampVideoBarOpacity(settings.videoBarOpacity) * 100),
+          aria: 'Controls transparency',
+          shown: `${Math.round(clampVideoBarOpacity(settings.videoBarOpacity) * 100)}%`,
+          onChange: event => {
+            setVideoBarOpacity(Number(event && event.target ? event.target.value : 60) / 100)
+          }
+        })
+      : null,
+    setupRow('theme', 'Use Aura theme',
+      applied
+        ? 'Aura Live is active. Turning this off restores the theme you had before.'
+        : 'Optional deep-stage palette. Your current theme is restored when you turn it off.',
+      jsx(Switch, {
+        checked: settings.themeOptIn,
+        'aria-label': 'Use Aura theme',
+        onCheckedChange: value => setThemeOptIn(value)
+      })),
+    settings.themeOptIn
+      ? setupRow('themeIdle', 'Keep my theme when idle',
+        'Aura Live only while a film or visual is showing; an idle Aura gives your theme back.',
+        jsx(Switch, {
+          checked: settings.themeIdleRestore !== false,
+          'aria-label': 'Keep my theme when idle',
+          onCheckedChange: value => {
+            writeSettings({ themeIdleRestore: Boolean(value) })
+            syncThemeForActivity()
+          }
+        }))
+      : null,
+    readableBlock,
+    setupRow('restore', 'Restore my theme',
+      'Turns off the window visual, the accent pulse and Aura Live, and restores your previous theme.',
+      jsx(Button, {
+        size: 'sm',
+        variant: 'outline',
+        'aria-label': 'Restore my theme',
+        onClick: () => {
+          void restoreMyTheme()
+        },
+        children: 'Restore my theme'
+      }))
+  ].filter(Boolean))
+
+  // ---- Where it shows ----------------------------------------------------
+  // The pane switch is workspace furniture, not a visualiser control: it stays
+  // visible in both modes.
+  const placesCard = setupCard('places', 'Where it shows', [
+    setupRow('panel', 'Right panel',
+      'The film, a scrubber and your sources in a panel on the right. Off leaves the Aura menu in the status bar.',
+      jsx(Switch, {
+        checked: settings.panelEnabled !== false,
+        'aria-label': 'Right panel',
+        onCheckedChange: value => setPanelEnabled(value)
+      })),
+    videoMode
+      ? setupRow('frame', 'Frame in Hermes',
+        'The film in its own 16:9 frame above the app instead of behind it, so text never reads through it.',
+        jsxs('div', {
+          style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' },
+          children: [
+            jsx(Switch, {
+              checked: settings.videoWindow === true,
+              'aria-label': 'Watch window (settings)',
+              onCheckedChange: value => setVideoWindow(value)
+            }),
+            jsx('select', {
+              className: 'aura-select',
+              value: settings.videoWindowSize,
+              'aria-label': 'Watch window size (settings)',
+              style: { ...SETUP_SELECT_STYLE, colorScheme: 'light' },
+              onChange: event => {
+                setVideoWindowSize(String(event && event.target ? event.target.value : 'medium'))
+              },
+              children: ['small', 'medium', 'large'].map(size =>
+                jsx('option', {
+                  key: size,
+                  value: size,
+                  style: { background: '#f1f1f1', color: '#111111' },
+                  children: size
+                })
+              )
+            }),
+            jsx('select', {
+              className: 'aura-select',
+              value: settings.videoWindowCorner,
+              'aria-label': 'Watch window corner (settings)',
+              style: { ...SETUP_SELECT_STYLE, colorScheme: 'light' },
+              onChange: event => {
+                setVideoWindowCorner(String(event && event.target ? event.target.value : 'top-right'))
+              },
+              children: VIDEO_WINDOW_CORNER_OPTIONS.map(corner =>
+                jsx('option', {
+                  key: corner,
+                  value: corner,
+                  style: { background: '#f1f1f1', color: '#111111' },
+                  children: corner === 'free' ? 'free (drag)' : corner
+                })
+              )
+            })
+          ]
+        }))
+      : null,
+    setupRow('sidebar', 'Show Aura in the sidebar',
+      'The Aura row in the sidebar. Off keeps the page: the Aura menu still opens it.',
+      jsx(Switch, {
+        checked: settings.sidebarPage !== false,
+        'aria-label': 'Show Aura in the sidebar',
+        onCheckedChange: value => setSidebarPage(value)
+      }))
+  ].filter(Boolean))
+
+  return jsxs('div', {
+    className: 'aura-setup-body',
+    children: [
+      jsx('div', {
+        key: 'grid',
+        className: 'aura-setup-grid',
+        // Aura and Where it shows are short and pair up; the mode's own card
+        // and Look are the long ones, so they share the second row.
+        children: [auraCard, placesCard, videoMode ? filmCard : visualCard, lookCard]
+      }),
+      // The last line: Aura has no library of its own, and REVamp does — one
+      // click away, no prizes, no nagging.
+      jsx('div', { key: 'revamp', children: RevampLine() })
     ]
   })
 }
