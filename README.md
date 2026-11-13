@@ -1,10 +1,6 @@
 <p align="center">
-  <img src="assets/hero.svg" alt="Aura — a film behind your work, and an app that breathes with your audio" width="100%">
+  <img src="assets/brand/banner.png" alt="Aura — a film behind your work, and an app that breathes with your audio" width="100%">
 </p>
-
-<h1 align="center">Aura</h1>
-
-<p align="center"><i>A film behind your work, and an app that breathes with your audio.</i></p>
 
 <p align="center">
   <a href="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml"><img alt="CI: tests" src="https://github.com/KeyArgo/hermes-aura/actions/workflows/tests.yml/badge.svg?branch=main"></a>
@@ -27,10 +23,10 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/aura-demo.gif" alt="Aura in Hermes Desktop: a documentary plays in the docked film pane, then the visualiser draws through the app" width="100%">
+  <img src="docs/media/aura-demo.gif" alt="Aura in Hermes Desktop: a documentary plays beside your work, then the same audio drives the visualiser" width="100%">
 </p>
 
-<p align="center"><sub><b>Aura inside Hermes Desktop</b>: the film pane beside your work, then the same audio driving the visualiser.
+<p align="center"><sub><b>Aura inside Hermes Desktop</b>: a film beside your work, then the same audio driving the visualiser.
 Recorded on the catalog-pinned build; the current release draws the visualiser in Aura's own pane — see
 <a href="#where-the-visual-lives">where the visual lives</a>. The plugin asks Hermes for a backdrop area so the full-window version can return.
 <a href="https://x.com/MHArgonaut/status/2120634853146435961">Watch the full 50-second demo ▶</a></sub></p>
@@ -52,7 +48,7 @@ Recorded on the catalog-pinned build; the current release draws the visualiser i
 ## What it is
 
 Aura turns Hermes Desktop into a room you can live in. Put any film, lecture or
-playlist in the right-hand pane and keep working; switch the film off and the
+playlist behind your chat, in the side panel or out on the desktop, and keep working; switch the film off and the
 same audio drives a MilkDrop-compatible visualiser. It
 listens to what the machine is already playing — system loopback, never the
 microphone — and nothing leaves the computer: no account, no uploads, no
@@ -66,7 +62,7 @@ recording.
 - **One audio path, two jobs.** The soundtrack of the film you watch is the same
   signal that paints the room. There is no second player and no second capture.
 - **A player with three surfaces, not three players.** The film exists in the
-  docked pane, the Aura page or its own OS window — exactly one at a time, with
+  Right panel, the Aura page or its own OS window — exactly one at a time, with
   the position kept per film.
 - **The agent is a remote, not a script.** Pause, seek, next episode, pop out,
   find something to watch, find a radio station: all through three tools that
@@ -80,7 +76,7 @@ recording.
 
 ### Where the visual lives
 
-The visualiser and the film render inside Aura's own surfaces — the docked pane, the Aura page and
+The visualiser and the film render inside Aura's own surfaces — the Right panel, the Aura page and
 the floating watch window. Hermes' plugin SDK has no "draw behind the app" area yet (the request is
 drafted for the maintainers), so nothing is painted over your chat; the pane is the surface that
 streams audio from the backend, and that stream is what keeps capture awake on a cold start.
@@ -89,7 +85,7 @@ streams audio from the backend, and that stream is what keeps capture awake on a
 
 ### Watch while you work
 
-- **A docked theatre pane** on the right: 16:9 stage, scrubber, transport,
+- **The Right panel** (video mode): 16:9 stage, scrubber, transport,
   volume, and a poster list of your sources. Closing it leaves only the
   status-bar menu.
 - **YouTube videos, YouTube playlists, direct MP4/WebM.** Any public or unlisted
@@ -225,7 +221,7 @@ You do not need a link. Say what you are in the mood for:
 The agent calls **`aura_watch`** with `action=search`, shows the numbered
 options (title, channel, length and link) and stops. Nothing plays until you
 pick; then it calls `action=play`, which puts the choice on the same player
-queue the transport buttons use — so it starts in the docked pane, the Aura page
+queue the transport buttons use — so it starts in the Right panel, the Aura page
 or the popped-out window, whichever is showing the film. `action=now` answers
 “what is playing?” without opening anything.
 
@@ -319,7 +315,7 @@ a list. Nothing here touches YouTube's own playlists.
 
 <table>
   <tr>
-    <td width="50%" align="center"><img src="docs/screenshots/desktop-film-pane.png" alt="The film pane docked in Hermes Desktop playing a documentary"><br><sub><b>The film pane</b><br>A film docked beside your work in Hermes Desktop.</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/desktop-film-pane.png" alt="The Right panel in Hermes Desktop playing a documentary"><br><sub><b>The Right panel</b><br>A film beside your work in Hermes Desktop.</sub></td>
     <td width="50%" align="center"><img src="docs/screenshots/desktop-film-shelf.png" alt="The Aura page with the film shelf and a YouTube link field"><br><sub><b>The shelf</b><br>Pick a film, or paste any YouTube link or playlist.</sub></td>
   </tr>
   <tr>
@@ -432,7 +428,7 @@ never guesses a port. `__init__.py` maps eleven agent hooks onto
 The film has one player and three surfaces. The diagram below is the shape of
 that rule; the film moves, and the surface that loses it does not keep a copy.
 
-<p align="center"><img src="assets/three-surfaces.svg" alt="The docked pane, the Aura page, and the pop-out window" width="100%"></p>
+<p align="center"><img src="assets/three-surfaces.svg" alt="The Right panel, the Aura page, and the pop-out window" width="100%"></p>
 
 ### Frame in Hermes, or pop out to desktop
 
