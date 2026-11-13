@@ -2,7 +2,7 @@
 
 One line: a walkthrough of every user-facing part of Aura, from the first film to radio and the agent tools.
 
-Applies to Aura 1.0.0 · revised 2026-11-11
+Applies to Aura 1.0.0 · revised 2026-11-13
 
 ## Turn it on
 
@@ -26,6 +26,16 @@ Accepted sources are YouTube videos, YouTube playlists, and direct MP4/WebM
 files. A film remembers where you stopped, keyed by URL, so switching sources
 never restarts it. A film that reaches the end is not remembered at its last
 second.
+
+## Move the controls
+
+The transport strip floats over the app. Drag it by the ⠿ grip — or by any empty
+part of the strip — and it stays where you dropped it, in every mode: dragging
+the strip never pops the film out or changes a mode. **Double-click the grip** to
+send it back to the bottom-left corner. A resize keeps it inside the window.
+
+Only the ⧉ button (in the strip, or on the page) pops the film out. Nothing else
+moves it between surfaces.
 
 ## Add a YouTube playlist
 

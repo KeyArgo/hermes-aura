@@ -422,8 +422,9 @@ It does not run a shell, and it does not touch host `html`/`body` styles.
 **Host safety.** The pane is a Hermes `PANES_AREA` contribution — Hermes lays it
 out; no fixed positioning, no z-index, no `body` padding. The film is an SDK
 `<SandboxedFrame>` inside that pane, and the transport strip is a
-`COMPOSER_AREAS.underside` contribution — no app markup is queried, nothing is
-appended to the document body, and no host stylesheet is written. Host root
+`COMPOSER_AREAS.underside` contribution whose floating pill sits at the point the
+user dragged it to (`videoBarX`/`videoBarY`) — no app markup is queried, nothing
+is appended to the document body, and no host stylesheet is written. Host root
 styles are never written; the
 accent override is the SDK's sanctioned mechanism. Switching the visual off,
 turning Aura off, **Restore my theme** and plugin disposal remove every effect

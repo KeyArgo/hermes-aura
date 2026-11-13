@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — the control strip is the user's
+
+- **Dragging the strip moves the strip.** The ⠿ grip (and any empty part of the
+  strip) drags the controls to where you want them; it no longer changes
+  `videoWindow` or any other mode. The ⧉ pop-out button is the only thing that
+  pops the film out.
+- **The strip never jumps.** Placement no longer depends on the app's composer:
+  the strip sits at the point you last dropped it (`videoBarX` / `videoBarY`),
+  defaults to bottom-left with a 16px margin clear of the status bar, is clamped
+  into the window on resize, and does not move when a panel with text inputs
+  appears. **Double-click the grip** to reset it.
+- The composer-measuring helper is gone for good; a regression test fails if any
+  code reads the app's composer again.
+
 ## Unreleased — quality review fixes
 
 - **The film frame is built from the live server again.** It was handed the
