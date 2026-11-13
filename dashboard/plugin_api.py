@@ -257,6 +257,12 @@ def player_status() -> dict:
     return _forward_json("/api/player", timeout=5.0)[1]
 
 
+@router.get("/catalog")
+def catalog() -> dict:
+    """The shelf catalogue — the same payload the server serves at /api/catalog."""
+    return _forward_json("/api/catalog", timeout=5.0)[1]
+
+
 @router.get("/player/commands")
 def player_commands(after: int = 0) -> dict:
     return _forward_json(f"/api/player/commands?after={max(0, after)}", timeout=5.0)[1]
