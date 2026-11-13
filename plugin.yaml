@@ -33,3 +33,6 @@ dashboard: dashboard
 python_dependencies:
   - 'soundcard>=0.4.2,<0.5; sys_platform == "win32"'
   - 'numpy>=1.24,<3; sys_platform == "win32"'
+  # macOS has no WASAPI/soundcard path: capture goes through PortAudio, i.e.
+  # sounddevice against a virtual loopback device (BlackHole and friends).
+  - 'sounddevice>=0.4,<0.6; sys_platform == "darwin"'

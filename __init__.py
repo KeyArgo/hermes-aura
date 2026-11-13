@@ -171,6 +171,28 @@ def _transition(mood: str, **kwargs):
 # ---------------------------------------------------------------------------
 
 def _token_path() -> Path:
+    """``<hermes home>/aura/token`` for the ACTIVE profile.
+
+    Resolved through ``aura_core.config.hermes_home()`` rather than a bare
+    ``os.environ["HERMES_HOME"]``: the helper follows a context-local override,
+    so a tool call inside a non-default profile reads that profile's token
+    instead of whichever home the environment happened to export at boot.
+    """
+    # Absolute first: the rest of the plugin and the tests import `aura_core`
+    # that way, and a relative import here would build a second, patched-only
+    # module instance whose hermes_home() nobody else can see.
+    try:
+        from aura_core import config as _config
+    except ImportError:
+        try:
+            from .aura_core import config as _config
+        except ImportError:
+            _config = None
+    if _config is not None:
+        try:
+            return _config.hermes_home().joinpath(*_TOKEN_FILE)
+        except Exception:  # noqa: BLE001 - never fail a tool call over a path
+            pass
     home = os.environ.get("HERMES_HOME")
     base = Path(home) if home else Path.home() / ".hermes"
     return base.joinpath(*_TOKEN_FILE)
