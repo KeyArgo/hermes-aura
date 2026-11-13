@@ -7226,7 +7226,7 @@ function AuraSettings() {
               })
             ),
             row(
-              'Watch window',
+              'Frame in Hermes',
               'Puts the film in its own 16:9 frame above the app instead of behind it, so you can watch it without text reading through.',
               jsxs('div', {
                 style: { display: 'flex', alignItems: 'center', gap: 6 },
