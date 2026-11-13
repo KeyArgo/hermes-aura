@@ -869,16 +869,20 @@ function setError(message) {
   setLive({ error: typeof message === 'string' ? message : '' })
 }
 
-// Optional whole-window backdrop, enabled only by the user. In "aura" mode the
-// iframe points at the visualizer page on the local server (with its own
+// Optional whole-window page, enabled only by the user. In "aura" mode the
+// frame points at the visualizer page on the local server (with its own
 // `overlay=1` / `reduced-motion=1` switches). In "video" mode it points at
 // web/player.html on the same origin, carrying the user's URL in `?url=`.
 // The server URL is absolute and tokenised, so the origin must be taken from
 // it — a bare `/player.html` would resolve against the Hermes app's origin.
-function backdropSrc(url) {
+// `mode` overrides the stored backdrop mode for the audio-only page (see
+// filmPageMode): the visualiser is what hosts the audio channel when no film is
+// on screen.
+function backdropSrc(url, mode) {
   if (!url) return ''
   const settings = $settings.get()
-  if (settings.backdropMode === 'video') {
+  const pageMode = mode || settings.backdropMode
+  if (pageMode === 'video') {
     const base = url.split('?')[0].replace(/\/+$/, '')
     const videoUrl = typeof settings.videoUrl === 'string' ? settings.videoUrl.trim() : ''
     const urlParams = new URL(url, 'http://dummy.test').searchParams
@@ -971,10 +975,10 @@ function showEligible() {
   // backdrop/theme/accent paths below require `enabled`.
   // The full page is the same kind of surface, for the same reason.
   const pageFilm = pageVisible() && Boolean(settings.videoUrl) && !settings.videoClosed
-  // [finding 4] The audio channel lives inside this same backdrop document.
-  // Without this a default install (window visual off, no theme) mounted no
-  // page, so playAudioSource posted into nothing and "playing" was a lie.
-  const audio = Boolean(settings.audioUrl)
+  // [finding 4] The audio channel lives inside this same page. Without this a
+  // default install (window visual off, no theme) mounted nothing, so
+  // playAudioSource posted into nothing and "playing" was a lie.
+  const audio = audioChannelLive()
   // A pane or page film is Aura's own surface and needs no overlay permission;
   // everything else is the overlay and does.
   const overlay = Boolean(audio || knownTheme === THEME_NAME || settings.windowVisual)
@@ -1068,8 +1072,10 @@ function mountBackdrop(url, opacity) {
   // The frame is a SandboxedFrame rendered by React inside Aura's own surfaces
   // (see AuraFilm). There is nothing to create and nothing to append: this
   // function only remembers what the frame should show, so a source change
-  // re-points the one element instead of stacking a second player.
-  const src = backdropSrc(url)
+  // re-points the one element instead of stacking a second player. filmSrc() is
+  // the same page the element will load, audio-only fallback included.
+  const src = filmSrc()
+  void url
   if (!src) return
   if (backdropKey !== pageKey()) {
     backdropUrl = src
@@ -1111,19 +1117,41 @@ function returnFocusToComposer() {
  */
 let filmFrameOwner = ''
 
+/** Does the audio channel have a source of its own? The music/radio channel
+ *  lives in the page's `web/audio.js`, so while it has a source SOMETHING has to
+ *  be framed for it to play in — even when the film is closed. */
+function audioChannelLive() {
+  const settings = $settings.get()
+  return Boolean(String(settings.audioUrl || '').trim())
+}
+
+/** Which page the one frame shows, or '' when nothing may be framed at all.
+ *
+ *  Aura mode always shows the visualiser. Video mode shows the film while it is
+ *  open, and falls back to the visualiser while it is closed but the music is
+ *  not: `player.html` with no film would be a dead black box, while the
+ *  visualiser page hosts the same audio channel AND draws the beat.
+ */
+function filmPageMode() {
+  const settings = $settings.get()
+  if (settings.backdropMode !== 'video') return 'aura'
+  const videoUrl = String(settings.videoUrl || '').trim()
+  if (videoUrl && settings.videoClosed !== true) return 'video'
+  return audioChannelLive() ? 'aura' : ''
+}
+
 /** Which surface owns the one player right now, or '' when none may show it.
  *
  *  Precedence: the OS pop-out window wins (one film, one surface), then the
  *  page while it is open, then the docked pane. Nothing renders while the film
- *  is closed, while no local server is up (no token, no page), or when the mode
- *  wants a source the user has not chosen.
+ *  is closed AND no music needs a page, while no local server is up (no token,
+ *  no page), or when the mode wants a source the user has not chosen.
  */
 function filmOwner() {
   const settings = $settings.get()
-  if (settings.videoClosed === true) return ''
   if (desktopOwned || desktopPending) return ''
   if (!liveUrl()) return ''
-  if (settings.backdropMode === 'video' && !String(settings.videoUrl || '').trim()) return ''
+  if (!filmPageMode()) return ''
   // The floating watch window is a surface the user opened on purpose: it takes
   // the film with it and parks the pane/page (one film, one surface).
   if (settings.videoWindow === true) return 'window'
@@ -1137,15 +1165,11 @@ function filmOwner() {
  *  film's own link: `backdropSrc` turns the server url into
  *  `<origin>/player.html?url=…&token=…`. */
 function filmSrc() {
-  const settings = $settings.get()
   const base = liveUrl()
   if (!base) return ''
-  if (settings.backdropMode === 'video') {
-    if (settings.videoClosed === true) return ''
-    if (!String(settings.videoUrl || '').trim()) return ''
-    return backdropSrc(base)
-  }
-  return backdropSrc(base)
+  const mode = filmPageMode()
+  if (!mode) return ''
+  return backdropSrc(base, mode)
 }
 
 function AuraFilm({ surface, style }) {
@@ -1272,16 +1296,16 @@ function AuraWatchWindow() {
 /** Opacity for the film surface: the video player's own transparency. The
  *  visualiser needs none — its page applies the user's opacity itself. */
 function filmOpacity(settings, video) {
-  if (settings.backdropMode === 'video') {
-    const manual = Number(video && video.opacity)
-    if (Number.isFinite(manual)) return manual
-    return Number(settings.videoOpacity) || 1
-  }
-  // The visualiser page owns its own opacity: it dims the canvas and compensates
-  // its scrim from the same setting (CONTRACT.md §9.2). Dimming the frame as
-  // well applied the setting twice — 25% drew 6% — and dimmed the page chrome
-  // the contract keeps legible. The frame carries only the fade machine's factor.
-  return 1
+  // The visualiser page owns its own opacity, and it is the page in aura mode
+  // and in the audio-only fallback alike (filmPageMode). It dims the canvas and
+  // compensates its scrim from the same setting (CONTRACT.md §9.2). Dimming the
+  // frame as well applied the setting twice — 25% drew 6% — and dimmed the page
+  // chrome the contract keeps legible. The frame carries only the fade
+  // machine's factor.
+  if (filmPageMode() !== 'video') return 1
+  const manual = Number(video && video.opacity)
+  if (Number.isFinite(manual)) return manual
+  return Number(settings.videoOpacity) || 1
 }
 
 /** The video-URL box: one controlled draft, one apply path.

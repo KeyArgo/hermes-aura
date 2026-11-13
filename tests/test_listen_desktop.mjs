@@ -12,12 +12,19 @@
  *   3. stop / volume / mute_video / unmute_video travel to the page through
  *      the same bridge and touch only their own setting (the video's mute is
  *      not the audio channel's);
- *   4. REVAMP_PITCH says what it must say, and revampCard() wires
+ *   4. the page that hosts audio.js (web/audio.js) exists whenever the music
+ *      does — including while the film is closed — and it is the SDK's
+ *      SandboxedFrame inside Aura's own surfaces, not an iframe on the app
+ *      body;
+ *   5. REVAMP_PITCH says what it must say, and revampCard() wires
  *      "Open REVamp" to host.navigate('/revamp') and "Get REVamp" to the
  *      public repo.
  *
  * The plugin is imported from a temp copy with its three import specifiers
  * rewritten to local stubs, exactly like tests/test_desktop_plugin.mjs does.
+ * The SDK stub records every SandboxedFrame it is handed in
+ * `globalThis.__sdkFrames` and posts the frame's own messages into
+ * `globalThis.__sdkFrameMessages`, which is what "reaches the page" means here.
  *
  * Run: node tests/test_listen_desktop.mjs
  */
@@ -169,6 +176,26 @@ export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right
 export const SETTINGS_PLUGINS_AREA = 'settings.plugins'
 export const THEMES_AREA = 'themes'
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' }
+export const COMPOSER_AREAS = {
+  top: 'composer.top', bottom: 'composer.bottom', underside: 'composer.underside',
+  leading: 'composer.leading', actions: 'composer.actions', middleware: 'composer.middleware',
+  attachments: 'composer.attachments', microActions: 'composer.microActions',
+  atCompletions: 'composer.atCompletions', modelPill: 'composer.modelPill', contextMenu: 'composer.contextMenu'
+}
+
+// The SDK's sandboxed frame. The film/visualiser page is drawn by THIS element
+// (React), not by a raw iframe the plugin appends to the app body, so the stub
+// records what it was handed AND hands the plugin the frame node its ref would
+// get: that node's contentWindow is the page the audio commands must reach.
+export const frames = []
+globalThis.__sdkFrames = frames
+globalThis.__sdkFrameMessages = []
+const frameNode = { contentWindow: { postMessage: message => { globalThis.__sdkFrameMessages.push(message) } } }
+export const SandboxedFrame = props => {
+  frames.push(props)
+  if (typeof props.ref === 'function') props.ref(frameNode)
+  return null
+}
 `)
 
 fs.writeFileSync(path.join(tmp, 'react-stub.mjs'), `
@@ -196,13 +223,22 @@ function makeCtx(initialSettings) {
   const storage = new Map()
   if (initialSettings) storage.set('settings', initialSettings)
   const messages = []
+  const contributions = []
+  const intervals = []
   const ctx = {
     source: 'plugin:aura',
     os: { openExternal: url => { sdkStub.calls.external.push(url); return true } },
-    register(contribution) { return () => { contribution.removed = true } },
+    register(contribution) {
+      const entry = { ...contribution }
+      contributions.push(entry)
+      return () => {
+        const index = contributions.indexOf(entry)
+        if (index >= 0) contributions.splice(index, 1)
+      }
+    },
     registerSettingsPage(page) { return ctx.register(page) },
     onDispose() {},
-    setInterval() { return () => {} },
+    setInterval(fn) { intervals.push(fn); return () => {} },
     setTimeout(fn) { return () => {} },
     addEventListener() { return () => {} },
     storage: {
@@ -222,19 +258,54 @@ function makeCtx(initialSettings) {
       return { ok: true }
     }
   }
-  return { ctx, storage, messages }
+  return { ctx, storage, messages, contributions, intervals }
 }
 
-// Capture what the plugin posts to its backdrop: the contract is the message,
-// not the DOM.
-const sent = []
+// The page the audio channel lives in is an SDK SandboxedFrame rendered inside
+// Aura's own surfaces (never an iframe appended to the app body), so a test has
+// to let React do its job: expand function elements until the frame is drawn
+// and the recorded props hold the src the page will load.
+const expandTree = (node, depth = 0) => {
+  if (depth > 8 || node === null || node === undefined || typeof node !== 'object') return
+  if (Array.isArray(node)) { node.forEach(child => expandTree(child, depth)); return }
+  if (typeof node.type === 'function') {
+    const out = node.type(node.props || {})
+    if (!out || typeof out !== 'object') return
+    node.type = out.type
+    node.props = out.props
+    if (typeof node.type === 'function') { expandTree(node, depth + 1); return }
+  }
+  if (node.props) expandTree(node.props.children, depth + 1)
+}
 
-// A fresh instance with a mounted backdrop — the audio channel only exists
-// while the backdrop document does.
+// The frames the SDK stub was handed since the last reset.
+const framed = () => globalThis.__sdkFrames
+const clearFrames = () => { globalThis.__sdkFrames.length = 0 }
+
+// Capture what the plugin posts to its page: the contract is the message, not
+// the DOM. The stub's frame node records every postMessage it receives.
+const sent = globalThis.__sdkFrameMessages
+
+// Mount the docked pane's tree the way a real render does, so the film/audio
+// page exists before a command is posted into it.
+function mountSurface(contributions) {
+  const pane = contributions.find(contribution => contribution.area === 'panes')
+  if (!pane) return null
+  const tree = pane.render()
+  expandTree(tree)
+  return tree
+}
+
+// A fresh instance with a mounted surface — the audio channel only exists while
+// the page that hosts it does. One poll tick fills the live server state (url +
+// token) the frame's src is built from.
 async function remount(settings = {}) {
-  const { ctx } = makeCtx({ enabled: true, windowVisual: true, backdropMode: 'aura', ...settings })
+  clearFrames()
+  const { ctx, contributions, intervals } = makeCtx({ enabled: true, windowVisual: true, backdropMode: 'aura', ...settings })
   const dispose = plugin.default.register(ctx)
+  if (intervals.length) intervals[0]()
   await new Promise(resolve => setTimeout(resolve, 20))
+  mountSurface(contributions)
   return dispose
 }
 
@@ -340,20 +411,18 @@ await record('handleAudioRequests: every unseen request is applied in order', as
 })
 
 await record('audio-only still mounts the backdrop that hosts audio.js', async () => {
-  const before = new Set(bodyChildren)
   const dispose = await remount({
     windowVisual: false,
     backdropMode: 'aura',
     audioUrl: 'https://ice.example/audio-only.mp3',
     audioLabel: 'Audio only'
   })
-  const frame = bodyChildren.find(node => !before.has(node) && node.tagName === 'IFRAME' && node.src && node.src.includes('overlay=1'))
-  assert.ok(frame, 'no backdrop was mounted for an audio-only session')
+  const frame = framed().find(props => String(props.src || '').includes('overlay=1'))
+  assert.ok(frame, `no page was framed for an audio-only session: ${JSON.stringify(framed().map(props => props.src))}`)
   dispose()
 })
 
 await record('a closed film does not tear down the audio-only backdrop', async () => {
-  const before = new Set(bodyChildren)
   const dispose = await remount({
     windowVisual: false,
     backdropMode: 'video',
@@ -362,8 +431,25 @@ await record('a closed film does not tear down the audio-only backdrop', async (
     audioUrl: 'https://ice.example/audio-only.mp3',
     audioLabel: 'Audio only'
   })
-  const frame = bodyChildren.find(node => !before.has(node) && node.tagName === 'IFRAME' && node.src && node.src.includes('player.html'))
-  assert.ok(frame, 'the closed-film branch removed the audio channel page')
+  const frame = framed().find(props => String(props.src || '').includes('token='))
+  assert.ok(frame, `the closed-film branch removed the audio channel page: ${JSON.stringify(framed().map(props => props.src))}`)
+  assert.ok(!String(frame.src).includes('/player.html'),
+    'a closed film put a dead player page back on screen for the music to live in')
+  dispose()
+})
+
+await record('music keeps its page when the film is closed in visualiser mode', async () => {
+  // The same gate, asked the other way round: closing the film must not take the
+  // music's page down with it, whatever mode the backdrop is in.
+  const dispose = await remount({
+    windowVisual: false,
+    backdropMode: 'aura',
+    videoClosed: true,
+    audioUrl: 'https://ice.example/audio-only.mp3',
+    audioLabel: 'Audio only'
+  })
+  const frame = framed().find(props => String(props.src || '').includes('overlay=1'))
+  assert.ok(frame, `a closed film took the music page down with it: ${JSON.stringify(framed().map(props => props.src))}`)
   dispose()
 })
 
