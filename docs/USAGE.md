@@ -30,6 +30,36 @@ files. A film remembers where you stopped, keyed by URL, so switching sources
 never restarts it. A film that reaches the end is not remembered at its last
 second.
 
+## Subtitles (CC)
+
+Aura does not set caption options for you, and YouTube decides on its own
+otherwise. The **CC** button turns them on and off, and the choice is
+remembered for every film after it.
+
+- **Where it is.** The floating control strip, the docked pane under the
+  picture (**Subtitles**), the Aura page beside the transport, the **A** menu
+  (**Subtitles**), and Settings ▸ Plugins ▸ Aura (**Subtitles**). Settings grows
+  the language list as well.
+- **What it costs when off.** Nothing: with CC off the embed is not asked for
+  captions at all, and a running player is told to unload its captions module.
+- **Languages.** When a video has more than one caption track, the menu offers
+  the ones it actually has (read from the player itself, not from a list Aura
+  ships). **Automatic** means the machine's own language, then English. The
+  list changes with the video because YouTube publishes it per video.
+- **Every new episode.** YouTube forgets captions per video, so Aura re-applies
+  the choice on each new video in a playlist.
+- **No subtitles.** When the player reports no caption track for the video, the
+  CC button is greyed out and its tooltip reads *No subtitles for this video* —
+  ambient ocean and cab-ride uploads are like this.
+- **Direct files.** An MP4/WebM's own text tracks are switched between showing
+  and hidden; a file with no track behaves like a video with no subtitles.
+- **Burned-in subtitles cannot be turned off.** If the words are painted into
+  the picture (many film uploads are), no player API can remove them and the CC
+  button will not change anything. That is the upload's choice, not a bug.
+
+By voice: *“turn the subtitles on”* → the agent calls `aura_control` with
+`action=captions`, `captions=on` (or `off`), and the same switch is applied.
+
 ## Move the controls
 
 The transport strip floats over the app. Drag it by the ⠿ grip — or by any empty

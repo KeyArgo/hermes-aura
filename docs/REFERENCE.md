@@ -15,11 +15,12 @@ Turn Aura on/off, read status, set intensity/preset/mood, drive the film.
 
 | Parameter | Type | Required | Notes |
 |---|---|---|---|
-| `action` | string enum | yes | `on`, `off`, `status`, `intensity`, `preset`, `mood`, `pause`, `resume`, `next`, `prev`, `seek`, `popout`, `popin` |
+| `action` | string enum | yes | `on`, `off`, `status`, `intensity`, `preset`, `mood`, `pause`, `resume`, `next`, `prev`, `seek`, `captions`, `popout`, `popout_inline`, `popin` |
 | `intensity` | number 0..1 | for `intensity` | Render cap. |
 | `preset` | string or null | for `preset` | Name from `web/presets.json`; `null` resets. |
 | `mood` | string enum | for `mood` | `idle`, `thinking`, `tool`, `approval`, `error`, `streaming`, `done` |
 | `position` | number ≥ 0 | for `seek` / `popout` | Seconds. |
+| `captions` | `on` \| `off` | for `captions` | The film's subtitles; remembered, and applied to whichever player owns the picture. |
 | `url` | string | optional for `popout` | Film to open; defaults to the loaded one. |
 
 Return shape (status, abridged): `ok`, `running`, `enabled`, `port`, `capture`,
@@ -171,6 +172,11 @@ four of them — `readable`, `readableSize` (`s`/`m`/`l`/`xl`), `readableFont`
 (`typography.baseSize`, `typography.lineHeight`, `typography.fontSans`,
 `typography.fontUrl`, `colors.foreground`, `colors.mutedForeground`) on the
 `aura-live` contribution.
+
+Subtitles live there too: `videoCaptions` (boolean, default `false`) and
+`videoCaptionLang` (a language tag such as `fr` or `en-US`; empty means
+"the machine's language, then English"). See
+[USAGE.md](USAGE.md#subtitles-cc) and §14 of [CONTRACT.md](../CONTRACT.md).
 
 Environment variables: `HERMES_HOME`, `AURA_CAPTURE`, `AURA_RADIO_BROWSER_SERVERS`,
 `AURA_DESKTOP_BROWSER`, `AURA_DESKTOP_GPU`, plus `XDG_SESSION_TYPE` /

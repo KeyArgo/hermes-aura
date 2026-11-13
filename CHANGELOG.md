@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased — subtitles you control
+
+- **A CC button, on every player surface.** The floating control strip, the
+  docked pane (**Subtitles**), the Aura page, the **A** menu and Settings ▸
+  Plugins ▸ Aura all carry the same switch, and the choice is remembered
+  (`videoCaptions`, off by default — before this, YouTube decided on its own).
+  The agent can set it too: `aura_control` with `action=captions`,
+  `captions=on|off`.
+- **The embed only asks for captions when they are on.** `cc_load_policy=1` plus
+  `cc_lang_pref` appear in the player URL only then; a live player is switched
+  with the documented `loadModule`/`unloadModule` command pair instead of a
+  reload, so the film never restarts. Both are re-applied per video, because
+  YouTube resets captions on every new video in a playlist.
+- **The language list is the video's own.** The player publishes its caption
+  tracks (`apiInfoDelivery` → `getOption('captions','tracklist')` shapes); the
+  menu offers exactly those, and picks one with
+  `setOption('captions','track',{languageCode})`. Automatic means the machine's
+  language, then English. Preferred language is remembered
+  (`videoCaptionLang`).
+- **"No subtitles" is an answer, not a guess.** Ambient uploads publish no
+  captions namespace at all, so the button is disabled with *No subtitles for
+  this video* instead of pretending. A direct MP4/WebM switches its own
+  `textTracks` between `showing` and `hidden`.
+- **The popped-out window starts with the same choice** (`captions`/`cc_lang` on
+  `/api/window/open`) and reports its own state back, so the app's switch never
+  disagrees with the picture.
+- **Documented limit:** subtitles burned into the picture cannot be turned off.
+  No player API exposes them; the README and USAGE say so plainly.
+
 ## Unreleased — Hermes can edit your own list
 
 - **`aura_watch` can save, remove and list the owner's Aura library** (the

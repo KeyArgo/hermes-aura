@@ -339,3 +339,29 @@ theme change and repaints in place. No selector, stylesheet or style rule is add
   on an idle window would undo the text exactly when the user goes back to reading chat.
 - Hermes' own chat face (`desktop.font_family`, Settings ▸ Appearance ▸ Chat font) is left alone;
   the Readable group links to it instead of overriding it.
+
+## 14. Subtitles (additive, 2026-11-13)
+
+Ownership is unchanged: the page owns the player, the desktop half owns the choice.
+
+- **Page → app.** `video-state` gains `captions: {on, lang, current, known, tracks: [{code, name}]}`.
+  `known: false` means the player has not answered yet; `known: true` with an empty `tracks` is
+  the real "this video has no subtitles" answer, and only that disables the CC control.
+- **App → page.** The page is loaded with `?captions=1` and `?cc_lang=<tag>` when the choice is on.
+  A live switch is `{aura: 'transport', cmd: 'captions', value: 0|1, lang?: '<tag>'}` over the same
+  bridge as the transport.
+- **Queue.** `/api/player/command` accepts `cmd: "captions"` with `value: 0|1` and an optional
+  `lang` matching `^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$`; anything else in `lang` is dropped, not
+  forwarded to YouTube. The OS window is opened with `captions`/`lang` in `/api/window/open`.
+- **Player commands** are `web/captions.js`: `cc_load_policy=1` + `cc_lang_pref` in the embed when
+  on (nothing when off), `loadModule`/`unloadModule` for `captions`, plus
+  `setOption('captions','track',{languageCode})` when a language is known. They are re-applied per
+  video id, because YouTube resets captions per video.
+- **Where the track list comes from.** The player's own `apiInfoDelivery` message
+  (`{namespaces:['captions'], captions:{track, tracklist}}`), which it posts whether or not captions
+  are showing. Measured: a Netflix/BBC Earth upload publishes 17 tracks; ambient uploads publish no
+  captions namespace at all.
+- **Direct files.** `<video>.textTracks[i].mode` is `showing` for the chosen track and `hidden` for
+  the rest.
+- **Not detectable, and stated as such:** subtitles burned into the picture. No player API exposes
+  them, so the CC switch cannot remove them; the README and USAGE say so.
