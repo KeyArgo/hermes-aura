@@ -157,8 +157,8 @@ function makeCtx(settings) {
   const serverSettings = {
     motion: settings && typeof settings.motion === 'string' ? settings.motion : 'agent_music',
     behavior: settings && typeof settings.behavior === 'string' ? settings.behavior : 'balanced',
-    intensity: settings && Number.isFinite(settings.intensity) ? settings.intensity : 0.5,
-    opacity: settings && Number.isFinite(settings.opacity) ? settings.opacity : 0.35,
+    intensity: settings && Number.isFinite(settings.intensity) ? settings.intensity : 0.25,
+    opacity: settings && Number.isFinite(settings.opacity) ? settings.opacity : 0.25,
     reduced_motion: settings && typeof settings.reducedMotion === 'boolean' ? settings.reducedMotion : false
   }
   const serverFrame = {
@@ -1364,8 +1364,9 @@ await recordAsync('accent pulse and Aura Live are off by default', async () => {
   assert.equal(hostStyles().length, 0)
   assert.equal(hostIframes().length, 0)
 
-  // Desktop defaults for a new user: agent_music, balanced, 0.35 opacity,
-  // "Show: Always". Saved settings keep their own values (covered elsewhere).
+  // Desktop defaults for a new user: agent_music, balanced, 25% intensity and
+  // 25% opacity, "Show: Always". Saved settings keep their own values (covered
+  // elsewhere).
   const motion = findSwitch(tree, 'Motion source')
   assert.equal(motion.props.value, 'agent_music', 'motion default is not agent_music')
   const behavior = (() => {
@@ -1383,7 +1384,7 @@ await recordAsync('accent pulse and Aura Live are off by default', async () => {
     })
     return found
   })()
-  assert.equal(opacity.props.value, 35, 'opacity default is not 0.35')
+  assert.equal(opacity.props.value, 25, 'opacity default is not 25%')
   const show = (() => {
     let found = null
     walk(tree, node => {
@@ -1399,7 +1400,7 @@ await recordAsync('accent pulse and Aura Live are off by default', async () => {
     })
     return found
   })()
-  assert.equal(intensity.props.value, 0.5, 'intensity default is not 0.5')
+  assert.equal(intensity.props.value, 0.25, 'intensity default is not 0.25')
 })
 
 record('dispose from the defaults scenario is clean', () => {
@@ -2898,6 +2899,50 @@ await recordAsync('quality: Aura (visualiser) mode frames the local visualiser, 
     assert.equal(url.searchParams.get('overlay'), '1', 'the visualiser frame is not overlay mode')
   } finally {
     dispose()
+  }
+})
+
+await recordAsync('display: the visualiser frame is never dimmed a second time', async () => {
+  // CONTRACT.md §9.2: the PAGE applies opacity to its own canvas and compensates
+  // its scrim for it, so the frame element must stay at full strength. Dimming
+  // the frame too squared the setting (25% drew 6%) and dimmed the page chrome
+  // the contract keeps legible.
+  const ctx = makeCtx({ enabled: true, backdropMode: 'aura', opacity: 0.25 })
+  closePopout(ctx)
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await primeLive()
+    globalThis.__sdkFrames.length = 0
+    const pane = ctx.contributions.find(c => c.area === 'panes')
+    assert.ok(pane, 'no pane contribution')
+    expandTree(pane.render())
+    const framed = globalThis.__sdkFrames.find(f => String(f.src || '').includes('overlay=1'))
+    assert.ok(framed, `the visualiser was not framed: ${JSON.stringify(globalThis.__sdkFrames.map(f => f.src))}`)
+    assert.equal(framed.style.opacity, 1,
+      'the frame carries the user opacity on top of the page, which applies it again (0.25 drew 0.0625)')
+  } finally {
+    dispose()
+  }
+  // A film is a different surface: the player page has no opacity of its own, so
+  // the frame keeps carrying the video's adaptive transparency.
+  const film = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true,
+    videoUrl: 'https://example.test/film.mp4'
+  })
+  closePopout(film)
+  const disposeFilm = pluginModule.default.register(film.ctx)
+  try {
+    await primeLive()
+    globalThis.__sdkFrames.length = 0
+    const pane = film.contributions.find(c => c.area === 'panes')
+    assert.ok(pane, 'no pane contribution')
+    expandTree(pane.render())
+    const framed = globalThis.__sdkFrames.find(f => String(f.src || '').includes('/player.html'))
+    assert.ok(framed, 'the film was not framed')
+    assert.ok(Number(framed.style.opacity) > 0 && Number(framed.style.opacity) < 1,
+      'the film lost its adaptive transparency: ' + framed.style.opacity)
+  } finally {
+    disposeFilm()
   }
 })
 
