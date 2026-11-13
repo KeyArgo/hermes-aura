@@ -27,10 +27,12 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/aura-demo.gif" alt="Aura in Hermes Desktop: a documentary plays in the docked film pane, then the visualiser fills the app behind the chat" width="100%">
+  <img src="docs/media/aura-demo.gif" alt="Aura in Hermes Desktop: a documentary plays in the docked film pane, then the visualiser draws through the app" width="100%">
 </p>
 
-<p align="center"><sub><b>Aura inside Hermes Desktop</b>: the film pane beside your work, then the same audio driving the visualiser behind the chat.
+<p align="center"><sub><b>Aura inside Hermes Desktop</b>: the film pane beside your work, then the same audio driving the visualiser.
+Recorded on the catalog-pinned build; the current release draws the visualiser in Aura's own pane — see
+<a href="#where-the-visual-lives">where the visual lives</a>. The plugin asks Hermes for a backdrop area so the full-window version can return.
 <a href="https://x.com/MHArgonaut/status/2120634853146435961">Watch the full 50-second demo ▶</a></sub></p>
 
 <p align="center"><img src="docs/media/aura-film.gif" alt="Aura: picking a film from the shelf, then it plays docked beside the chat" width="100%"/>
