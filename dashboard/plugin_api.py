@@ -338,11 +338,20 @@ def _version_dict() -> dict:
             module = None
     if module is not None:
         try:
-            return module.as_dict()
+            info = module.as_dict()
+            # The chip renders this line verbatim (VERSION-CHIP.md): one place
+            # builds it, so every surface and the /version command agree.
+            try:
+                info = dict(info)
+                info["line"] = module.chip_line(info)
+            except Exception:  # noqa: BLE001 - an older vendored copy has no chip_line
+                pass
+            return info
         except Exception:  # noqa: BLE001
             logger.info("aura dashboard: version stamp unreadable", exc_info=True)
     return {"version": "unknown", "commit": "", "commit_short": "", "commit_date": "",
-            "built_at": "", "channel": "release", "dirty": False, "source": "manifest"}
+            "built_at": "", "channel": "release", "dirty": False, "source": "manifest",
+            "line": "vunknown"}
 
 
 @router.get("/version")

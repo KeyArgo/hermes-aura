@@ -428,6 +428,10 @@ const $pulse = atom(0)
 // The running build, read once from the backend's /version. An atom (not a constant)
 // because a number typed into this file would drift from the manifest and never say so.
 const $build = atom(null)
+// True when the backend answered /version without the standard `line` key: that
+// is an Aura *server* older than this pane (Hermes keeps the old Python module in
+// memory across an update). The pane says so instead of looking broken.
+const $staleServer = atom(false)
 let pulseIndex = 0
 
 // --------------------------------------------------------------- persistence
@@ -4261,13 +4265,26 @@ function AuraPane() {
       open ? jsx(AuraSettings, { key: 'controls' }) : null
     ]
   })
+  const stale = useValue($staleServer)
+  const staleNote = stale
+    ? jsx('div', {
+      key: 'stale',
+      role: 'status',
+      style: {
+        flex: '0 0 auto', padding: '4px 6px', marginBottom: 6, borderRadius: 6,
+        fontSize: 11, lineHeight: 1.35, color: '#e8a33d',
+        border: '1px solid rgba(232,163,61,0.45)', background: 'rgba(232,163,61,0.08)'
+      },
+      children: 'Aura\'s backend is running an older build than this pane — restart Hermes to finish the update.'
+    })
+    : null
   return jsxs('div', {
     key: 'pane',
     style: {
       height: '100%', minHeight: 0, overflowY: 'auto',
       display: 'flex', flexDirection: 'column'
     },
-    children: [film, theatre, settingsSection]
+    children: [film, staleNote, theatre, settingsSection]
   })
 }
 
@@ -5890,88 +5907,132 @@ function ThemeProbe() {
 
 // Copy that reports the truth: callers may only say "copied" when this returned true.
 async function copyText(text) {
+  // Order per VERSION-CHIP.md: the host's clipboard door first (it is the
+  // sanctioned one), then the browser API, then the legacy textarea fallback.
   try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
+    if (host && host.os && typeof host.os.writeClipboard === 'function') {
+      const wrote = await host.os.writeClipboard(text)
+      if (wrote === true) return true
+    }
+  } catch {
+    // fall through
+  }
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
       await navigator.clipboard.writeText(text)
       return true
     }
-  } catch { /* fall through to the textarea */ }
-  try {
-    const wrote = host && host.os && typeof host.os.writeClipboard === 'function'
-      ? await host.os.writeClipboard(text)
-      : false
-    return wrote === true
-  } catch { return false }
+  } catch {
+    // fall through
+  }
+  // No DOM fallback: it would mean appending a textarea to the host's body, and
+  // a plugin that must not touch app markup must not touch it for a copy
+  // either. Its absence is reported, not faked.
+  return false
 }
 
-/** `v1.0.0-dev.57 · 2026-11-09 · a4b7a67d` (+ ` · modified` from a dirty tree). */
+/** The suite's one chip line (VERSION-CHIP.md), e.g.
+ *  `v1.0.0-dev.342 · 1a2b3c4d · 2026-11-13`. The backend builds it
+ *  (`chip_line()`), so this renders `build.line` verbatim and only falls back to
+ *  assembling one when an older server has no `line` key. */
 function buildLine(build) {
-  if (!build || !build.version) return ''
+  if (!build) return ''
+  if (typeof build.line === 'string' && build.line) return build.line
+  if (!build.version) return ''
   const parts = ['v' + build.version]
-  if (build.commit_date) parts.push(String(build.commit_date).slice(0, 10))
   const sha = build.commit_short || build.commit
   if (sha) parts.push(String(sha).slice(0, 8))
-  return parts.join(' · ') + (build.dirty ? ' · modified' : '')
+  if (build.commit_date) parts.push(String(build.commit_date).slice(0, 10))
+  if (build.dirty) parts.push('modified')
+  return parts.join(' · ')
 }
 
-function buildTitle(build) {
-  if (!build || !build.version) return ''
+/** Tooltip lines, in the order the standard names. */
+function buildTitle(build, line) {
+  if (!line) return ''
   return [
-    'Aura ' + build.version,
-    build.commit ? 'commit ' + build.commit : 'no commit (installed copy)',
-    build.commit_date ? 'committed ' + build.commit_date : '',
-    build.built_at ? 'installed ' + build.built_at : '',
-    build.channel ? 'channel ' + build.channel : '',
-    'click to copy this line',
+    'Aura ' + String(build && build.version ? build.version : ''),
+    build && build.commit ? 'commit ' + build.commit : '',
+    build && build.commit_date ? 'committed ' + String(build.commit_date) : '',
+    build && build.built_at ? 'installed ' + String(build.built_at) : '',
+    build && build.channel ? 'channel ' + String(build.channel) : '',
+    build && build.source ? `read from ${String(build.source)}` : '',
+    'Click to copy',
   ].filter(Boolean).join('\n')
 }
 
-/** The build chip: filled from the backend's /version, never from a number compiled in here.
- *  `compact` is the status-menu variant: same source, version + short sha only, at 9px,
- *  because the full line does not fit beside the word Aura in a popover. */
+/** The build chip. One style, one text, one behaviour, wherever it appears.
+ *
+ *  Source: ONE GET to the plugin backend's `/version`, at request time. Nothing
+ *  before it answers (a guessed number is worse than none), a retry whenever the
+ *  backend comes up, and a 60 s refresh while it is on screen so a reload or an
+ *  update is picked up without restarting Desktop.
+ *
+ *  `compact` is the only difference anywhere: 9px instead of 10.5px where space
+ *  forces it. Same text — no truncated commit.
+ */
+/** One GET to /version, at request time. Returns nothing: the atom carries it. */
+function refreshVersion() {
+  if (!ctxRef || disposed) return
+  ctxRef.rest('/version', { timeoutMs: 4000 })
+    .then(info => {
+      if (!info || !info.version) return
+      $build.set(info)
+      // No `line` means the server's version_stamp predates the chip standard:
+      // Hermes is still running the module it loaded before the update.
+      const stale = typeof info.line !== 'string' || !info.line
+      if (stale !== $staleServer.get()) $staleServer.set(stale)
+    })
+    .catch(() => {})            // no guess beats a wrong number
+}
+
 function VersionChip(props) {
   const compact = Boolean(props && props.compact === true)
   const build = useValue($build)
   const live = useValue($live)
   const [copyState, setCopyState] = useState('')   // '' | 'copied' | 'failed'
-  // Depends on live.ok so a page that rendered before the server answered tries again.
+
+  // Retry when the backend comes up (live.ok flips). The 60 s refresh lives in
+  // register() so the plugin's own disposer owns it — a component that unmounts
+  // must not leave a timer behind.
   useEffect(() => {
-    if ($build.get() || !ctxRef) return
-    let alive = true
-    ctxRef.rest('/version', { timeoutMs: 4000 })
-      .then(info => { if (alive && info && info.version) $build.set(info) })
-      .catch(() => {})            // no guess beats a wrong number
-    return () => { alive = false }
+    if (!$build.get()) refreshVersion()
   }, [live.ok])
-  const sha = build.commit_short || build.commit || ''
-  const line = compact
-    ? ['v' + build.version].concat(sha ? [String(sha).slice(0, 8)] : []).join(' · ')
-    : buildLine(build)
+
+  const line = buildLine(build)
   if (!line) return null
   const label = copyState === 'copied' ? 'copied ✓' : copyState === 'failed' ? 'copy failed' : line
   return jsx('button', {
     type: 'button',
-    title: buildTitle(build),
+    title: buildTitle(build, line),
+    'aria-label': 'Copy version ' + line,
     onClick: async () => {
-      // Say "copied" only when something was copied: a badge that lies is worse than no badge.
+      // Say "copied" only when something was copied: a badge that lies is worse
+      // than no badge.
       const ok = await copyText('Aura ' + line)
       setCopyState(ok ? 'copied' : 'failed')
       setTimeout(() => setCopyState(''), 1400)
+    },
+    onKeyDown: event => {
+      if (event && (event.key === 'Enter' || event.key === ' ')) {
+        if (event.preventDefault) event.preventDefault()
+        copyText('Aura ' + line).then(ok => {
+          setCopyState(ok ? 'copied' : 'failed')
+          setTimeout(() => setCopyState(''), 1400)
+        })
+      }
     },
     style: {
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       fontSize: compact ? 9 : 10.5,
       padding: compact ? '0px 5px' : '1px 7px',
       lineHeight: compact ? '13px' : undefined,
-      letterSpacing: compact ? 0 : undefined,
       borderRadius: 999,
       border: '1px solid var(--ui-stroke-secondary)', background: 'transparent',
       cursor: 'pointer', whiteSpace: 'nowrap',
-      maxWidth: compact ? 132 : undefined,
-      overflow: 'hidden', textOverflow: 'ellipsis',
       color: copyState === 'failed' ? '#e05a5a'
         : copyState === 'copied' ? 'var(--ui-accent)'
-        : build.dirty ? '#e8a33d' : 'var(--ui-text-tertiary)',
+        : (build && build.dirty) ? '#e8a33d' : 'var(--ui-text-tertiary)',
     },
     children: label,
   })
@@ -6833,6 +6894,10 @@ export default {
     // drop down"). The contribution lives in the status bar; the panel is a
     // host Popover, which owns its own Escape/outside-click/focus handling,
     // so nothing here adds a listener or a node to clear on dispose.
+    // The chip refreshes itself: a reload or an update shows up within 60 s
+    // without restarting Desktop.
+    track(ctx.setInterval(() => { if ($build.get()) refreshVersion() }, 60000))
+
     track(
       ctx.register({
         id: 'quick-menu',
@@ -6959,6 +7024,14 @@ export {
 // driven through register()'s context, and are not part of the host contract.
 export const __test = {
   readPositions,
+  VersionChip,
+  buildLine,
+  buildTitle,
+  copyText,
+  refreshVersion,
+  resetBuildForTest: () => { $build.set(null); $staleServer.set(false) },
+  staleServerForTest: () => $staleServer.get(),
+  buildForTest: () => $build.get(),
   // The real poll tick, so a test can put the plugin in the state a live server
   // produces (url + token) without faking the atom.
   poll,

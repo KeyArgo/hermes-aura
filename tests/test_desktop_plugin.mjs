@@ -2914,6 +2914,160 @@ await recordAsync('the floating watch window is restored after a reload', async 
   }
 })
 
+// ---------------------------------------------- version chip (VERSION-CHIP.md)
+// One text, one behaviour, everywhere. The chip renders the backend's
+// chip_line() verbatim and never invents a number.
+
+record('the chip renders the backend line byte for byte', () => {
+  const line = tx.buildLine({
+    version: '1.0.0-dev.342', commit: '1a2b3c4d5e6f7a8b', commit_short: '1a2b3c4d',
+    commit_date: '2026-11-13T09:12:00-07:00', dirty: false, line: 'v1.0.0-dev.342 · 1a2b3c4d · 2026-11-13'
+  })
+  assert.equal(line, 'v1.0.0-dev.342 · 1a2b3c4d · 2026-11-13')
+  // An older server without `line` still gets the same shape, built here.
+  assert.equal(
+    tx.buildLine({ version: '1.0.0', commit_short: 'abcdef12', commit_date: '2026-11-13T10:00:00Z' }),
+    'v1.0.0 · abcdef12 · 2026-11-13'
+  )
+  assert.equal(tx.buildLine({ version: '1.0.0-dev', commit: '', commit_date: '' }), 'v1.0.0-dev')
+  assert.equal(tx.buildLine({ version: '1.0.0', dirty: true }), 'v1.0.0 · modified')
+  assert.equal(tx.buildLine(null), '', 'a chip was drawn with no build')
+})
+
+record('the chip tooltip lists the standard lines in order', () => {
+  const title = tx.buildTitle({
+    version: '1.0.0-dev.342', commit: '1a2b3c4d5e6f7a8b', commit_date: '2026-11-13T09:12:00-07:00',
+    built_at: '2026-11-13T09:12:05-07:00', channel: 'dev', source: 'git'
+  }, 'v1.0.0-dev.342 · 1a2b3c4d · 2026-11-13')
+  assert.deepEqual(title.split('\n'), [
+    'Aura 1.0.0-dev.342',
+    'commit 1a2b3c4d5e6f7a8b',
+    'committed 2026-11-13T09:12:00-07:00',
+    'installed 2026-11-13T09:12:05-07:00',
+    'channel dev',
+    'read from git',
+    'Click to copy'
+  ])
+})
+
+await recordAsync('the chip shows nothing until the backend answers, then copies the standard line', async () => {
+  const ctx = makeCtx({ enabled: true })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  const copied = []
+  const desk = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  try {
+    // Nothing fetched yet: no chip, no guessed number.
+    tx.resetBuildForTest()
+    assert.equal(tx.buildLine(null), '')
+    const chip = tx.VersionChip({ compact: true })
+    assert.equal(chip, null, 'a chip was rendered before /version answered')
+
+    // The backend answers (the real fetch path, through ctx.rest).
+    const original = ctx.ctx.rest
+    ctx.ctx.rest = async (route, options) => {
+      if (route === '/version') {
+        return {
+          version: '1.0.0-dev.342', commit: '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b',
+          commit_short: '1a2b3c4d', commit_date: '2026-11-13T09:12:00-07:00',
+          built_at: '2026-11-13T09:12:05-07:00', channel: 'dev', dirty: false, source: 'git',
+          line: 'v1.0.0-dev.342 · 1a2b3c4d · 2026-11-13'
+        }
+      }
+      return original(route, options)
+    }
+    await tx.refreshVersion()
+    await sleep(20)
+
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { clipboard: { writeText: async text => { copied.push(text) } } },
+      configurable: true, writable: true
+    })
+    const rendered = tx.VersionChip({ compact: true })
+    assert.ok(rendered, 'no chip after the backend answered')
+    assert.equal(rendered.props.children, 'v1.0.0-dev.342 · 1a2b3c4d · 2026-11-13')
+    assert.equal(rendered.props['aria-label'], 'Copy version v1.0.0-dev.342 · 1a2b3c4d · 2026-11-13')
+    assert.equal(rendered.props.type, 'button')
+    await rendered.props.onClick()
+    assert.deepEqual(copied, ['Aura v1.0.0-dev.342 · 1a2b3c4d · 2026-11-13'])
+  } finally {
+    if (desk) Object.defineProperty(globalThis, 'navigator', desk)
+    else delete globalThis.navigator
+    dispose()
+  }
+})
+
+await recordAsync('cold start: the visual appears when the server answers, with no toggling', async () => {
+  // Owner's blocker: "it doesn't even play at all ... I had to toggle aura on and
+  // off and then visualizer and video". A cold start must mount the visual as
+  // soon as the backend answers — the user touches nothing.
+  const ctx = makeCtx({ enabled: true, backdropMode: 'aura' })
+  closePopout(ctx)
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    // First render happens BEFORE the server has answered: nothing may be drawn
+    // (there is no page to draw yet), and nothing may be cached as "off".
+    globalThis.__sdkFrames.length = 0
+    const pane = ctx.contributions.find(c => c.area === 'panes')
+    expandTree(pane.render())
+    assert.equal(globalThis.__sdkFrames.length, 0, 'a frame was drawn with no server')
+
+    // The live signal arrives on its own (one poll, no user action).
+    await primeLive()
+    globalThis.__sdkFrames.length = 0
+    expandTree(pane.render())
+    const framed = globalThis.__sdkFrames.find(f => String(f.src || '').includes('overlay=1'))
+    assert.ok(framed, 'the visual never mounted after the server answered — the toggle bug')
+    assert.match(framed.src, /token=/, 'the visual frame carries no token, so it cannot stream')
+    assert.equal(ctx.storage.get('settings').backdropMode, 'aura',
+      'mounting the visual changed the user\'s mode')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('a stale backend is named, not left looking broken', async () => {
+  // Hermes keeps the Python module it loaded: after an update the pane can be new
+  // while the server is old. Its /version then has no `line`, and the pane says
+  // so — "restart Hermes to finish the update" — instead of drawing nothing.
+  const ctx = makeCtx({ enabled: true, backdropMode: 'aura' })
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    tx.resetBuildForTest()
+    const original = ctx.ctx.rest
+    ctx.ctx.rest = async (route, options) => {
+      if (route === '/version') {
+        return { version: '1.0.0', commit: '', commit_short: '', commit_date: '', compiled: true }
+      }
+      return original(route, options)
+    }
+    await tx.refreshVersion()
+    await sleep(20)
+    assert.equal(tx.staleServerForTest(), true, 'an old server was not detected')
+    const pane = ctx.contributions.find(c => c.area === 'panes')
+    const tree = pane.render()
+    expandTree(tree)
+    const body = texts(tree)
+    assert.match(body, /restart Hermes to finish the update/i, 'the pane does not say how to fix it')
+
+    // A current server clears it again.
+    ctx.ctx.rest = async (route, options) => {
+      if (route === '/version') {
+        return {
+          version: '1.0.0-dev.342', commit: 'abc', commit_short: 'abc12345',
+          commit_date: '2026-11-13', dirty: false, channel: 'dev', source: 'git',
+          line: 'v1.0.0-dev.342 · abc12345 · 2026-11-13'
+        }
+      }
+      return original(route, options)
+    }
+    await tx.refreshVersion()
+    await sleep(20)
+    assert.equal(tx.staleServerForTest(), false, 'a current server still looked stale')
+  } finally {
+    dispose()
+  }
+})
+
 // --------------------------------------------------------------- reporting
 
 console.log(results.join('\n'))

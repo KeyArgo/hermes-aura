@@ -76,6 +76,13 @@ recording.
 
 ---
 
+### Where the visual lives
+
+The visualiser and the film render inside Aura's own surfaces — the docked pane, the Aura page and
+the floating watch window. Hermes' plugin SDK has no "draw behind the app" area yet (the request is
+drafted for the maintainers), so nothing is painted over your chat; the pane is the surface that
+streams audio from the backend, and that stream is what keeps capture awake on a cold start.
+
 ## Features
 
 ### Watch while you work
@@ -221,6 +228,14 @@ dashboard also exposes the same search as
   `api_request_error`, stream start/end, subagent start/stop.
 
 ### Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/aura-audio.gif" alt="Aura's visualiser reacting to a beat" width="80%">
+</p>
+<p align="center"><sub><b>The visualiser, reacting</b> — captured 2026-11-13 from Aura's own visualiser surface, driven by
+real system loopback audio (a 120 BPM kick pattern) through the plugin's capture path. 800 px, 6 fps, looped.</sub></p>
+
+
 
 <table>
   <tr>
