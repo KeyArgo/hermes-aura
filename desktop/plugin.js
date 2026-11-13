@@ -297,7 +297,37 @@ const STARTER_SOURCES = Object.freeze([
   // Internet Archive — public-domain features, served as direct mp4 (checked:
   // 200 with Content-Type video/mp4), so no embed rules apply at all.
   { label: 'Nanook of the North (1922) · film', url: 'https://archive.org/download/nanookOfTheNorth1922/NanookOfTheNorth1922.mp4' },
-  { label: 'The General (1926) · film', url: 'https://archive.org/download/TheGeneralBusterKeaton1926/TheGeneral2.mp4' }
+  { label: 'The General (1926) · film', url: 'https://archive.org/download/TheGeneralBusterKeaton1926/TheGeneral2.mp4' },
+  // Added by hand 2026-11-13: each checked with oEmbed (200) and yt-dlp
+  // (playable_in_embed true, age_limit 0). Official channel uploads or
+  // public-domain films only.
+  // BBC Earth — official uploads; Blue Planet II's deep-sea hour leads.
+  { label: 'Blue Planet II: The Deep (67 min) · documentary', url: 'https://www.youtube.com/watch?v=EF8C4v7JIbA' },
+  { label: 'Blue Planet II in 4K (67 min) · documentary', url: 'https://www.youtube.com/watch?v=fPzadO3WXdk' },
+  { label: 'Wild China (98 min) · documentary', url: 'https://www.youtube.com/watch?v=2PjosQxTv1A' },
+  { label: 'Wildlife with Attenborough (4 h) · documentary', url: 'https://www.youtube.com/watch?v=asaBsrIJ25c' },
+  { label: 'The Wild Side of Our Planet (3 h) · documentary', url: 'https://www.youtube.com/watch?v=E5fofNAbm78' },
+  // Netflix — released Our Planet free on its own YouTube channel.
+  { label: 'Our Planet: High Seas (49 min) · documentary', url: 'https://www.youtube.com/watch?v=9FqwhW0B3tY' },
+  { label: 'Our Planet: Forests (48 min) · documentary', url: 'https://www.youtube.com/watch?v=JkaxUblCGz0' },
+  { label: 'Our Planet: Jungles (51 min) · documentary', url: 'https://www.youtube.com/watch?v=um2Q9aUecy0' },
+  { label: 'Our Planet: Fresh Water (49 min) · documentary', url: 'https://www.youtube.com/watch?v=R2DU85qLfJQ' },
+  { label: 'Our Planet: Coastal Seas (50 min) · documentary', url: 'https://www.youtube.com/watch?v=r9PeYPHdpNo' },
+  // National Geographic / HISTORY — official uploads.
+  { label: 'Giants of the Deep (38 min) · documentary', url: 'https://www.youtube.com/watch?v=OwsSVq1AmVE' },
+  { label: 'America\'s National Parks (3.7 h) · documentary', url: 'https://www.youtube.com/watch?v=r10g5gERB04' },
+  { label: 'Inside the Mariana Trench (44 min) · documentary', url: 'https://www.youtube.com/watch?v=ZC0DxdjTjT8' },
+  // HOME (2009) — released free by its producers for anyone to watch.
+  { label: 'HOME (93 min) · documentary', url: 'https://www.youtube.com/watch?v=QjhX5aOYyJs' },
+  // Sen — its own 24/7 live 4K camera on the ISS.
+  { label: 'Earth from the ISS (live) · space', url: 'https://www.youtube.com/watch?v=fO9e9jnhYK8' },
+  // NRK released Bergensbanen minute by minute under CC BY.
+  { label: 'Bergen to Oslo by train (7 h) · cab ride', url: 'https://www.youtube.com/watch?v=fCD2Rs_wUtM' },
+  // Public-domain features.
+  { label: 'Metropolis (1927) · film', url: 'https://www.youtube.com/watch?v=enwB5zZfaV4' },
+  { label: 'His Girl Friday (1940) · film', url: 'https://www.youtube.com/watch?v=kmYcT5gT6a4' },
+  { label: 'Charade (1963) · film', url: 'https://www.youtube.com/watch?v=4G1PNO41Di8' },
+  { label: 'The Last Man on Earth (1964) · film', url: 'https://www.youtube.com/watch?v=Nn1zUV_zQMQ' }
 ])
 
 // Sites that refuse to be framed: their web apps send X-Frame-Options /
@@ -734,7 +764,7 @@ function readSettings(ctx) {
     out.videoRecent = readSourceList(raw.videoRecent)
     out.videoPlaylists = readSourceList(raw.videoPlaylists)
     out.videoHiddenStarters = Array.isArray(raw.videoHiddenStarters)
-      ? raw.videoHiddenStarters.filter(item => typeof item === 'string').slice(0, 40)
+      ? raw.videoHiddenStarters.filter(item => typeof item === 'string').slice(0, 1000)
       : []
     out.videoHiddenIds = Array.isArray(raw.videoHiddenIds)
       ? raw.videoHiddenIds.filter(item => typeof item === 'string').slice(0, 500)
