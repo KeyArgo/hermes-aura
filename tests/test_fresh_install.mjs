@@ -1286,17 +1286,32 @@ const stripButton = label => {
     assert.ok(toggle && typeof toggle.props.onCheckedChange === 'function', 'no Frosted glass switch in Aura settings')
     toggle.props.onCheckedChange(true)
     await tickPoll(bucket)
-    assert.equal(bucket.storage.get('settings').frost, true, 'the choice was not saved')
+    assert.equal(bucket.storage.get('settings').frostLook, true, 'the choice was not saved')
     assert.ok(imitatesFrost(glassCss()), 'frost on draws no frost look without host glass')
   })
   await recordAsync('56. Frosted glass off paints a solid base over the host glass (Windows/macOS)', async () => {
     frostSwitch().props.onCheckedChange(false)
     await tickPoll(bucket)
-    assert.equal(bucket.storage.get('settings').frost, false, 'the choice was not saved')
+    assert.equal(bucket.storage.get('settings').frostLook, false, 'the choice was not saved')
     assert.ok(winsOverHostGlass(glassCss()), 'with frost off the host glass still shows through')
     assert.equal(imitatesFrost(glassCss()), false, 'frost off still imitates frost')
   })
   safeDispose('the frost scenario (R)', dispose)
+}
+
+// Scenario R2: builds a970229..019a25c saved `frost: true` as a default nobody
+// chose. On a platform without glass (Linux) that must not switch the frost
+// look on by itself.
+{
+  const bucket = makeCtx(new Map([['settings', { enabled: true, backdropMode: 'aura', windowVisual: true, panelEnabled: false, frost: true }]]))
+  const dispose = pluginModule.default.register(bucket.ctx)
+  await tickPoll(bucket)
+  record('65. a stale saved frost default does not turn the frost look on (Linux keeps its look)', () => {
+    const style = headChildren.find(node => node.attributes && node.attributes.id === 'aura-glass')
+    const css = style ? String(style.textContent || '') : ''
+    assert.equal(/html:not\(\[data-hermes-glass\]\)/.test(css), false, 'an old saved default switched the frost look on')
+  })
+  safeDispose('the stale frost scenario (R2)', dispose)
 }
 
 // Scenario S: watch window sizes beyond small/medium/large, and a big one never

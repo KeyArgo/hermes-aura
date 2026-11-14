@@ -152,8 +152,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   windowVisual: false,
   // Frosted (true) or solid (false) behind the visual, on every platform. null
   // follows the platform: frost where Hermes has glass (Windows/macOS), solid
-  // where it has none (Linux). See frostOn().
-  frost: null,
+  // where it has none (Linux). See frostOn(). Not `frost`: a970229..019a25c
+  // saved `frost: true` as a default nobody chose, which would force frost on Linux.
+  frostLook: null,
   motion: 'agent_music',
   // What the render gain does while the agent is idle: stop / ember / keep going.
   idleMotion: 'always',
@@ -608,7 +609,7 @@ function readSettings(ctx) {
     if (typeof raw.themeOptIn === 'boolean') out.themeOptIn = raw.themeOptIn
     if (typeof raw.themeIdleRestore === 'boolean') out.themeIdleRestore = raw.themeIdleRestore
     if (typeof raw.windowVisual === 'boolean') out.windowVisual = raw.windowVisual
-    if (typeof raw.frost === 'boolean') out.frost = raw.frost
+    if (typeof raw.frostLook === 'boolean') out.frostLook = raw.frostLook
     if (typeof raw.motion === 'string' && MOTIONS.includes(raw.motion)) out.motion = raw.motion
     if (typeof raw.idleMotion === 'string' && IDLE_MOTIONS.includes(raw.idleMotion)) out.idleMotion = raw.idleMotion
     if (typeof raw.reducedMotion === 'boolean') out.reducedMotion = raw.reducedMotion
@@ -804,14 +805,14 @@ function hostGlassLive() {
 
 /** Frosted or solid behind the visual: the user's pick, else the platform's. */
 function frostOn() {
-  const frost = $settings.get().frost
+  const frost = $settings.get().frostLook
   return typeof frost === 'boolean' ? frost : hostGlassLive()
 }
 
 /** Frosted glass on/off; re-measures the glass if it is up. */
 function setFrost(on) {
   if (!ctxRef || disposed) return
-  writeSettings({ frost: Boolean(on) })
+  writeSettings({ frostLook: Boolean(on) })
   if (glassStyleEl) applyGlassStyle()
 }
 
