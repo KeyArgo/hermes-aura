@@ -1522,6 +1522,68 @@ for (const [name, extra] of [
   safeDispose('the off closes desktop scenario', scenario.dispose)
 }
 
+// Found in review (11-14): turning Aura off while the desktop window was still
+// open let the next poll "adopt" the window again, and a slow or failed close was
+// never retried, so the OS window kept playing with Aura shown off.
+{
+  const scenario = await watchWindowScenario({ videoWindow: false })
+  const routes = []
+  let windowOpen = false
+  const realRest = scenario.bucket.ctx.rest
+  scenario.bucket.ctx.rest = async (route, options = {}) => {
+    routes.push(route)
+    if (route === '/window') return { ok: true, available: true, open: windowOpen }
+    if (route === '/window/open') { windowOpen = true; return { ok: true, open: true } }
+    if (route === '/window/close') return { ok: false, error: 'busy' }  // the close fails
+    if (route === '/player') return { ok: true, player: {}, seq: 0, window: { ok: true, open: windowOpen, available: true } }
+    if (route.startsWith('/player')) return { ok: true, player: {}, commands: [], seq: 0 }
+    return realRest(route, options)
+  }
+  clickDom(domFind(scenario.pane, node => node.attributes && node.attributes['aria-label'] === 'Watch the film in a desktop window'))
+  await sleep(60)
+  await tickPoll(scenario.bucket)
+  await recordAsync('60b. with Aura off, a desktop window that is still open is closed again, never adopted', async () => {
+    const power = domFind(scenario.pane, node => node.className === 'ap-power')
+    clickDom(power)
+    clickDom(power)
+    await sleep(40)
+    const closesBefore = routes.filter(r => r === '/window/close').length
+    for (let i = 0; i < 4; i += 1) await tickPoll(scenario.bucket)
+    const closesAfter = routes.filter(r => r === '/window/close').length
+    assert.ok(closesAfter > closesBefore, 'Aura is off, the desktop window is still open, and nothing tried to close it again')
+  })
+  safeDispose('the off retries desktop close scenario', scenario.dispose)
+}
+
+// Found in review (11-14): with the desktop window open, "Watch in: Window" closed
+// the desktop window and then the close handoff switched the watch window back off,
+// so the film landed in the Right panel instead.
+{
+  const scenario = await watchWindowScenario({ videoWindow: false })
+  let windowOpen = false
+  const realRest = scenario.bucket.ctx.rest
+  scenario.bucket.ctx.rest = async (route, options = {}) => {
+    if (route === '/window') return { ok: true, available: true, open: windowOpen }
+    if (route === '/window/open') { windowOpen = true; return { ok: true, open: true } }
+    if (route === '/window/close') { windowOpen = false; return { ok: true, closed: true } }
+    if (route === '/player') return { ok: true, player: {}, seq: 0, window: { ok: true, open: windowOpen, available: true } }
+    if (route.startsWith('/player')) return { ok: true, player: {}, commands: [], seq: 0 }
+    return realRest(route, options)
+  }
+  clickDom(domFind(scenario.pane, node => node.attributes && node.attributes['aria-label'] === 'Watch the film in a desktop window'))
+  await sleep(60)
+  await tickPoll(scenario.bucket)
+  await recordAsync('60c. from the desktop window, Watch in: Window ends in the watch window', async () => {
+    clickDom(domFind(scenario.pane, node => node.attributes && node.attributes['aria-label'] === 'Watch the film in the watch window'))
+    await sleep(60)
+    for (let i = 0; i < 3; i += 1) await tickPoll(scenario.bucket)
+    const saved = scenario.bucket.storage.get('settings') || {}
+    assert.equal(windowOpen, false, 'the desktop window stayed open')
+    assert.equal(saved.videoWindow, true, 'the film did not end in the watch window')
+  })
+  safeDispose('the desktop to window scenario', scenario.dispose)
+}
+
 // ===================================================================
 // Scenario I: "Watch in: Panel | Behind chat". With the Right panel open the
 // film can play behind the chat while the panel stays the remote, without a

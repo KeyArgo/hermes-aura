@@ -361,3 +361,17 @@ def test_open_page_that_exits_at_once_is_an_error(popen, monkeypatch):
     monkeypatch.setattr(window.subprocess, "Popen", dying)
     with pytest.raises(window.WindowError):
         window.open_page("https://example.test/one")
+
+
+def test_windows_raise_declares_pointer_sized_window_handles():
+    # Found in review (11-14): GetForegroundWindow had no restype, so ctypes read the
+    # handle as a C int; a 64-bit HWND was truncated before the foreground comparison
+    # and the raise silently failed on Windows. Static check: CI's Windows runner has
+    # no window to raise.
+    import inspect
+    from aura_core import window as win
+
+    source = inspect.getsource(win._raise_windows)
+    assert "GetForegroundWindow.restype = wintypes.HWND" in source
+    for name in ("IsIconic", "BringWindowToTop", "SetForegroundWindow"):
+        assert f'"{name}"' in source, f"{name} has no HWND argtypes"

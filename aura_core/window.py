@@ -279,6 +279,16 @@ def _raise_windows(pid: int) -> bool:
     user32.GetWindowThreadProcessId.restype = wintypes.DWORD
     user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
                                     ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    # Window handles are pointer-sized: without these declarations ctypes treats them
+    # as a C int, which truncates (or refuses) a handle above 32 bits on 64-bit Windows.
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetForegroundWindow.argtypes = []
+    for name in ("IsIconic", "BringWindowToTop", "SetForegroundWindow", "IsWindowVisible",
+                 "GetWindowTextLengthW"):
+        getattr(user32, name).argtypes = [wintypes.HWND]
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     found: List[int] = []
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)

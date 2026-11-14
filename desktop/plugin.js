@@ -1396,6 +1396,10 @@ let desktopOwned = false
 // A pop-out is in flight: the in-app frame is parked already, and stays parked
 // until we know whether a real window opened ("one or the other").
 let desktopPending = false
+// A close of a desktop window that is still open while Aura is off is in flight.
+let desktopClosing = false
+// Bumped by every setDesktopWindow call; a slow open checks it before claiming the film.
+let desktopGeneration = 0
 let playerCursor = null
 let playerReportAt = 0
 let playerReportKey = ''
@@ -1408,6 +1412,20 @@ async function syncPlayerOwnership() {
     if (!snapshot || snapshot.ok !== true || !snapshot.window) return
     const open = snapshot.window.open === true
     const player = snapshot.player || {}
+    // Off is off: a desktop window still open while Aura is off (a slow or failed
+    // close) is closed again on every poll, never adopted back.
+    const liveNow = $live.get()
+    const auraOn = liveNow.ok ? liveNow.enabled === true : $settings.get().enabled
+    if (!auraOn) {
+      desktopOwned = false
+      desktopPending = false
+      lastDesktopPlayer = null
+      if (open && !desktopClosing) {
+        desktopClosing = true
+        void closeDesktopWindow().finally(() => { desktopClosing = false })
+      }
+      return
+    }
     if (open) {
       if (!desktopOwned) {
         lastDesktopPlayer = { ...$video.get(), url: $settings.get().videoUrl || '' }
@@ -1501,6 +1519,9 @@ function popoutSurface(available, opened) {
 }
 
 async function setDesktopWindow(on) {
+  // Any later move away from the desktop bumps this, so a slow open cannot claim
+  // the film after the user already picked somewhere else.
+  const generation = ++desktopGeneration
   if (on) {
     // An OS window and the in-app frame are ALTERNATIVES, never both. Popping
     // out used to switch the in-app frame on first and then also open the OS
@@ -1520,6 +1541,11 @@ async function setDesktopWindow(on) {
       const previousPlayer = { ...$video.get(), url: $settings.get().videoUrl || '' }
       const result = await openDesktopWindow()
       desktopPending = false
+      if (generation !== desktopGeneration || disposed) {
+        // Superseded while it opened: the user moved the film elsewhere.
+        if (result.open === true) void closeDesktopWindow()
+        return
+      }
       if (popoutSurface(true, result.open === true) === 'desktop') {
         if (!desktopOwned) lastDesktopPlayer = previousPlayer
         desktopOwned = true
@@ -1951,7 +1977,9 @@ async function setEnabled(next) {
     removeVideoBar()
     clearAccent(true)
     restoreTheme()
-    // The desktop film window is Aura too: off closes it.
+    // The desktop film window is Aura too: off closes it, and a pop-out still
+    // opening must not claim the film when it lands.
+    desktopGeneration += 1
     if (desktopOwned || desktopPending) {
       desktopOwned = false
       desktopPending = false
@@ -3280,14 +3308,23 @@ function moveFilmTo(place) {
     sendFilmToDesktop()
     return
   }
-  if (desktopOwned || desktopPending) void setDesktopWindow(false)
-  if (place === 'window') {
-    setVideoWindow(true)
-    syncPanel(true)
+  const finish = () => {
+    if (!ctxRef || disposed) return
+    if (place === 'window') {
+      setVideoWindow(true)
+      syncPanel(true)
+      return
+    }
+    if (place === 'behind') sendFilmBehindChat()
+    else sendFilmToPanel()
+  }
+  if (desktopOwned || desktopPending) {
+    // The close handoff turns the watch window off; finish the move after it, or
+    // "Window" would land in the Right panel.
+    void setDesktopWindow(false).then(finish, finish)
     return
   }
-  if (place === 'behind') sendFilmBehindChat()
-  else sendFilmToPanel()
+  finish()
 }
 
 /** Send the film from the watch window back into the Right panel. */
@@ -6233,17 +6270,19 @@ function openRevamp() {
 function capabilitiesSearchInput() {
   if (!doc) return null
   try {
+    // A text box only: never a checkbox, radio or hidden field near the actions.
+    const textBox = 'input[type="search"], input[type="text"], input:not([type])'
     const actions = doc.querySelector('[data-catalog-actions]')
     for (let node = actions; node; node = node.parentElement) {
       if (typeof node.querySelector !== 'function') continue
-      const input = node.querySelector('input')
+      const input = node.querySelector(textBox)
       if (input) return input
     }
   } catch {
     // A host without the catalog markup: fall back to the main search box.
   }
   try {
-    return doc.querySelector('main input[type="search"], main input[placeholder]')
+    return doc.querySelector('main input[type="search"], main input[type="text"][placeholder], main input:not([type])[placeholder]')
   } catch {
     return null
   }
@@ -6252,6 +6291,8 @@ function capabilitiesSearchInput() {
 /** Open Capabilities > Plugins and type REVamp into its search box so the user
  *  lands on the install row instead of hunting for it. The host has no URL
  *  parameter for that box, so poll for it briefly, then never throw. */
+let revampSearchRun = 0
+
 function findRevampInPlugins() {
   try {
     host.navigate(REVAMP_PLUGINS_ROUTE)
@@ -6263,12 +6304,15 @@ function findRevampInPlugins() {
     return
   }
   const started = Date.now()
+  // One search at a time: a second click retires the first click's polling.
+  const run = ++revampSearchRun
   const tick = () => {
-    if (disposed) return
+    if (disposed || run !== revampSearchRun) return
     try {
       const input = capabilitiesSearchInput()
       if (input) {
-        if (!input.value) {
+        // The click asked for REVamp: replace whatever was in the box.
+        if (input.value !== 'REVamp') {
           const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value').set
           setter.call(input, 'REVamp')
           input.dispatchEvent(new Event('input', { bubbles: true }))

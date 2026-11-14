@@ -24,6 +24,7 @@ import base64
 import collections
 import hashlib
 import hmac
+import contextvars
 import json
 import logging
 import os
@@ -1762,6 +1763,16 @@ def _apply_control(data) -> dict:
 class _Httpd(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    # The context the server was started in. A profile's home is context-local and
+    # every request runs on a fresh thread, which would otherwise resolve the
+    # process-wide default home and read another profile's config.
+    aura_context: contextvars.Context | None = None
+
+    def process_request_thread(self, request, client_address):
+        ctx = self.aura_context
+        if ctx is None:
+            return super().process_request_thread(request, client_address)
+        return ctx.copy().run(super().process_request_thread, request, client_address)
 
     def server_bind(self):
         # HTTPServer.server_bind does socket.getfqdn(host), a reverse DNS lookup
@@ -1802,6 +1813,7 @@ def _start_server() -> None:
         _log("aura: token file write failed (%s)", type(exc).__name__)
 
     httpd = _Httpd(("127.0.0.1", 0), _Handler)
+    httpd.aura_context = contextvars.copy_context()
     port = int(httpd.server_address[1])
 
     stop_event = threading.Event()
@@ -1827,7 +1839,7 @@ def _start_server() -> None:
         _STATE.audio_request = None
 
     thread.start()
-    cap_thread = threading.Thread(target=_capture_loop, args=(stop_event,),
+    cap_thread = threading.Thread(target=contextvars.copy_context().run, args=(_capture_loop, stop_event),
                                   name="aura-capture", daemon=True)
     with _STATE.lock:
         _STATE.capture_thread = cap_thread
@@ -1840,7 +1852,10 @@ def _start_server() -> None:
         _STATE.session_thread = session_thread
     session_thread.start()
     _write_lease(token, port)
-    threading.Thread(target=_lease_loop, args=(stop_event,), name="aura-lease", daemon=True).start()
+    # In the starting context: a profile's home is context-local, and a plain thread
+    # would resolve the process-wide default and advertise into another profile.
+    threading.Thread(target=contextvars.copy_context().run, args=(_lease_loop, stop_event),
+                     name="aura-lease", daemon=True).start()
     # A window left behind by a previous server holds a dead token: close it,
     # before it plays audio nobody can control.
     try:
