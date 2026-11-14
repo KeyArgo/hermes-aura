@@ -900,11 +900,31 @@ const stripButton = label => {
 }
 
 {
+  // A saved "controls off" from the old switch must not leave the watch window
+  // with no way to move it ("no move bar or media controls": a regression).
   const scenario = await watchWindowScenario({ watchControls: false })
-  record('24. the strip under the watch window can be switched off in favour of the Right panel', () => {
-    assert.equal(videoBar(), undefined, 'the strip still shows with "Controls under the watch window" off')
+  record('24. the watch window always has its strip: move grip and transport', () => {
+    assert.ok(videoBar(), 'the watch window has no strip')
+    assert.ok(domFind(videoBar(), node => node.attributes && node.attributes['aria-label'] === 'Drag to move the watch window'),
+      'the watch window has no move grip')
+    assert.ok(domFind(videoBar(), node => node.attributes && node.attributes['aria-label'] === 'Stop'),
+      'the watch window strip has no media controls')
   })
-  safeDispose('the watch-window no-strip scenario (J)', scenario.dispose)
+  await recordAsync('61. the watch window strip stays fully visible when idle', async () => {
+    // The mouse over the film never reaches the app (the frame swallows it), so
+    // a strip that fades on idle never came back: it looked gone.
+    await sleep(3200)
+    assert.equal(videoBar().style.opacity, '1', `the strip faded to ${videoBar().style.opacity} under the watch window`)
+    assert.notEqual(videoBar().style.pointerEvents, 'none', 'the idle strip stopped taking clicks')
+  })
+  record('62. the watch window and its strip opt out of the host title-bar drag strip', () => {
+    // Near the top of the window, Electron drag regions eat real clicks.
+    assert.equal(videoBar().style.WebkitAppRegion, 'no-drag', 'the strip can be swallowed by the title-bar drag strip')
+    const frame = hostIframes().find(f => f.style.display !== 'none' && !['-1', '1'].includes(f.style.zIndex))
+    assert.ok(frame, 'no watch window')
+    assert.equal(frame.style.WebkitAppRegion, 'no-drag', 'the watch window can be swallowed by the title-bar drag strip')
+  })
+  safeDispose('the watch-window strip scenario (J)', scenario.dispose)
 }
 
 // ===================================================================
@@ -1251,6 +1271,11 @@ const stripButton = label => {
   const winsOverHostGlass = css => /html:root\[data-hermes-glass\][^{]*\{[^}]*background:[^}]*!important/.test(css || '')
   const imitatesFrost = css => /html:not\(\[data-hermes-glass\]\)[^{]*\{[^}]*background:[^}]*!important/.test(css || '')
   const frostSwitch = () => pageAria(renderDeep(renderContribution(bucket.contributions.find(c => c.area === 'settings.plugins'))), 'Frosted glass')
+  record('63. the full-window visual never opts out of window dragging', () => {
+    const frame = hostIframes()[0]
+    assert.ok(frame, 'no visual behind the app')
+    assert.notEqual(frame.style.WebkitAppRegion, 'no-drag', 'a full-window no-drag frame would stop the window from being dragged')
+  })
   record('48. by default the look follows the platform: no host glass here, so solid (Linux unchanged)', () => {
     assert.ok(glassCss() !== null, 'no glass stylesheet with the visual behind the app')
     assert.equal(imitatesFrost(glassCss()), false, 'a platform without glass got the frost look without asking')

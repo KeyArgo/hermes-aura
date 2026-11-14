@@ -3093,6 +3093,7 @@ function applyBackdropLayout() {
       // app-wide overlay. Still click-through; the page's controls are the remote.
       style.zIndex = '1'
       style.background = '#000'
+      style.WebkitAppRegion = 'no-drag'
       return
     }
   }
@@ -3118,6 +3119,7 @@ function applyBackdropLayout() {
       // over the status bar or the title bar.
       style.clipPath = panelClipPath(slot)
       style.background = '#000'
+      style.WebkitAppRegion = 'no-drag'
       return
     }
   }
@@ -3140,6 +3142,8 @@ function applyBackdropLayout() {
     // Still click-through: the strip is the remote.
     style.zIndex = String(WATCH_WINDOW_Z)
     style.background = '#000'
+    // Near the top, the host's title-bar drag strip would eat clicks on it.
+    style.WebkitAppRegion = 'no-drag'
   } else {
     style.inset = '0'
     style.left = '0'
@@ -3153,6 +3157,8 @@ function applyBackdropLayout() {
     style.overflow = 'visible'
     style.zIndex = '-1'
     style.background = 'transparent'
+    // Full window: never no-drag, or the whole window could no longer be dragged.
+    style.WebkitAppRegion = ''
   }
 }
 
@@ -3226,9 +3232,9 @@ function videoBarActive() {
   const live = $live.get()
   const enabled = live.ok ? live.enabled === true : settings.enabled
   if (!doc || !enabled || settings.backdropMode !== 'video' || !settings.videoUrl || settings.videoClosed) return false
-  // The watch window carries its own strip (its drag grip and transport) even
-  // with the Right panel open, unless switched off to use the panel instead.
-  if (videoWindowOn()) return settings.watchControls !== false
+  // The watch window always carries its own strip: without it there is no way
+  // to move it (a "controls off" switch left it stranded with no move bar).
+  if (videoWindowOn()) return true
   // Otherwise the open docked panel owns the controls; the strip is for the
   // tray-only life.
   if (panelVisible() && settings.panelCollapsed !== true) return false
@@ -3575,7 +3581,10 @@ function showVideoBar() {
   if (videoBarHideTimer) clearTimeout(videoBarHideTimer)
   videoBarHideTimer = setTimeout(() => {
     videoBarHideTimer = null
-    if (!videoBarEl) return
+    // Under the watch window the strip is the player's own chrome: it stays.
+    // The mouse over the film never reaches the app, so a faded strip never
+    // came back and looked gone.
+    if (!videoBarEl || videoWindowOn()) return
     videoBarEl.style.opacity = '0.22'
     // A ghost that still takes clicks is what made the old panel feel like the
     // app had frozen: nothing typed, nothing to click.
@@ -6000,16 +6009,6 @@ function AuraQuickMenu() {
                     children: 'Open in YouTube'
                   })
                 ) : null,
-                // Its strip (drag grip, transport, Send to); off leaves the
-                // controls to the Right panel.
-                row(
-                  'Controls under the frame',
-                  jsx(Switch, {
-                    checked: settings.watchControls !== false,
-                    'aria-label': 'Controls under the watch window',
-                    onCheckedChange: value => { writeSettings({ watchControls: Boolean(value) }); syncVideoBar(true) }
-                  })
-                ),
                 jsxs('div', {
                   key: 'videoFooter',
                   style: {

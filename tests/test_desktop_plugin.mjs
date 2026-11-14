@@ -2221,8 +2221,9 @@ await recordAsync('the film controls in the quick menu are named for what they d
     const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
     assert.ok(findByAria(tree, '25% video strength'), 'the film presets are not labelled as film strength')
     assert.equal(findByAria(tree, '25% video transparency'), null, 'a film preset is still labelled as transparency')
-    assert.ok(findByAria(tree, 'Controls under the watch window'),
-      'the quick menu has no switch for the strip under the watch window')
+    // The watch window always has its strip; a switch to hide it stranded the window.
+    assert.equal(findByAria(tree, 'Controls under the watch window'), null,
+      'the quick menu still offers to hide the watch window strip')
   } finally {
     dispose()
   }
