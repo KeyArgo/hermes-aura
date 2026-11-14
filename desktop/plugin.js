@@ -121,6 +121,8 @@ const MUSIC_OFF_DELAY_MS = 4000
 const VIDEO_RESUME_TAIL_S = 12
 // The watch window: a real 16:9 frame above the app instead of the film sitting
 // behind it. Widths in CSS px. Declared before DEFAULT_SETTINGS uses the size.
+// Room kept under the watch window for its control strip when sizing to the height.
+const VIDEO_WINDOW_STRIP_ROOM = 110
 const VIDEO_WINDOW_SIZES = Object.freeze({ small: 320, medium: 480, large: 640, xlarge: 880, huge: 1120 })
 const VIDEO_WINDOW_SIZE_LABELS = Object.freeze({ small: 'Small', medium: 'Medium', large: 'Large', xlarge: 'X-Large', huge: 'Huge' })
 /** Where the watch window parks. Top-right by default: the status bar lives
@@ -877,6 +879,9 @@ function showEligible() {
   // backdrop/theme/accent paths below require `enabled`.
   // The full page is the same kind of surface, for the same reason.
   const pageFilm = pageVisible() && Boolean(settings.videoUrl) && !settings.videoClosed
+  // So is the watch window: with the Right panel hidden it is the only surface,
+  // and without this the film unmounted while its strip stayed up.
+  const watchFilm = videoWindowOn() && Boolean(settings.videoUrl) && !settings.videoClosed
   // [finding 4] The audio channel lives inside this same backdrop document.
   // Without this a default install (window visual off, no theme) mounted no
   // page, so playAudioSource posted into nothing and "playing" was a lie.
@@ -885,7 +890,7 @@ function showEligible() {
   // everything else is the overlay and does. Off is off (owner): no film, no
   // visual, no audio channel, on any surface.
   const overlay = Boolean(audio || knownTheme === THEME_NAME || settings.windowVisual)
-  return Boolean(doc && enabled && liveUrl() && (paneFilm || pageFilm || overlay))
+  return Boolean(doc && enabled && liveUrl() && (paneFilm || pageFilm || watchFilm || overlay))
 }
 
 // Host-owned timers: cancel through the disposer the SDK returns. A stale
@@ -3053,7 +3058,11 @@ function videoWindowWidth() {
   // The big sizes shrink to fit left of the Right panel (and inside the window).
   const view = doc && doc.defaultView
   const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
-  return Math.max(VIDEO_WINDOW_SIZES.small, Math.min(wanted, panelLeftEdge(vw) - 16))
+  // And to fit the window's height: a 16:9 frame plus its control strip below it
+  // (Huge is 630 px tall and ran off the bottom of a short window).
+  const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
+  const byHeight = Math.floor((vh - 16 - VIDEO_WINDOW_STRIP_ROOM) * 16 / 9)
+  return Math.max(VIDEO_WINDOW_SIZES.small, Math.min(wanted, panelLeftEdge(vw) - 16, byHeight))
 }
 
 /** Lay the player out as the backdrop (full bleed, behind everything) or as a
@@ -8001,6 +8010,11 @@ function teardown() {
   liveFrame = null
   liveKey = ''
   desktopOwned = false
+  // A pop-out still in flight from this instance must not claim the next one.
+  desktopPending = false
+  desktopClosing = false
+  desktopGeneration += 1
+  $powerArmed.set(0)
   playerCursor = null
   playerReportAt = 0
   playerReportKey = ''

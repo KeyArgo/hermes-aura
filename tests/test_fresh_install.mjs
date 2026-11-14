@@ -1584,6 +1584,43 @@ for (const [name, extra] of [
   safeDispose('the desktop to window scenario', scenario.dispose)
 }
 
+// Found in review (11-14): with the Right panel hidden and the film in the watch
+// window, nothing counted the watch window as a surface, so the film unmounted
+// while its strip stayed up with buttons posting into nothing.
+{
+  const bucket = makeCtx(new Map([['settings', {
+    enabled: true, backdropMode: 'video', panelEnabled: false, videoWindow: true,
+    windowVisual: false, videoUrl: SINTEL_URL
+  }]]))
+  const scenario = { bucket, dispose: pluginModule.default.register(bucket.ctx) }
+  for (let i = 0; i < 3; i += 1) await tickPoll(scenario.bucket)
+  record('60d. with the Right panel hidden, a film in the watch window stays on screen', () => {
+    const frame = hostIframes().find(f => f.style.display !== 'none' && !['-1', '1'].includes(f.style.zIndex))
+    assert.ok(frame, 'the Right panel is hidden and the watch-window film unmounted')
+  })
+  safeDispose('the hidden panel watch window scenario', scenario.dispose)
+}
+
+// Found in review (11-14): the watch window was only clamped to the width left of
+// the panel, so Huge (1120 px, 630 tall) ran off the bottom of a short window.
+{
+  // The fake document has no window: give it a 1400x600 one for this case only.
+  const hadView = Object.prototype.hasOwnProperty.call(globalThis.document, 'defaultView')
+  const realView = globalThis.document.defaultView
+  globalThis.document.defaultView = { innerWidth: 1400, innerHeight: 600 }
+  const scenario = await watchWindowScenario({ videoWindow: true, videoWindowSize: 'huge' })
+  for (let i = 0; i < 2; i += 1) await tickPoll(scenario.bucket)
+  record('60e. a Huge watch window fits a short window', () => {
+    const frame = hostIframes().find(f => f.style.display !== 'none' && !['-1', '1'].includes(f.style.zIndex))
+    assert.ok(frame, 'no watch window')
+    const bottom = parseFloat(frame.style.top) + parseFloat(frame.style.height)
+    assert.ok(bottom <= 600, `the watch window reaches y=${bottom} in a 600 px tall window`)
+  })
+  safeDispose('the short window scenario', scenario.dispose)
+  if (hadView) globalThis.document.defaultView = realView
+  else delete globalThis.document.defaultView
+}
+
 // ===================================================================
 // Scenario I: "Watch in: Panel | Behind chat". With the Right panel open the
 // film can play behind the chat while the panel stays the remote, without a
