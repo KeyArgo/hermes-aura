@@ -1289,6 +1289,36 @@ record('dispose of the themed instance is clean', () => {
   assert.equal(own.contributions.length, 0)
 })
 
+// ------------------------------------------------- a skin change keeps the visual
+// Changing the app's own theme used to switch "Visual behind the app" off in
+// silence, so the visualiser vanished and the switch had to be found again. The
+// glass is measured from the theme's colours, so it is re-measured instead.
+
+sdk.themeState.name = 'nous'
+const skin = makeCtx({ enabled: true, backdropMode: 'aura', windowVisual: true, themeOptIn: false, panelEnabled: false })
+const disposeSkin = pluginModule.default.register(skin.ctx)
+const probeSkin = skin.contributions.find(c => c.area === 'titleBar.center')
+
+await recordAsync('changing the app theme keeps "Visual behind the app" on', async () => {
+  renderContribution(probeSkin)          // first report: the user's theme
+  skin.timers.filter(t => t.ms === 250).forEach(t => t.fn())
+  await sleep(40)
+  assert.equal(skin.storage.get('settings').windowVisual, true, 'the visual was not on to begin with')
+  sdk.themeState.name = 'midnight'       // the user picks another skin
+  renderContribution(probeSkin)
+  skin.timers.filter(t => t.ms === 250).forEach(t => t.fn())
+  await sleep(40)
+  assert.equal(skin.storage.get('settings').windowVisual, true,
+    'a theme change switched "Visual behind the app" off')
+  assert.ok(hostIframes().length >= 1, 'the visual is gone after a theme change')
+})
+
+record('dispose of the skin-change instance is clean', () => {
+  disposeSkin()
+  sdk.themeState.name = 'nous'
+  assert.equal(skin.contributions.length, 0)
+})
+
 // ------------------------------------------------------------- scenario C
 // Legacy glass keys are accepted but ignored; host glass is gone. The active
 // theme is deliberately NOT aura-live, so any mounted glass would prove the

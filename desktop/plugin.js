@@ -1839,11 +1839,10 @@ function onThemeName(name) {
   if (!first && overrideActive) {
     clearAccent(true)
   }
-  if (!first && $settings.get().windowVisual) {
-    writeSettings({ windowVisual: false })
-    resetShow()
-    removeBackdrop()
-  }
+  // A new skin used to switch "Visual behind the app" off in silence, so the
+  // visual vanished and its switch had to be hunted down again. The glass is
+  // measured from the theme's colours: re-measure it for the new theme instead.
+  if (!first && glassStyleEl) applyGlassStyle()
   // Only the probe's FIRST report retries an opt-in that register() could not
   // make yet. Re-applying on every report undid the restore: the theme we had
   // just handed back to the user came straight back as an opt-in request.
