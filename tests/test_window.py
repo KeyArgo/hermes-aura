@@ -226,7 +226,7 @@ def test_find_browser_finds_edge_in_its_windows_install_folder(tmp_path, monkeyp
     edge.write_bytes(b"")
     monkeypatch.delenv("AURA_DESKTOP_BROWSER", raising=False)
     monkeypatch.setattr(window.shutil, "which", lambda name: None)
-    monkeypatch.setattr(window.os, "name", "nt")
+    monkeypatch.setattr(window, "_on_windows", lambda: True)
     monkeypatch.setenv("PROGRAMFILES", str(tmp_path / "nothing-here"))
     monkeypatch.setenv("PROGRAMFILES(X86)", str(tmp_path))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "nothing-here-either"))
@@ -258,7 +258,7 @@ def test_reap_finds_and_closes_a_leftover_window_on_windows(tmp_path, monkeypatc
 
     killed = []
     monkeypatch.setattr("builtins.open", no_proc)
-    monkeypatch.setattr(window.os, "name", "nt")
+    monkeypatch.setattr(window, "_on_windows", lambda: True)
     monkeypatch.setattr(window.subprocess, "run", fake_run)
     monkeypatch.setattr(window.os, "killpg", lambda pid, sig: killed.append(pid), raising=False)
     monkeypatch.setattr(window.os, "kill", lambda pid, sig: killed.append(pid))

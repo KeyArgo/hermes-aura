@@ -75,6 +75,12 @@ class WindowError(Exception):
     """No usable browser, or it would not start."""
 
 
+def _on_windows() -> bool:
+    """Windows-only paths (install folders, PowerShell, case-insensitive paths). One seam,
+    so tests can exercise the Windows branch on any OS without faking os.name globally."""
+    return os.name == "nt"
+
+
 def _installed_browsers() -> List[str]:
     """Chromium-family browsers in their standard install folders, in preference order.
 
@@ -82,7 +88,7 @@ def _installed_browsers() -> List[str]:
     and "Pop out to desktop" fell back to the small frame inside Hermes. Edge ships
     with every Windows install, so Windows always has one.
     """
-    if os.name == "nt":
+    if _on_windows():
         roots = [os.environ.get(key, "") for key in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
         apps = (
             os.path.join("Google", "Chrome", "Application", "chrome.exe"),
@@ -199,7 +205,7 @@ def _command_line(pid: int) -> str:
         return open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", "replace")
     except OSError:
         pass
-    if os.name == "nt":
+    if _on_windows():
         script = f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine"
         args, timeout = ["powershell", "-NoProfile", "-NonInteractive", "-Command", script], 10
     else:
@@ -230,7 +236,7 @@ def reap_orphan() -> bool:
     # Windows quotes an argument with spaces ("--user-data-dir=C:\...") and its
     # paths are case-insensitive.
     profiles = {profile, os.path.realpath(profile)}
-    flags = re.IGNORECASE if os.name == "nt" else 0
+    flags = re.IGNORECASE if _on_windows() else 0
     if not any(re.search(r'(?:^|[\0\s"])--user-data-dir="?' + re.escape(candidate) +
                          r'"?(?=[\0\s"]|$)', cmd, flags) for candidate in profiles):
         return False
