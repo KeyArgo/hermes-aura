@@ -391,7 +391,7 @@ fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: ty
 fs.writeFileSync(
   sdkStub,
   `// Stub of @hermes/plugin-sdk: records the calls the plugin makes.
-export const calls = { accent: [], themes: [], navigations: [], notifications: [], undismissed: [], revealed: [] }
+export const calls = { accent: [], themes: [], navigations: [], notifications: [], undismissed: [], revealed: [], composer: [] }
 
 function makeAtom(initial) {
   let value = initial
@@ -420,7 +420,8 @@ export const host = {
   navigate: route => { calls.navigations.push(route) },
   notify: message => { calls.notifications.push(message) },
   undismissPane: paneId => { calls.undismissed.push(paneId) },
-  revealPane: paneId => { calls.revealed.push(paneId) }
+  revealPane: paneId => { calls.revealed.push(paneId) },
+  composer: { focus: sessionId => { calls.composer.push(sessionId) } }
 }
 
 export const useValue = store => store.get()
@@ -496,6 +497,10 @@ export const Fragment = Symbol.for('react.fragment')
 const bodyChildren = []
 const headChildren = []
 const createdElements = []
+// Document-level listeners are recorded so a test can prove Aura never grabs
+// keys or focus on the host document (Teknium review ask 2).
+const documentListeners = []
+const isCapture = options => options === true || (options && options.capture === true)
 const documentElement = { style: {} }
 function makeChildList(children) {
   const classes = new Set()
@@ -580,8 +585,14 @@ globalThis.document = {
     createdElements.push(node)
     return node
   },
-  addEventListener() {},
-  removeEventListener() {}
+  addEventListener(type, fn, options) {
+    documentListeners.push({ type, fn, options, removed: false })
+  },
+  removeEventListener(type, fn, options) {
+    const record = documentListeners.find(entry =>
+      !entry.removed && entry.type === type && entry.fn === fn && isCapture(entry.options) === isCapture(options))
+    if (record) record.removed = true
+  }
 }
 const FAKE_VARS = {
   '--ui-accent': '#8b7cff',
@@ -3035,27 +3046,76 @@ record('a pop-out resolves to ONE surface, never both at once', () => {
   assert.match(fn, /popoutSurface\(true, result\.open === true\) === 'desktop'/, 'the decision helper is not used')
 })
 
-record('a backdrop frame that takes focus gives the keyboard straight back', () => {
-  // YouTube's player calls window.focus() when it starts. Without this guard the
-  // iframe keeps the keyboard and the composer silently stops accepting text
-  // ("Aura has a keyboard bug that keeps me from typing into hermes").
-  const frame = { blurred: false, blur() { this.blurred = true } }
-  tx.setBackdropForTest(frame)
-  const composer = { focused: false, isConnected: true, focus() { this.focused = true } }
+await recordAsync('no document-level focus/key capture listeners are registered', async () => {
+  // Teknium review ask 2: Aura must not capture focusin/keydown on the host
+  // document. It did, with capture=true, and restored a saved DOM caret.
+  const start = documentListeners.length
+  const scenario = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true })
+  const dispose = pluginModule.default.register(scenario.ctx)
+  try {
+    await sleep(20)
+    const added = documentListeners.slice(start)
+    assert.equal(
+      added.filter(entry => isCapture(entry.options)).length,
+      0,
+      'Aura registered a document-level capture listener')
+    assert.equal(
+      added.filter(entry => entry.type === 'focusin').length,
+      0,
+      'Aura still listens for focusin on the host document')
+  } finally {
+    dispose()
+  }
+})
 
-  // A field the user actually typed in is remembered...
-  tx.rememberCaret({ target: composer })
-  // ...and the frame grabbing focus does not win.
-  tx.releaseBackdropFocus({ target: frame })
+await recordAsync('typing is never swallowed by a document keydown handler', async () => {
+  // No Aura key handler may sit on the host document: a keystroke in the chat
+  // belongs to the chat. Aura's own Ctrl+Shift+H/A are bound to its elements.
+  const start = documentListeners.length
+  const scenario = makeCtx({ enabled: true, backdropMode: 'video', panelEnabled: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
+  const dispose = pluginModule.default.register(scenario.ctx)
+  try {
+    scenario.timers.find(timer => timer.ms === 250).fn()
+    await sleep(30)
+    const keydownListeners = documentListeners.slice(start).filter(entry => entry.type === 'keydown')
+    assert.equal(keydownListeners.length, 0, 'Aura put a keydown handler on the host document')
+    let prevented = false
+    for (const entry of keydownListeners) {
+      entry.fn({ code: 'KeyA', key: 'a', preventDefault() { prevented = true } })
+    }
+    assert.equal(prevented, false, 'a keystroke was swallowed by Aura')
+  } finally {
+    dispose()
+  }
+})
 
-  assert.equal(frame.blurred, true, 'the film frame kept focus')
-  assert.equal(composer.focused, true, 'the caret was not handed back to the user')
-
-  // A focus event on anything else is none of our business.
-  const other = { blurred: false, blur() { this.blurred = true } }
-  tx.releaseBackdropFocus({ target: other })
-  assert.equal(other.blurred, false, 'the guard blurred an unrelated element')
-  tx.setBackdropForTest(null)
+await recordAsync('a click on Aura\'s video strip hands focus back with host.composer.focus', async () => {
+  // The old code remembered a caret and synthetically focused a Hermes input.
+  // The SDK's own verb addresses the current surface, so the chat gets its
+  // keyboard back without Aura touching app markup.
+  const scenario = makeCtx({ enabled: true, backdropMode: 'video', windowVisual: true,
+    panelEnabled: false, videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
+  const dispose = pluginModule.default.register(scenario.ctx)
+  try {
+    scenario.timers.find(timer => timer.ms === 250).fn()
+    await sleep(40)
+    const bars = bodyChildren.filter(node => node.attributes && node.attributes.role === 'toolbar')
+    const bar = bars[bars.length - 1]
+    assert.ok(bar, 'the video strip never mounted')
+    assert.ok(Array.isArray(bar.__handlers.click) && bar.__handlers.click.length > 0,
+      'the strip has no click handler to hand focus back')
+    const before = sdk.calls.composer.length
+    const button = { tagName: 'BUTTON', getAttribute: () => null }
+    for (const handler of bar.__handlers.click) handler({ target: button, preventDefault() {} })
+    await sleep(10)
+    assert.ok(sdk.calls.composer.length > before,
+      'host.composer.focus was not called after a strip click')
+    assert.equal(sdk.calls.composer[sdk.calls.composer.length - 1], null,
+      'focus must address the current surface, not a guessed session id')
+  } finally {
+    dispose()
+  }
 })
 
 record('shortLabel survives a malformed percent escape', () => {

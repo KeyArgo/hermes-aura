@@ -38,7 +38,8 @@
  *   - a hidden dev readout: Ctrl+Shift+A toggles a fixed bottom-right stats
  *     panel (sessions, session boost, intensity, mood, music level, silence,
  *     fps, preset), refreshed every 100 ms from liveFrame and the state
- *     atoms; the keydown listener and the timer die with dispose.
+ *     atoms; its shortcut is bound to Aura's own controls and the timer dies
+ *     with dispose.
  *
  * The old full-page stage and everything that opened it (the `/aura` route,
  * the sidebar row, the palette command and the compact pane) was removed: the
@@ -967,83 +968,38 @@ function pageKey() {
   ].join('|')
 }
 
-/** Keep the caret where the user put it.
+/** Hand the caret back to the chat after an Aura control takes it.
  *
- * A film page can call `window.focus()` — YouTube's own player does exactly
- * that when it starts — and an iframe that takes focus swallows every
- * keystroke, so the composer stops accepting text until the user clicks back
- * in ("Aura has a keyboard bug that keeps me from typing"). The backdrop is
- * decoration: it must never hold focus. Remember the last real field, and if
- * the frame ever takes focus, hand it straight back.
+ *  The SDK's own door: no DOM lookup, no saved selection, no `focusin` capture.
+ *  `null` addresses whichever surface the app's focus bus is routing to, and a
+ *  host without the verb simply does nothing.
  */
-let lastCaretEl = null
-// A contenteditable can hold focus and still have no caret range; every key
-// then lands in nothing and the field looks dead. Remember the range too.
-let lastCaretRange = null
-
-const focusTrace = []
-
-function describeFocusable(node) {
-  if (!node) return '—'
-  if (node === backdropEl) return 'backdrop'
-  const tag = String(node.tagName || node.nodeName || 'node').toLowerCase()
-  const role = node.getAttribute ? node.getAttribute('role') : ''
-  const label = node.getAttribute ? (node.getAttribute('aria-label') || node.getAttribute('placeholder') || '') : ''
-  return `${tag}${role ? `[${role}]` : ''}${label ? ` ${String(label).slice(0, 18)}` : ''}`
-}
-
-// Keystrokes that reached the document while a text field had focus. Purely a
-// measurement: Aura never consumes or alters them (capture phase, no
-// preventDefault, no stopPropagation).
-let keysSeen = 0
-
-function countKey(event) {
-  if (!event || event.key === 'Shift' || event.key === 'Control' || event.key === 'Alt' || event.key === 'Meta') return
-  const active = doc && doc.activeElement
-  const field = active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT' ||
-    (active.getAttribute && active.getAttribute('contenteditable') === 'true'))
-  if (field) keysSeen += 1
-}
-
-function rememberCaret(event) {
-  const target = event && event.target
-  if (!target) return
-  focusTrace.push(describeFocusable(target))
-  if (focusTrace.length > 8) focusTrace.shift()
-  if (target === backdropEl) return
-  if (typeof target.focus === 'function') lastCaretEl = target
+function returnFocusToComposer() {
   try {
-    const sel = doc.getSelection ? doc.getSelection() : null
-    lastCaretRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null
-  } catch {
-    lastCaretRange = null
-  }
-}
-
-function releaseBackdropFocus(event) {
-  const target = event && event.target
-  if (!target || target !== backdropEl) return
-  try {
-    backdropEl.blur()
-  } catch {
-    // a detached frame cannot be blurred; the retarget below still helps
-  }
-  const caret = lastCaretEl
-  lastCaretEl = null
-  if (caret && caret.isConnected !== false && typeof caret.focus === 'function') {
-    try {
-      caret.focus()
-      if (lastCaretRange) {
-        const sel = doc.getSelection ? doc.getSelection() : null
-        if (sel) {
-          sel.removeAllRanges()
-          sel.addRange(lastCaretRange)
-        }
-      }
-    } catch {
-      // the field went away while the film was starting
+    if (host && host.composer && typeof host.composer.focus === 'function') {
+      host.composer.focus(null)
     }
+  } catch {
+    // a host without the verb is not an error
   }
+}
+
+/** A click that landed in a text field must keep the caret there: returning
+ *  focus to the composer after the user clicked Aura's own URL box would make
+ *  the box impossible to type in. */
+function isTextEntry(node) {
+  if (!node) return false
+  const tag = String(node.tagName || node.nodeName || '').toLowerCase()
+  if (tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'option') return true
+  return Boolean(node.getAttribute && node.getAttribute('contenteditable') === 'true')
+}
+
+/** Aura owns the control that was clicked, so give the chat its keyboard back
+ *  once the click has been handled. Deferred so the browser's own focus pass
+ *  finishes first, exactly like the SDK example. */
+function returnFocusAfterClick(event) {
+  if (isTextEntry(event && event.target)) return
+  setTimeout(returnFocusToComposer, 0)
 }
 
 function mountBackdrop(url, opacity) {
@@ -1070,6 +1026,17 @@ function mountBackdrop(url, opacity) {
     style.pointerEvents = 'none'
     style.zIndex = '-1'
     style.background = 'transparent'
+    // YouTube's player calls window.focus() when it starts. The backdrop is
+    // decoration and must never keep the keyboard; if the frame takes focus,
+    // hand it back through the SDK instead of restoring a saved DOM caret.
+    backdropEl.addEventListener('focus', () => {
+      try {
+        backdropEl.blur()
+      } catch {
+        // a detached frame cannot be blurred; the SDK call below still helps
+      }
+      returnFocusToComposer()
+    })
     backdropUrl = src
     backdropKey = pageKey()
     backdropEl.src = src
@@ -3635,6 +3602,10 @@ function mountVideoBar() {
     setVideoVolume(clamp01($settings.get().videoVolume + step))
     showVideoBar()
   }, { passive: false })
+  // A click on one of Aura's own controls hands the caret back to the chat
+  // through the SDK's verb, not by restoring a DOM range.
+  bar.addEventListener('click', returnFocusAfterClick)
+  bindAuraKeyHandlers(bar)
 
   doc.body.appendChild(bar)
   videoBarEl = bar
@@ -4563,6 +4534,10 @@ function mountPanelInto(hostNode) {
   panel.appendChild(head)
   panel.appendChild(stage)
   panel.appendChild(body)
+  // Clicks on Aura's own panel return the caret to the chat; text fields are
+  // excluded so the URL box can still be typed in.
+  panel.addEventListener('click', returnFocusAfterClick)
+  bindAuraKeyHandlers(panel)
   hostNode.appendChild(panel)
 
   panelEl = panel
@@ -5181,9 +5156,10 @@ async function setAutoPreset(next) {
 // panel, 250 px, dark, mono, fed every 100 ms from liveFrame + the state
 // atoms. It is the only host DOM the panel touches; colours come from the
 // theme's own CSS variables (with dark fallbacks) so it reads correctly in
-// light and dark skins. The keydown listener and the 100 ms timer are both
-// host-owned/`track`ed and die with dispose. Nothing mounts until the hotkey
-// fires: hidden means zero DOM, zero timers, zero listeners beyond keydown.
+// light and dark skins. Its shortcuts are bound to Aura's own panel and strip
+// (never the host document), and the 100 ms timer is tracked so it dies with
+// dispose. Nothing mounts until the hotkey fires: hidden means zero DOM and
+// zero timers.
 
 const DEV_STATS_REFRESH_MS = 100
 const DEV_STATS_ROWS = Object.freeze([
@@ -5194,13 +5170,7 @@ const DEV_STATS_ROWS = Object.freeze([
   ['level', 'music level'],
   ['silence', 'silence'],
   ['fps', 'fps'],
-  ['preset', 'preset'],
-  // What last took focus: the composer going dead for no visible reason is
-  // otherwise unprovable after the fact.
-  ['focus', 'last focus'],
-  // Did the keyboard reach the app at all? A dead composer with this counting
-  // up is the host dropping keys; stuck at 0 is something above us holding them.
-  ['keys', 'keys seen']
+  ['preset', 'preset']
 ])
 
 let devStatsEl = null
@@ -5318,9 +5288,8 @@ function devStatsTick() {
   const silence = frame.silence === true ? 'yes' : frame.silence === false ? 'no' : '—'
   const fps = devFps > 0 ? devFps.toFixed(1) : '0.0'
   const preset = typeof frame.preset === 'string' && frame.preset ? frame.preset : '—'
-  const focus = focusTrace.length ? focusTrace[focusTrace.length - 1] : '—'
 
-  const values = { sessions, boost, intensity: `${Math.round(intensity * 100)}%`, mood, level, silence, fps, preset, focus, keys: String(keysSeen) }
+  const values = { sessions, boost, intensity: `${Math.round(intensity * 100)}%`, mood, level, silence, fps, preset }
   for (const [key] of DEV_STATS_ROWS) {
     const el = devStatsValueEls[key]
     const value = values[key]
@@ -5387,8 +5356,8 @@ function closeDevStats() {
   devFpsLastAt = 0
 }
 
-/** Ctrl+Shift+H: hide/show the panel. A keyboard escape hatch, because a
- *  click-swallowing overlay must never be the only way out. */
+/** Ctrl+Shift+H: hide/show the panel while one of Aura's own controls has
+ *  focus. Panel-local by design: the host document is never listened to. */
 function onPanelKeydown(event) {
   if (disposed || !event || event.defaultPrevented || event.repeat) return
   if (event.code !== 'KeyH' || !event.ctrlKey || !event.shiftKey || event.altKey || event.metaKey) return
@@ -5406,6 +5375,15 @@ function onDevStatsKeydown(event) {
   }
   if (devStatsEl) closeDevStats()
   else openDevStats()
+}
+
+/** Panel-local shortcuts: attached to Aura's own controls, never to the host
+ *  document. They fire only when the user is already working inside Aura, so
+ *  no key the chat needs is ever intercepted. */
+function bindAuraKeyHandlers(el) {
+  if (!el || typeof el.addEventListener !== 'function') return
+  el.addEventListener('keydown', onDevStatsKeydown)
+  el.addEventListener('keydown', onPanelKeydown)
 }
 
 // ---------------------------------------------------------------------- UI
@@ -8206,22 +8184,9 @@ export default {
       if (typeof globalThis !== 'undefined' && typeof globalThis.addEventListener === 'function') {
         track(ctx.addEventListener(globalThis, 'message', onBackdropMessage))
       }
-      // Hidden dev shortcut (Ctrl+Shift+A) for the stats overlay. The SDK
-      // disposer removes it on dispose, and the overlay itself is torn down
-      // by closeDevStats() in teardown().
-      if (doc) {
-        doc.addEventListener('keydown', onDevStatsKeydown)
-        track(() => doc.removeEventListener('keydown', onDevStatsKeydown))
-        doc.addEventListener('keydown', onPanelKeydown)
-        track(() => doc.removeEventListener('keydown', onPanelKeydown))
-        // The backdrop frame must never keep the keyboard (see releaseBackdropFocus).
-        doc.addEventListener('keydown', countKey, true)
-        track(() => doc.removeEventListener('keydown', countKey, true))
-        doc.addEventListener('focusin', rememberCaret, true)
-        track(() => doc.removeEventListener('focusin', rememberCaret, true))
-        doc.addEventListener('focusin', releaseBackdropFocus, true)
-        track(() => doc.removeEventListener('focusin', releaseBackdropFocus, true))
-      }
+      // No document-level key or focus capture: typing in the chat belongs to
+      // the app. Aura's own shortcuts are bound to its own panel and strip
+      // (bindAuraKeyHandlers), and focus is returned with host.composer.focus.
     }
 
     if (typeof ctx.onDispose === 'function') ctx.onDispose(dispose)
@@ -8268,13 +8233,6 @@ export const __test = {
   applyUrlBox,
   skipBlockedEpisode,
   panelVisible,
-  // The backdrop focus guard: a film page that calls window.focus() must not
-  // be able to keep the keyboard (owner: "keeps me from typing into hermes").
-  rememberCaret,
-  releaseBackdropFocus,
-  // Tests hand in the frame they are working with; production sets it in
-  // mountBackdrop.
-  setBackdropForTest: el => { backdropEl = el },
   // Popping out must produce ONE surface, not two (owner: "there should be
   // one or the other").
   setDesktopWindow,
@@ -8282,6 +8240,5 @@ export const __test = {
   popoutSurface,
   hiddenVideoIds,
   hideCurrentEpisode,
-  managePlaylist,
-  keysSeenForTest: () => keysSeen
+  managePlaylist
 }
