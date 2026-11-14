@@ -18,10 +18,15 @@
  *     z-index -1 plus a single `#aura-glass` stylesheet that clears the app's
  *     own big surfaces so the moving visual shows through. It appears only
  *     when Aura is enabled AND the user opted in (the windowVisual switch or
- *     the Aura Live theme) and a live URL exists. Turning the visual off,
- *     turning Aura off, Restore my theme and dispose remove both again. If
- *     the visual is switched on while Aura is off, Aura is enabled through
- *     the same door the "Aura enabled" switch uses.
+ *     the Aura Live theme) and a live URL exists. Every glass rule is scoped
+ *     under a `data-aura-backdrop` attribute that is set on <html> with the
+ *     style and removed with it, so the host appearance cannot leak. Turning
+ *     the visual off, turning Aura off, Restore my theme, framing the film in
+ *     the pane/page/window and dispose remove both again. A frame load error
+ *     (or a host with no usable root) removes the glass first and falls back
+ *     to the Right panel film. If the visual is switched on while Aura is
+ *     off, Aura is enabled through the same door the "Aura enabled" switch
+ *     uses.
  *   - a status-bar quick menu (`STATUSBAR_AREAS.right`): a small "A" glyph
  *     button (dim when Aura is off, accent when on, with a tiny dot that
  *     breathes only while the visual is actually moving) opens a host
@@ -45,10 +50,13 @@
  * the sidebar row, the palette command and the compact pane) was removed: the
  * backdrop and the Settings page are the product.
  *
- * Host safety: the backdrop iframe and the `#aura-glass` style — mounted only
- * behind the opt-in above — are the only host DOM Aura touches; nothing is
- * injected while nothing is opted in, and the host `html`/`body`/root styles
- * are never written. All other appearance effects go through the SDK
+ * Host safety: the backdrop iframe, its scoped `#aura-glass` style and the
+ * matching `data-aura-backdrop` attribute on <html> are mounted only behind
+ * the opt-in above. Two other pieces of host DOM are Aura's own and go away
+ * with dispose: the floating video strip and the explicit Ctrl+Shift+A dev
+ * readout (both appended to `body`). No host markup selectors are used to draw
+ * the backdrop (colour tokens are read from the root's computed properties; no
+ * probe element is appended). All other appearance effects go through the SDK
  * (`setAccentOverride`, `requestTheme`). Accent pulse and the Aura Live theme
  * are opt-in and off by default.
  *
@@ -753,28 +761,17 @@ const GLASS_FLOATING = [
   '--ui-chat-bubble-background'
 ]
 
-/** The browser-resolved colour of a token (handles var(), color-mix(), oklch()). */
+/** The browser-resolved colour of a token (handles var(), color-mix(), oklch()).
+ *  Read from the root's own computed custom properties: no probe element is
+ *  ever appended to the host document, so nothing has to be cleaned up and no
+ *  Hermes markup is touched. */
 function resolvedColor(name) {
-  if (!doc || !doc.body || typeof getComputedStyle !== 'function') return ''
-  let probe = null
+  if (!doc || !doc.documentElement || typeof getComputedStyle !== 'function') return ''
   try {
-    probe = doc.createElement('div')
-    probe.style.position = 'absolute'
-    probe.style.width = '0'
-    probe.style.height = '0'
-    probe.style.visibility = 'hidden'
-    probe.style.backgroundColor = `var(${name})`
-    doc.body.appendChild(probe)
-    const value = String(getComputedStyle(probe).backgroundColor || '').trim()
+    const value = String(getComputedStyle(doc.documentElement).getPropertyValue(name) || '').trim()
     return value && value !== 'rgba(0, 0, 0, 0)' && value !== 'transparent' ? value : ''
   } catch {
     return ''
-  } finally {
-    try {
-      if (probe) probe.remove()
-    } catch {
-      // detached already
-    }
   }
 }
 
@@ -792,6 +789,9 @@ function glassCss() {
     if (color) declarations += `${name}: color-mix(in srgb, ${color} 90%, transparent) !important;`
   }
   const color = base || 'var(--background)'
+  // Every rule is scoped under the one attribute Aura sets on <html> while the
+  // full-window backdrop is up. Remove the attribute (with the style) and the
+  // host goes back to its own appearance exactly: no leaked transparency.
   // Solid: Hermes's `:root[data-hermes-glass] { background-color: transparent
   // !important }` outranks a plain `html` rule and lets the frosted window
   // material through; this selector outranks it, and the dark fallback keeps
@@ -799,13 +799,13 @@ function glassCss() {
   // Frost where Hermes has no glass (Linux): no native material to show, so a
   // milky tint stands in for it. No blur: the frosted haze stays gone.
   const look = frostOn()
-    ? `html:not([data-hermes-glass]) { background: linear-gradient(color-mix(in srgb, ${color} 70%, #cdc8d6), color-mix(in srgb, ${color} 70%, #cdc8d6)) #2a2730 !important; }`
-    : `html:root[data-hermes-glass], html:root { background: linear-gradient(${color}, ${color}) #0d0c10 !important; }`
+    ? `html:not([data-hermes-glass])[data-aura-backdrop] { background: linear-gradient(color-mix(in srgb, ${color} 70%, #cdc8d6), color-mix(in srgb, ${color} 70%, #cdc8d6)) #2a2730 !important; }`
+    : `html:root[data-hermes-glass][data-aura-backdrop], html:root[data-aura-backdrop] { background: linear-gradient(${color}, ${color}) #0d0c10 !important; }`
   return [
-    base ? `html { background: ${base} !important; }` : '',
+    base ? `html:root[data-aura-backdrop] { background: ${base} !important; }` : '',
     look,
-    'body, #root, #app { background: transparent !important; }',
-    `:root { ${declarations} }`
+    ':root[data-aura-backdrop] body, :root[data-aura-backdrop] #root, :root[data-aura-backdrop] #app { background: transparent !important; }',
+    `:root[data-aura-backdrop] { ${declarations} }`
   ].filter(Boolean).join('\n')
 }
 
@@ -832,17 +832,65 @@ function setFrost(on) {
   if (glassStyleEl) applyGlassStyle()
 }
 
+/** The host root, when it can carry the backdrop attribute. A host that does
+ *  not expose a normal <html> element cannot be scoped, so Aura refuses to
+ *  paint glass there (fail-safe below). */
+function glassRoot() {
+  const root = doc && doc.documentElement
+  if (!root || typeof root.setAttribute !== 'function' || typeof root.removeAttribute !== 'function') return null
+  return root
+}
+
+/** Mount the glass stylesheet AND the attribute that scopes every rule in it.
+ *  Returns false when it could not (missing root / stylesheet support): the
+ *  caller must then fall back rather than leave the chat transparent. */
 function applyGlassStyle() {
-  if (!doc || !doc.head || typeof doc.head.appendChild !== 'function') return
+  if (!doc || !doc.head || typeof doc.head.appendChild !== 'function') return false
+  const root = glassRoot()
+  if (!root) {
+    removeGlassStyle()
+    return false
+  }
   // Measure the theme's own colours, not the previous glass.
   if (glassStyleEl) removeGlassStyle()
-  glassStyleEl = doc.createElement('style')
-  glassStyleEl.setAttribute('id', 'aura-glass')
-  doc.head.appendChild(glassStyleEl)
-  glassStyleEl.textContent = glassCss()
+  const style = doc.createElement('style')
+  style.setAttribute('id', 'aura-glass')
+  let css = ''
+  try {
+    css = glassCss()
+  } catch {
+    return false
+  }
+  style.textContent = css
+  try {
+    doc.head.appendChild(style)
+    root.setAttribute('data-aura-backdrop', '')
+  } catch {
+    try {
+      style.remove()
+    } catch {
+      // detached already
+    }
+    try {
+      root.removeAttribute('data-aura-backdrop')
+    } catch {
+      // the root went away mid-mount
+    }
+    return false
+  }
+  glassStyleEl = style
+  return true
 }
 
 function removeGlassStyle() {
+  const root = glassRoot()
+  if (root) {
+    try {
+      root.removeAttribute('data-aura-backdrop')
+    } catch {
+      // the root went away with the window
+    }
+  }
   if (!glassStyleEl) return
   try {
     glassStyleEl.remove()
@@ -871,6 +919,40 @@ function removeBackdrop() {
   backdropEl = null
   backdropUrl = ''
   removeGlassStyle()
+}
+
+/** Never leave a transparent chat over nothing: when the full-window frame or
+ *  the host root is unusable, take the glass away first, then hand a film to
+ *  the Right panel (Aura's own surface) if there is one. A visualiser has no
+ *  panel surface, so it is removed instead. */
+function handleBackdropFailure() {
+  if (disposed) return
+  const settings = $settings.get()
+  const film = settings.backdropMode === 'video' && Boolean(settings.videoUrl) && !settings.videoClosed
+  removeGlassStyle()
+  if (!film) {
+    removeBackdrop()
+    return
+  }
+  if (settings.filmBehind !== false) writeSettings({ filmBehind: false })
+  syncBackdrop()
+  applyBackdropLayout()
+  syncPanel(true)
+}
+
+/** The in-app frame's own origin (the 127.0.0.1 Aura server). postMessage must
+ *  target it rather than '*': the frame is sandboxed decoration with a real
+ *  origin, so every message can be delivered to exactly that origin. */
+function frameTargetOrigin() {
+  const src = backdropEl && typeof backdropEl.src === 'string' && backdropEl.src ? backdropEl.src : backdropUrl
+  if (!src) return '*'
+  try {
+    const parsed = new URL(src, 'http://dummy.test')
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.origin
+  } catch {
+    // a non-URL source has no origin to name
+  }
+  return '*'
 }
 
 function liveUrl() {
@@ -1025,10 +1107,15 @@ function mountBackdrop(url, opacity) {
     // Sandboxed, click-through decoration: same-origin is required because
     // the page talks to its own 127.0.0.1 origin and the server sends no CORS
     // headers; pointer-events stay off so nothing can be clicked through it.
-    backdropEl.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-downloads')
+    // A player needs scripts, its own origin, and media playback — never
+    // forms or downloads.
+    backdropEl.setAttribute('sandbox', 'allow-scripts allow-same-origin')
     backdropEl.setAttribute('referrerpolicy', 'no-referrer')
     backdropEl.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture')
     backdropEl.setAttribute('allowfullscreen', '')
+    // If the film/visual cannot load (server down, instead-of-a-page error),
+    // hand over to the fail-safe instead of leaving a cleared chat.
+    backdropEl.addEventListener('error', handleBackdropFailure)
     const style = backdropEl.style
     style.position = 'fixed'
     style.inset = '0'
@@ -1085,7 +1172,10 @@ function mountBackdrop(url, opacity) {
   const fullBleed = !framedElsewhere && Boolean(settings.windowVisual || settings.audioUrl ||
     knownTheme === THEME_NAME || settings.backdropMode === 'video')
   if (auraOn && fullBleed) {
-    if (!glassStyleEl) applyGlassStyle()
+    if (!glassStyleEl && !applyGlassStyle()) {
+      handleBackdropFailure()
+      return
+    }
   } else if (glassStyleEl) {
     removeGlassStyle()
   }
@@ -2430,7 +2520,7 @@ function postToFrame(message) {
   try {
     const win = backdropEl && backdropEl.contentWindow
     if (!win) return false
-    win.postMessage({ aura: 'transport', ...message }, '*')
+    win.postMessage({ aura: 'transport', ...message }, frameTargetOrigin())
     return true
   } catch {
     return false
@@ -2538,7 +2628,7 @@ function audioCommand(message) {
   try {
     const win = backdropEl && backdropEl.contentWindow
     if (!win) return false
-    win.postMessage({ aura: 'audio', ...message }, '*')
+    win.postMessage({ aura: 'audio', ...message }, frameTargetOrigin())
     lastAudioCommand = { ...message, at: Date.now() }
     return true
   } catch {
@@ -5403,7 +5493,9 @@ function clearDevStatsTimer() {
 }
 
 function openDevStats() {
-  if (!doc || !doc.body || typeof doc.body.appendChild !== 'function' || devStatsEl) return
+  // Explicit only: the Ctrl+Shift+A handler is the one caller. Nothing mounts
+  // on register, so a normal install never gets this panel.
+  if (disposed || !doc || !doc.body || typeof doc.body.appendChild !== 'function' || devStatsEl) return
   devFps = 0
   devFpsLastSeq = null
   devFpsLastAt = 0
@@ -8049,6 +8141,9 @@ function teardown() {
     pollDisposer = null
   }
   resetShow()
+  // The dev readout is host DOM Aura appended itself: take it down first, so a
+  // later teardown step that throws can never strand it on the window.
+  closeDevStats()
   // [listen lane] Stop the audio channel before its document goes away, so a
   // disable or hot reload never leaves music playing with no Aura on screen.
   audioCommand({ cmd: 'stop' })
@@ -8069,7 +8164,6 @@ function teardown() {
       // one broken disposer must not strand the rest
     }
   }
-  closeDevStats()
   ctxRef = null
   liveFrame = null
   liveKey = ''
