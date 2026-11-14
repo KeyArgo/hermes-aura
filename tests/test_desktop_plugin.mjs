@@ -2518,12 +2518,42 @@ record('the page renders the player, the setup and the REVamp card', () => {
   const link = pageAria(tree, 'REVamp marketplace page')
   assert.ok(link, 'the REVamp marketplace link is missing')
   assert.equal(link.type, 'a', 'the marketplace page must be a link')
-  assert.equal(link.props.href, 'https://hermes-agent.nousresearch.com/marketplace/revamp')
+  assert.equal(link.props.href, 'https://hermes-agent.nousresearch.com/marketplace')
   // The settings page carries the one-line version too.
   const settingsTree = renderDeep(renderContribution(p.contributions.find(c => c.area === 'settings.plugins')))
   assert.match(texts(settingsTree), /Winamp-style player for Hermes/, 'AuraSettings has no REVamp line')
   const line = pageAria(settingsTree, 'Open REVamp')
   assert.ok(line, 'the settings REVamp line has no Open REVamp action')
+})
+
+record('REVAMP_URL is the marketplace root', () => {
+  assert.match(source, /const REVAMP_URL = 'https:\/\/hermes-agent\.nousresearch\.com\/marketplace'/)
+  const link = pageAria(pageTree(), 'REVamp marketplace page')
+  assert.ok(link, 'the REVamp marketplace link is missing')
+  assert.equal(link.props.href, 'https://hermes-agent.nousresearch.com/marketplace')
+})
+
+record('Find in Plugins searches for REVamp via findRevampInPlugins', () => {
+  assert.match(source, /function findRevampInPlugins\s*\(/, 'findRevampInPlugins is missing')
+  assert.match(source, /onClick:\s*findRevampInPlugins\b/, 'the button does not call findRevampInPlugins')
+})
+
+record('REVAMP_ICON is an inline SVG data URL', () => {
+  assert.match(source, /const REVAMP_ICON = 'data:image\/svg\+xml;base64,/)
+})
+
+record('the REVamp card renders the icon and its chips', () => {
+  const tree = pageTree()
+  let logo = null
+  walk(tree, node => {
+    if (!logo && node.type === 'img' && node.props && node.props.alt === 'REVamp') logo = node
+  })
+  assert.ok(logo, 'the REVamp card has no img alt="REVamp"')
+  assert.match(String(logo.props.src), /^data:image\/svg\+xml;base64,/)
+  const body = texts(tree)
+  for (const chip of ['Windows · macOS · Linux', 'Classic skins', 'Agent DJ']) {
+    assert.ok(body.includes(chip), `the REVamp card is missing the chip "${chip}"`)
+  }
 })
 
 record('the REVamp button opens /revamp', () => {

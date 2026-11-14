@@ -2484,10 +2484,11 @@ const AUDIO_STALE_MS = 60000
 const REVAMP_PITCH =
   'Want a Winamp-style player for Hermes with your local library, audiobooks, radio and skins? ' +
   'REVamp plays it — Aura’s visuals react to it, and both can run at once.'
-const REVAMP_URL = 'https://hermes-agent.nousresearch.com/marketplace/revamp'
+const REVAMP_URL = 'https://hermes-agent.nousresearch.com/marketplace'
 const REVAMP_INSTALL = 'hermes plugin install revamp'
 // Capabilities > Plugins, at REVamp's row once it is installed.
 const REVAMP_PLUGINS_ROUTE = '/capabilities?tab=plugins&plugin=revamp'
+const REVAMP_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDI0IDEwMjQiIHJvbGU9ImltZyIgYXJpYS1sYWJlbD0iUkVWYW1wIj4KICA8ZGVmcz4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iYiIgeDE9IjAiIHkxPSIwIiB4Mj0iMSIgeTI9IjEiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzBmMjAzMCIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzA4MGIxNiIvPjwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InJldyIgeDE9IjAiIHkxPSIwIiB4Mj0iMSIgeTI9IjEiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzVmZjJjNiIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iI2Q4ZmY1YyIvPjwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InBsYXkiIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIxIj48c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiNmZjRmZDgiLz48c3RvcCBvZmZzZXQ9Ii41IiBzdG9wLWNvbG9yPSIjZmZmZmZmIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjNWZmMmM2Ii8+PC9saW5lYXJHcmFkaWVudD4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iY2hyb21lIiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjM2I0YTVlIi8+PHN0b3Agb2Zmc2V0PSIuNSIgc3RvcC1jb2xvcj0iIzIzMmQzYyIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzE1MWIyNiIvPjwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InRpdGxlIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMCI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjNWZmMmM2Ii8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjZmY0ZmQ4Ii8+PC9saW5lYXJHcmFkaWVudD4KICAgIDxwYXR0ZXJuIGlkPSJzY2FuIiB3aWR0aD0iOCIgaGVpZ2h0PSIxMCIgcGF0dGVyblVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+PHJlY3Qgd2lkdGg9IjgiIGhlaWdodD0iNCIgZmlsbD0iIzVmZjJjNiIgZmlsbC1vcGFjaXR5PSIuMDciLz48L3BhdHRlcm4+CiAgICA8cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIuNSIgY3k9Ii41IiByPSIuNSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjNWZmMmM2IiBzdG9wLW9wYWNpdHk9Ii4zIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjNWZmMmM2IiBzdG9wLW9wYWNpdHk9IjAiLz48L3JhZGlhbEdyYWRpZW50PgogIDwvZGVmcz4KICA8cmVjdCB4PSI2NCIgeT0iNjQiIHdpZHRoPSI4OTYiIGhlaWdodD0iODk2IiByeD0iMjA4IiBmaWxsPSJ1cmwoI2IpIi8+CiAgPGNpcmNsZSBjeD0iNTEyIiBjeT0iNTEyIiByPSI0MjAiIGZpbGw9InVybCgjZykiLz4KICA8IS0tIGEgY2xhc3NpYyBwbGF5ZXIgd2luZG93IC0tPgogIDxyZWN0IHg9IjE1MCIgeT0iMjE0IiB3aWR0aD0iNzI0IiBoZWlnaHQ9IjU5NiIgcng9IjQwIiBmaWxsPSJ1cmwoI2Nocm9tZSkiIHN0cm9rZT0iIzVmZjJjNiIgc3Ryb2tlLW9wYWNpdHk9Ii41IiBzdHJva2Utd2lkdGg9IjYiLz4KICA8cmVjdCB4PSIxNTAiIHk9IjIxNCIgd2lkdGg9IjcyNCIgaGVpZ2h0PSI1OCIgcng9IjI4IiBmaWxsPSJ1cmwoI3RpdGxlKSIgb3BhY2l0eT0iLjg1Ii8+CiAgPGcgZmlsbD0iIzBiMTAxOCIgZmlsbC1vcGFjaXR5PSIuNyI+PHJlY3QgeD0iNzYwIiB5PSIyMzIiIHdpZHRoPSIyMiIgaGVpZ2h0PSIyMiIgcng9IjQiLz48cmVjdCB4PSI3OTYiIHk9IjIzMiIgd2lkdGg9IjIyIiBoZWlnaHQ9IjIyIiByeD0iNCIvPjxyZWN0IHg9IjgzMiIgeT0iMjMyIiB3aWR0aD0iMjIiIGhlaWdodD0iMjIiIHJ4PSI0Ii8+PC9nPgogIDwhLS0gTENEIC0tPgogIDxyZWN0IHg9IjE5MCIgeT0iMzA0IiB3aWR0aD0iNjQ0IiBoZWlnaHQ9IjQxMiIgcng9IjIyIiBmaWxsPSIjMDYwYTBmIi8+CiAgPHJlY3QgeD0iMTkwIiB5PSIzMDQiIHdpZHRoPSI2NDQiIGhlaWdodD0iNDEyIiByeD0iMjIiIGZpbGw9InVybCgjc2NhbikiLz4KICA8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgyMjIgMzQ0KSBzY2FsZSgyLjkpIj4KICAgIDxwb2x5Z29uIHBvaW50cz0iMzIsMCAwLDI0IDMyLDQ4IiBmaWxsPSJ1cmwoI3JldykiLz4KICAgIDxwb2x5Z29uIHBvaW50cz0iMzIsNTIgMCw3NiAzMiwxMDAiIGZpbGw9InVybCgjcmV3KSIvPgogICAgPHBhdGggZD0iTTM2IDAgMTAwIDI0IDM2IDQ4WiBNNDQuMyAxMiA3Ni4zIDI0IDQ0LjMgMzZaIiBmaWxsPSJ1cmwoI3BsYXkpIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiLz4KICAgIDxwb2x5Z29uIHBvaW50cz0iMzYsNTIgNjQsNTIgMTAwLDEwMCA3MiwxMDAiIGZpbGw9IiNkOGZmNWMiLz4KICA8L2c+CiAgPCEtLSBzcGVjdHJ1bSBhbmFseXNlciB3aXRoIHBlYWsgY2FwcyAtLT4KICA8Zz4KICAgIDxyZWN0IHg9IjU2MCIgeT0iNTYwIiB3aWR0aD0iMzAiIGhlaWdodD0iMTIwIiByeD0iNCIgZmlsbD0iIzVmZjJjNiIvPjxyZWN0IHg9IjYwMCIgeT0iNTAwIiB3aWR0aD0iMzAiIGhlaWdodD0iMTgwIiByeD0iNCIgZmlsbD0iIzhhZjNhYiIvPgogICAgPHJlY3QgeD0iNjQwIiB5PSI0NDAiIHdpZHRoPSIzMCIgaGVpZ2h0PSIyNDAiIHJ4PSI0IiBmaWxsPSIjYjZmNzhhIi8+PHJlY3QgeD0iNjgwIiB5PSI1MjAiIHdpZHRoPSIzMCIgaGVpZ2h0PSIxNjAiIHJ4PSI0IiBmaWxsPSIjZDhmZjVjIi8+CiAgICA8cmVjdCB4PSI3MjAiIHk9IjQ3MCIgd2lkdGg9IjMwIiBoZWlnaHQ9IjIxMCIgcng9IjQiIGZpbGw9IiNmZjhhZTYiLz48cmVjdCB4PSI3NjAiIHk9IjU4MCIgd2lkdGg9IjMwIiBoZWlnaHQ9IjEwMCIgcng9IjQiIGZpbGw9IiNmZjRmZDgiLz4KICAgIDxnIGZpbGw9IiNmZmZmZmYiPjxyZWN0IHg9IjYwMCIgeT0iNDgwIiB3aWR0aD0iMzAiIGhlaWdodD0iOCIgcng9IjIiLz48cmVjdCB4PSI2NDAiIHk9IjQyMCIgd2lkdGg9IjMwIiBoZWlnaHQ9IjgiIHJ4PSIyIi8+PHJlY3QgeD0iNzIwIiB5PSI0NTAiIHdpZHRoPSIzMCIgaGVpZ2h0PSI4IiByeD0iMiIvPjwvZz4KICA8L2c+CiAgPCEtLSBzZWVrIGJhciAtLT4KICA8cmVjdCB4PSIxOTAiIHk9Ijc0OCIgd2lkdGg9IjY0NCIgaGVpZ2h0PSIyMCIgcng9IjEwIiBmaWxsPSIjMGIxMDE4Ii8+CiAgPHJlY3QgeD0iMTkwIiB5PSI3NDgiIHdpZHRoPSI0MDAiIGhlaWdodD0iMjAiIHJ4PSIxMCIgZmlsbD0idXJsKCNyZXcpIi8+CiAgPGNpcmNsZSBjeD0iNTkwIiBjeT0iNzU4IiByPSIyMiIgZmlsbD0iI2ZmZmZmZiIvPgogIDxyZWN0IHg9IjY4IiB5PSI2OCIgd2lkdGg9Ijg4OCIgaGVpZ2h0PSI4ODgiIHJ4PSIyMDQiIGZpbGw9Im5vbmUiIHN0cm9rZT0idXJsKCNyZXcpIiBzdHJva2Utd2lkdGg9IjgiIG9wYWNpdHk9Ii4zNSIvPgogIDxwYXRoIGQ9Ik04NDIgMTc2Yy00MCA2LTc4IDI2LTEwNCA1OCAzMC02IDU4LTQgODIgNi0yNCA0LTQ2IDE0LTYyIDMwIDI4LTIgNTIgNCA3MCAxNi0xNC0zNC04LTgwIDE0LTExMFoiIGZpbGw9IiNmMmY0ZmYiIG9wYWNpdHk9Ii45Ii8+Cjwvc3ZnPgo='
 
 const EMPTY_AUDIO = Object.freeze({
   url: '', label: '', playing: false, volume: 0.7, muted: false, error: '', reportedAt: 0
@@ -6228,29 +6229,108 @@ function openRevamp() {
   }
 }
 
+/** The Capabilities search field, if the host has rendered it yet. */
+function capabilitiesSearchInput() {
+  if (!doc) return null
+  try {
+    const actions = doc.querySelector('[data-catalog-actions]')
+    for (let node = actions; node; node = node.parentElement) {
+      if (typeof node.querySelector !== 'function') continue
+      const input = node.querySelector('input')
+      if (input) return input
+    }
+  } catch {
+    // A host without the catalog markup: fall back to the main search box.
+  }
+  try {
+    return doc.querySelector('main input[type="search"], main input[placeholder]')
+  } catch {
+    return null
+  }
+}
+
+/** Open Capabilities > Plugins and type REVamp into its search box so the user
+ *  lands on the install row instead of hunting for it. The host has no URL
+ *  parameter for that box, so poll for it briefly, then never throw. */
+function findRevampInPlugins() {
+  try {
+    host.navigate(REVAMP_PLUGINS_ROUTE)
+  } catch {
+    // older host without navigate
+  }
+  if (!doc) {
+    note('In Plugins, search for "REVamp" to install it.', 6000)
+    return
+  }
+  const started = Date.now()
+  const tick = () => {
+    if (disposed) return
+    try {
+      const input = capabilitiesSearchInput()
+      if (input) {
+        if (!input.value) {
+          const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value').set
+          setter.call(input, 'REVamp')
+          input.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+        return
+      }
+    } catch {
+      // If the search box cannot be driven, the hint below still helps.
+    }
+    if (Date.now() - started >= 4000) {
+      note('In Plugins, search for "REVamp" to install it.', 6000)
+      return
+    }
+    setShowTimer(tick, 150)
+  }
+  tick()
+}
+
 /** The card on the Aura page. */
 function RevampCard() {
+  const chip = (key, text) => jsx('span', {
+    key,
+    style: {
+      fontSize: 10.5, padding: '2px 8px', borderRadius: 999,
+      border: '1px solid rgba(120,255,220,0.35)', color: '#9ff0dc'
+    },
+    children: text
+  })
   return jsxs('div', {
     style: {
       display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
       padding: '10px 12px', borderRadius: 10,
       border: '1px solid var(--ui-stroke-secondary)',
-      background: 'linear-gradient(180deg, rgba(139,124,255,0.10), rgba(255,150,80,0.05))'
+      background: 'linear-gradient(120deg, rgba(20,24,48,0.9), rgba(30,60,60,0.55))'
     },
     children: [
+      jsx('img', {
+        key: 'logo', src: REVAMP_ICON, alt: 'REVamp', width: 56, height: 56,
+        style: { flex: 'none', borderRadius: 12, display: 'block' }
+      }),
       jsxs('div', {
         key: 'copy',
         style: { flex: '1 1 260px', minWidth: 0 },
         children: [
           jsx('div', {
             key: 'title',
-            style: { fontSize: 12, color: 'var(--ui-text-primary)', marginBottom: 2 },
+            style: { fontSize: 15, fontWeight: 700, color: 'var(--ui-text-primary)', marginBottom: 2 },
             children: 'REVamp'
           }),
           jsx('div', {
             key: 'pitch',
             style: { fontSize: 11, lineHeight: 1.4, color: 'var(--ui-text-tertiary)' },
             children: REVAMP_PITCH
+          }),
+          jsxs('div', {
+            key: 'chips',
+            style: { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 },
+            children: [
+              chip('os', 'Windows · macOS · Linux'),
+              chip('skins', 'Classic skins'),
+              chip('dj', 'Agent DJ')
+            ]
           })
         ]
       }),
@@ -6265,10 +6345,8 @@ function RevampCard() {
           }),
           jsx(Button, {
             key: 'plugins', size: 'sm', variant: 'ghost', 'aria-label': 'Find REVamp in Plugins',
-            title: 'Capabilities > Plugins: install, enable or open REVamp',
-            onClick: () => {
-              try { host.navigate(REVAMP_PLUGINS_ROUTE) } catch { /* older host without navigate */ }
-            },
+            title: 'Opens Capabilities > Plugins and searches for REVamp so you can install it',
+            onClick: findRevampInPlugins,
             children: 'Find in Plugins'
           }),
           jsx('a', {
@@ -6309,6 +6387,10 @@ function RevampLine() {
       borderTop: '1px solid var(--ui-stroke-secondary)'
     },
     children: [
+      jsx('img', {
+        key: 'logo', src: REVAMP_ICON, alt: 'REVamp', width: 28, height: 28,
+        style: { flex: 'none', borderRadius: 8, display: 'block' }
+      }),
       jsx('div', {
         key: 'copy',
         style: { flex: 1, minWidth: 0, fontSize: 11, lineHeight: 1.4, color: 'var(--ui-text-tertiary)' },

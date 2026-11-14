@@ -1388,7 +1388,7 @@ const stripButton = label => {
     find.props.onClick({ preventDefault() {} })
     assert.equal(sdk.calls.navigations.at(-1), '/capabilities?tab=plugins&plugin=revamp')
     const page = pageAria(tree, 'REVamp marketplace page')
-    assert.ok(page && page.props.href === 'https://hermes-agent.nousresearch.com/marketplace/revamp', 'no marketplace link')
+    assert.ok(page && page.props.href === 'https://hermes-agent.nousresearch.com/marketplace', 'no marketplace link')
     let command = false
     walk(tree, node => { if (node.props && node.props.children === 'hermes plugin install revamp') command = true })
     assert.ok(command, 'the install command is not shown')
