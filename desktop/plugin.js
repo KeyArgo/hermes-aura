@@ -3424,6 +3424,8 @@ function filmInPanel() {
   return panelVisible() && settings.backdropMode === 'video' && settings.filmBehind !== true
 }
 
+const FILM_STRENGTH_PANEL_TITLE = 'The film plays in the Right panel at full strength. Choose Behind chat to use strength.'
+
 function setFilmBehind(on) {
   if (!ctxRef || disposed) return
   writeSettings({ filmBehind: Boolean(on) })
@@ -5076,6 +5078,9 @@ function AuraQuickMenu() {
   const presetStyle = { minWidth: 0, padding: '0 6px', fontSize: 11, lineHeight: 1.4 }
 
   const glyphColor = auraOn ? 'var(--ui-accent)' : 'var(--ui-text-tertiary)'
+  // In the Right panel the film is always at full strength; strength only acts
+  // on a film behind the chat.
+  const filmPanelled = filmInPanel()
 
   return jsxs(Popover, {
     open,
@@ -5288,6 +5293,26 @@ function AuraQuickMenu() {
                     })
                   })
                   : null,
+                // Where the film plays: in the Right panel, or behind the chat
+                // with the panel (if open) as its remote.
+                row(
+                  'Watch in',
+                  jsxs('div', {
+                    style: { display: 'flex', alignItems: 'center', gap: 2 },
+                    children: [[false, 'Panel', 'Watch the film in the Right panel (quick menu)'],
+                      [true, 'Behind chat', 'Watch the film behind the chat (quick menu)']].map(([behind, label, aria]) =>
+                      jsx(Button, {
+                        key: label,
+                        size: 'micro',
+                        variant: (settings.filmBehind === true) === behind ? 'default' : 'ghost',
+                        'aria-label': aria,
+                        style: presetStyle,
+                        onClick: () => setFilmBehind(behind),
+                        children: label
+                      })
+                    )
+                  })
+                ),
                 row(
                   'Film strength',
                   jsxs('div', {
@@ -5297,7 +5322,8 @@ function AuraQuickMenu() {
                         size: 'micro',
                         variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
                         'aria-label': 'Automatic film strength',
-                        title: 'Automatic: 20% working, 30% with music, +3% per extra chat',
+                        title: filmPanelled ? FILM_STRENGTH_PANEL_TITLE : 'Automatic: 20% working, 30% with music, +3% per extra chat',
+                        disabled: filmPanelled,
                         style: presetStyle,
                         onClick: () => setVideoOpacityAuto(),
                         children: 'Auto'
@@ -5311,6 +5337,8 @@ function AuraQuickMenu() {
                             ? 'default'
                             : 'ghost',
                           'aria-label': `${preset}% film strength`,
+                          title: filmPanelled ? FILM_STRENGTH_PANEL_TITLE : undefined,
+                          disabled: filmPanelled,
                           style: presetStyle,
                           onClick: () => setVideoOpacity(preset / 100),
                           children: `${preset}%`

@@ -2096,6 +2096,34 @@ await recordAsync('Aura adds no blur of its own over a film behind the app', asy
   }
 })
 
+await recordAsync('the quick menu offers Watch in, and Film strength only acts on a film behind the chat', async () => {
+  // With the Right panel open the film plays in it at full strength, so the
+  // strength presets cannot change anything: grey them out and offer the move.
+  const menuFor = async filmBehind => {
+    const scenario = makeCtx({ enabled: true, backdropMode: 'video', panelEnabled: true, filmBehind,
+      videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
+    const dispose = pluginModule.default.register(scenario.ctx)
+    await sleep(20)
+    const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
+    return { tree, dispose }
+  }
+  const inPanel = await menuFor(false)
+  try {
+    assert.ok(findByAria(inPanel.tree, 'Watch the film behind the chat (quick menu)'), 'the quick menu has no Behind chat choice')
+    assert.ok(findByAria(inPanel.tree, 'Watch the film in the Right panel (quick menu)'), 'the quick menu has no Panel choice')
+    assert.equal(findByAria(inPanel.tree, '50% film strength').props.disabled, true,
+      'Film strength looks live while the film plays in the Right panel at full strength')
+  } finally {
+    inPanel.dispose()
+  }
+  const behind = await menuFor(true)
+  try {
+    assert.ok(!findByAria(behind.tree, '50% film strength').props.disabled, 'Film strength is greyed out for a film behind the chat')
+  } finally {
+    behind.dispose()
+  }
+})
+
 await recordAsync('the film controls in the quick menu are named for what they do', async () => {
   // The presets set how solid the film is; labelled "transparency" they read
   // backwards, so 25% looked like a nearly clear film when it is mostly gone.
