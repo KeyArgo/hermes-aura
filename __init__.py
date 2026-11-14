@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import contextvars
 import threading
 import urllib.error
 import urllib.parse
@@ -1269,8 +1270,12 @@ def register(ctx: Any) -> None:
     for hook_name, fn in HOOKS:
         ctx.register_hook(hook_name, fn)
 
-    # Warm the server without blocking register().
-    threading.Thread(target=_boot, name="aura-boot", daemon=True).start()
+    # Warm the server without blocking register(). A plain thread starts with an
+    # empty context, so it would lose the profile Hermes registered this copy
+    # for (its home override is context-local) and start the launch profile's
+    # server instead. Run it in a copy of the registering context.
+    threading.Thread(target=contextvars.copy_context().run, args=(_boot,),
+                     name="aura-boot", daemon=True).start()
     logger.info("aura registered (%d tool, %d hooks)", len(TOOLS), len(HOOKS))
 
 
