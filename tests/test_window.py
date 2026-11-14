@@ -218,6 +218,41 @@ def test_reap_kills_only_our_profile(tmp_path, monkeypatch):
     assert os.getpid() != 987654
 
 
+def test_reap_finds_and_closes_a_leftover_window_on_windows(tmp_path, monkeypatch):
+    """Windows has neither /proc nor ps: the reaper asks Windows for the command line,
+    and Windows quotes arguments with spaces ("--user-data-dir=C:\\...")."""
+    import builtins
+    import subprocess
+
+    profile = str(window._profile())
+    _write_lease(tmp_path, 987654, profile)
+    real_open = builtins.open
+
+    def no_proc(path, *args, **kwargs):
+        if str(path).startswith("/proc/"):
+            raise OSError("no /proc on Windows")
+        return real_open(path, *args, **kwargs)
+
+    asked = []
+
+    def fake_run(args, **kwargs):
+        asked.append(args)
+        cmd = f'"C:\\Program Files\\Chromium\\chrome.exe" --app=x "--user-data-dir={profile}"'
+        return subprocess.CompletedProcess(args, 0, stdout=cmd + "\r\n", stderr="")
+
+    killed = []
+    monkeypatch.setattr("builtins.open", no_proc)
+    monkeypatch.setattr(window.os, "name", "nt")
+    monkeypatch.setattr(window.subprocess, "run", fake_run)
+    monkeypatch.setattr(window.os, "killpg", lambda pid, sig: killed.append(pid), raising=False)
+    monkeypatch.setattr(window.os, "kill", lambda pid, sig: killed.append(pid))
+
+    assert window.reap_orphan() is True, "a leftover window on Windows was not recognised"
+    assert killed == [987654]
+    assert asked and asked[0][0].lower().startswith("powershell"), f"asked {asked}, not Windows"
+    assert not (tmp_path / "aura" / window.LEASE).exists()
+
+
 def test_player_url_preserves_playlist_episode():
     url = window.player_url(4567, 'token', 'https://youtube.com/playlist?list=abc', 42,
                             video_id='abcdefghijk')

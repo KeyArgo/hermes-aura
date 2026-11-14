@@ -157,6 +157,28 @@ def _clear_lease() -> None:
         pass
 
 
+def _command_line(pid: int) -> str:
+    """The command line of ``pid``, or "" when it cannot be read.
+
+    Linux exposes argv NUL-separated in /proc; macOS answers through ps; Windows has
+    neither, so it is asked through PowerShell's Win32_Process.
+    """
+    try:
+        return open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", "replace")
+    except OSError:
+        pass
+    if os.name == "nt":
+        script = f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine"
+        args, timeout = ["powershell", "-NoProfile", "-NonInteractive", "-Command", script], 10
+    else:
+        args, timeout = ["ps", "-p", str(pid), "-o", "command="], 1
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, check=False, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def reap_orphan() -> bool:
     """At server start: close a window left behind by a previous server.
 
@@ -169,22 +191,16 @@ def reap_orphan() -> bool:
     except (OSError, ValueError, KeyError, TypeError):
         return False
     profile = str(_profile())
-    try:
-        # Linux exposes argv NUL-separated; no shell quoting to undo.
-        cmd = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", "replace")
-    except OSError:
-        try:
-            result = subprocess.run(
-                ["ps", "-p", str(pid), "-o", "command="],
-                capture_output=True, text=True, check=False, timeout=1,
-            )
-            cmd = result.stdout if result.returncode == 0 else ""
-        except (OSError, subprocess.SubprocessError):
-            return False
+    cmd = _command_line(pid)
+    if not cmd:
+        return False
     # Ours only if it runs on this home's own browser profile (PIDs get reused).
+    # Windows quotes an argument with spaces ("--user-data-dir=C:\...") and its
+    # paths are case-insensitive.
     profiles = {profile, os.path.realpath(profile)}
-    if not any(re.search(r"(?:^|[\0\s])--user-data-dir=" + re.escape(candidate) +
-                         r"(?=[\0\s]|$)", cmd) for candidate in profiles):
+    flags = re.IGNORECASE if os.name == "nt" else 0
+    if not any(re.search(r'(?:^|[\0\s"])--user-data-dir="?' + re.escape(candidate) +
+                         r'"?(?=[\0\s"]|$)', cmd, flags) for candidate in profiles):
         return False
     try:
         os.killpg(pid, signal.SIGTERM)  # started with start_new_session: own group
