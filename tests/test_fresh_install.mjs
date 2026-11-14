@@ -1161,6 +1161,30 @@ const stripButton = label => {
   safeDispose('the adopted desktop-window scenario (N)', dispose)
 }
 
+// Scenario O: the Aura page header's on/off pill is a real control, with the
+// same two-click turn-off as the panel's power button.
+{
+  const scenario = await watchWindowScenario({})
+  const enabledSent = () => scenario.bucket.controls.filter(c => c && typeof c.enabled === 'boolean').map(c => c.enabled)
+  const pill = () => pageAriaPrefix(pageTree(scenario.bucket), 'Aura on') || pageAriaPrefix(pageTree(scenario.bucket), 'Aura off') ||
+    pageAriaPrefix(pageTree(scenario.bucket), 'Click again')
+  await recordAsync('43. the page header Aura on/off pill turns Aura off (two clicks) and on (one click)', async () => {
+    const first = pill()
+    assert.ok(first && typeof first.props.onClick === 'function', 'the page header Aura on/off pill does nothing when clicked')
+    first.props.onClick({ preventDefault() {} })
+    await sleep(30)
+    assert.deepEqual(enabledSent(), [], 'one click turned Aura off (it needs a second click)')
+    pill().props.onClick({ preventDefault() {} })
+    await sleep(30)
+    assert.deepEqual(enabledSent(), [false], 'the second click did not turn Aura off')
+    await tickPoll(scenario.bucket)
+    pill().props.onClick({ preventDefault() {} })
+    await sleep(30)
+    assert.deepEqual(enabledSent(), [false, true], 'one click did not turn Aura back on')
+  })
+  safeDispose('the page header on/off scenario (O)', scenario.dispose)
+}
+
 // ===================================================================
 // Scenario I: "Watch in: Panel | Behind chat". With the Right panel open the
 // film can play behind the chat while the panel stays the remote, without a

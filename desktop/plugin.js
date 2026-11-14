@@ -2350,15 +2350,17 @@ function postToBackdrop(message) {
   // control (scrub, Jump to, volume, transport) goes to that window instead of
   // into a frame nobody is watching. Not while the pop-out is still pending:
   // that is when the in-app film itself is paused for the hand-over.
-  if (desktopOwned && ctxRef && !disposed) {
-    const command = desktopCommandFor(message)
-    if (command) {
-      void ctxRef.rest('/player/command', { method: 'POST', body: command, timeoutMs: 4000 })
-        .catch(() => setError('Aura could not reach the film window.'))
-      return true
-    }
-  }
-  return postToFrame(message)
+  return postToDesktop(message) || postToFrame(message)
+}
+
+/** Send a control to the desktop window while it owns the film; false if not. */
+function postToDesktop(message) {
+  if (!desktopOwned || !ctxRef || disposed) return false
+  const command = desktopCommandFor(message)
+  if (!command) return false
+  void ctxRef.rest('/player/command', { method: 'POST', body: command, timeoutMs: 4000 })
+    .catch(() => setError('Aura could not reach the film window.'))
+  return true
 }
 
 /** Post straight into the in-app frame, wherever the film is being watched. */
@@ -2375,15 +2377,9 @@ function postToFrame(message) {
 
 /** One entry point for every transport control, wherever it is clicked. */
 function videoCommand(cmd, value) {
-  if (desktopOwned && ctxRef) {
-    let name = cmd
-    let number = value
-    if (name === 'toggle') name = $video.get().playing ? 'pause' : 'play'
-    if (name === 'seek') { name = 'seek'; number = Math.max(0, ($video.get().position || 0) + Number(value || 0)) }
-    if (name === 'seekTo') name = 'seek'
-    const body = { cmd: name }
-    if (number != null) body.value = number
-    void ctxRef.rest('/player/command', { method: 'POST', body, timeoutMs: 4000 }).catch(() => setError('Aura could not reach the film window.'))
+  if (desktopOwned) {
+    const name = cmd === 'toggle' ? ($video.get().playing ? 'pause' : 'play') : cmd
+    postToDesktop({ cmd: name, value })
     return
   }
   if (cmd === 'next' || cmd === 'prev') {
@@ -3545,10 +3541,35 @@ const PANE_ID = `${ID}:panel`
 
 let panelEl = null
 let panelParts = null
-// The panel power button arms on the first click and turns Aura off only on a
-// second click before this time (ms since epoch); 0 = not armed.
-let powerArmedUntil = 0
+// The power controls (panel button, page pill) arm on the first click and turn
+// Aura off only on a second click before this time (ms since epoch); 0 = not armed.
+const $powerArmed = atom(0)
 const POWER_CONFIRM_MS = 3000
+
+/** One press of an Aura power control: on at once, off on a second press. */
+function pressPower() {
+  const live = $live.get()
+  const on = live.ok ? live.enabled === true : $settings.get().enabled
+  if (!on || Date.now() < $powerArmed.get()) {
+    $powerArmed.set(0)
+    void setEnabled(!on)
+  } else {
+    // Beside Visualizer | Video one stray click used to switch all of Aura off.
+    $powerArmed.set(Date.now() + POWER_CONFIRM_MS)
+    setTimeout(() => {
+      if (disposed || Date.now() < $powerArmed.get()) return
+      $powerArmed.set(0)
+      syncPanel(true)
+    }, POWER_CONFIRM_MS + 50)
+  }
+  syncPanel(true)
+}
+
+/** What a power control says, armed or not. */
+function powerLabel(auraOn) {
+  if (auraOn && Date.now() < $powerArmed.get()) return 'Click again to turn Aura off'
+  return auraOn ? 'Aura on — click twice to turn off' : 'Aura off — click to turn on'
+}
 let panelStyleEl = null
 // The live `panes` registration, if any. Tracked through the disposer below so
 // plugin disposal (and switching the panel off) removes the host pane/tab/strip.
@@ -3817,6 +3838,7 @@ function uiCss() {
       text-transform: uppercase; color: #d8cec2; border: 1px solid rgba(255,255,255,0.16);
       background: rgba(255,255,255,0.04);
     }
+    #aura-page button.aura-pill { font: inherit; font-size: 10.5px; cursor: pointer; }
     #aura-page .aura-pill.is-on {
       color: #ffe2c6; border-color: rgba(255,180,120,0.55);
       background: rgba(255,150,80,0.14); box-shadow: 0 0 18px rgba(255,150,80,0.22);
@@ -4067,23 +4089,7 @@ function mountPanelInto(hostNode) {
   power.className = 'ap-power'
   power.addEventListener('click', event => {
     if (event && event.preventDefault) event.preventDefault()
-    const live = $live.get()
-    const on = live.ok ? live.enabled === true : $settings.get().enabled
-    if (!on) {
-      powerArmedUntil = 0
-      void setEnabled(true)
-      return
-    }
-    // It sits right beside Visualizer | Video: one stray click used to switch all
-    // of Aura off in silence. Turning off takes a second click within 3 s.
-    if (Date.now() < powerArmedUntil) {
-      powerArmedUntil = 0
-      void setEnabled(false)
-      return
-    }
-    powerArmedUntil = Date.now() + POWER_CONFIRM_MS
-    syncPanel(true)
-    setTimeout(() => { if (!disposed) syncPanel(true) }, POWER_CONFIRM_MS + 50)
+    pressPower()
   })
 
   // Hide the panel, not Aura: the visual and a film behind the window keep
@@ -4453,10 +4459,8 @@ function syncPanel(force) {
     }
   }
   if (parts.power) {
-    const armed = auraOn && Date.now() < powerArmedUntil
-    const label = armed
-      ? 'Click again to turn Aura off'
-      : auraOn ? 'Aura on — click twice to turn off' : 'Aura off — click to turn on'
+    const armed = auraOn && Date.now() < $powerArmed.get()
+    const label = powerLabel(auraOn)
     if (parts.power.getAttribute('aria-label') !== label) {
       parts.power.setAttribute('aria-label', label)
       parts.power.title = label
@@ -6377,6 +6381,8 @@ function AuraPage() {
   const live = useValue($live)
   const state = useValue($video)
   const auraOn = live.ok ? live.enabled === true : settings.enabled
+  const armedUntil = useValue($powerArmed)
+  const armed = auraOn && armedUntil > Date.now()
   const playing = state.playing === true
   // The film is a fixed-position frame glued to this stage's rect, so the rect
   // has to follow a scrolling page between poll ticks (4 Hz is a visible lag).
@@ -6570,10 +6576,17 @@ function AuraPage() {
         className: 'aura-hero-status',
         style: { display: 'flex', alignItems: 'center', gap: 10, flex: 'none' },
         children: [
-          jsx('span', {
+          jsx('button', {
             key: 'flag',
+            type: 'button',
             className: auraOn ? 'aura-pill is-on' : 'aura-pill',
-            children: auraOn ? 'Aura on' : 'Aura off'
+            'aria-label': powerLabel(auraOn),
+            title: powerLabel(auraOn),
+            onClick: event => {
+              if (event && event.preventDefault) event.preventDefault()
+              pressPower()
+            },
+            children: armed ? 'Off?' : auraOn ? 'Aura on' : 'Aura off'
           }),
           // Visualizer | Video beside the on/off chip, like the status bar: the
           // same setBackdropMode, so the page, bar, menu and panel all agree.
