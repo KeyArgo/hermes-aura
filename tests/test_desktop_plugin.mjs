@@ -2077,6 +2077,46 @@ await recordAsync('the "Visual behind the app" switch is on the settings page in
   }
 })
 
+await recordAsync('Frosted haze is a choice: on keeps the app frosted, off clears the blur over the film', async () => {
+  // The haze trades a sharper film for more readable text; people pick. It is
+  // Aura's own filter on the film, so it looks the same on every OS instead of
+  // depending on whether the host's frost survives the OS transparency setting.
+  const look = async filmHaze => {
+    const { films, dispose } = await surfaceScenario({
+      enabled: true, backdropMode: 'video', panelEnabled: false, windowVisual: true, filmHaze,
+      videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+    })
+    try {
+      assert.equal(films.length, 1, 'no film behind the app')
+      const glass = glassStyles()
+      assert.equal(glass.length, 1, 'no glass stylesheet while the film is behind the app')
+      return { css: String(glass[0].textContent || ''), filter: String(films[0].style.filter || '') }
+    } finally {
+      dispose()
+    }
+  }
+  const on = await look(true)
+  assert.match(on.filter, /blur\(/, `Frosted haze on draws no haze of Aura's own (filter: ${on.filter || 'none'})`)
+  assert.ok(!/backdrop-filter:\s*none/.test(on.css), 'Frosted haze on strips the host frost')
+  const off = await look(false)
+  assert.ok(!/blur\(/.test(off.filter), `Frosted haze off still blurs the film (filter: ${off.filter})`)
+  assert.match(off.css, /backdrop-filter:\s*none/, 'Frosted haze off leaves the host frost over the film')
+})
+
+await recordAsync('Frosted haze has a switch on the settings page', async () => {
+  const scenario = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
+  const dispose = pluginModule.default.register(scenario.ctx)
+  try {
+    await sleep(20)
+    const page = scenario.contributions.find(c => c.area === 'settings.plugins')
+    const toggle = findSwitch(renderContribution(page), 'Frosted haze')
+    assert.ok(toggle, 'the settings page has no Frosted haze switch')
+    assert.equal(toggle.props.checked, true, 'Frosted haze is not on by default')
+  } finally {
+    dispose()
+  }
+})
+
 await recordAsync('a film in the Right panel is always full strength', async () => {
   // See-through is for the film behind the app. Inside its own box a 75% film is
   // a dim player, and the 250 ms tick used to pull it back to 75% after mount set

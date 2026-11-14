@@ -872,6 +872,13 @@ async function watchInScenario(filmBehind) {
     assert.ok(behind.seeThroughRow, 'the panel has no see-through row')
     assert.notEqual(behind.seeThroughRow.style.display, 'none', 'see-through is hidden while it is the film behind the chat it controls')
   })
+  await recordAsync('16b. Behind chat: the panel turns the frosted haze off in one click', async () => {
+    const off = domFind(behind.pane, node => node.attributes && node.attributes['aria-label'] === 'Frosted haze off')
+    assert.ok(off, 'the panel has no Frosted haze choice next to see-through')
+    clickDom(off)
+    await sleep(40)
+    assert.equal(behind.bucket.storage.get('settings').filmHaze, false, 'Frosted haze off was not saved')
+  })
   safeDispose('the behind-chat scenario (I)', behind.dispose)
 }
 
