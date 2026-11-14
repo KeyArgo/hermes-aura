@@ -3472,6 +3472,10 @@ const PANE_ID = `${ID}:panel`
 
 let panelEl = null
 let panelParts = null
+// The panel power button arms on the first click and turns Aura off only on a
+// second click before this time (ms since epoch); 0 = not armed.
+let powerArmedUntil = 0
+const POWER_CONFIRM_MS = 3000
 let panelStyleEl = null
 // The live `panes` registration, if any. Tracked through the disposer below so
 // plugin disposal (and switching the panel off) removes the host pane/tab/strip.
@@ -3985,7 +3989,21 @@ function mountPanelInto(hostNode) {
     if (event && event.preventDefault) event.preventDefault()
     const live = $live.get()
     const on = live.ok ? live.enabled === true : $settings.get().enabled
-    void setEnabled(!on)
+    if (!on) {
+      powerArmedUntil = 0
+      void setEnabled(true)
+      return
+    }
+    // It sits right beside Visualizer | Movie: one stray click used to switch all
+    // of Aura off in silence. Turning off takes a second click within 3 s.
+    if (Date.now() < powerArmedUntil) {
+      powerArmedUntil = 0
+      void setEnabled(false)
+      return
+    }
+    powerArmedUntil = Date.now() + POWER_CONFIRM_MS
+    syncPanel(true)
+    setTimeout(() => { if (!disposed) syncPanel(true) }, POWER_CONFIRM_MS + 50)
   })
 
   // Hide the panel, not Aura: the visual and a film behind the window keep
@@ -4350,16 +4368,18 @@ function syncPanel(force) {
     }
   }
   if (parts.power) {
-    const label = auraOn ? 'Aura on — click to turn off' : 'Aura off — click to turn on'
+    const armed = auraOn && Date.now() < powerArmedUntil
+    const label = armed
+      ? 'Click again to turn Aura off'
+      : auraOn ? 'Aura on — click twice to turn off' : 'Aura off — click to turn on'
     if (parts.power.getAttribute('aria-label') !== label) {
       parts.power.setAttribute('aria-label', label)
       parts.power.title = label
     }
     const flag = auraOn ? 'on' : 'off'
-    if (parts.power.getAttribute('data-on') !== flag) {
-      parts.power.setAttribute('data-on', flag)
-      parts.power.textContent = auraOn ? 'On' : 'Off'
-    }
+    const text = armed ? 'Off?' : auraOn ? 'On' : 'Off'
+    if (parts.power.getAttribute('data-on') !== flag) parts.power.setAttribute('data-on', flag)
+    if (parts.power.textContent !== text) parts.power.textContent = text
   }
   for (const [value, button] of Object.entries(parts.modeButtons || {})) {
     const active = settings.backdropMode === value ? 'true' : 'false'

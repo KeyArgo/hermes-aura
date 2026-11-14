@@ -954,6 +954,20 @@ const stripButton = label => {
     assert.ok(!/pop-out window/.test(text), 'the page still calls the in-app watch window a pop-out window')
   })
 
+  await recordAsync('29. the panel power button needs a second click to turn Aura off', async () => {
+    // It sits right beside Visualizer | Movie: one stray click used to turn all of
+    // Aura off in silence. Turning on stays one click.
+    const power = domFind(scenario.pane, node => node.className === 'ap-power')
+    assert.ok(power, 'the panel has no power button')
+    clickDom(power)
+    await sleep(30)
+    assert.equal(scenario.bucket.storage.get('settings').enabled, true, 'one click turned Aura off')
+    assert.match(String(power.getAttribute('aria-label') || ''), /again/i, 'the button does not ask for a second click')
+    clickDom(power)
+    await sleep(30)
+    assert.equal(scenario.bucket.storage.get('settings').enabled, false, 'the second click did not turn Aura off')
+  })
+
   safeDispose('the reachability scenario (K)', scenario.dispose)
 }
 
