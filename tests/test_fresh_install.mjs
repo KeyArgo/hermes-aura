@@ -384,7 +384,14 @@ export const Fragment = Symbol.for('react.fragment')
 // control-strip accounting, and for asserting none of it survives dispose.
 const bodyChildren = []
 const headChildren = []
-const documentElement = { style: {} }
+const documentElement = {
+  style: {},
+  attributes: {},
+  setAttribute(name, value) { this.attributes[name] = String(value) },
+  getAttribute(name) { return this.attributes[name] },
+  removeAttribute(name) { delete this.attributes[name] },
+  hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, name) }
+}
 function makeChildList(children) {
   const classes = new Set()
   return {

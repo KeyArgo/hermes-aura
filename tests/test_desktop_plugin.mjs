@@ -386,7 +386,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, video: $video, settings: $settings };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, video: $video, settings: $settings };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -404,8 +404,14 @@ function makeAtom(initial) {
 
 export const atom = makeAtom
 export const $accentOverride = makeAtom(null)
+// Injected host failures (a real host call can throw during teardown).
+export const failures = { accent: 0 }
 
 export const setAccentOverride = color => {
+  if (failures.accent > 0) {
+    failures.accent -= 1
+    throw new Error('accent host failure')
+  }
   calls.accent.push(color)
   $accentOverride.set(color)
 }
@@ -496,7 +502,14 @@ export const Fragment = Symbol.for('react.fragment')
 const bodyChildren = []
 const headChildren = []
 const createdElements = []
-const documentElement = { style: {} }
+const documentElement = {
+  style: {},
+  attributes: {},
+  setAttribute(name, value) { this.attributes[name] = String(value) },
+  getAttribute(name) { return this.attributes[name] },
+  removeAttribute(name) { delete this.attributes[name] },
+  hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, name) }
+}
 function makeChildList(children) {
   const classes = new Set()
   return {
@@ -580,8 +593,15 @@ globalThis.document = {
     createdElements.push(node)
     return node
   },
-  addEventListener() {},
-  removeEventListener() {}
+  __handlers: {},
+  addEventListener(type, fn) {
+    const list = this.__handlers[type] || (this.__handlers[type] = [])
+    list.push(fn)
+  },
+  removeEventListener(type, fn) {
+    const list = this.__handlers[type]
+    if (list) this.__handlers[type] = list.filter(entry => entry !== fn)
+  }
 }
 const FAKE_VARS = {
   '--ui-accent': '#8b7cff',
@@ -1160,6 +1180,173 @@ await recordAsync('disposer removes every contribution, clears timers/listeners,
   assert.equal(hostIframes().length, 0, 'a host iframe survived dispose')
   assert.doesNotThrow(() => disposeA(), 'dispose is not idempotent')
 })
+
+// ------------------------------------------------------------- scenario D
+// Backdrop containment: the glass stylesheet is scoped by one attribute on
+// <html>, exists only while the full-window backdrop shows, and every way out
+// (off, closed, framed in the panel, a failed load, a host with no root)
+// removes the attribute with the style. The sandbox carries only what the
+// player needs and messages go to the frame's own origin.
+
+const rootHasBackdrop = () => documentElement.hasAttribute('data-aura-backdrop')
+const newestGlassCss = () => {
+  const style = glassStyles()[glassStyles().length - 1]
+  return style ? String(style.textContent || '') : ''
+}
+
+{
+  const off = makeCtx({ enabled: false, windowVisual: false })
+  const dispose = pluginModule.default.register(off.ctx)
+  await sleep(25)
+  record('D1. no #aura-glass and no backdrop attribute while the backdrop is off', () => {
+    assert.equal(glassStyles().length, 0, 'the glass style exists with the backdrop off')
+    assert.equal(rootHasBackdrop(), false, 'the data-aura-backdrop attribute survived with the backdrop off')
+    assert.equal(hostIframes().length, 0, 'a backdrop iframe exists with the backdrop off')
+  })
+  dispose()
+}
+
+{
+  const on = makeCtx({ enabled: true, backdropMode: 'aura', windowVisual: true, panelEnabled: false })
+  const dispose = pluginModule.default.register(on.ctx)
+  await sleep(30)
+  record('D2. the full-window backdrop scopes every glass rule under data-aura-backdrop', () => {
+    assert.equal(hostIframes().length, 1, 'the full-window backdrop did not mount')
+    assert.equal(glassStyles().length, 1, 'the glass style did not mount with the backdrop')
+    assert.equal(rootHasBackdrop(), true, 'the scoping attribute was not set on <html>')
+    const css = newestGlassCss()
+    const selectors = [...css.matchAll(/([^{}\n]+)\{/g)].map(match => match[1].trim())
+    assert.ok(selectors.length > 0, 'the glass stylesheet has no rules')
+    for (const selector of selectors) {
+      assert.match(selector, /data-aura-backdrop/, `an unscoped glass rule escaped: ${selector}`)
+    }
+    assert.equal(/\[data-(slot|tour|sidebar|testid)[=\]]/.test(css), false,
+      'the glass stylesheet targets Hermes markup selectors')
+  })
+
+  record('D3. the backdrop iframe sandbox is scripts + same-origin only', () => {
+    const frame = hostIframes()[0]
+    const sandbox = frame.attributes.sandbox
+    assert.equal(sandbox, 'allow-scripts allow-same-origin', `unexpected sandbox: ${sandbox}`)
+    assert.equal(/allow-forms/.test(sandbox), false, 'allow-forms is still in the sandbox')
+    assert.equal(/allow-downloads/.test(sandbox), false, 'allow-downloads is still in the sandbox')
+    assert.equal(frame.attributes.allow, 'autoplay; fullscreen; encrypted-media; picture-in-picture',
+      'the player lost a feature policy it needs (autoplay/encrypted-media for YouTube)')
+  })
+
+  await recordAsync('D4. transport and audio messages target the frame origin, never *', async () => {
+    const sent = []
+    hostIframes()[0].contentWindow = { postMessage: (message, origin) => sent.push({ message, origin }) }
+    assert.ok(pluginModule.wiringTest.post({ cmd: 'pause' }), 'the transport post did not reach the frame')
+    pluginModule.wiringTest.audio({ cmd: 'mute' })
+    assert.ok(sent.length >= 2, `no messages were posted (${JSON.stringify(sent)})`)
+    for (const entry of sent) {
+      assert.equal(entry.origin, 'http://127.0.0.1:4321', `posted to ${entry.origin} instead of the frame origin`)
+    }
+  })
+
+  dispose()
+  record('D5. removing the backdrop removes the attribute with the style', () => {
+    assert.equal(glassStyles().length, 0, 'the glass style survived the backdrop')
+    assert.equal(rootHasBackdrop(), false, 'the data-aura-backdrop attribute survived the backdrop')
+  })
+}
+
+{
+  const panelled = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, filmBehind: false,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  const dispose = pluginModule.default.register(panelled.ctx)
+  await sleep(30)
+  record('D6. a film framed in the Right panel never mounts the glass', () => {
+    assert.equal(hostIframes().length, 1, 'the panel film did not mount')
+    assert.equal(glassStyles().length, 0, 'the glass style exists over a panel film')
+    assert.equal(rootHasBackdrop(), false, 'the scoping attribute exists over a panel film')
+  })
+  dispose()
+}
+
+{
+  const closed = makeCtx({
+    enabled: true, backdropMode: 'video', videoClosed: true, windowVisual: false,
+    panelEnabled: false, videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  const dispose = pluginModule.default.register(closed.ctx)
+  await sleep(25)
+  record('D7. a closed film never leaves the glass (or the attribute) behind', () => {
+    assert.equal(hostIframes().length, 0, 'a closed film kept its iframe')
+    assert.equal(glassStyles().length, 0, 'a closed film kept the glass style')
+    assert.equal(rootHasBackdrop(), false, 'a closed film kept the scoping attribute')
+  })
+  dispose()
+}
+
+{
+  const failing = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, filmBehind: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ', windowVisual: true
+  })
+  const dispose = pluginModule.default.register(failing.ctx)
+  await sleep(30)
+  record('D8. a frame load error falls back to the panel film and removes the glass', () => {
+    const frame = hostIframes()[0]
+    assert.ok(frame, 'the full-window film did not mount')
+    assert.equal(glassStyles().length, 1, 'precondition: no glass mounted')
+    const handlers = (frame.__handlers && frame.__handlers.error) || []
+    assert.ok(handlers.length > 0, 'the backdrop frame has no load-failure handler')
+    handlers[0]({ type: 'error' })
+    assert.equal(glassStyles().length, 0, 'the glass style survived the failed load')
+    assert.equal(rootHasBackdrop(), false, 'the scoping attribute survived the failed load')
+    assert.equal(failing.storage.get('settings').filmBehind, false, 'the film did not fall back to the Right panel')
+    assert.equal(hostIframes().length, 1, 'the film frame was torn down instead of moving into the panel')
+  })
+  dispose()
+}
+
+{
+  const root = globalThis.document.documentElement
+  const setAttribute = root.setAttribute
+  const removeAttribute = root.removeAttribute
+  const noRoot = makeCtx({ enabled: true, backdropMode: 'aura', windowVisual: true, panelEnabled: false })
+  root.setAttribute = undefined
+  root.removeAttribute = undefined
+  const dispose = pluginModule.default.register(noRoot.ctx)
+  try {
+    await sleep(25)
+    record('D9. a host with no usable root fails safe: no glass, no transparent chat', () => {
+      assert.equal(glassStyles().length, 0, 'the glass style mounted with no root to scope it')
+      assert.equal(rootHasBackdrop(), false, 'a scoping attribute appeared on an unusable root')
+      assert.equal(hostIframes().length, 0, 'the visualiser was left over an unwashable (transparent) chat')
+    })
+  } finally {
+    root.setAttribute = setAttribute
+    root.removeAttribute = removeAttribute
+    dispose()
+  }
+}
+
+{
+  let divAppends = 0
+  const body = globalThis.document.body
+  const appendChild = body.appendChild
+  body.appendChild = function (node) {
+    if (node && node.tagName === 'DIV' && node.attributes && node.attributes.id !== 'aura-dev-stats') divAppends += 1
+    return appendChild.call(this, node)
+  }
+  const bucket = makeCtx({ enabled: true, backdropMode: 'aura', windowVisual: true, panelEnabled: false })
+  const dispose = pluginModule.default.register(bucket.ctx)
+  try {
+    await sleep(30)
+    record('D10. measuring the glass colours appends no probe element to the host body', () => {
+      assert.equal(glassStyles().length, 1, 'precondition: no glass to measure')
+      assert.equal(divAppends, 0, `Aura appended ${divAppends} probe element(s) to the host body`)
+    })
+  } finally {
+    body.appendChild = appendChild
+    dispose()
+  }
+}
 
 // ------------------------------------------------------------- scenario B
 
@@ -3495,6 +3682,44 @@ await recordAsync('manage playlist opens the real list page in the window', asyn
     dispose()
   }
 })
+
+// Scenario U: the dev-stats readout is explicit (Ctrl+Shift+A only), appends
+// exactly one node when asked, and is removed on dispose even when a later
+// host call throws before teardown reaches its end.
+{
+  const seenBefore = (globalThis.document.__handlers.keydown || []).length
+  const bucket = makeCtx({ enabled: false })
+  const dispose = pluginModule.default.register(bucket.ctx)
+  const added = (globalThis.document.__handlers.keydown || []).slice(seenBefore)
+  const devStats = () => bodyChildren.find(node => node.attributes && node.attributes.id === 'aura-dev-stats')
+  const hotkey = added[0]
+
+  record('D11. the dev-stats panel is not mounted unless explicitly asked for', () => {
+    assert.ok(hotkey, 'no Ctrl+Shift+A handler was registered')
+    assert.equal(devStats(), undefined, 'the dev-stats panel mounted on its own')
+  })
+
+  record('D12. Ctrl+Shift+A mounts exactly one dev-stats panel', () => {
+    hotkey({ code: 'KeyA', ctrlKey: true, shiftKey: true, altKey: false, metaKey: false, repeat: false, defaultPrevented: false, preventDefault() {} })
+    assert.ok(devStats(), 'the hotkey did not mount the dev-stats panel')
+    assert.equal(bodyChildren.filter(node => node.attributes && node.attributes.id === 'aura-dev-stats').length, 1,
+      'the hotkey mounted more than one dev-stats panel')
+  })
+
+  sdk.failures.accent = 1
+  let threw = false
+  try {
+    dispose()
+  } catch {
+    threw = true
+  } finally {
+    sdk.failures.accent = 0
+  }
+  record('D13. dispose removes the dev-stats panel even if a host call throws', () => {
+    assert.equal(threw, true, 'the injected host failure did not surface (bad precondition)')
+    assert.equal(devStats(), undefined, 'the dev-stats panel was stranded on the window by a throwing host call')
+  })
+}
 
 // --------------------------------------------------------------- reporting
 

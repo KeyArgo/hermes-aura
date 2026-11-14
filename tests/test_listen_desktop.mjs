@@ -112,7 +112,14 @@ function makeElement(tagName) {
 globalThis.document = {
   hidden: false,
   visibilityState: 'visible',
-  documentElement: { style: {} },
+  documentElement: {
+    style: {},
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = String(value) },
+    getAttribute(name) { return this.attributes[name] },
+    removeAttribute(name) { delete this.attributes[name] },
+    hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, name) }
+  },
   head: makeParent(headChildren),
   body: makeParent(bodyChildren),
   createElement: makeElement,
