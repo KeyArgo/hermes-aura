@@ -924,11 +924,17 @@ await recordAsync('7. fresh install: Pop out from the page moves the film to the
   assert.equal(onPage()[0].style.zIndex, '1', 'the page film must sit above the page')
 
   // Pop out: the film leaves the page and becomes the floating watch window.
+  // Pop out asks the host for a real OS window first; this host cannot give one,
+  // so the film settles in the in-app watch window. Both steps are async.
   const pop = pageAria(pageTree(freshD), 'Pop out')
   assert.ok(pop, 'the page has no Pop out button')
   pop.props.onClick()
+  await sleep(80)
   assert.equal(onPage().length, 0, 'Pop out left the film on the page')
-  const floating = hostIframes().find(frame => frame.style.zIndex === '999997')
+  // The watch window floats above the app (not behind it at -1, not on the page
+  // stage at 1) and still below the host's menus.
+  const floating = hostIframes().find(frame =>
+    frame.style.display !== 'none' && !['-1', '1'].includes(frame.style.zIndex) && Number(frame.style.zIndex) < 50)
   assert.ok(floating, 'Pop out did not hand the film to the floating watch window')
   assert.equal(freshD.storage.get('settings').videoWindow, true, 'the watch window was not persisted')
 
@@ -936,6 +942,7 @@ await recordAsync('7. fresh install: Pop out from the page moves the film to the
   const back = pageAria(pageTree(freshD), 'Bring back')
   assert.ok(back, 'a popped-out film offers no Bring back')
   back.props.onClick()
+  await sleep(80)
   assert.equal(onPage().length, 1, 'Bring back did not return the film to the page')
   assert.equal(freshD.storage.get('settings').videoWindow, false, 'bring-back did not persist')
   assert.equal(hostIframes().length, 1, 'pop out / bring back grew a second player')
