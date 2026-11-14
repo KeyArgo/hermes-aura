@@ -2307,9 +2307,10 @@ record('the video-mode quick menu labels the pane the Right panel', () => {
   assert.ok(findByAria(tree, 'Right panel (quick menu)'), 'the quick menu has no Right panel switch')
 })
 
-await recordAsync('the quick menu offers the Right panel and Visual behind the app in both modes', async () => {
-  // Hiding and bringing back the Right panel, and the full-window switch, are
-  // the two layout controls people reach for in either mode.
+await recordAsync('the quick menu offers the Right panel in both modes, and Visual behind the app only in visualizer mode', async () => {
+  // Hiding and bringing back the Right panel is a layout control in either
+  // mode. "Visual behind the app" only acts on the visualiser: in Video mode the
+  // film already fills the window, so the switch has nothing to do there.
   for (const backdropMode of ['aura', 'video']) {
     const scenario = makeCtx({ enabled: true, backdropMode, panelEnabled: true,
       videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
@@ -2320,11 +2321,49 @@ await recordAsync('the quick menu offers the Right panel and Visual behind the a
       assert.ok(menu, `no quick menu in ${backdropMode} mode`)
       const tree = renderContribution(menu)
       assert.ok(findByAria(tree, 'Right panel (quick menu)'), `${backdropMode} mode: the quick menu has no Right panel switch`)
-      assert.ok(findByAria(tree, 'Visual behind the app (quick menu)'),
-        `${backdropMode} mode: the quick menu has no Visual behind the app switch`)
+      assert.equal(
+        Boolean(findByAria(tree, 'Visual behind the app (quick menu)')),
+        backdropMode !== 'video',
+        `${backdropMode} mode: the Visual behind the app switch is on the wrong side of the mode rule`
+      )
     } finally {
       dispose()
     }
+  }
+})
+
+// Every row in the quick menu carries a short plain-English hint in its title,
+// so hovering anywhere on the row explains what the option does.
+const titledRow = (tree, label) => {
+  let found = null
+  walk(tree, node => {
+    if (found || !node.props) return
+    if (typeof node.props.title !== 'string' || !node.props.title) return
+    if (texts(node).includes(label)) found = node
+  })
+  return found
+}
+
+record('the quick menu rows carry short plain-English hints', () => {
+  const scenario = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: false })
+  const dispose = pluginModule.default.register(scenario.ctx)
+  try {
+    const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
+    const frosted = titledRow(tree, 'Frosted glass')
+    assert.ok(frosted, 'the Frosted glass row has no hint')
+    assert.match(frosted.props.title, /below 100%/, 'the Frosted glass hint does not mention below 100%')
+    for (const label of ['Right panel', 'Visual behind the app', 'Reacts to', 'Intensity',
+      'Visual strength', 'Style', 'Gentle motion', 'Show']) {
+      const rowNode = titledRow(tree, label)
+      assert.ok(rowNode, `the ${label} row has no hint`)
+      assert.ok(rowNode.props.title.length <= 110,
+        `the ${label} hint is longer than 110 characters (${rowNode.props.title.length})`)
+    }
+    const visual = titledRow(tree, 'Visual behind the app')
+    assert.match(visual.props.title, /Visualizer mode/,
+      'the Visual behind the app hint does not explain that it is Visualizer-only')
+  } finally {
+    dispose()
   }
 })
 

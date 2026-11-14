@@ -5429,11 +5429,14 @@ function visualControlRows(settings, ui) {
         children: motionChoices(settings).map(name =>
           jsx('option', { key: name, value: name, children: MOTION_LABELS[name] })
         )
-      })
+      }),
+      'What the visual responds to: music, gentle designs, agent activity, or both.'
     ),
-    row('Intensity', slider('Intensity', settings.intensity, value => applyIntensity(value))),
+    row('Intensity', slider('Intensity', settings.intensity, value => applyIntensity(value)),
+      'How strongly the visual reacts to sound and activity.'),
     // The value is how solid the visual is (the Settings page's "Visual opacity").
-    row('Visual strength', slider('Visual strength', settings.opacity, value => { void setOpacity(clamp01(value)) })),
+    row('Visual strength', slider('Visual strength', settings.opacity, value => { void setOpacity(clamp01(value)) }),
+      'How solid the visual is on screen; lower values are fainter.'),
     row(
       'Style',
       jsx('select', { className: 'aura-select',
@@ -5448,7 +5451,8 @@ function visualControlRows(settings, ui) {
         children: BEHAVIORS.map(name =>
           jsx('option', { key: name, value: name, children: BEHAVIOR_LABELS[name] })
         )
-      })
+      }),
+      'The character of the motion: calm, balanced or intense.'
     ),
     // Gentle motion is an Aura-visual setting, so it sits with Style and
     // Intensity and locks with them while a film is playing.
@@ -5462,7 +5466,8 @@ function visualControlRows(settings, ui) {
         onCheckedChange: value => {
           void setReducedMotion(value)
         }
-      })
+      }),
+      'Calmer, slower motion for motion-sensitive eyes.'
     ),
     row(
       'Show',
@@ -5478,7 +5483,8 @@ function visualControlRows(settings, ui) {
         children: SHOW_WHEN_OPTIONS.map(name =>
           jsx('option', { key: name, value: name, children: SHOW_WHEN_LABELS[name] })
         )
-      })
+      }),
+      'When the visual appears: always, or only while there is activity.'
     )
   ]
 }
@@ -5502,8 +5508,9 @@ function AuraQuickMenu() {
     if ($menuOpen.get() !== Boolean(value)) $menuOpen.set(Boolean(value))
   }
 
-  const row = (label, control) =>
+  const row = (label, control, hint) =>
     jsxs('div', {
+      title: typeof hint === 'string' && hint ? hint : undefined,
       style: {
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
         padding: '7px 12px', margin: '0 4px', borderRadius: 9
@@ -5545,7 +5552,7 @@ function AuraQuickMenu() {
   const inputStyle = { ...selectStyle, width: 148 }
   // Transport and transparency buttons are one micro Button apart from each
   // other; keep them square and quiet so five fit on one row in a popover.
-  const transportStyle = { minWidth: 24, padding: '0 4px', fontSize: 13, lineHeight: 1 }
+  const transportStyle = { minWidth: 32, height: 28, padding: '0 6px', fontSize: 17, lineHeight: 1 }
   const presetStyle = { minWidth: 0, padding: '0 6px', fontSize: 11, lineHeight: 1.4 }
 
   const glyphColor = auraOn ? 'var(--ui-accent)' : 'var(--ui-text-tertiary)'
@@ -5629,7 +5636,8 @@ function AuraQuickMenu() {
         // The Right panel's look: warm dark gradient, soft edge, amber accents.
         // Scrolls when it is taller than the space above the status bar.
         style: {
-          minWidth: 300,
+          minWidth: 360,
+          maxWidth: 'calc(100vw - 24px)',
           maxHeight: 'min(78vh, 720px)',
           overflowY: 'auto',
           padding: '8px 4px 10px',
@@ -5672,7 +5680,8 @@ function AuraQuickMenu() {
               onCheckedChange: value => {
                 void setEnabled(value)
               }
-            })
+            }),
+            'Turn Aura on or off: the visual, the film and everything Aura draws.'
           ),
           jsx('div', {
             key: 'stop-all',
@@ -5693,23 +5702,28 @@ function AuraQuickMenu() {
               checked: settings.panelEnabled !== false,
               'aria-label': 'Right panel (quick menu)',
               onCheckedChange: value => setPanelEnabled(value)
-            })
+            }),
+            'Show the Aura panel on the right: the film, its controls and your shelf.'
           ),
-          row(
-            'Visual behind the app',
-            jsx(Switch, {
-              checked: settings.windowVisual === true,
-              'aria-label': 'Visual behind the app (quick menu)',
-              onCheckedChange: value => setWindowVisual(value)
-            })
-          ),
+          settings.backdropMode !== 'video'
+            ? row(
+              'Visual behind the app',
+              jsx(Switch, {
+                checked: settings.windowVisual === true,
+                'aria-label': 'Visual behind the app (quick menu)',
+                onCheckedChange: value => setWindowVisual(value)
+              }),
+              'Visualizer mode: draw the visual behind the whole window when the Right panel is closed.'
+            )
+            : null,
           row(
             'Frosted glass',
             jsx(Switch, {
               checked: frostOn(),
               'aria-label': 'Frosted glass (quick menu)',
               onCheckedChange: value => setFrost(value)
-            })
+            }),
+            'A frosted haze behind the film. Only visible when Video strength is below 100% (or Auto).'
           ),
           settings.backdropMode === 'video' ? null : section('visual', 'Visual'),
           settings.backdropMode === 'video'
@@ -5767,7 +5781,8 @@ function AuraQuickMenu() {
                         onClick: () => videoCommand('next'), children: '⏭'
                       })
                     ]
-                  })
+                  }),
+                  'Play, pause and skip through the film.'
                 ),
                 row(
                   'Source',
@@ -5780,7 +5795,8 @@ function AuraQuickMenu() {
                       void applyVideoSource(url)
                     },
                     children: videoSourceOptions(settings)
-                  })
+                  }),
+                  'Which film or playlist is playing.'
                 ),
                 // The picker lists everything; editing lives on the page where
                 // there is room for names, removal and playlists.
@@ -5822,7 +5838,8 @@ function AuraQuickMenu() {
                         children: label
                       })
                     )
-                  })
+                  }),
+                  'Where the film plays: the Right panel, behind the chat, a small watch window, or your desktop.'
                 ),
                 // Window = the small frame inside Hermes; its size lives here.
                 currentFilmPlace() === 'window'
@@ -5841,7 +5858,8 @@ function AuraQuickMenu() {
                           children: VIDEO_WINDOW_SIZE_LABELS[size]
                         })
                       )
-                    })
+                    }),
+                    'How big the small watch window is.'
                   )
                   : null,
                 row(
@@ -5876,7 +5894,8 @@ function AuraQuickMenu() {
                         })
                       )
                     ]
-                  })
+                  }),
+                  'How solid the film is behind the chat. 100% hides the frosted glass.'
                 ),
                 row(
                   'Video URL',
@@ -5912,7 +5931,8 @@ function AuraQuickMenu() {
                         children: '⟳'
                       })
                     ]
-                  })
+                  }),
+                  'Paste a direct video or playlist link to play it.'
                 ),
                 isFrameBlocked(settings.videoUrl)
                   ? jsx('div', {
@@ -5965,7 +5985,8 @@ function AuraQuickMenu() {
                       else closeVideo()
                     },
                     children: settings.videoClosed ? 'Open video' : 'Close video'
-                  })
+                  }),
+                  'Show or hide the film without changing the source.'
                 ),
                 row(
                   'Jump to',
@@ -5980,7 +6001,8 @@ function AuraQuickMenu() {
                       const to = parseClock(event.target ? event.target.value : '')
                       if (to != null) postToBackdrop({ cmd: 'seekTo', value: to })
                     }
-                  })
+                  }),
+                  'Jump to a time in the film: type a time like 12:34 and press Enter.'
                 ),
                 // Playlist-only: ⌀ in the Right panel hides the playing episode
                 // (and skips it from then on); this brings them all back.
@@ -5994,7 +6016,8 @@ function AuraQuickMenu() {
                       disabled: !(Array.isArray(settings.videoHiddenIds) && settings.videoHiddenIds.length),
                       onClick: () => { writeSettings({ videoHiddenIds: [] }); syncPanel(true) },
                       children: `${(Array.isArray(settings.videoHiddenIds) ? settings.videoHiddenIds.length : 0)} hidden · show all again`
-                    })
+                    }),
+                    'Bring back episodes you hid with ⌀ in the Right panel so they play again.'
                   )
                   : null,
                 isPlaylistUrl(settings.videoUrl) ? row(
@@ -6016,7 +6039,8 @@ function AuraQuickMenu() {
                       } catch { /* no browser handle: nothing to open with */ }
                     },
                     children: 'Open in YouTube'
-                  })
+                  }),
+                  'Open this playlist on YouTube in your browser.'
                 ) : null,
                 jsxs('div', {
                   key: 'videoFooter',
