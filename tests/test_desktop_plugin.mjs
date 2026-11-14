@@ -696,6 +696,11 @@ record('docks the theatre as an enforced right-hand pane the host lays out', () 
     'existing layouts must be moved to the right on boot'
   )
   assert.match(String(pane.data.width), /^\d+px$/, 'the host needs a width')
+  // The host remembers a dragged width per machine; without a floor a stale
+  // 135px pane clipped the controls and shelf (Linux report, 11-13).
+  assert.match(String(pane.data.minWidth), /^\d+px$/, 'the host needs a minimum width')
+  assert.ok(parseInt(pane.data.minWidth, 10) >= 240, 'the controls need at least ~240px')
+  assert.ok(parseInt(pane.data.minWidth, 10) <= parseInt(pane.data.width, 10), 'the floor cannot exceed the default width')
   // A pane is laid out by the app; anything we would have to pin ourselves is
   // exactly what broke the layout before.
   assert.ok(!('position' in pane.data), 'pane must not set its own position')

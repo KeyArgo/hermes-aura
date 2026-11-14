@@ -3608,6 +3608,7 @@ function onVideoBarMouseMove() {
 // the status tray. The pane contribution itself is registered only while the
 // panel is enabled, so switching it off removes the host's empty frame too.
 const PANEL_WIDTH = 320
+const PANEL_MIN_WIDTH = 260
 const PANEL_RAIL = 44
 const PANEL_SCORE_MAX = 12
 const PANE_ID = `${ID}:panel`
@@ -4710,7 +4711,14 @@ function registerPanelPane(restore) {
     id: 'panel',
     area: PANES_AREA,
     title: 'Aura',
-    data: { placement: 'right', dock: { pane: 'workspace', pos: 'right', enforce: true }, width: `${PANEL_WIDTH}px` },
+    // minWidth: the host keeps a dragged width per machine; a stale narrow one
+    // (135px on Linux) clipped the controls and shelf. The floor stops that.
+    data: {
+      placement: 'right',
+      dock: { pane: 'workspace', pos: 'right', enforce: true },
+      width: `${PANEL_WIDTH}px`,
+      minWidth: `${PANEL_MIN_WIDTH}px`
+    },
     render: () => jsx(AuraPane, {})
   })
   paneRegistration = typeof off === 'function' ? off : null

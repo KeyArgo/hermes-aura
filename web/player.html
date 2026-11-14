@@ -15,6 +15,14 @@
     position: fixed; inset: 0; width: 100vw; height: 100vh; border: 0;
   }
   #stage video { object-fit: contain; }
+  /* Inside Hermes the page is the backdrop: cover the frame edge to edge, so a
+     window wider (or taller) than 16:9 gets no black bars. The stand-alone
+     pop-out window (?desktop=1) keeps the whole picture. */
+  .fit-cover #stage iframe {
+    inset: auto; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: max(100vw, 177.78vh); height: max(100vh, 56.25vw);
+  }
+  .fit-cover #stage video { object-fit: cover; }
   #hint {
     position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
     padding: 24px; text-align: center; pointer-events: none;
@@ -332,6 +340,7 @@
   // back ~1 Hz, so "pause", "next episode" or "play the octopus documentary"
   // spoken to Hermes still works while the window has focus elsewhere.
   var desktopMode = params.get('desktop') === '1'
+  if (!desktopMode) document.documentElement.classList.add('fit-cover')
   var authToken = ''
   try { if (desktopMode) authToken = sessionStorage.getItem('auraDesktopToken') || '' } catch (err) {}
   var commandCursor = null

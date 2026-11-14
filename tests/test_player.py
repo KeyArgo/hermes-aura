@@ -420,3 +420,15 @@ if (authToken !== 'session-secret') throw Error('reload lost its credential');
 '''
     result = subprocess.run(['node', '-e', script], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_player_page_fills_the_hermes_frame_edge_to_edge():
+    # Inside Hermes the page is the full-window backdrop: a window wider than
+    # 16:9 showed black bars left and right (Linux report, 11-13). The film is
+    # sized to cover; the stand-alone pop-out window (?desktop=1) keeps the
+    # whole picture.
+    html = (Path(__file__).resolve().parents[1] / "web" / "player.html").read_text()
+    assert ".fit-cover #stage iframe" in html
+    assert "max(100vw, 177.78vh)" in html and "max(100vh, 56.25vw)" in html
+    assert ".fit-cover #stage video { object-fit: cover; }" in html
+    assert "if (!desktopMode) document.documentElement.classList.add('fit-cover')" in html
