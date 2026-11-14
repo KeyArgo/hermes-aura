@@ -955,7 +955,7 @@ const stripButton = label => {
   })
 
   await recordAsync('29. the panel power button needs a second click to turn Aura off', async () => {
-    // It sits right beside Visualizer | Movie: one stray click used to turn all of
+    // It sits right beside Visualizer | Video: one stray click used to turn all of
     // Aura off in silence. Turning on stays one click.
     const power = domFind(scenario.pane, node => node.className === 'ap-power')
     assert.ok(power, 'the panel has no power button')

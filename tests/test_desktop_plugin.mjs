@@ -2529,7 +2529,7 @@ record('video mode hides the Aura-visual rows instead of greying them (quick men
   const preset = findByAria(tree, '50% film strength')
   assert.ok(preset, 'the film strength presets vanished')
   assert.ok(!preset.props.disabled, 'film strength must stay active in video mode')
-  assert.ok(findByAria(tree, 'Movie volume'), 'the volume slider vanished')
+  assert.ok(findByAria(tree, 'Video volume'), 'the volume slider vanished')
   assert.equal(s.storage.get('settings').showWhen, 'active', 'showWhen was rewritten by hiding')
 })
 
@@ -3009,7 +3009,8 @@ record('the pane header carries the mode switch and the power control', () => {
     assert.ok(head, 'the pane has no header')
     const modes = findAll(head, node => node.getAttribute && node.getAttribute('data-mode'))
     assert.equal(modes.length, 2, 'the header needs both mode buttons')
-    assert.deepEqual(modes.map(node => node.textContent), ['Visualizer', 'Movie'])
+    // Same word as the status bar, page header and settings: Video, not Movie.
+    assert.deepEqual(modes.map(node => node.textContent), ['Visualizer', 'Video'])
     const power = findAll(head, node => node.className === 'ap-power')[0]
     assert.ok(power, 'the header has no on/off control')
   } finally {
@@ -3206,7 +3207,7 @@ record('visualiser mode keeps the visual rows and drops the film rows', () => {
   for (const label of ['Reacts to', 'Intensity', 'Gentle motion (motion-sensitive)', 'Show']) {
     assert.ok(findByAria(auraMenuTree, label), `${label} is missing in visualiser mode`)
   }
-  for (const label of ['Movie volume', 'Watch window']) {
+  for (const label of ['Video volume', 'Watch window']) {
     assert.equal(findByAria(auraMenuTree, label), null, `film-only row ${label} leaked into visualiser mode`)
   }
 })

@@ -107,7 +107,7 @@ const VIDEO_OPACITY_MUSIC = 0.3
 const VIDEO_OPACITY_SESSION_STEP = 0.03
 const VIDEO_OPACITY_MAX = 0.6
 const VIDEO_OPACITY_PRESETS = Object.freeze([25, 50, 75, 100])
-// Movie volume. Persisted, re-sent to the player whenever it (re)loads, and
+// Video volume. Persisted, re-sent to the player whenever it (re)loads, and
 // changed by the mouse wheel over the strip.
 const VIDEO_VOLUME = 0.7
 // How solid the floating strip is over the film.
@@ -2097,7 +2097,7 @@ function setVideoOpacityAuto() {
   applyVideoOpacity()
 }
 
-/** Movie volume, 0..1. Applied through the same bridge as the transport and
+/** Video volume, 0..1. Applied through the same bridge as the transport and
  *  re-sent whenever the player reloads, so a swap keeps the level. */
 function setVideoVolume(value) {
   const videoVolume = clamp01(Number(value))
@@ -4041,14 +4041,14 @@ function mountPanelInto(hostNode) {
   name.className = 'ap-name'
   name.textContent = 'Aura'
 
-  // Visualizer | Movie, side by side with the word: switching one turns the
+  // Visualizer | Video, side by side with the word: switching one turns the
   // other off because it is one setting.
   const mode = doc.createElement('div')
   mode.className = 'ap-mode'
   mode.setAttribute('role', 'group')
   mode.setAttribute('aria-label', 'Aura mode')
   const modeButtons = {}
-  for (const [value, label] of [['aura', 'Visualizer'], ['video', 'Movie']]) {
+  for (const [value, label] of [['aura', 'Visualizer'], ['video', 'Video']]) {
     const button = doc.createElement('button')
     button.type = 'button'
     button.className = 'ap-mode-button'
@@ -4074,7 +4074,7 @@ function mountPanelInto(hostNode) {
       void setEnabled(true)
       return
     }
-    // It sits right beside Visualizer | Movie: one stray click used to switch all
+    // It sits right beside Visualizer | Video: one stray click used to switch all
     // of Aura off in silence. Turning off takes a second click within 3 s.
     if (Date.now() < powerArmedUntil) {
       powerArmedUntil = 0
@@ -5844,7 +5844,7 @@ function AuraQuickMenu() {
                     jsx('input', {
                       type: 'range', min: 0, max: 100, step: 1,
                       value: Math.round(clamp01(settings.videoVolume) * 100),
-                      'aria-label': 'Movie volume',
+                      'aria-label': 'Video volume',
                       style: { flex: 1, minWidth: 60, accentColor: 'var(--ui-accent)' },
                       onChange: event => {
                         setVideoVolume(Number(event && event.target ? event.target.value : 0) / 100)
@@ -7112,14 +7112,14 @@ function AuraSettings() {
             ),
             row(
               'Volume',
-              'The movie’s own volume. The visualizer reacts to whatever this plays.',
+              'The video’s own volume. The visualizer reacts to whatever this plays.',
               jsxs('div', {
                 style: { display: 'flex', alignItems: 'center', gap: 6 },
                 children: [
                   jsx('input', {
                     type: 'range', min: 0, max: 100, step: 1,
                     value: Math.round(clamp01(settings.videoVolume) * 100),
-                    'aria-label': 'Movie volume (settings)',
+                    'aria-label': 'Video volume (settings)',
                     style: { width: 140, accentColor: 'var(--ui-accent)' },
                     onChange: event => {
                       setVideoVolume(Number(event && event.target ? event.target.value : 0) / 100)
