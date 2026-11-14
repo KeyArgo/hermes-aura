@@ -972,6 +972,90 @@ const stripButton = label => {
 }
 
 // ===================================================================
+// Scenario L: every Right-panel button does something (or says why not), the
+// panel scrolls, Watch in shows where the film really is, and the mode toggle
+// follows Aura on/off on the status bar and sits on the Aura page header.
+// ===================================================================
+
+{
+  const scenario = await watchWindowScenario({ videoWindow: false })
+  const control = label => domFind(scenario.pane, node => node.attributes && node.attributes['aria-label'] === label)
+
+  await recordAsync('30. the panel ⧉ button pops the film out into the watch window inside Hermes', async () => {
+    const pop = control('Pop out (watch window in Hermes)')
+    assert.ok(pop, 'the panel has no in-Hermes pop-out button')
+    clickDom(pop)
+    await sleep(40)
+    assert.equal(scenario.bucket.storage.get('settings').videoWindow, true, '⧉ did not open the watch window')
+  })
+
+  record('31. playlist-only buttons are disabled for a single film, and say why', () => {
+    for (const label of ['Manage playlist', 'Hide this episode']) {
+      const button = control(label)
+      assert.ok(button, `the panel has no "${label}"`)
+      assert.equal(button.disabled === true || button.attributes.disabled !== undefined, true,
+        `"${label}" looks live for a single film but does nothing`)
+      assert.match(String(button.title || ''), /playlist/i, `"${label}" does not say it is for playlists`)
+    }
+  })
+
+  record('32. the Right panel scrolls when its content is taller than the pane', () => {
+    const style = domFind(globalThis.document.head, node => node.attributes && node.attributes.id === 'aura-panel-style')
+    assert.ok(style, 'no panel stylesheet')
+    const css = String(style.textContent || '')
+    const body = /\.ap-body\s*\{([^}]*)\}/.exec(css)
+    assert.ok(body, 'the panel body has no rule, so it never limits its height')
+    assert.match(body[1], /overflow-y:\s*auto/, 'the panel body cannot scroll')
+    assert.match(body[1], /min-height:\s*0/, 'the panel body cannot shrink to scroll')
+  })
+
+  await recordAsync('33. Watch in offers Panel, Behind chat, Window and Desktop, and marks where the film is', async () => {
+    for (const label of ['Watch the film in the Right panel', 'Watch the film behind the chat',
+      'Watch the film in the watch window', 'Watch the film in a desktop window']) {
+      assert.ok(control(label), `Watch in has no "${label}"`)
+    }
+    // ⧉ above put the film in the watch window: that is what Watch in must show.
+    assert.equal(control('Watch the film in the watch window').attributes['data-active'], 'true',
+      'Watch in does not mark the watch window as the current place')
+  })
+
+  safeDispose('the panel-buttons scenario (L)', scenario.dispose)
+}
+
+{
+  const scenario = await watchWindowScenario({})
+  // Off the way a person does it: the "Aura enabled" switch, which tells the server.
+  const settingsPage = scenario.bucket.contributions.find(c => c.area === 'settings.plugins')
+  findByAria(renderContribution(settingsPage), 'Aura enabled').props.onCheckedChange(false)
+  await sleep(40)
+  await tickPoll(scenario.bucket)
+  record('34. with Aura off the status bar does not show Visualizer | Video', () => {
+    const item = scenario.bucket.contributions.find(c => c.id === 'quick-menu')
+    let onBar = null
+    const visit = (node, insideMenu) => {
+      if (!node || onBar) return
+      if (Array.isArray(node)) { node.forEach(child => visit(child, insideMenu)); return }
+      if (typeof node !== 'object' || !node.props) return
+      const nowInside = insideMenu || node.type === sdk.PopoverContent
+      if (!nowInside && node.props['aria-label'] === 'Aura mode') { onBar = node; return }
+      visit(node.props.children, nowInside)
+    }
+    visit(renderDeep(renderContribution(item)), false)
+    assert.equal(onBar, null, 'the status bar still shows the mode toggle with Aura off')
+  })
+  safeDispose('the Aura-off scenario (L)', scenario.dispose)
+}
+
+{
+  const scenario = await watchWindowScenario({})
+  record('35. the Aura page header has Visualizer | Video next to Aura on / off', () => {
+    assert.ok(pageAria(pageTree(scenario.bucket), 'Aura mode (page header)'),
+      'the Aura page header has no mode toggle next to its Aura on/off chip')
+  })
+  safeDispose('the page-header scenario (L)', scenario.dispose)
+}
+
+// ===================================================================
 // Scenario I: "Watch in: Panel | Behind chat". With the Right panel open the
 // film can play behind the chat while the panel stays the remote, without a
 // second picture in the panel.

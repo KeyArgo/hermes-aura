@@ -3155,6 +3155,38 @@ function panelLeftEdge(vw) {
   return Math.max(0, vw - width)
 }
 
+/** The four places a film can play, for Watch in (panel and menu). */
+const FILM_PLACES = [
+  ['panel', 'Panel', 'Watch the film in the Right panel'],
+  ['behind', 'Behind chat', 'Watch the film behind the chat'],
+  ['window', 'Window', 'Watch the film in the watch window'],
+  ['desktop', 'Desktop', 'Watch the film in a desktop window']
+]
+
+/** Where the film is playing right now. */
+function currentFilmPlace() {
+  if (desktopOwned || desktopPending) return 'desktop'
+  if (videoWindowOn()) return 'window'
+  return $settings.get().filmBehind === true ? 'behind' : 'panel'
+}
+
+/** Move the film to one of FILM_PLACES, from wherever it is. */
+function moveFilmTo(place) {
+  if (!ctxRef || disposed) return
+  if (place === 'desktop') {
+    sendFilmToDesktop()
+    return
+  }
+  if (desktopOwned || desktopPending) void setDesktopWindow(false)
+  if (place === 'window') {
+    setVideoWindow(true)
+    syncPanel(true)
+    return
+  }
+  if (place === 'behind') sendFilmBehindChat()
+  else sendFilmToPanel()
+}
+
 /** Send the film from the watch window back into the Right panel. */
 function sendFilmToPanel() {
   if (!ctxRef || disposed) return
@@ -3675,9 +3707,16 @@ function panelCss() {
     }
 
     /* shelf --------------------------------------------------------------- */
+    /* The body under the picture scrolls as one: transport, film settings and
+       the shelf. It had no rule at all, so it never limited its height and
+       #aura-panel (overflow hidden) cut everything below the fold off, with
+       nothing for the wheel to scroll. */
+    .ap-body {
+      display: flex; flex-direction: column; gap: 12px;
+      flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 3px;
+    }
     .ap-list {
-      display: flex; flex-direction: column; gap: 7px; overflow-y: auto; min-height: 0;
-      padding-right: 3px; flex: 1;
+      display: flex; flex-direction: column; gap: 7px; flex: none;
     }
     .ap-card {
       display: flex; align-items: center; gap: 10px; padding: 7px; border-radius: 11px; cursor: pointer;
@@ -4102,10 +4141,13 @@ function mountPanelInto(hostNode) {
   watch.type = 'button'
   watch.className = 'ap-watch'
   watch.textContent = '⧉'
-  watch.setAttribute('aria-label', 'Watch window')
+  // Pop out = the small watch window inside Hermes. The desktop window has its
+  // own button now ("Pop out to desktop"), so this one no longer opens it.
+  watch.setAttribute('aria-label', 'Pop out (watch window in Hermes)')
   watch.addEventListener('click', event => {
     if (event && event.preventDefault) event.preventDefault()
-    void setDesktopWindow($settings.get().videoWindow !== true)
+    setVideoWindow($settings.get().videoWindow !== true)
+    syncPanel(true)
   })
 
   // Hide this episode: the playlist is read-only from here, so this is the
@@ -4189,10 +4231,7 @@ function mountPanelInto(hostNode) {
   const watchInButtons = doc.createElement('div')
   watchInButtons.className = 'ap-pills'
   const watchInPills = []
-  for (const [behind, label, aria] of [
-    [false, 'Panel', 'Watch the film in the Right panel'],
-    [true, 'Behind chat', 'Watch the film behind the chat']
-  ]) {
+  for (const [place, label, aria] of FILM_PLACES) {
     const pill = doc.createElement('button')
     pill.type = 'button'
     pill.className = 'ap-pill'
@@ -4200,9 +4239,9 @@ function mountPanelInto(hostNode) {
     pill.setAttribute('aria-label', aria)
     pill.addEventListener('click', event => {
       if (event && event.preventDefault) event.preventDefault()
-      setFilmBehind(behind)
+      moveFilmTo(place)
     })
-    watchInPills.push([behind, pill])
+    watchInPills.push([place, pill])
     watchInButtons.appendChild(pill)
   }
   watchInRow.appendChild(watchInLabel)
@@ -4291,7 +4330,7 @@ function mountPanelInto(hostNode) {
   panelParts = {
     panel, body, stage, hint, track, fill, time, play, list, vol,
     power, modeButtons, watch, source, opacityPills, opacityButtons,
-    opacityRow, watchInPills, closeFilm
+    opacityRow, watchInPills, closeFilm, manage, hideEpisode: hide
   }
   syncPanel(true)
 }
@@ -4357,10 +4396,11 @@ function syncPanel(force) {
   setDisplay(parts.stage, videoMode && !behind)
   // See-through only changes a film behind the app; inside the panel it is 100%.
   setDisplay(parts.opacityRow, behind)
-  // In the watch window the film is neither in the panel nor behind the chat.
-  const watchIn = videoWindowOn() ? null : behind
+  // Watch in marks where the film really is: panel, behind chat, watch window
+  // or desktop window.
+  const place = currentFilmPlace()
   for (const [value, pill] of parts.watchInPills || []) {
-    const flag = value === watchIn ? 'true' : 'false'
+    const flag = value === place ? 'true' : 'false'
     if (pill.getAttribute('data-active') !== flag) pill.setAttribute('data-active', flag)
   }
   if (parts.closeFilm) {
@@ -4397,8 +4437,22 @@ function syncPanel(force) {
     const flag = watching ? 'true' : 'false'
     if (parts.watch.getAttribute('data-active') !== flag) {
       parts.watch.setAttribute('data-active', flag)
-      parts.watch.title = watching ? 'Close the watch window' : 'Pop the film out into a window'
+      parts.watch.title = watching ? 'Close the watch window' : 'Pop out into the watch window inside Hermes'
     }
+  }
+  // Manage playlist / Hide episode only mean something for a playlist: greyed
+  // out with the reason for a single film, instead of a click that does nothing.
+  const playlist = isPlaylistUrl(settings.videoUrl)
+  for (const [node, live, idle] of [
+    [parts.manage, 'Open this playlist in its own window to edit it', 'Only for playlists: this film is not part of a playlist'],
+    [parts.hideEpisode, 'Hide this episode from the playlist', 'Only for playlists: this film is not part of a playlist']
+  ]) {
+    if (!node) continue
+    if (node.disabled !== !playlist) node.disabled = !playlist
+    const title = playlist ? live : idle
+    if (node.title !== title) node.title = title
+    const opacity = playlist ? '' : '0.4'
+    if (node.style.opacity !== opacity) node.style.opacity = opacity
   }
   if (parts.source) {
     // videoSourceOptions() returns <optgroup> elements; mirror them as real DOM.
@@ -5099,7 +5153,7 @@ function onDevStatsKeydown(event) {
 /** Visualiser | Video. One at a time: picking either turns the other off, which
  *  is what the owner asked for instead of a Backdrop drop-down buried among
  *  unrelated rows. */
-function modeToggle(mode, compact) {
+function modeToggle(mode, compact, groupLabel) {
   compact = compact === true
   const option = (value, label) =>
     jsx('button', {
@@ -5126,7 +5180,7 @@ function modeToggle(mode, compact) {
     })
   return jsx('div', {
     role: 'group',
-    'aria-label': 'Aura mode',
+    'aria-label': groupLabel || 'Aura mode',
     style: {
       display: 'inline-flex', alignItems: 'center', gap: 4, padding: 3,
       borderRadius: 999, background: 'var(--ui-surface-secondary, rgba(127,127,127,0.12))'
@@ -5135,9 +5189,13 @@ function modeToggle(mode, compact) {
   })
 }
 
-/** The status-bar Visualizer | Video toggle (compact). */
+/** The status-bar Visualizer | Video toggle (compact). Gone while Aura is off:
+ *  there is nothing to switch between then. */
 function AuraStatusMode() {
   const settings = useValue($settings)
+  const live = useValue($live)
+  const auraOn = live.ok ? live.enabled === true : settings.enabled
+  if (!auraOn) return null
   return modeToggle(settings.backdropMode, true)
 }
 
@@ -5511,15 +5569,14 @@ function AuraQuickMenu() {
                   'Watch in',
                   jsxs('div', {
                     style: { display: 'flex', alignItems: 'center', gap: 2 },
-                    children: [[false, 'Panel', 'Watch the film in the Right panel (quick menu)'],
-                      [true, 'Behind chat', 'Watch the film behind the chat (quick menu)']].map(([behind, label, aria]) =>
+                    children: FILM_PLACES.map(([place, label, aria]) =>
                       jsx(Button, {
-                        key: label,
+                        key: place,
                         size: 'micro',
-                        variant: !videoWindowOn() && (settings.filmBehind === true) === behind ? 'default' : 'ghost',
-                        'aria-label': aria,
+                        variant: currentFilmPlace() === place ? 'default' : 'ghost',
+                        'aria-label': `${aria} (quick menu)`,
                         style: presetStyle,
-                        onClick: () => setFilmBehind(behind),
+                        onClick: () => moveFilmTo(place),
                         children: label
                       })
                     )
@@ -6469,6 +6526,9 @@ function AuraPage() {
             className: auraOn ? 'aura-pill is-on' : 'aura-pill',
             children: auraOn ? 'Aura on' : 'Aura off'
           }),
+          // Visualizer | Video beside the on/off chip, like the status bar: the
+          // same setBackdropMode, so the page, bar, menu and panel all agree.
+          auraOn ? jsx('span', { key: 'mode', children: modeToggle(settings.backdropMode, true, 'Aura mode (page header)') }) : null,
           jsx(VersionChip, { key: 'build' })
         ]
       })
