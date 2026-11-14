@@ -14,6 +14,7 @@ import os
 import socket
 import struct
 import time
+from pathlib import Path
 
 import pytest
 
@@ -247,7 +248,12 @@ def test_good_token_healthz(live):
     assert status == 200
     body = json_body(payload)
     assert body["ok"] is True
-    assert body["version"] == "0.1.0"
+    # One version for the whole plugin: /healthz says what plugin.yaml (and so the
+    # build chip) says. It used to report a stale "0.1.0" next to a 1.0.0 release.
+    manifest = (Path(__file__).resolve().parents[1] / "plugin.yaml").read_text(encoding="utf-8")
+    declared = next(line.split(":", 1)[1].strip().strip('"\'') for line in manifest.splitlines()
+                    if line.startswith("version:"))
+    assert body["version"] == declared, f"healthz says {body['version']}, plugin.yaml says {declared}"
     assert body["capture"] == "none"
     assert body["rate"] == 48000
     assert isinstance(body["clients"], int)

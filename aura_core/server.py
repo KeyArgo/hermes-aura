@@ -50,7 +50,23 @@ from .capture import base as capture
 
 logger = logging.getLogger("aura.server")
 
-VERSION = "0.1.0"
+def _manifest_version() -> str:
+    """The plugin's one version number, read from plugin.yaml.
+
+    /healthz used to report its own hard-coded "0.1.0" next to a 1.0.0 release; the
+    build chip, the CLI and /healthz now all say what the manifest says.
+    """
+    try:
+        text = (Path(__file__).resolve().parent.parent / "plugin.yaml").read_text(encoding="utf-8")
+    except OSError:
+        return "unknown"
+    for line in text.splitlines():
+        if line.startswith("version:"):
+            return line.split(":", 1)[1].strip().strip("\"'") or "unknown"
+    return "unknown"
+
+
+VERSION = _manifest_version()
 SAMPLE_RATE = 48000
 FRAME_SAMPLES = 1024
 FEATURE_INTERVAL_S = 0.1  # ≤10 Hz (§2)
