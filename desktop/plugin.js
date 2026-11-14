@@ -880,9 +880,10 @@ function showEligible() {
   // page, so playAudioSource posted into nothing and "playing" was a lie.
   const audio = Boolean(settings.audioUrl)
   // A pane or page film is Aura's own surface and needs no overlay permission;
-  // everything else is the overlay and does.
+  // everything else is the overlay and does. Off is off (owner): no film, no
+  // visual, no audio channel, on any surface.
   const overlay = Boolean(audio || knownTheme === THEME_NAME || settings.windowVisual)
-  return Boolean(doc && liveUrl() && (paneFilm || pageFilm || (enabled && overlay)))
+  return Boolean(doc && enabled && liveUrl() && (paneFilm || pageFilm || overlay))
 }
 
 // Host-owned timers: cancel through the disposer the SDK returns. A stale
@@ -1945,8 +1946,15 @@ async function setEnabled(next) {
     saveCurrentPosition()
     resetShow()
     removeBackdrop()
+    removeVideoBar()
     clearAccent(true)
     restoreTheme()
+    // The desktop film window is Aura too: off closes it.
+    if (desktopOwned || desktopPending) {
+      desktopOwned = false
+      desktopPending = false
+      void closeDesktopWindow()
+    }
   } else if ($settings.get().themeOptIn) {
     applyThemeIfOptedIn()
   }

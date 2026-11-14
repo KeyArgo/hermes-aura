@@ -1411,6 +1411,53 @@ const stripButton = label => {
   safeDispose('the status-bar power scenario (U)', dispose)
 }
 
+// Scenario V: off is off. A film in the Right panel, in the watch window or on
+// the desktop must stop and disappear when Aura is turned off ("the off
+// buttons don't work": the film kept playing).
+for (const [name, extra] of [
+  ['the Right panel', { videoWindow: false }],
+  ['the watch window', { videoWindow: true }]
+]) {
+  const scenario = await watchWindowScenario(extra)
+  await recordAsync(`59. turning Aura off removes the film from ${name}, and its strip`, async () => {
+    const live = () => hostIframes().filter(f => f.style.display !== 'none')
+    assert.ok(live().length >= 1, `no film in ${name} to begin with`)
+    const power = domFind(scenario.pane, node => node.className === 'ap-power')
+    clickDom(power)
+    clickDom(power)
+    await sleep(30)
+    await tickPoll(scenario.bucket)
+    await tickPoll(scenario.bucket)
+    assert.ok(scenario.bucket.controls.some(c => c && c.enabled === false), 'the power button did not turn Aura off')
+    assert.equal(live().length, 0, `Aura is off but the film still shows in ${name}`)
+    assert.equal(videoBar(), undefined, 'Aura is off but the watch-window strip is still up')
+  })
+  safeDispose(`the off-is-off scenario (${name})`, scenario.dispose)
+}
+{
+  const scenario = await watchWindowScenario({ videoWindow: false })
+  const routes = []
+  const realRest = scenario.bucket.ctx.rest
+  scenario.bucket.ctx.rest = async (route, options = {}) => {
+    routes.push(route)
+    if (route === '/window') return { ok: true, available: true, open: false }
+    if (route === '/window/open') return { ok: true, open: true }
+    if (route === '/window/close') return { ok: true, closed: true }
+    if (route.startsWith('/player')) return { ok: true, player: {}, commands: [], seq: 0 }
+    return realRest(route, options)
+  }
+  clickDom(domFind(scenario.pane, node => node.attributes && node.attributes['aria-label'] === 'Watch the film in a desktop window'))
+  await sleep(60)
+  await recordAsync('60. turning Aura off closes the desktop film window', async () => {
+    const power = domFind(scenario.pane, node => node.className === 'ap-power')
+    clickDom(power)
+    clickDom(power)
+    await sleep(40)
+    assert.ok(routes.includes('/window/close'), 'Aura is off but the desktop film window stayed open')
+  })
+  safeDispose('the off closes desktop scenario', scenario.dispose)
+}
+
 // ===================================================================
 // Scenario I: "Watch in: Panel | Behind chat". With the Right panel open the
 // film can play behind the chat while the panel stays the remote, without a
