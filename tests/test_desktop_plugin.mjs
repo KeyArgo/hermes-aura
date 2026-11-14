@@ -2002,6 +2002,82 @@ await recordAsync('video mode mounts the two-row control strip with grip, scrub 
   assert.equal(bar.style.opacity, '1', 'the strip must start visible')
 })
 
+// ---------------------------------------------------- watch window size row
+// The window used to be resizable only from the status menu, and it opened too
+// small. Its own strip now carries a Size row, and the default is Large.
+
+const sizeCtx = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  windowVisual: true,
+  videoWindow: true,
+  panelEnabled: false,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+pluginModule.default.register(sizeCtx.ctx)
+sizeCtx.timers.find(t => t.ms === 250).fn()
+await sleep(40)
+
+function watchBar() {
+  const bars = bodyChildren.filter(node => node.attributes && node.attributes.role === 'toolbar')
+  return bars[bars.length - 1]
+}
+function watchNodes(bar) {
+  const nodes = []
+  const collect = node => {
+    for (const child of node.children || []) {
+      nodes.push(child)
+      collect(child)
+    }
+  }
+  collect(bar)
+  return nodes
+}
+function watchPill(nodes, label) {
+  return nodes.find(node => node.attributes && node.attributes['aria-label'] === `Watch window size: ${label}`) || null
+}
+
+record('the watch window bar has a Size row with one pill per size', () => {
+  const bar = watchBar()
+  assert.ok(bar, 'the watch window strip never mounted')
+  const nodes = watchNodes(bar)
+  const sizeRow = bar.children.find(row =>
+    (row.children || []).some(child => child.textContent === 'Size'))
+  assert.ok(sizeRow, 'the strip has no Size row')
+  for (const label of ['Small', 'Medium', 'Large', 'X-Large', 'Huge']) {
+    assert.ok(watchPill(nodes, label), `no "${label}" size pill in the strip`)
+  }
+  assert.equal(
+    nodes.filter(node => node.attributes && /^Watch window size: /.test(node.attributes['aria-label'] || '')).length,
+    5,
+    'the Size row does not have exactly five pills')
+})
+
+record('the watch window default size is Large and an active pill is highlighted', () => {
+  const large = watchPill(watchNodes(watchBar()), 'Large')
+  assert.ok(large, 'no Large size pill')
+  assert.equal(large.style.color, '#ffd9a8', 'the default Large pill is not highlighted')
+  assert.equal(large.style.border, '1px solid rgba(255,190,120,0.55)', 'the default pill lacks the amber border')
+})
+
+await recordAsync('clicking the Huge size pill stores videoWindowSize huge and highlights it', async () => {
+  const nodes = watchNodes(watchBar())
+  const huge = watchPill(nodes, 'Huge')
+  assert.ok(huge, 'no Huge size pill')
+  const clicks = huge.__handlers.click || []
+  assert.ok(clicks.length > 0, 'the Huge pill has no click handler')
+  clicks[0]({ preventDefault() {} })
+  assert.equal(sizeCtx.storage.get('settings').videoWindowSize, 'huge',
+    'clicking Huge did not persist videoWindowSize')
+  assert.equal(huge.style.color, '#ffd9a8', 'the Huge pill was not highlighted after the click')
+  assert.notEqual(watchPill(watchNodes(watchBar()), 'Large').style.color, '#ffd9a8',
+    'the old size stayed highlighted')
+})
+
+record('VIDEO_WINDOW_DEFAULT_SIZE is large', () => {
+  assert.match(source, /const VIDEO_WINDOW_DEFAULT_SIZE = 'large'/)
+})
+
 // ------------------------------------------------- pane-only film (regression)
 // Grok's review caught the demo-killer: with the defaults (window visual off,
 // not on the Aura theme) nothing mounted, so the docked pane showed a stage

@@ -135,7 +135,7 @@ const VIDEO_WINDOW_TOP = 56
 // Bottom corners keep clear of the status bar (and the Aura wordmark in it).
 const VIDEO_WINDOW_BOTTOM = 110
 const VIDEO_WINDOW_DEFAULT_CORNER = 'top-right'
-const VIDEO_WINDOW_DEFAULT_SIZE = 'medium'
+const VIDEO_WINDOW_DEFAULT_SIZE = 'large'
 
 const DEFAULT_SETTINGS = Object.freeze({
   enabled: true,
@@ -3506,16 +3506,16 @@ function mountVideoBar() {
   sendLabel.textContent = 'Send to'
   Object.assign(sendLabel.style, { fontSize: '10.5px', color: 'rgba(255,255,255,0.6)', marginRight: '2px' })
   sendRow.appendChild(sendLabel)
-  for (const [text, aria, action] of [
-    ['Right panel', 'Send the film to the Right panel', sendFilmToPanel],
-    ['Behind chat', 'Send the film behind the chat', sendFilmBehindChat],
-    ['Desktop', 'Pop the film out to the desktop', sendFilmToDesktop]
+  for (const [text, aria, title, action] of [
+    ['Right panel', 'Send the film to the Right panel', 'Play the film in the Right panel', sendFilmToPanel],
+    ['Behind chat', 'Send the film behind the chat', 'Play the film behind the chat', sendFilmBehindChat],
+    ['Desktop', 'Pop the film out to the desktop', 'Play the film in its own window on your desktop', sendFilmToDesktop]
   ]) {
     const button = doc.createElement('button')
     button.type = 'button'
     button.textContent = text
     button.setAttribute('aria-label', aria)
-    button.title = aria
+    button.title = title
     Object.assign(button.style, {
       appearance: 'none', border: '1px solid rgba(255,255,255,0.18)', borderRadius: '999px',
       background: 'transparent', color: 'inherit', font: 'inherit', fontSize: '10.5px',
@@ -3530,9 +3530,49 @@ function mountVideoBar() {
     sendRow.appendChild(button)
   }
 
+  // How big the watch window is, while it is on screen. Sizes used to live
+  // only in the status menu, so the window could not be resized from itself.
+  const sizeRow = doc.createElement('div')
+  Object.assign(sizeRow.style, {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px',
+    paddingTop: '3px', borderTop: '1px solid rgba(255,255,255,0.08)'
+  })
+  const sizeLabel = doc.createElement('span')
+  sizeLabel.textContent = 'Size'
+  Object.assign(sizeLabel.style, { fontSize: '10.5px', color: 'rgba(255,255,255,0.6)', marginRight: '2px' })
+  sizeRow.appendChild(sizeLabel)
+  const sizeButtons = []
+  for (const size of Object.keys(VIDEO_WINDOW_SIZES)) {
+    const label = VIDEO_WINDOW_SIZE_LABELS[size]
+    const button = doc.createElement('button')
+    button.type = 'button'
+    button.textContent = label
+    button.setAttribute('aria-label', `Watch window size: ${label}`)
+    button.title = `Watch window size: ${label}`
+    Object.assign(button.style, {
+      appearance: 'none', border: '1px solid rgba(255,255,255,0.18)', borderRadius: '999px',
+      background: 'transparent', color: 'inherit', font: 'inherit', fontSize: '10.5px',
+      padding: '3px 8px', cursor: 'pointer', lineHeight: '1'
+    })
+    button.sizeActive = false
+    button.addEventListener('mouseenter', () => {
+      if (!button.sizeActive) button.style.background = 'rgba(255,255,255,0.14)'
+    })
+    button.addEventListener('mouseleave', () => {
+      button.style.background = button.sizeActive ? 'rgba(255,190,120,0.16)' : 'transparent'
+    })
+    button.addEventListener('click', event => {
+      if (event && event.preventDefault) event.preventDefault()
+      setVideoWindowSize(size)
+    })
+    sizeButtons.push({ size, button })
+    sizeRow.appendChild(button)
+  }
+
   bar.appendChild(topRow)
   bar.appendChild(transportRow)
   bar.appendChild(sendRow)
+  bar.appendChild(sizeRow)
   // Grabbing empty strip (not a button) also drags the window.
   bar.addEventListener('mousedown', event => {
     if (!event || event.target !== bar) return
@@ -3551,7 +3591,7 @@ function mountVideoBar() {
 
   doc.body.appendChild(bar)
   videoBarEl = bar
-  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill, title, sendRow }
+  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill, title, sendRow, sizeRow, sizeButtons }
 }
 
 function removeVideoBar() {
@@ -4922,6 +4962,24 @@ function syncVideoBar(force) {
   }
   const state = $video.get()
   const settings = $settings.get()
+  // "Size" shares the watch window's visibility, and its active pill follows
+  // the setting so a resize from anywhere (menu, page) stays in step.
+  if (parts.sizeRow) {
+    const display = videoWindowOn() ? 'flex' : 'none'
+    if (parts.sizeRow.style.display !== display) parts.sizeRow.style.display = display
+  }
+  if (parts.sizeButtons) {
+    for (const { size, button } of parts.sizeButtons) {
+      const active = settings.videoWindowSize === size
+      const border = active ? '1px solid rgba(255,190,120,0.55)' : '1px solid rgba(255,255,255,0.18)'
+      const color = active ? '#ffd9a8' : 'inherit'
+      const background = active ? 'rgba(255,190,120,0.16)' : 'transparent'
+      button.sizeActive = active
+      if (button.style.border !== border) button.style.border = border
+      if (button.style.color !== color) button.style.color = color
+      if (button.style.background !== background) button.style.background = background
+    }
+  }
   const barAlpha = clamp01(Number.isFinite(settings.videoBarOpacity)
     ? settings.videoBarOpacity
     : VIDEO_BAR_OPACITY)
@@ -5433,7 +5491,7 @@ function visualControlRows(settings, ui) {
       'What the visual responds to: music, gentle designs, agent activity, or both.'
     ),
     row('Intensity', slider('Intensity', settings.intensity, value => applyIntensity(value)),
-      'How strongly the visual reacts to sound and activity.'),
+      'How hard the visual reacts to sound. 0 = barely moves; Style still sets its look.'),
     // The value is how solid the visual is (the Settings page's "Visual opacity").
     row('Visual strength', slider('Visual strength', settings.opacity, value => { void setOpacity(clamp01(value)) }),
       'How solid the visual is on screen; lower values are fainter.'),
@@ -5452,7 +5510,7 @@ function visualControlRows(settings, ui) {
           jsx('option', { key: name, value: name, children: BEHAVIOR_LABELS[name] })
         )
       }),
-      'The character of the motion: calm, balanced or intense.'
+      'The look and pace: Calm = soft, no pulse; Balanced = liquid; Intense = sharp, fast pulse.'
     ),
     // Gentle motion is an Aura-visual setting, so it sits with Style and
     // Intensity and locks with them while a film is playing.
