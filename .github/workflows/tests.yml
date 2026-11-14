@@ -21,7 +21,20 @@ jobs:
       # The suite must prove the plugin on every OS we claim, not only the one it
       # was written on. Anything genuinely impossible per platform is skipped in
       # the test itself, with the reason written there.
-      - run: python -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration
+      - run: python -m pytest tests -q -rf -p no:cacheprovider --ignore=tests/e2e --ignore=tests/integration --junitxml=pytest-results.xml
+      # Job logs need a GitHub login; annotations do not. Publish each failing
+      # test as an annotation so a failure can be read from the public API.
+      - name: failing tests as annotations
+        if: failure()
+        shell: python
+        run: |
+          import os, xml.etree.ElementTree as ET
+          if os.path.exists("pytest-results.xml"):
+              for case in ET.parse("pytest-results.xml").iter("testcase"):
+                  for bad in list(case.iter("failure")) + list(case.iter("error")):
+                      name = f"{case.get('classname')}::{case.get('name')}"
+                      msg = (bad.get("message") or "").replace("\n", " ")[:300]
+                      print(f"::error title={name}::{msg}")
 
   desktop:
     name: desktop contract suite (${{ matrix.os }})
