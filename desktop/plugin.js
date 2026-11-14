@@ -7167,10 +7167,8 @@ function VersionChip(props) {
   // Nothing to show until /version answers. Reading the null build here threw,
   // and the host's error boundary blanked the whole Right panel on first paint.
   if (!build) return null
-  const sha = build.commit_short || build.commit || ''
-  const line = compact
-    ? ['v' + build.version].concat(sha ? [String(sha).slice(0, 8)] : []).join(' · ')
-    : buildLine(build)
+  // One line everywhere, compact or not: version · commit date · commit (the suite chip).
+  const line = buildLine(build)
   if (!line) return null
   const label = copyState === 'copied' ? 'copied ✓' : copyState === 'failed' ? 'copy failed' : line
   return jsx('button', {

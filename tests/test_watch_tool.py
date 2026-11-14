@@ -467,7 +467,9 @@ def test_dashboard_registers_get_search(dashboard):
 
 
 def test_dashboard_search_returns_items(dashboard, monkeypatch):
-    from aura_core import search
+    # The module the dashboard really uses: run alone, an earlier plugin load leaves a
+    # second copy, and patching the other one sent these tests to the real network.
+    search = dashboard._search_module()
     monkeypatch.setattr(search, "youtube_search", lambda q, limit=6: ROWS[:limit])
     payload = dashboard.search_payload("octopus documentary", 2)
     assert payload["ok"] is True
@@ -476,7 +478,9 @@ def test_dashboard_search_returns_items(dashboard, monkeypatch):
 
 
 def test_dashboard_search_outage_is_an_empty_list(dashboard, monkeypatch):
-    from aura_core import search
+    # The module the dashboard really uses: run alone, an earlier plugin load leaves a
+    # second copy, and patching the other one sent these tests to the real network.
+    search = dashboard._search_module()
 
     def offline(q, limit=6):
         return []
@@ -489,7 +493,9 @@ def test_dashboard_search_outage_is_an_empty_list(dashboard, monkeypatch):
 
 
 def test_dashboard_search_survives_a_broken_module(dashboard, monkeypatch):
-    from aura_core import search
+    # The module the dashboard really uses: run alone, an earlier plugin load leaves a
+    # second copy, and patching the other one sent these tests to the real network.
+    search = dashboard._search_module()
 
     def explode(q, limit=6):
         raise RuntimeError("boom")
@@ -499,3 +505,15 @@ def test_dashboard_search_survives_a_broken_module(dashboard, monkeypatch):
     assert payload["ok"] is False
     assert payload["error"] == "search_failed"
     assert payload["items"] == []
+
+
+def test_dashboard_reads_the_active_profiles_home(dashboard, monkeypatch, tmp_path):
+    # Found in the bug hunt (11-14): the dashboard read HERMES_HOME directly, so in a
+    # multi-profile gateway it found another profile's token and config. It now
+    # follows aura_core.config.hermes_home(), the same resolver as the plugin.
+    from aura_core import config
+
+    profile = tmp_path / "profile-a"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default"))
+    monkeypatch.setattr(config, "_hermes_constants_home", lambda: profile)
+    assert dashboard._hermes_home() == profile

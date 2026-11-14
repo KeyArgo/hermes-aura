@@ -1719,6 +1719,9 @@ await recordAsync('the quick menu shows the same version chip as the settings pa
   const body = texts(chip.type(chip.props))
   assert.ok(body.includes('v1.2.3'), 'the quick menu chip does not show the shared build line')
   assert.ok(body.includes('abcdef12'), 'the quick menu chip is not the shared build line')
+  // The suite's one chip line (as Omniscience shows it): version, commit date, commit.
+  // The compact menu chip used to drop the date (owner, 11-14).
+  assert.ok(body.includes('v1.2.3 · 2026-11-09 · abcdef12'), `the quick menu chip is not "v1.2.3 · 2026-11-09 · abcdef12" (got ${body})`)
 })
 
 await recordAsync('switching the Right panel off disposes the pane and on re-registers it', async () => {

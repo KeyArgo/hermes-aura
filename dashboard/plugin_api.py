@@ -64,6 +64,19 @@ def _server_module():
 
 
 def _hermes_home() -> Path:
+    """The active profile's home, through the plugin's own resolver.
+
+    ``HERMES_HOME`` alone is the process-wide default; in a multi-profile gateway the
+    active profile is a context-local override that ``aura_core.config`` follows.
+    """
+    for loader in (
+        lambda: __import__("aura_core.config", fromlist=["config"]),
+        lambda: __import__("aura.aura_core.config", fromlist=["config"]),
+    ):
+        try:
+            return Path(loader().hermes_home())
+        except Exception:  # noqa: BLE001 - fall back to the environment below
+            continue
     raw = os.environ.get("HERMES_HOME")
     if raw:
         return Path(raw).expanduser()
