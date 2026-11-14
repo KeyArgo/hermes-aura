@@ -1506,7 +1506,7 @@ record('quick menu renders the button, every control and no stray popover state'
   })
   assert.ok(mark && mark.props.width === 13, 'the Aura mark (inline svg) is missing')
   const body = texts(tree)
-  for (const label of ['Reacts to', 'Intensity', 'Transparency', 'Style', 'Show', 'All Aura settings']) {
+  for (const label of ['Reacts to', 'Intensity', 'Visual strength', 'Style', 'Show', 'All Aura settings']) {
     assert.ok(body.includes(label), `quick menu is missing "${label}"`)
   }
   const motion = findByAria(tree, 'Reacts to')
@@ -1535,7 +1535,7 @@ record('quick menu renders the button, every control and no stray popover state'
   })
   assert.deepEqual(showOptions, [['always', 'Always'], ['active', 'Only while active']], 'Show options drifted')
   const intensity = findByAria(tree, 'Intensity')
-  const transparency = findByAria(tree, 'Transparency')
+  const transparency = findByAria(tree, 'Visual strength')
   assert.equal(intensity.props.value, 50, 'intensity slider mis-scaled')
   assert.equal(transparency.props.value, 75, 'transparency slider mis-scaled')
   const enabled = findByAria(tree, 'Aura enabled')
@@ -1586,11 +1586,11 @@ await recordAsync('the intensity slider round-trips through 0-100 and pushes 0-1
 })
 
 await recordAsync('the transparency slider round-trips through the opacity setting', async () => {
-  findByAria(quickTree(), 'Transparency').props.onChange({ target: { value: '30' } })
+  findByAria(quickTree(), 'Visual strength').props.onChange({ target: { value: '30' } })
   await sleep(30)
   assert.deepEqual(fLastControl(), { opacity: 0.3 }, 'opacity push missing or wrong')
   assert.equal(fSaved().opacity, 0.3, 'opacity did not persist')
-  assert.equal(findByAria(quickTree(), 'Transparency').props.value, 30, 'slider did not round-trip')
+  assert.equal(findByAria(quickTree(), 'Visual strength').props.value, 30, 'slider did not round-trip')
 })
 
 await recordAsync('the style select pushes behaviour changes', async () => {
@@ -1870,7 +1870,7 @@ await recordAsync('poll syncs stale local display settings from the server /stat
   assert.equal(findByAria(tree, 'Reacts to').props.value, 'agent', 'the menu still shows the stale motion')
   assert.equal(findByAria(tree, 'Style').props.value, 'calm', 'the menu still shows the stale behaviour')
   assert.equal(findByAria(tree, 'Intensity').props.value, 20, 'the menu still shows the stale intensity')
-  assert.equal(findByAria(tree, 'Transparency').props.value, 40, 'the menu still shows the stale opacity')
+  assert.equal(findByAria(tree, 'Visual strength').props.value, 40, 'the menu still shows the stale opacity')
   assert.equal(findByAria(tree, 'Gentle motion (motion-sensitive)').props.checked, true, 'the menu still shows stale reduced motion')
 })
 
@@ -1884,7 +1884,7 @@ await recordAsync('every quick-menu control reaches /control and updates the ser
   findByAria(hMenu(), 'Intensity').props.onChange({ target: { value: '60' } })
   await sleep(30)
   assert.equal(h.serverSettings.intensity, 0.6, 'the server intensity did not update')
-  findByAria(hMenu(), 'Transparency').props.onChange({ target: { value: '30' } })
+  findByAria(hMenu(), 'Visual strength').props.onChange({ target: { value: '30' } })
   await sleep(30)
   assert.equal(h.serverSettings.opacity, 0.3, 'the server opacity did not update')
   findByAria(hMenu(), 'Gentle motion (motion-sensitive)').props.onCheckedChange(false)
@@ -2101,6 +2101,22 @@ await recordAsync('Frosted haze is a choice: on keeps the app frosted, off clear
   const off = await look(false)
   assert.ok(!/blur\(/.test(off.filter), `Frosted haze off still blurs the film (filter: ${off.filter})`)
   assert.match(off.css, /backdrop-filter:\s*none/, 'Frosted haze off leaves the host frost over the film')
+})
+
+await recordAsync('the film controls in the quick menu are named for what they do', async () => {
+  // The presets set how solid the film is; labelled "transparency" they read
+  // backwards, so 25% looked like a nearly clear film when it is mostly gone.
+  const scenario = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
+  const dispose = pluginModule.default.register(scenario.ctx)
+  try {
+    await sleep(20)
+    const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
+    assert.ok(findByAria(tree, '25% film strength'), 'the film presets are not labelled as film strength')
+    assert.equal(findByAria(tree, '25% video transparency'), null, 'a film preset is still labelled as transparency')
+    assert.ok(findByAria(tree, 'Frosted haze (quick menu)'), 'the quick menu has no Frosted haze switch next to film strength')
+  } finally {
+    dispose()
+  }
 })
 
 await recordAsync('Frosted haze has a switch on the settings page', async () => {
@@ -2422,13 +2438,13 @@ record('video mode hides the Aura-visual rows instead of greying them (quick men
   const tree = sMenu()
   // Owner's rule: with Video on, everything that only affects the visualiser is
   // gone; with Visualizer on, everything that only affects the film is gone.
-  for (const label of ['Reacts to', 'Style', 'Intensity', 'Transparency', 'Gentle motion (motion-sensitive)', 'Show']) {
+  for (const label of ['Reacts to', 'Style', 'Intensity', 'Visual strength', 'Gentle motion (motion-sensitive)', 'Show']) {
     assert.equal(findByAria(tree, label), null, `${label} is still rendered in video mode`)
   }
   // The video's own transparency stays usable.
-  const preset = findByAria(tree, '50% video transparency')
-  assert.ok(preset, 'the video transparency presets vanished')
-  assert.ok(!preset.props.disabled, 'video transparency must stay active in video mode')
+  const preset = findByAria(tree, '50% film strength')
+  assert.ok(preset, 'the film strength presets vanished')
+  assert.ok(!preset.props.disabled, 'film strength must stay active in video mode')
   assert.ok(findByAria(tree, 'Movie volume'), 'the volume slider vanished')
   assert.equal(s.storage.get('settings').showWhen, 'active', 'showWhen was rewritten by hiding')
 })
@@ -2439,9 +2455,9 @@ record('Settings hides the Aura-visual rows in video mode and offers the same sw
     assert.equal(findByAria(tree, label), null, `Settings still renders ${label} in video mode`)
   }
   assert.ok(findByAria(tree, 'Aura mode'), 'Settings has no mode switch')
-  // Video transparency presets are still live.
-  assert.ok(!findByAria(tree, '25% video transparency').props.disabled,
-    'video transparency was hidden with the Aura controls')
+  // Film strength presets are still live.
+  assert.ok(!findByAria(tree, '25% film strength').props.disabled,
+    'film strength was hidden with the Aura controls')
   assert.equal(s.storage.get('settings').showWhen, 'active', 'Settings rewrote showWhen')
 })
 

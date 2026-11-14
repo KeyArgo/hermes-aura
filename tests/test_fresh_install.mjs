@@ -815,7 +815,7 @@ for (const [mode, expectControls] of [['aura', true], ['video', false]]) {
   const body = domFind(paneH, node => node.className === 'ap-body')
 
   record(`13. ${mode} mode: the Right panel ${expectControls ? 'shows' : 'does not show'} the visualiser controls`, () => {
-    for (const label of ['Reacts to', 'Intensity', 'Transparency', 'Style']) {
+    for (const label of ['Reacts to', 'Intensity', 'Visual strength', 'Style']) {
       assert.equal(Boolean(pageAria(tree, label)), expectControls,
         `${mode} mode: "${label}" is ${expectControls ? 'missing from' : 'shown in'} the Right panel`)
     }
@@ -852,7 +852,7 @@ async function watchInScenario(filmBehind) {
   if (panelBox) panelBox.getBoundingClientRect = () => ({ left: 1180, top: 40, width: 340, height: 760, right: 1520, bottom: 800 })
   if (stage) stage.getBoundingClientRect = () => ({ left: 1200, top: 90, width: 300, height: 170, right: 1500, bottom: 260 })
   await tickPoll(bucket)
-  const seeThrough = domFind(pane, node => node.attributes && node.attributes['aria-label'] === '25% film see-through')
+  const seeThrough = domFind(pane, node => node.attributes && node.attributes['aria-label'] === '25% film strength')
   const seeThroughRow = seeThrough && seeThrough.parentNode && seeThrough.parentNode.parentNode
   return { bucket, dispose, pane, stage, seeThroughRow }
 }
@@ -874,7 +874,7 @@ async function watchInScenario(filmBehind) {
   })
   await recordAsync('16b. Behind chat: the panel turns the frosted haze off in one click', async () => {
     const off = domFind(behind.pane, node => node.attributes && node.attributes['aria-label'] === 'Frosted haze off')
-    assert.ok(off, 'the panel has no Frosted haze choice next to see-through')
+    assert.ok(off, 'the panel has no Frosted haze choice next to film strength')
     clickDom(off)
     await sleep(40)
     assert.equal(behind.bucket.storage.get('settings').filmHaze, false, 'Frosted haze off was not saved')

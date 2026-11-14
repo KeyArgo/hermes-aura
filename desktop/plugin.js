@@ -4057,7 +4057,9 @@ function mountPanelInto(hostNode) {
   opacityRow.className = 'ap-field'
   const opacityLabel = doc.createElement('span')
   opacityLabel.className = 'ap-field-label'
-  opacityLabel.textContent = 'Film see-through'
+  // The value is how solid the film is (100% = fully visible); calling it
+  // "see-through" read backwards, so 25% looked like a nearly clear film.
+  opacityLabel.textContent = 'Film strength'
   const opacityButtons = doc.createElement('div')
   opacityButtons.className = 'ap-pills'
   const opacityPills = []
@@ -4066,7 +4068,7 @@ function mountPanelInto(hostNode) {
     pill.type = 'button'
     pill.className = 'ap-pill'
     pill.textContent = `${preset}%`
-    pill.setAttribute('aria-label', `${preset}% film see-through`)
+    pill.setAttribute('aria-label', `${preset}% film strength`)
     pill.addEventListener('click', event => {
       if (event && event.preventDefault) event.preventDefault()
       setVideoOpacity(preset / 100)
@@ -4615,7 +4617,7 @@ function syncVideoBar(force) {
       : `auto ${Math.round(effectiveVideoOpacity() * 100)}%`
     if (parts.opacity.textContent !== label) parts.opacity.textContent = label
     parts.opacity.title = settings.videoOpacityAuto === false
-      ? 'Video transparency (click for the next level)'
+      ? 'Film strength (click for the next level)'
       : 'Automatic transparency — 20% working, 30% with music. Click to pin a level.'
   }
 
@@ -5027,7 +5029,8 @@ function visualControlRows(settings, ui) {
       })
     ),
     row('Intensity', slider('Intensity', settings.intensity, value => applyIntensity(value))),
-    row('Transparency', slider('Transparency', settings.opacity, value => { void setOpacity(clamp01(value)) })),
+    // The value is how solid the visual is (the Settings page's "Visual opacity").
+    row('Visual strength', slider('Visual strength', settings.opacity, value => { void setOpacity(clamp01(value)) })),
     row(
       'Style',
       jsx('select', { className: 'aura-select',
@@ -5343,14 +5346,14 @@ function AuraQuickMenu() {
                   })
                   : null,
                 row(
-                  'Transparency',
+                  'Film strength',
                   jsxs('div', {
                     style: { display: 'flex', alignItems: 'center', gap: 2 },
                     children: [
                       jsx(Button, {
                         size: 'micro',
                         variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
-                        'aria-label': 'Automatic video transparency',
+                        'aria-label': 'Automatic film strength',
                         title: 'Automatic: 20% working, 30% with music, +3% per extra chat',
                         style: presetStyle,
                         onClick: () => setVideoOpacityAuto(),
@@ -5364,13 +5367,22 @@ function AuraQuickMenu() {
                             Math.round(clamp01(settings.videoOpacity) * 100) === preset
                             ? 'default'
                             : 'ghost',
-                          'aria-label': `${preset}% video transparency`,
+                          'aria-label': `${preset}% film strength`,
                           style: presetStyle,
                           onClick: () => setVideoOpacity(preset / 100),
                           children: `${preset}%`
                         })
                       )
                     ]
+                  })
+                ),
+                // Next to strength: both shape how the film behind the chat looks.
+                row(
+                  'Frosted haze',
+                  jsx(Switch, {
+                    checked: settings.filmHaze !== false,
+                    'aria-label': 'Frosted haze (quick menu)',
+                    onCheckedChange: value => setFilmHaze(value)
                   })
                 ),
                 row(
@@ -6727,7 +6739,7 @@ function AuraSettings() {
               })
             ),
             row(
-              'Video transparency',
+              'Film strength',
               'Automatic by default: 20% while you work, 30% when audio is playing, plus 3% for every extra active chat. Pick a fixed level to override.',
               jsxs('div', {
                 style: { display: 'flex', alignItems: 'center', gap: 4 },
@@ -6735,7 +6747,7 @@ function AuraSettings() {
                   jsx(Button, {
                     size: 'micro',
                     variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
-                    'aria-label': 'Automatic video transparency',
+                    'aria-label': 'Automatic film strength',
                     onClick: () => setVideoOpacityAuto(),
                     children: 'Auto'
                   }),
@@ -6747,7 +6759,7 @@ function AuraSettings() {
                         Math.round(clamp01(settings.videoOpacity) * 100) === preset
                         ? 'default'
                         : 'ghost',
-                      'aria-label': `${preset}% video transparency`,
+                      'aria-label': `${preset}% film strength`,
                       onClick: () => setVideoOpacity(preset / 100),
                       children: `${preset}%`
                     })
