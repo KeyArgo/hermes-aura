@@ -218,6 +218,22 @@ def test_reap_kills_only_our_profile(tmp_path, monkeypatch):
     assert os.getpid() != 987654
 
 
+def test_find_browser_finds_edge_in_its_windows_install_folder(tmp_path, monkeypatch):
+    """Windows browsers are not on PATH, so a PATH-only search found none: "Pop out to
+    desktop" was never available and fell back to the small frame inside Hermes."""
+    edge = tmp_path / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+    edge.parent.mkdir(parents=True)
+    edge.write_bytes(b"")
+    monkeypatch.delenv("AURA_DESKTOP_BROWSER", raising=False)
+    monkeypatch.setattr(window.shutil, "which", lambda name: None)
+    monkeypatch.setattr(window.os, "name", "nt")
+    monkeypatch.setenv("PROGRAMFILES", str(tmp_path / "nothing-here"))
+    monkeypatch.setenv("PROGRAMFILES(X86)", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "nothing-here-either"))
+
+    assert window.find_browser() == str(edge), "Edge in its install folder was not found"
+
+
 def test_reap_finds_and_closes_a_leftover_window_on_windows(tmp_path, monkeypatch):
     """Windows has neither /proc nor ps: the reaper asks Windows for the command line,
     and Windows quotes arguments with spaces ("--user-data-dir=C:\\...")."""

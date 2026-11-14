@@ -75,14 +75,46 @@ class WindowError(Exception):
     """No usable browser, or it would not start."""
 
 
+def _installed_browsers() -> List[str]:
+    """Chromium-family browsers in their standard install folders, in preference order.
+
+    Windows and macOS browsers are not on PATH, so a PATH-only search found none there
+    and "Pop out to desktop" fell back to the small frame inside Hermes. Edge ships
+    with every Windows install, so Windows always has one.
+    """
+    if os.name == "nt":
+        roots = [os.environ.get(key, "") for key in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
+        apps = (
+            os.path.join("Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join("Microsoft", "Edge", "Application", "msedge.exe"),
+            os.path.join("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+            os.path.join("Chromium", "Application", "chrome.exe"),
+        )
+        return [os.path.join(root, app) for app in apps for root in roots if root]
+    if sys.platform == "darwin":
+        bases = ("/Applications", os.path.expanduser("~/Applications"))
+        apps = (
+            "Google Chrome.app/Contents/MacOS/Google Chrome",
+            "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "Brave Browser.app/Contents/MacOS/Brave Browser",
+            "Chromium.app/Contents/MacOS/Chromium",
+        )
+        return [os.path.join(base, app) for app in apps for base in bases]
+    return []
+
+
 def find_browser() -> Optional[str]:
-    """The first Chromium-family browser on PATH, or ``AURA_DESKTOP_BROWSER``."""
+    """``AURA_DESKTOP_BROWSER``, else the first Chromium-family browser on PATH, else
+    one in its standard install folder (Windows, macOS)."""
     override = os.environ.get("AURA_DESKTOP_BROWSER")
     if override:
         return shutil.which(override) or (override if os.path.isfile(override) else None)
     for name in BROWSERS:
         path = shutil.which(name)
         if path:
+            return path
+    for path in _installed_browsers():
+        if os.path.isfile(path):
             return path
     return None
 
