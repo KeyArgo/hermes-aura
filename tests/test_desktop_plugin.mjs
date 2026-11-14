@@ -2201,6 +2201,22 @@ await recordAsync('the film controls in the quick menu are named for what they d
   }
 })
 
+await recordAsync('no glass while the film is framed in the Right panel, even with Visual behind the app on', async () => {
+  // Glass clears the app's own surfaces so a full-window picture shows through.
+  // With the film in the panel nothing is behind the app, so cleared surfaces
+  // only exposed the window's backing: on Windows the whole app washed out.
+  const { films, dispose } = await surfaceScenario({
+    enabled: true, backdropMode: 'video', panelEnabled: true, windowVisual: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  try {
+    assert.equal(films.length, 1, 'the pane film did not mount')
+    assert.equal(glassStyles().length, 0, 'the app surfaces were cleared with nothing behind them')
+  } finally {
+    dispose()
+  }
+})
+
 await recordAsync('a film in the Right panel is always full strength', async () => {
   // See-through is for the film behind the app. Inside its own box a 75% film is
   // a dim player, and the 250 ms tick used to pull it back to 75% after mount set

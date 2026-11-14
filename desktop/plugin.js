@@ -1049,9 +1049,14 @@ function mountBackdrop(url, opacity) {
   const liveNow = $live.get()
   const auraOn = liveNow.ok ? liveNow.enabled === true : settings.enabled
   // Glass clears the chat surfaces so a full-bleed visual shows through. A film
-  // in Aura's own pane or page is not full-bleed, and an off Aura paints nothing.
-  const fullBleed = Boolean(settings.windowVisual || settings.audioUrl || knownTheme === THEME_NAME ||
-    (settings.backdropMode === 'video' && !filmInPanel() && !pageVisible() && !videoWindowOn()))
+  // in Aura's own pane, page or watch window is not full-bleed, whatever the
+  // switches say: with nothing behind the app, cleared surfaces only expose the
+  // window's backing (translucent on Windows and macOS), washing the app out.
+  // An off Aura paints nothing.
+  const framedElsewhere = settings.backdropMode === 'video' && !settings.videoClosed &&
+    (filmInPanel() || pageVisible() || videoWindowOn())
+  const fullBleed = !framedElsewhere && Boolean(settings.windowVisual || settings.audioUrl ||
+    knownTheme === THEME_NAME || settings.backdropMode === 'video')
   if (auraOn && fullBleed) {
     if (!glassStyleEl) applyGlassStyle()
   } else if (glassStyleEl) {
