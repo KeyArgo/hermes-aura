@@ -1056,6 +1056,74 @@ const stripButton = label => {
 }
 
 // ===================================================================
+// Scenario M: the film out on the desktop. Every control must reach the
+// desktop window (the in-app frame is parked), the visualiser must still show
+// in visualiser mode, and nothing may clear the app's surfaces with nothing
+// behind them. Plus the visualiser-mode panel: no tall empty box.
+// ===================================================================
+
+{
+  // The owner's live settings when this broke: Behind chat, Visual behind the app on.
+  const scenario = await watchWindowScenario({ videoWindow: false, filmBehind: true, windowVisual: true })
+  const sent = []
+  const realRest = scenario.bucket.ctx.rest
+  scenario.bucket.ctx.rest = async (route, options = {}) => {
+    if (route === '/window') return { ok: true, available: true, open: false }
+    if (route === '/window/open') return { ok: true, open: true, url: SINTEL_URL }
+    if (route === '/player/command') { sent.push(options.body); return { ok: true, seq: sent.length } }
+    if (route.startsWith('/player')) return { ok: true, player: {}, commands: [], seq: 0 }
+    return realRest(route, options)
+  }
+  const control = label => domFind(scenario.pane, node => node.attributes && node.attributes['aria-label'] === label)
+  clickDom(control('Pop the film out to the desktop (Right panel)'))
+  await sleep(80)
+  await tickPoll(scenario.bucket)
+
+  await recordAsync('36. with the film on the desktop, Jump to and volume reach the desktop window', async () => {
+    const jump = control('Jump to time (Right panel)')
+    assert.ok(jump, 'no Jump to box')
+    jump.value = '1:00'
+    for (const fn of (jump.__handlers && jump.__handlers.keydown) || []) fn({ key: 'Enter' })
+    await sleep(30)
+    assert.ok(sent.some(c => c && c.cmd === 'seek' && c.value === 60),
+      `Jump to never reached the desktop window (sent ${JSON.stringify(sent)})`)
+    const volume = control('Volume')
+    assert.ok(volume, 'no volume slider')
+    for (const fn of (volume.__handlers && volume.__handlers.input) || []) fn({ target: { value: '40' } })
+    await sleep(30)
+    assert.ok(sent.some(c => c && c.cmd === 'volume' && Math.abs(c.value - 0.4) < 1e-9),
+      `the volume slider never reached the desktop window (sent ${JSON.stringify(sent)})`)
+  })
+
+  const glassOn = () => headChildren.some(node => node.attributes && node.attributes.id === 'aura-glass')
+  record('37. with the film on the desktop, the app is not cleared to glass', () => {
+    assert.equal(glassOn(), false, 'the app surfaces were cleared while the film is out on the desktop')
+  })
+
+  await recordAsync('38. switching to the visualiser while the film is on the desktop shows the visualiser', async () => {
+    const visualizer = domFind(scenario.pane, node => node.attributes && node.attributes['data-mode'] === 'aura')
+    assert.ok(visualizer, 'no Visualizer mode button in the panel')
+    clickDom(visualizer)
+    await sleep(60)
+    await tickPoll(scenario.bucket)
+    const frame = hostIframes()[0]
+    assert.ok(frame, 'no visualiser frame')
+    assert.notEqual(frame.style.display, 'none', 'the visualiser is hidden because the film is on the desktop')
+  })
+
+  record('39. the visualiser-mode panel has no tall empty box above its controls', () => {
+    const panelBox = domFind(scenario.pane, node => node.attributes && node.attributes.id === 'aura-panel')
+    assert.ok(panelBox, 'no #aura-panel')
+    assert.equal(panelBox.style.height, 'auto', 'the panel still reserves the hidden film stage height')
+    const section = pageAria(renderDeep(renderContribution(scenario.bucket.contributions.find(c => c.area === 'panes'))), 'Visualizer controls')
+    assert.ok(section && section.props.style && section.props.style.background,
+      'the visualiser controls have no panel background (unreadable on a light theme)')
+  })
+
+  safeDispose('the desktop-window scenario (M)', scenario.dispose)
+}
+
+// ===================================================================
 // Scenario I: "Watch in: Panel | Behind chat". With the Right panel open the
 // film can play behind the chat while the panel stays the remote, without a
 // second picture in the panel.

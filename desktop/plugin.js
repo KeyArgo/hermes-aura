@@ -1054,7 +1054,7 @@ function mountBackdrop(url, opacity) {
   // window's backing (translucent on Windows and macOS), washing the app out.
   // An off Aura paints nothing.
   const framedElsewhere = settings.backdropMode === 'video' && !settings.videoClosed &&
-    (filmInPanel() || pageVisible() || videoWindowOn())
+    (filmInPanel() || pageVisible() || videoWindowOn() || desktopOwned || desktopPending)
   const fullBleed = !framedElsewhere && Boolean(settings.windowVisual || settings.audioUrl ||
     knownTheme === THEME_NAME || settings.backdropMode === 'video')
   if (auraOn && fullBleed) {
@@ -2327,7 +2327,33 @@ function clearVideoRecents() {
   syncVideoBar(true)
 }
 
+/** A transport message as a command the desktop window's player accepts
+ *  (server PLAYER_COMMANDS), or null when it has no desktop equivalent. Its
+ *  seek takes an absolute position. */
+function desktopCommandFor(message) {
+  const cmd = message && message.cmd
+  if (['play', 'pause', 'toggle', 'next', 'prev'].includes(cmd)) return { cmd }
+  const value = Number(message.value)
+  if (!Number.isFinite(value)) return null
+  if (cmd === 'seekTo') return { cmd: 'seek', value: Math.max(0, value) }
+  if (cmd === 'seek') return { cmd: 'seek', value: Math.max(0, (Number($video.get().position) || 0) + value) }
+  if (cmd === 'volume') return { cmd: 'volume', value: clamp01(value) }
+  return null
+}
+
 function postToBackdrop(message) {
+  // While the desktop window owns the film the in-app frame is parked: every
+  // control (scrub, Jump to, volume, transport) goes to that window instead of
+  // into a frame nobody is watching. Not while the pop-out is still pending:
+  // that is when the in-app film itself is paused for the hand-over.
+  if (desktopOwned && ctxRef && !disposed) {
+    const command = desktopCommandFor(message)
+    if (command) {
+      void ctxRef.rest('/player/command', { method: 'POST', body: command, timeoutMs: 4000 })
+        .catch(() => setError('Aura could not reach the film window.'))
+      return true
+    }
+  }
   try {
     const win = backdropEl && backdropEl.contentWindow
     if (!win) return false
@@ -2970,8 +2996,9 @@ function applyBackdropLayout() {
   const style = backdropEl.style
   const current = $settings.get()
   // A popped-out OS window owns the picture: the in-app frame is parked, not
-  // shrunk into a corner. One film, one surface.
-  if (desktopOwned || desktopPending) {
+  // shrunk into a corner. One film, one surface. Only the film: in visualiser
+  // mode the frame is the visualiser, which the desktop film must not hide.
+  if ((desktopOwned || desktopPending) && current.backdropMode === 'video') {
     style.display = 'none'
     style.width = '0px'
     style.height = '0px'
@@ -4394,6 +4421,10 @@ function syncPanel(force) {
   setDisplay(parts.body, videoMode)
   // No second picture: the stage only shows when the film actually plays here.
   setDisplay(parts.stage, videoMode && !behind)
+  // In visualiser mode the panel is just its header (the controls sit below it):
+  // filling the pane height left a tall empty box above them.
+  const panelHeight = videoMode ? '' : 'auto'
+  if (parts.panel && parts.panel.style.height !== panelHeight) parts.panel.style.height = panelHeight
   // See-through only changes a film behind the app; inside the panel it is 100%.
   setDisplay(parts.opacityRow, behind)
   // Watch in marks where the film really is: panel, behind chat, watch window
@@ -4629,9 +4660,12 @@ function AuraPane() {
     ref: panelHostRef,
     // Drawer closed: the theatre shrinks to fit so the "Aura settings" toggle
     // stays on screen. Open: it keeps its full height and the column scrolls.
-    style: open
-      ? { height: '100%', minHeight: 0, flex: '0 0 auto', display: 'flex', flexDirection: 'column' }
-      : { minHeight: 0, flex: '1 1 auto', display: 'flex', flexDirection: 'column' }
+    style: settings.backdropMode !== 'video'
+      // Visualiser mode: only the header lives here, so do not fill the pane.
+      ? { minHeight: 0, flex: '0 0 auto', display: 'flex', flexDirection: 'column' }
+      : open
+        ? { height: '100%', minHeight: 0, flex: '0 0 auto', display: 'flex', flexDirection: 'column' }
+        : { minHeight: 0, flex: '1 1 auto', display: 'flex', flexDirection: 'column' }
   })
   const settingsSection = jsxs('section', {
     key: 'settings',
@@ -4696,7 +4730,13 @@ function AuraPaneVisualControls() {
     })
   return jsxs('section', {
     'aria-label': 'Visualizer controls',
-    style: { flex: '0 0 auto', marginTop: 8, padding: '6px 10px 4px' },
+    // The panel's own surface: its text is light, so on a light theme without a
+    // background it was unreadable.
+    style: {
+      flex: '0 0 auto', marginTop: 8, padding: '8px 10px 6px',
+      background: 'linear-gradient(180deg, #16111f 0%, #1b1418 55%, #241a12 100%)',
+      color: '#f3ece2', borderRadius: 12, border: '1px solid rgba(255,255,255,0.08)'
+    },
     children: visualControlRows(settings, {
       row, selectStyle, readout,
       sliderStyle: { width: 110, accentColor: '#ffbe78' },
