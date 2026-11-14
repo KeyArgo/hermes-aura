@@ -6696,8 +6696,13 @@ function AuraPage() {
         title: settings.videoWindow === true
           ? 'Bring the film back onto this page'
           : 'Pop out — play in a floating window you can drag anywhere',
-        onClick: () => { void toggleDesktopWindow() },
-        children: settings.videoWindow === true ? 'Bring back' : 'Pop out'
+        // Pop out = the watch window inside Hermes (Desktop is in Watch in);
+        // Bring back undoes either kind of pop-out.
+        onClick: () => {
+          if (desktopOwned || desktopPending) void setDesktopWindow(false)
+          else setVideoWindow(settings.videoWindow !== true)
+        },
+        children: popoutBackLabel()
       }),
       jsx(Button, {
         key: 'open',

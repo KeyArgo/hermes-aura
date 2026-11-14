@@ -3109,7 +3109,9 @@ await recordAsync('player coordinator reports, consumes commands, and restores a
   dispose()
 })
 
-await recordAsync('page Pop out opens the OS window and unavailable browsers use the in-app window', async () => {
+await recordAsync('Watch in > Desktop opens the OS window and unavailable browsers use the in-app window', async () => {
+  // "Pop out" on the page is the in-Hermes watch window (owner's words); the OS
+  // window is Watch in > Desktop.
   const x = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://example.test/one.mp4' })
   const calls = []
   let available = true
@@ -3126,9 +3128,8 @@ await recordAsync('page Pop out opens the OS window and unavailable browsers use
   }
   const dispose = pluginModule.default.register(x.ctx)
   await sleep(40)
-  const route = x.contributions.find(c => c.area === 'routes')
-  const tree = renderDeep(renderContribution(route))
-  pageAria(tree, 'Pop out').props.onClick()
+  const menu = renderContribution(x.contributions.find(c => c.id === 'quick-menu'))
+  findByAria(menu, 'Watch the film in a desktop window (quick menu)').props.onClick()
   await sleep(40)
   assert.ok(calls.includes('/window/open'))
   dispose()

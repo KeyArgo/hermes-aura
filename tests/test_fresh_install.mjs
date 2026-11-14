@@ -1436,6 +1436,30 @@ const stripButton = label => {
   safeDispose('the status-bar power scenario (U)', dispose)
 }
 
+// Scenario W: "Pop out" on the Aura page is the watch window inside Hermes,
+// like the panel's ⧉ (owner's words: pop out = in Hermes, Desktop = OS window).
+// Found live: it opened the desktop window path instead.
+{
+  const scenario = await watchWindowScenario({ videoWindow: false })
+  const routes = []
+  const realRest = scenario.bucket.ctx.rest
+  scenario.bucket.ctx.rest = async (route, options = {}) => { routes.push(route); return realRest(route, options).catch(() => ({ ok: false })) }
+  await recordAsync('64. Pop out on the Aura page opens the watch window, not a desktop window; Bring back closes it', async () => {
+    const pop = pageAria(pageTree(scenario.bucket), 'Pop out')
+    assert.ok(pop, 'the Aura page has no Pop out')
+    pop.props.onClick()
+    await sleep(40)
+    assert.equal(scenario.bucket.storage.get('settings').videoWindow, true, 'Pop out did not open the watch window')
+    assert.ok(!routes.some(r => r.startsWith('/window')), `Pop out went to the desktop window (${routes.filter(r => r.startsWith('/window'))})`)
+    const back = pageAria(pageTree(scenario.bucket), 'Bring back')
+    assert.ok(back, 'no Bring back while the film is popped out')
+    back.props.onClick()
+    await sleep(40)
+    assert.equal(scenario.bucket.storage.get('settings').videoWindow, false, 'Bring back left the watch window open')
+  })
+  safeDispose('the page pop-out scenario (W)', scenario.dispose)
+}
+
 // Scenario V: off is off. A film in the Right panel, in the watch window or on
 // the desktop must stop and disappear when Aura is turned off ("the off
 // buttons don't work": the film kept playing).
