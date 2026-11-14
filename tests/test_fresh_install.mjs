@@ -1249,19 +1249,27 @@ const stripButton = label => {
     return style ? String(style.textContent || '') : null
   }
   const winsOverHostGlass = css => /html:root\[data-hermes-glass\][^{]*\{[^}]*background:[^}]*!important/.test(css || '')
-  record('48. by default the host glass (frost) is left alone', () => {
+  const imitatesFrost = css => /html:not\(\[data-hermes-glass\]\)[^{]*\{[^}]*background:[^}]*!important/.test(css || '')
+  const frostSwitch = () => pageAria(renderDeep(renderContribution(bucket.contributions.find(c => c.area === 'settings.plugins'))), 'Frosted glass')
+  record('48. by default the look follows the platform: no host glass here, so solid (Linux unchanged)', () => {
     assert.ok(glassCss() !== null, 'no glass stylesheet with the visual behind the app')
-    assert.equal(winsOverHostGlass(glassCss()), false, 'frost was overridden without being asked')
+    assert.equal(imitatesFrost(glassCss()), false, 'a platform without glass got the frost look without asking')
+    assert.equal(frostSwitch().props.checked, false, 'the switch claims frost where there is none')
   })
-  await recordAsync('49. Frosted glass off paints a solid base over the host glass, like Linux', async () => {
-    const settingsPage = bucket.contributions.find(c => c.area === 'settings.plugins')
-    assert.ok(settingsPage, 'no Aura settings page')
-    const toggle = pageAria(renderDeep(renderContribution(settingsPage)), 'Frosted glass')
+  await recordAsync('49. Frosted glass on imitates frost where the host has no glass (Linux)', async () => {
+    const toggle = frostSwitch()
     assert.ok(toggle && typeof toggle.props.onCheckedChange === 'function', 'no Frosted glass switch in Aura settings')
-    toggle.props.onCheckedChange(false)
+    toggle.props.onCheckedChange(true)
+    await tickPoll(bucket)
+    assert.equal(bucket.storage.get('settings').frost, true, 'the choice was not saved')
+    assert.ok(imitatesFrost(glassCss()), 'frost on draws no frost look without host glass')
+  })
+  await recordAsync('56. Frosted glass off paints a solid base over the host glass (Windows/macOS)', async () => {
+    frostSwitch().props.onCheckedChange(false)
     await tickPoll(bucket)
     assert.equal(bucket.storage.get('settings').frost, false, 'the choice was not saved')
     assert.ok(winsOverHostGlass(glassCss()), 'with frost off the host glass still shows through')
+    assert.equal(imitatesFrost(glassCss()), false, 'frost off still imitates frost')
   })
   safeDispose('the frost scenario (R)', dispose)
 }
@@ -1288,6 +1296,64 @@ const stripButton = label => {
     assert.ok(parseFloat(frame.style.left) >= 0, 'the huge watch window starts off-screen')
   })
   safeDispose('the sizes scenario (S)', scenario.dispose)
+}
+
+// Scenario T: Stop (not only pause), page transport as big as the panel's,
+// one "Stop everything" switch for when something misbehaves, and REVamp.
+{
+  const scenario = await watchWindowScenario({ videoWindow: false, audioUrl: 'https://radio.example/stream.mp3' })
+  const posted = []
+  const frame = hostIframes()[0]
+  if (frame) frame.contentWindow = { postMessage: message => posted.push(message) }
+  pluginModule.wiringTest.video.set({ ...pluginModule.wiringTest.video.get(), playing: true, duration: 100, position: 40 })
+
+  await recordAsync('52. the Right panel has Stop: it pauses and goes back to the start', async () => {
+    const stop = domFind(scenario.pane, node => node.attributes && node.attributes['aria-label'] === 'Stop')
+    assert.ok(stop, 'the Right panel has no Stop button')
+    clickDom(stop)
+    await sleep(20)
+    assert.ok(posted.some(m => m && m.cmd === 'pause'), `Stop did not pause (posted ${JSON.stringify(posted)})`)
+    assert.ok(posted.some(m => m && m.cmd === 'seekTo' && m.value === 0), 'Stop did not go back to the start')
+    assert.equal(pluginModule.wiringTest.video.get().playing, false, 'Stop left the film marked as playing')
+  })
+
+  record('53. the Aura page transport is as big as the panel’s, with Stop', () => {
+    const tree = pageTree(scenario.bucket)
+    const stop = pageAria(tree, 'Stop')
+    assert.ok(stop, 'the Aura page has no Stop button')
+    const back = pageAria(tree, 'Back 10 seconds')
+    assert.ok(back && back.props.style.minWidth >= 38 && back.props.style.height >= 38,
+      `page transport buttons are ${back && back.props.style.minWidth}x${back && back.props.style.height}, smaller than the panel's 38`)
+    const play = pageAria(tree, 'Play') || pageAria(tree, 'Pause')
+    assert.ok(play && play.props.style.height >= 48, 'the page play button is smaller than the panel’s 48')
+  })
+
+  await recordAsync('54. Stop everything turns Aura off, stops sound and closes the watch window', async () => {
+    const settingsPage = scenario.bucket.contributions.find(c => c.area === 'settings.plugins')
+    const button = pageAria(renderDeep(renderContribution(settingsPage)), 'Stop everything')
+    assert.ok(button && typeof button.props.onClick === 'function', 'no Stop everything button in Aura settings')
+    button.props.onClick({ preventDefault() {} })
+    await sleep(40)
+    const saved = scenario.bucket.storage.get('settings')
+    assert.ok(scenario.bucket.controls.some(c => c && c.enabled === false), 'Stop everything did not turn Aura off')
+    assert.equal(saved.audioUrl, '', 'Stop everything left the audio playing')
+    assert.notEqual(saved.videoWindow, true, 'Stop everything left the watch window open')
+    assert.ok(posted.some(m => m && m.cmd === 'pause'), 'Stop everything did not stop the film')
+  })
+
+  record('55. REVamp: find it in Capabilities > Plugins, the marketplace page, or the install command', () => {
+    const tree = pageTree(scenario.bucket)
+    const find = pageAria(tree, 'Find REVamp in Plugins')
+    assert.ok(find, 'no way to open REVamp in Capabilities > Plugins')
+    find.props.onClick({ preventDefault() {} })
+    assert.equal(sdk.calls.navigations.at(-1), '/capabilities?tab=plugins&plugin=revamp')
+    const page = pageAria(tree, 'REVamp marketplace page')
+    assert.ok(page && page.props.href === 'https://hermes-agent.nousresearch.com/marketplace/revamp', 'no marketplace link')
+    let command = false
+    walk(tree, node => { if (node.props && node.props.children === 'hermes plugin install revamp') command = true })
+    assert.ok(command, 'the install command is not shown')
+  })
+  safeDispose('the stop scenario (T)', scenario.dispose)
 }
 
 // ===================================================================

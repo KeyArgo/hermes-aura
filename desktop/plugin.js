@@ -150,9 +150,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   // instead of leaving the Aura skin on an idle window.
   themeIdleRestore: true,
   windowVisual: false,
-  // Windows/macOS: let Hermes's frosted glass show behind the visual. Off paints
-  // a solid base instead, the way Linux (no glass) always looks.
-  frost: true,
+  // Frosted (true) or solid (false) behind the visual, on every platform. null
+  // follows the platform: frost where Hermes has glass (Windows/macOS), solid
+  // where it has none (Linux). See frostOn().
+  frost: null,
   motion: 'agent_music',
   // What the render gain does while the agent is idle: stop / ember / keep going.
   idleMotion: 'always',
@@ -773,22 +774,41 @@ function glassCss() {
     // !important: the theme writes these inline on <html>; a plain rule loses.
     if (color) declarations += `${name}: color-mix(in srgb, ${color} 90%, transparent) !important;`
   }
-  // Frost off: Hermes's `:root[data-hermes-glass] { background-color:
-  // transparent !important }` outranks a plain `html` rule and lets the frosted
-  // window material through. This selector outranks it; the dark fallback
-  // colour keeps the base solid even when the theme colour is translucent.
-  const solid = $settings.get().frost === false
-    ? `html:root[data-hermes-glass], html:root { background: linear-gradient(${base || 'var(--background)'}, ${base || 'var(--background)'}) #0d0c10 !important; }`
-    : ''
+  const color = base || 'var(--background)'
+  // Solid: Hermes's `:root[data-hermes-glass] { background-color: transparent
+  // !important }` outranks a plain `html` rule and lets the frosted window
+  // material through; this selector outranks it, and the dark fallback keeps
+  // the base solid even when the theme colour is translucent.
+  // Frost where Hermes has no glass (Linux): no native material to show, so a
+  // milky tint stands in for it. No blur: the frosted haze stays gone.
+  const look = frostOn()
+    ? `html:not([data-hermes-glass]) { background: linear-gradient(color-mix(in srgb, ${color} 70%, #cdc8d6), color-mix(in srgb, ${color} 70%, #cdc8d6)) #2a2730 !important; }`
+    : `html:root[data-hermes-glass], html:root { background: linear-gradient(${color}, ${color}) #0d0c10 !important; }`
   return [
     base ? `html { background: ${base} !important; }` : '',
-    solid,
+    look,
     'body, #root, #app { background: transparent !important; }',
     `:root { ${declarations} }`
   ].filter(Boolean).join('\n')
 }
 
-/** Frosted glass on/off (Windows/macOS); re-measures the glass if it is up. */
+/** Does Hermes have its native glass on in this window (Windows/macOS)? */
+function hostGlassLive() {
+  try {
+    const root = doc && doc.documentElement
+    return Boolean(root && typeof root.hasAttribute === 'function' && root.hasAttribute('data-hermes-glass-on'))
+  } catch {
+    return false
+  }
+}
+
+/** Frosted or solid behind the visual: the user's pick, else the platform's. */
+function frostOn() {
+  const frost = $settings.get().frost
+  return typeof frost === 'boolean' ? frost : hostGlassLive()
+}
+
+/** Frosted glass on/off; re-measures the glass if it is up. */
 function setFrost(on) {
   if (!ctxRef || disposed) return
   writeSettings({ frost: Boolean(on) })
@@ -2397,6 +2417,13 @@ function postToFrame(message) {
 
 /** One entry point for every transport control, wherever it is clicked. */
 function videoCommand(cmd, value) {
+  if (cmd === 'stop') {
+    // Stop = pause and back to the start, wherever the film plays.
+    postToBackdrop({ cmd: 'pause' })
+    postToBackdrop({ cmd: 'seekTo', value: 0 })
+    $video.set({ ...$video.get(), playing: false, position: 0, reportedAt: Date.now() })
+    return
+  }
   if (desktopOwned) {
     const name = cmd === 'toggle' ? ($video.get().playing ? 'pause' : 'play') : cmd
     postToDesktop({ cmd: name, value })
@@ -2447,7 +2474,10 @@ const AUDIO_STALE_MS = 60000
 const REVAMP_PITCH =
   'Want a Winamp-style player for Hermes with your local library, audiobooks, radio and skins? ' +
   'REVamp plays it — Aura’s visuals react to it, and both can run at once.'
-const REVAMP_URL = 'https://github.com/KeyArgo/hermes-revamp'
+const REVAMP_URL = 'https://hermes-agent.nousresearch.com/marketplace/revamp'
+const REVAMP_INSTALL = 'hermes plugin install revamp'
+// Capabilities > Plugins, at REVamp's row once it is installed.
+const REVAMP_PLUGINS_ROUTE = '/capabilities?tab=plugins&plugin=revamp'
 
 const EMPTY_AUDIO = Object.freeze({
   url: '', label: '', playing: false, volume: 0.7, muted: false, error: '', reportedAt: 0
@@ -3327,6 +3357,7 @@ function mountVideoBar() {
   const back = videoBarButton('⏪', 'Back 10 seconds', 'seek', -10)
   const backMin = videoBarButton('-1m', 'Back 1 minute', 'seek', -60)
   const play = videoBarButton('▶', 'Play', 'toggle')
+  const stopBtn = videoBarButton('⏹', 'Stop', 'stop')
   const fwdMin = videoBarButton('+1m', 'Forward 1 minute', 'seek', 60)
   const fwd = videoBarButton('⏩', 'Forward 10 seconds', 'seek', 10)
   const next = videoBarButton('⏭', 'Next source', 'next')
@@ -3445,7 +3476,7 @@ function mountVideoBar() {
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '2px',
     paddingTop: '3px', borderTop: '1px solid rgba(255,255,255,0.08)'
   })
-  for (const node of [prev, backMin, back, play, fwd, fwdMin, next]) {
+  for (const node of [prev, backMin, back, play, stopBtn, fwd, fwdMin, next]) {
     transportRow.appendChild(node)
   }
   // Where the film goes next, while it is in the watch window: back into the
@@ -3587,6 +3618,23 @@ function pressPower() {
     }, POWER_CONFIRM_MS + 50)
   }
   syncPanel(true)
+}
+
+/** The "something is wrong, make it all stop" switch: film stopped, audio
+ *  stopped, desktop and watch windows closed, Aura off. One click, no confirm. */
+async function stopEverything() {
+  if (!ctxRef || disposed) return
+  videoCommand('stop')
+  stopAudio()
+  if (desktopOwned || desktopPending) {
+    await closeDesktopWindow()
+    desktopOwned = false
+    desktopPending = false
+  }
+  if ($settings.get().videoWindow === true) setVideoWindow(false)
+  $powerArmed.set(0)
+  await setEnabled(false)
+  note('Aura stopped. Turn it back on whenever you like.', 6000)
 }
 
 /** What a power control says, armed or not. */
@@ -4160,9 +4208,10 @@ function mountPanelInto(hostNode) {
   const prev = panelButton('⏮', 'Previous (episode in a playlist, else previous source)', () => videoCommand('prev'))
   const back = panelButton('⏪', 'Back 10 seconds', () => videoCommand('seek', -10))
   const play = panelButton('▶', 'Play', () => videoCommand('toggle'), true)
+  const stop = panelButton('⏹', 'Stop', () => videoCommand('stop'))
   const fwd = panelButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10))
   const next = panelButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next'))
-  for (const node of [prev, back, play, fwd, next]) transport.appendChild(node)
+  for (const node of [prev, back, play, stop, fwd, next]) transport.appendChild(node)
 
   const scrub = doc.createElement('div')
   scrub.className = 'ap-scrub'
@@ -5570,6 +5619,16 @@ function AuraQuickMenu() {
               }
             })
           ),
+          jsx('div', {
+            key: 'stop-all',
+            style: { display: 'flex', justifyContent: 'flex-end', padding: '0 12px 4px' },
+            children: jsx(Button, {
+              size: 'micro', variant: 'ghost', 'aria-label': 'Stop everything (quick menu)',
+              title: 'Stop the video and audio, close Aura’s windows and turn Aura off',
+              onClick: () => { setOpen(false); void stopEverything() },
+              children: '⏹ Stop everything'
+            })
+          }),
           // Layout controls for either mode: put the Right panel away or bring it
           // back, and let the visual or the film fill the window.
           section('layout', 'Layout'),
@@ -5592,7 +5651,7 @@ function AuraQuickMenu() {
           row(
             'Frosted glass',
             jsx(Switch, {
-              checked: settings.frost !== false,
+              checked: frostOn(),
               'aria-label': 'Frosted glass (quick menu)',
               onCheckedChange: value => setFrost(value)
             })
@@ -5636,6 +5695,11 @@ function AuraQuickMenu() {
                         style: transportStyle,
                         onClick: () => videoCommand('toggle'),
                         children: videoState.playing ? '⏸' : '▶'
+                      }),
+                      jsx(Button, {
+                        size: 'micro', variant: 'ghost', 'aria-label': 'Stop (quick menu)',
+                        title: 'Stop', style: transportStyle,
+                        onClick: () => videoCommand('stop'), children: '⏹'
                       }),
                       jsx(Button, {
                         size: 'micro', variant: 'ghost', 'aria-label': 'Forward 10 seconds',
@@ -6071,11 +6135,36 @@ function RevampCard() {
             onClick: () => openRevamp(),
             children: 'Open REVamp'
           }),
+          jsx(Button, {
+            key: 'plugins', size: 'sm', variant: 'ghost', 'aria-label': 'Find REVamp in Plugins',
+            title: 'Capabilities > Plugins: install, enable or open REVamp',
+            onClick: () => {
+              try { host.navigate(REVAMP_PLUGINS_ROUTE) } catch { /* older host without navigate */ }
+            },
+            children: 'Find in Plugins'
+          }),
           jsx('a', {
             key: 'get', href: REVAMP_URL, target: '_blank', rel: 'noreferrer',
-            'aria-label': 'Get REVamp',
+            'aria-label': 'REVamp marketplace page',
             style: { fontSize: 11, color: 'var(--ui-accent)', textDecoration: 'none' },
-            children: 'Get REVamp'
+            children: 'Marketplace page'
+          })
+        ]
+      }),
+      jsxs('div', {
+        key: 'install',
+        style: { display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 100%', fontSize: 11, color: 'var(--ui-text-tertiary)' },
+        children: [
+          jsx('span', { key: 'or', children: 'Or in a terminal:' }),
+          jsx('code', {
+            key: 'cmd',
+            style: { fontSize: 11, padding: '2px 6px', borderRadius: 5, background: 'rgba(255,255,255,0.06)', color: 'var(--ui-text-primary)' },
+            children: REVAMP_INSTALL
+          }),
+          jsx(Button, {
+            key: 'copy', size: 'micro', variant: 'ghost', 'aria-label': 'Copy the REVamp install command',
+            onClick: () => { void copyText(REVAMP_INSTALL).then(ok => note(ok ? 'Copied' : 'Could not copy', 2500)) },
+            children: 'Copy'
           })
         ]
       })
@@ -6117,15 +6206,21 @@ function pageButton(label, aria, onClick, primary) {
       if (event && event.preventDefault) event.preventDefault()
       onClick()
     },
-    style: {
-      appearance: 'none',
-      border: primary ? '1px solid rgba(255,190,120,0.35)' : '0',
-      background: primary ? 'rgba(255,190,120,0.16)' : 'transparent',
-      color: 'var(--ui-text-primary)',
-      cursor: 'pointer',
-      minWidth: 34, height: 30, borderRadius: 9, fontSize: 14,
-      display: 'inline-flex', alignItems: 'center', justifyContent: 'center'
-    },
+    // The Right panel's sizes: 38px buttons, a 48px round play.
+    style: primary
+      ? {
+        appearance: 'none', border: '0', cursor: 'pointer',
+        minWidth: 48, height: 48, borderRadius: '50%', fontSize: 19,
+        background: 'linear-gradient(160deg, rgba(255,205,140,0.95), rgba(255,150,110,0.95))',
+        color: '#241a12', boxShadow: '0 6px 18px rgba(255,170,110,0.28)',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center'
+      }
+      : {
+        appearance: 'none', border: '0', background: 'transparent',
+        color: 'var(--ui-text-primary)', cursor: 'pointer',
+        minWidth: 38, height: 38, borderRadius: 12, fontSize: 16,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center'
+      },
     children: label
   })
 }
@@ -6547,11 +6642,12 @@ function AuraPage() {
 
   const transport = jsxs('div', {
     className: 'aura-transport',
-    style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, width: '100%', flexWrap: 'wrap' },
+    style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, width: '100%', flexWrap: 'wrap' },
     children: [
       jsx('span', { key: 'p', style: { display: 'inline-flex' }, children: pageButton('⏮', 'Previous (episode in a playlist, else previous source)', () => videoCommand('prev')) }),
       jsx('span', { key: 'b', style: { display: 'inline-flex' }, children: pageButton('⏪', 'Back 10 seconds', () => videoCommand('seek', -10)) }),
       jsx('span', { key: 't', style: { display: 'inline-flex' }, children: pageButton(playing ? '⏸' : '▶', playing ? 'Pause' : 'Play', () => videoCommand('toggle'), true) }),
+      jsx('span', { key: 's', style: { display: 'inline-flex' }, children: pageButton('⏹', 'Stop', () => videoCommand('stop')) }),
       jsx('span', { key: 'f', style: { display: 'inline-flex' }, children: pageButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10)) }),
       jsx('span', { key: 'n', style: { display: 'inline-flex' }, children: pageButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next')) }),
       jsx('span', { key: 'gap', style: { flex: 1 } }),
@@ -7426,12 +7522,24 @@ function AuraSettings() {
         )
       }),
       jsx('div', {
+        key: 'stopAll',
+        children: row(
+          'Stop everything',
+          'If Aura misbehaves: stops the video and audio, closes its windows and turns Aura off in one click.',
+          jsx(Button, {
+            size: 'sm', variant: 'outline', 'aria-label': 'Stop everything',
+            onClick: event => { if (event && event.preventDefault) event.preventDefault(); void stopEverything() },
+            children: 'Stop everything'
+          })
+        )
+      }),
+      jsx('div', {
         key: 'frost',
         children: row(
           'Frosted glass',
-          'Windows and macOS: Hermes’s frosted glass shows behind the visual and brightens it. Off gives a solid dark base, the way Linux looks.',
+          'On: a frosted, brighter look behind the visual (Hermes’s own glass on Windows and macOS, a frost tint elsewhere). Off: a solid dark base. Works on every platform.',
           jsx(Switch, {
-            checked: settings.frost !== false,
+            checked: frostOn(),
             'aria-label': 'Frosted glass',
             onCheckedChange: value => setFrost(value)
           })

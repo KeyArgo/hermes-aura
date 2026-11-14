@@ -443,7 +443,7 @@ await record('REVAMP_PITCH names the pitch and revampCard wires both buttons', (
   open.__handlers.click[0]()
   assert.deepEqual(sdkStub.calls.navigations.slice(-1), ['/revamp'])
   get.__handlers.click[0]()
-  assert.deepEqual(sdkStub.calls.external.slice(-1), ['https://github.com/KeyArgo/hermes-revamp'])
+  assert.deepEqual(sdkStub.calls.external.slice(-1), ['https://hermes-agent.nousresearch.com/marketplace/revamp'])
 })
 
 await record('the video backdrop carries mute=1 when the film is muted', () => {
