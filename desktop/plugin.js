@@ -184,9 +184,6 @@ const DEFAULT_SETTINGS = Object.freeze({
   // "Watch in": the film plays in the Right panel (false) or behind the chat
   // with the panel as its remote (true).
   filmBehind: false,
-  // Frosted haze over a film behind the app: Aura's own gentle blur on the film
-  // (same on every OS) for readable text, or off for the clearest picture.
-  filmHaze: true,
   // The pane's own settings drawer starts closed: the film is the reason the
   // pane exists, and every control is still one click away.
   panelSettingsOpen: false,
@@ -627,7 +624,6 @@ function readSettings(ctx) {
     if (typeof raw.panelEnabled === 'boolean') out.panelEnabled = raw.panelEnabled
     if (typeof raw.panelCollapsed === 'boolean') out.panelCollapsed = raw.panelCollapsed
     if (typeof raw.filmBehind === 'boolean') out.filmBehind = raw.filmBehind
-    if (typeof raw.filmHaze === 'boolean') out.filmHaze = raw.filmHaze
     if (typeof raw.panelSettingsOpen === 'boolean') out.panelSettingsOpen = raw.panelSettingsOpen
     out.videoSources = readSourceList(raw.videoSources)
     out.videoRecent = readSourceList(raw.videoRecent)
@@ -771,27 +767,8 @@ function glassCss() {
   return [
     base ? `html { background: ${base} !important; }` : '',
     'body, #root, #app { background: transparent !important; }',
-    `:root { ${declarations} }`,
-    // Frosted haze off: the clearest picture. The host's frosted surfaces blur
-    // whatever is behind them, and whether that frost survives depends on the OS
-    // transparency setting, so with the haze off it goes while Aura paints.
-    $settings.get().filmHaze === false
-      ? '*, *::before, *::after { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }'
-      : ''
+    `:root { ${declarations} }`
   ].filter(Boolean).join('\n')
-}
-
-// Aura's own haze over a film behind the app: a plain filter, which no OS
-// transparency setting turns off, so it looks the same on Windows, macOS and Linux.
-const FILM_HAZE_FILTER = 'blur(3px) saturate(0.92)'
-
-function setFilmHaze(on) {
-  if (!ctxRef || disposed) return
-  writeSettings({ filmHaze: Boolean(on) })
-  // The glass stylesheet carries the frost rule; rebuild it for the new choice.
-  if (glassStyleEl) applyGlassStyle()
-  applyBackdropLayout()
-  syncPanel(true)
 }
 
 function applyGlassStyle() {
@@ -2991,7 +2968,6 @@ function applyBackdropLayout() {
   }
   style.display = ''
   style.clipPath = 'none'
-  style.filter = 'none'
   // The full page's stage outranks everything: it is the one place the film is
   // meant to be watched, and the page is only open while the user is there.
   if (pageVisible() && current.backdropMode === 'video' && !current.videoClosed) {
@@ -3072,8 +3048,6 @@ function applyBackdropLayout() {
     style.overflow = 'visible'
     style.zIndex = '-1'
     style.background = 'transparent'
-    // A film behind the chat gets Aura's frosted haze unless it is switched off.
-    if (current.backdropMode === 'video' && current.filmHaze !== false) style.filter = FILM_HAZE_FILTER
   }
 }
 
@@ -4108,35 +4082,9 @@ function mountPanelInto(hostNode) {
   watchInRow.appendChild(watchInLabel)
   watchInRow.appendChild(watchInButtons)
 
-  // Frosted haze, next to see-through: both shape the film behind the chat.
-  const hazeRow = doc.createElement('div')
-  hazeRow.className = 'ap-field'
-  const hazeLabel = doc.createElement('span')
-  hazeLabel.className = 'ap-field-label'
-  hazeLabel.textContent = 'Frosted haze'
-  const hazeButtons = doc.createElement('div')
-  hazeButtons.className = 'ap-pills'
-  const hazePills = []
-  for (const [on, label] of [[true, 'On'], [false, 'Off']]) {
-    const pill = doc.createElement('button')
-    pill.type = 'button'
-    pill.className = 'ap-pill'
-    pill.textContent = label
-    pill.setAttribute('aria-label', on ? 'Frosted haze on' : 'Frosted haze off')
-    pill.addEventListener('click', event => {
-      if (event && event.preventDefault) event.preventDefault()
-      setFilmHaze(on)
-    })
-    hazePills.push([on, pill])
-    hazeButtons.appendChild(pill)
-  }
-  hazeRow.appendChild(hazeLabel)
-  hazeRow.appendChild(hazeButtons)
-
   settingsBox.appendChild(watchInRow)
   settingsBox.appendChild(sourceRow)
   settingsBox.appendChild(opacityRow)
-  settingsBox.appendChild(hazeRow)
 
   // ---- the shelf ---------------------------------------------------------
   const list = doc.createElement('div')
@@ -4156,7 +4104,7 @@ function mountPanelInto(hostNode) {
   panelParts = {
     panel, body, stage, hint, track, fill, time, play, list, vol,
     power, modeButtons, watch, source, opacityPills, opacityButtons,
-    opacityRow, watchInPills, hazeRow, hazePills
+    opacityRow, watchInPills
   }
   syncPanel(true)
 }
@@ -4222,15 +4170,10 @@ function syncPanel(force) {
   setDisplay(parts.stage, videoMode && !behind)
   // See-through only changes a film behind the app; inside the panel it is 100%.
   setDisplay(parts.opacityRow, behind)
-  setDisplay(parts.hazeRow, behind)
-  const markActive = (pills, current) => {
-    for (const [value, pill] of pills || []) {
-      const flag = value === current ? 'true' : 'false'
-      if (pill.getAttribute('data-active') !== flag) pill.setAttribute('data-active', flag)
-    }
+  for (const [value, pill] of parts.watchInPills || []) {
+    const flag = value === behind ? 'true' : 'false'
+    if (pill.getAttribute('data-active') !== flag) pill.setAttribute('data-active', flag)
   }
-  markActive(parts.watchInPills, behind)
-  markActive(parts.hazePills, settings.filmHaze !== false)
   if (parts.power) {
     const label = auraOn ? 'Aura on — click to turn off' : 'Aura off — click to turn on'
     if (parts.power.getAttribute('aria-label') !== label) {
@@ -5374,15 +5317,6 @@ function AuraQuickMenu() {
                         })
                       )
                     ]
-                  })
-                ),
-                // Next to strength: both shape how the film behind the chat looks.
-                row(
-                  'Frosted haze',
-                  jsx(Switch, {
-                    checked: settings.filmHaze !== false,
-                    'aria-label': 'Frosted haze (quick menu)',
-                    onCheckedChange: value => setFilmHaze(value)
                   })
                 ),
                 row(
@@ -7040,20 +6974,6 @@ function AuraSettings() {
       }),
           ]
         }),
-      // A film behind the app: Aura's own haze (same on every OS) for readable
-      // text, or off for the clearest picture.
-      jsx('div', {
-        key: 'filmHaze',
-        children: row(
-          'Frosted haze',
-          'A soft haze over a film behind the app keeps the chat easy to read. Off gives the clearest picture. Looks the same on Windows, macOS and Linux.',
-          jsx(Switch, {
-            checked: settings.filmHaze !== false,
-            'aria-label': 'Frosted haze',
-            onCheckedChange: value => setFilmHaze(value)
-          })
-        )
-      }),
       // Both modes: in video mode this is what lets the film fill the window with
       // the Right panel closed, so it cannot live with the visualiser-only rows.
       jsx('div', {

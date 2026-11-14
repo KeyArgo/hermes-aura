@@ -2077,30 +2077,23 @@ await recordAsync('the "Visual behind the app" switch is on the settings page in
   }
 })
 
-await recordAsync('Frosted haze is a choice: on keeps the app frosted, off clears the blur over the film', async () => {
-  // The haze trades a sharper film for more readable text; people pick. It is
-  // Aura's own filter on the film, so it looks the same on every OS instead of
-  // depending on whether the host's frost survives the OS transparency setting.
-  const look = async filmHaze => {
-    const { films, dispose } = await surfaceScenario({
-      enabled: true, backdropMode: 'video', panelEnabled: false, windowVisual: true, filmHaze,
-      videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
-    })
-    try {
-      assert.equal(films.length, 1, 'no film behind the app')
-      const glass = glassStyles()
-      assert.equal(glass.length, 1, 'no glass stylesheet while the film is behind the app')
-      return { css: String(glass[0].textContent || ''), filter: String(films[0].style.filter || '') }
-    } finally {
-      dispose()
-    }
+await recordAsync('Aura adds no blur of its own over a film behind the app', async () => {
+  // Film strength is the readability control (low = hazy film, readable chat);
+  // the host already frosts its own surfaces, so a second blur from Aura only
+  // smears the film. Guard against it coming back.
+  const { films, dispose } = await surfaceScenario({
+    enabled: true, backdropMode: 'video', panelEnabled: false, windowVisual: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  try {
+    assert.equal(films.length, 1, 'no film behind the app')
+    assert.ok(!/blur\(/.test(String(films[0].style.filter || '')), `Aura blurs the film (filter: ${films[0].style.filter})`)
+    const glass = glassStyles()
+    assert.ok(!glass.some(node => /backdrop-filter/.test(String(node.textContent || ''))),
+      'Aura rewrites the host frost')
+  } finally {
+    dispose()
   }
-  const on = await look(true)
-  assert.match(on.filter, /blur\(/, `Frosted haze on draws no haze of Aura's own (filter: ${on.filter || 'none'})`)
-  assert.ok(!/backdrop-filter:\s*none/.test(on.css), 'Frosted haze on strips the host frost')
-  const off = await look(false)
-  assert.ok(!/blur\(/.test(off.filter), `Frosted haze off still blurs the film (filter: ${off.filter})`)
-  assert.match(off.css, /backdrop-filter:\s*none/, 'Frosted haze off leaves the host frost over the film')
 })
 
 await recordAsync('the film controls in the quick menu are named for what they do', async () => {
@@ -2113,21 +2106,6 @@ await recordAsync('the film controls in the quick menu are named for what they d
     const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
     assert.ok(findByAria(tree, '25% film strength'), 'the film presets are not labelled as film strength')
     assert.equal(findByAria(tree, '25% video transparency'), null, 'a film preset is still labelled as transparency')
-    assert.ok(findByAria(tree, 'Frosted haze (quick menu)'), 'the quick menu has no Frosted haze switch next to film strength')
-  } finally {
-    dispose()
-  }
-})
-
-await recordAsync('Frosted haze has a switch on the settings page', async () => {
-  const scenario = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
-  const dispose = pluginModule.default.register(scenario.ctx)
-  try {
-    await sleep(20)
-    const page = scenario.contributions.find(c => c.area === 'settings.plugins')
-    const toggle = findSwitch(renderContribution(page), 'Frosted haze')
-    assert.ok(toggle, 'the settings page has no Frosted haze switch')
-    assert.equal(toggle.props.checked, true, 'Frosted haze is not on by default')
   } finally {
     dispose()
   }
