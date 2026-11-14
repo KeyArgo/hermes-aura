@@ -1,7 +1,7 @@
 name: aura
 label: Aura
 kind: standalone
-version: "1.0.0-dev"
+version: "1.0.0"
 author: InovinLabs
 description: >
   Aura turns Hermes Desktop into a room you can live in: play a film, lecture or YouTube playlist
