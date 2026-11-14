@@ -2096,6 +2096,34 @@ await recordAsync('Aura adds no blur of its own over a film behind the app', asy
   }
 })
 
+await recordAsync('the Aura menu opens clear of the Right panel so both can be used at once', async () => {
+  // The menu pops up from the right end of the status bar, where the Right panel
+  // is docked: with the panel open it keeps the panel's width clear on the right.
+  const paddingFor = async panelEnabled => {
+    const scenario = makeCtx({ enabled: true, backdropMode: 'video', panelEnabled,
+      videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
+    const dispose = pluginModule.default.register(scenario.ctx)
+    try {
+      await sleep(20)
+      const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
+      let content = null
+      walk(tree, node => {
+        if (!content && node.props && node.props['aria-label'] === 'Aura quick settings' && node.type === sdk.PopoverContent) content = node
+      })
+      assert.ok(content, 'no menu content')
+      return content.props.collisionPadding
+    } finally {
+      dispose()
+    }
+  }
+  const withPanel = await paddingFor(true)
+  assert.ok(withPanel && Number(withPanel.right) >= 300,
+    `with the Right panel open the menu does not keep clear of it (collisionPadding ${JSON.stringify(withPanel)})`)
+  const withoutPanel = await paddingFor(false)
+  assert.ok(!withoutPanel || !(Number(withoutPanel.right) >= 300),
+    'with the Right panel closed the menu still keeps a panel-wide gap')
+})
+
 await recordAsync('the quick menu offers Watch in, and Film strength only acts on a film behind the chat', async () => {
   // With the Right panel open the film plays in it at full strength, so the
   // strength presets cannot change anything: grey them out and offer the move.

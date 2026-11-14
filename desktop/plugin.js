@@ -3424,6 +3424,20 @@ function filmInPanel() {
   return panelVisible() && settings.backdropMode === 'video' && settings.filmBehind !== true
 }
 
+/** Radix collision padding for the Aura menu: with the Right panel open, its
+ *  width (measured, else the docked default) plus a margin stays clear. */
+function menuCollisionPadding() {
+  if (!panelVisible()) return 8
+  let width = PANEL_WIDTH
+  try {
+    const rect = panelEl && panelEl.getBoundingClientRect ? panelEl.getBoundingClientRect() : null
+    if (rect && rect.width > 0) width = rect.width
+  } catch {
+    // unmeasured: the docked default
+  }
+  return { top: 8, bottom: 8, left: 8, right: Math.round(width) + 12 }
+}
+
 const FILM_STRENGTH_PANEL_TITLE = 'The film plays in the Right panel at full strength. Choose Behind chat to use strength.'
 
 function setFilmBehind(on) {
@@ -5151,6 +5165,9 @@ function AuraQuickMenu() {
       jsx(PopoverContent, {
         side: 'top',
         align: 'end',
+        // The menu rises from the right end of the status bar, where the Right
+        // panel is docked: keep the panel clear so both can be used at once.
+        collisionPadding: menuCollisionPadding(),
         'aria-label': 'Aura quick settings',
         style: {
           minWidth: 264,
