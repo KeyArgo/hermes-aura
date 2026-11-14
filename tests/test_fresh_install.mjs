@@ -847,9 +847,9 @@ async function watchWindowScenario(extra) {
   }]]))
   const dispose = pluginModule.default.register(bucket.ctx)
   await tickPoll(bucket)
-  mountPane(bucket)
+  const pane = mountPane(bucket)
   await tickPoll(bucket)
-  return { bucket, dispose }
+  return { bucket, dispose, pane }
 }
 
 const stripButton = label => {
@@ -905,6 +905,56 @@ const stripButton = label => {
     assert.equal(videoBar(), undefined, 'the strip still shows with "Controls under the watch window" off')
   })
   safeDispose('the watch-window no-strip scenario (J)', scenario.dispose)
+}
+
+// ===================================================================
+// Scenario K: everything reachable where you are. Visualizer | Video sits in the
+// status bar next to Aura; the Right panel has the film tools the menu has; the
+// labels say where the film actually is.
+// ===================================================================
+
+{
+  const scenario = await watchWindowScenario({})
+  const paneControl = label => domFind(scenario.pane, node => node.attributes && node.attributes['aria-label'] === label)
+
+  record('25. Visualizer | Video sits in the status bar next to Aura, outside the menu', () => {
+    // Still one status-bar item (Aura's rule), but the toggle is on the bar itself,
+    // not only inside the dropdown.
+    const item = scenario.bucket.contributions.find(c => c.id === 'quick-menu')
+    assert.ok(item, 'no status-bar item')
+    let onBar = null
+    const visit = (node, insideMenu) => {
+      if (!node || onBar) return
+      if (Array.isArray(node)) { node.forEach(child => visit(child, insideMenu)); return }
+      if (typeof node !== 'object' || !node.props) return
+      const nowInside = insideMenu || node.type === sdk.PopoverContent
+      if (!nowInside && node.props['aria-label'] === 'Aura mode') { onBar = node; return }
+      visit(node.props.children, nowInside)
+    }
+    visit(renderDeep(renderContribution(item)), false)
+    assert.ok(onBar, 'Visualizer | Video is only inside the Aura menu, not on the status bar')
+  })
+
+  record('26. the Right panel has the film tools: paste a link, jump to a time, close, pop out to desktop', () => {
+    for (const label of ['Paste a video or playlist link', 'Jump to time (Right panel)', 'Close the film', 'Pop the film out to the desktop (Right panel)']) {
+      assert.ok(paneControl(label), `the Right panel has no "${label}"`)
+    }
+  })
+
+  record('27. with the film in the watch window, Watch in marks neither Panel nor Behind chat', () => {
+    const panelPill = paneControl('Watch the film in the Right panel')
+    const behindPill = paneControl('Watch the film behind the chat')
+    assert.ok(panelPill && behindPill, 'the Watch in pills are missing')
+    assert.notEqual(panelPill.attributes['data-active'], 'true', 'Watch in shows Panel while the film is in the watch window')
+    assert.notEqual(behindPill.attributes['data-active'], 'true', 'Watch in shows Behind chat while the film is in the watch window')
+  })
+
+  record('28. the Aura page names the watch window, not a "pop-out window"', () => {
+    const text = JSON.stringify(pageTree(scenario.bucket))
+    assert.ok(!/pop-out window/.test(text), 'the page still calls the in-app watch window a pop-out window')
+  })
+
+  safeDispose('the reachability scenario (K)', scenario.dispose)
 }
 
 // ===================================================================

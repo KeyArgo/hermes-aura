@@ -4186,8 +4186,69 @@ function mountPanelInto(hostNode) {
   watchInRow.appendChild(watchInLabel)
   watchInRow.appendChild(watchInButtons)
 
+  // The film tools the status-bar menu has, here too: paste a link, jump to a
+  // time, close/open, pop out to the desktop. Same handlers as the menu.
+  const fieldInput = (aria, placeholder, width) => {
+    const input = doc.createElement('input')
+    input.type = 'text'
+    input.setAttribute('aria-label', aria)
+    input.placeholder = placeholder
+    input.spellcheck = false
+    Object.assign(input.style, {
+      flex: width ? `0 0 ${width}` : '1 1 auto', minWidth: '0', boxSizing: 'border-box',
+      font: 'inherit', fontSize: '11px', color: '#f3ece2', background: 'rgba(255,255,255,0.06)',
+      border: '1px solid rgba(255,255,255,0.16)', borderRadius: '6px', padding: '4px 6px'
+    })
+    return input
+  }
+  const pillButton = (text, aria, onClick) => {
+    const button = doc.createElement('button')
+    button.type = 'button'
+    button.className = 'ap-pill'
+    button.textContent = text
+    button.setAttribute('aria-label', aria)
+    button.title = aria
+    button.addEventListener('click', event => {
+      if (event && event.preventDefault) event.preventDefault()
+      onClick()
+    })
+    return button
+  }
+
+  const linkRow = doc.createElement('div')
+  linkRow.className = 'ap-field'
+  const link = fieldInput('Paste a video or playlist link', 'Paste a YouTube link, playlist or .mp4')
+  const playLink = () => {
+    const value = String(link.value || '').trim()
+    if (!value) return
+    void applyVideoSource(value)
+    link.value = ''
+  }
+  link.addEventListener('keydown', event => { if (event && event.key === 'Enter') playLink() })
+  linkRow.appendChild(link)
+  linkRow.appendChild(pillButton('Play', 'Play the pasted link', playLink))
+
+  const toolsRow = doc.createElement('div')
+  toolsRow.className = 'ap-field'
+  const jump = fieldInput('Jump to time (Right panel)', '12:34', '64px')
+  jump.addEventListener('keydown', event => {
+    if (!event || event.key !== 'Enter') return
+    const to = parseClock(jump.value)
+    if (to != null) postToBackdrop({ cmd: 'seekTo', value: to })
+  })
+  const closeFilm = pillButton('Close', 'Close the film', () => {
+    if ($settings.get().videoClosed === true) openVideo()
+    else closeVideo()
+  })
+  const desktopOut = pillButton('Pop out to desktop', 'Pop the film out to the desktop (Right panel)', sendFilmToDesktop)
+  toolsRow.appendChild(jump)
+  toolsRow.appendChild(closeFilm)
+  toolsRow.appendChild(desktopOut)
+
   settingsBox.appendChild(watchInRow)
   settingsBox.appendChild(sourceRow)
+  settingsBox.appendChild(linkRow)
+  settingsBox.appendChild(toolsRow)
   settingsBox.appendChild(opacityRow)
 
   // ---- the shelf ---------------------------------------------------------
@@ -4208,7 +4269,7 @@ function mountPanelInto(hostNode) {
   panelParts = {
     panel, body, stage, hint, track, fill, time, play, list, vol,
     power, modeButtons, watch, source, opacityPills, opacityButtons,
-    opacityRow, watchInPills
+    opacityRow, watchInPills, closeFilm
   }
   syncPanel(true)
 }
@@ -4274,9 +4335,20 @@ function syncPanel(force) {
   setDisplay(parts.stage, videoMode && !behind)
   // See-through only changes a film behind the app; inside the panel it is 100%.
   setDisplay(parts.opacityRow, behind)
+  // In the watch window the film is neither in the panel nor behind the chat.
+  const watchIn = videoWindowOn() ? null : behind
   for (const [value, pill] of parts.watchInPills || []) {
-    const flag = value === behind ? 'true' : 'false'
+    const flag = value === watchIn ? 'true' : 'false'
     if (pill.getAttribute('data-active') !== flag) pill.setAttribute('data-active', flag)
+  }
+  if (parts.closeFilm) {
+    const closed = settings.videoClosed === true
+    const label = closed ? 'Open the film' : 'Close the film'
+    if (parts.closeFilm.getAttribute('aria-label') !== label) {
+      parts.closeFilm.setAttribute('aria-label', label)
+      parts.closeFilm.title = closed ? 'Open the film again where it stopped' : 'Close the film (resumes where it stopped)'
+      parts.closeFilm.textContent = closed ? 'Open' : 'Close'
+    }
   }
   if (parts.power) {
     const label = auraOn ? 'Aura on — click to turn off' : 'Aura off — click to turn on'
@@ -5039,6 +5111,12 @@ function modeToggle(mode, compact) {
   })
 }
 
+/** The status-bar Visualizer | Video toggle (compact). */
+function AuraStatusMode() {
+  const settings = useValue($settings)
+  return modeToggle(settings.backdropMode, true)
+}
+
 /** The visualiser's live controls: what it reacts to, intensity, transparency,
  *  style, gentle motion and when it shows. One set of rows, drawn by the status
  *  menu and by the Right panel in visualiser mode, so both drive the same
@@ -5414,7 +5492,7 @@ function AuraQuickMenu() {
                       jsx(Button, {
                         key: label,
                         size: 'micro',
-                        variant: (settings.filmBehind === true) === behind ? 'default' : 'ghost',
+                        variant: !videoWindowOn() && (settings.filmBehind === true) === behind ? 'default' : 'ghost',
                         'aria-label': aria,
                         style: presetStyle,
                         onClick: () => setFilmBehind(behind),
@@ -5700,7 +5778,12 @@ function AuraQuickMenu() {
             ]
           })
         ]
-      })
+      }),
+      // Visualizer | Video on the status bar itself, beside the Aura mark: the
+      // mode is the switch reached for most, so it should not need the menu.
+      // Inside the popover root but outside its content, so it stays on the bar
+      // while the dropdown portals away; same setBackdropMode as everywhere else.
+      jsx(AuraStatusMode, { key: 'mode' })
     ]
   })
 }
@@ -6197,7 +6280,7 @@ function AuraPage() {
         : settings.backdropMode !== 'video'
           ? 'Backdrop mode is set to the Aura visual. Choose "Video player" in the setup below to watch here.'
           : videoWindowOn()
-            ? 'Playing in the pop-out window. Press Bring back to watch it here.'
+            ? 'Playing in the watch window (the small frame in Hermes). Press Bring back to watch it here.'
             : state.blocked
               ? 'This video cannot be embedded. Paste a different link, or pick another source.'
               : ''
