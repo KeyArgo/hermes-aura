@@ -645,6 +645,20 @@ def test_ws_features_text_frame(live):
         ws.close()
 
 
+def test_binding_does_no_reverse_dns(monkeypatch):
+    # http.server's server_bind calls socket.getfqdn(host); on macOS that
+    # reverse lookup can stall for seconds (mDNS), so the server, and every
+    # helper in the single-server tests, came up late or not at all.
+    looked_up = []
+    monkeypatch.setattr(socket, "getfqdn", lambda *a, **k: looked_up.append(a) or "slow.example")
+    httpd = server._Httpd(("127.0.0.1", 0), server.BaseHTTPRequestHandler)
+    try:
+        assert looked_up == [], "binding did a reverse DNS lookup"
+        assert httpd.server_port > 0
+    finally:
+        httpd.server_close()
+
+
 def test_features_rate_is_capped(live):
     ws = WSClient(live["port"], live["token"])
     try:

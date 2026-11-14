@@ -29,6 +29,7 @@ import logging
 import os
 import secrets
 import socket
+import socketserver
 import struct
 import threading
 import time
@@ -1761,6 +1762,14 @@ def _apply_control(data) -> dict:
 class _Httpd(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def server_bind(self):
+        # HTTPServer.server_bind does socket.getfqdn(host), a reverse DNS lookup
+        # that can stall for seconds on macOS (mDNS). The name is never used.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
 
     def handle_error(self, request, client_address):  # noqa: N802
         try:
