@@ -1945,8 +1945,10 @@ await recordAsync('video mode mounts the two-row control strip with grip, scrub 
     nodes.some(node => node.attributes && node.attributes.role === 'slider'),
     'scrub bar missing from the strip'
   )
-  // Two rows: the film line over a centred transport row.
-  assert.equal(bar.children.length, 2, 'the strip is not drawn as two rows')
+  // Two visible rows: the film line over a centred transport row. A third,
+  // "Send to", belongs to the watch window and stays hidden without one.
+  const visibleRows = bar.children.filter(row => row.style.display !== 'none')
+  assert.equal(visibleRows.length, 2, 'the strip is not drawn as two rows')
   const transport = bar.children[1]
   const transportText = (transport.children || []).map(child => child.textContent || '').join('')
   for (const glyph of ['⏮', '⏪', '▶', '⏩', '⏭']) {
@@ -2162,6 +2164,8 @@ await recordAsync('the film controls in the quick menu are named for what they d
     const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
     assert.ok(findByAria(tree, '25% film strength'), 'the film presets are not labelled as film strength')
     assert.equal(findByAria(tree, '25% video transparency'), null, 'a film preset is still labelled as transparency')
+    assert.ok(findByAria(tree, 'Controls under the watch window'),
+      'the quick menu has no switch for the strip under the watch window')
   } finally {
     dispose()
   }

@@ -184,6 +184,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   // "Watch in": the film plays in the Right panel (false) or behind the chat
   // with the panel as its remote (true).
   filmBehind: false,
+  // The in-app watch window carries its own control strip (drag grip, transport,
+  // where to send the film) unless switched off in favour of the Right panel.
+  watchControls: true,
   // The pane's own settings drawer starts closed: the film is the reason the
   // pane exists, and every control is still one click away.
   panelSettingsOpen: false,
@@ -624,6 +627,7 @@ function readSettings(ctx) {
     if (typeof raw.panelEnabled === 'boolean') out.panelEnabled = raw.panelEnabled
     if (typeof raw.panelCollapsed === 'boolean') out.panelCollapsed = raw.panelCollapsed
     if (typeof raw.filmBehind === 'boolean') out.filmBehind = raw.filmBehind
+    if (typeof raw.watchControls === 'boolean') out.watchControls = raw.watchControls
     if (typeof raw.panelSettingsOpen === 'boolean') out.panelSettingsOpen = raw.panelSettingsOpen
     out.videoSources = readSourceList(raw.videoSources)
     out.videoRecent = readSourceList(raw.videoRecent)
@@ -2935,7 +2939,10 @@ function videoWindowPoint(width) {
   const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
   const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
   const frameHeight = Math.round(width * 9 / 16)
-  const clampX = value => Math.min(Math.max(8, vw - width - 8), Math.max(8, value))
+  // The usable width ends at the Right panel while it is open, so the watch
+  // window never lands on (or is dragged over) the panel's controls.
+  const edge = panelLeftEdge(vw)
+  const clampX = value => Math.min(Math.max(8, edge - width - 8), Math.max(8, value))
   const clampY = value => Math.min(Math.max(8, vh - frameHeight - 8), Math.max(8, value))
   if (settings.videoWindowCorner === 'free' &&
       Number.isFinite(settings.videoWindowX) && Number.isFinite(settings.videoWindowY)) {
@@ -2947,7 +2954,7 @@ function videoWindowPoint(width) {
   const right = corner.endsWith('right')
   const bottom = corner.startsWith('bottom')
   return {
-    x: right ? clampX(vw - width - VIDEO_WINDOW_RIGHT_MARGIN) : VIDEO_WINDOW_RIGHT_MARGIN,
+    x: right ? clampX(edge - width - VIDEO_WINDOW_RIGHT_MARGIN) : VIDEO_WINDOW_RIGHT_MARGIN,
     y: bottom ? clampY(vh - frameHeight - VIDEO_WINDOW_BOTTOM) : VIDEO_WINDOW_TOP
   }
 }
@@ -3121,10 +3128,55 @@ function videoBarActive() {
   const live = $live.get()
   const enabled = live.ok ? live.enabled === true : settings.enabled
   if (!doc || !enabled || settings.backdropMode !== 'video' || !settings.videoUrl || settings.videoClosed) return false
-  // When the docked panel is open it owns the controls; the pill is for the
+  // The watch window carries its own strip (its drag grip and transport) even
+  // with the Right panel open, unless switched off to use the panel instead.
+  if (videoWindowOn()) return settings.watchControls !== false
+  // Otherwise the open docked panel owns the controls; the strip is for the
   // tray-only life.
   if (panelVisible() && settings.panelCollapsed !== true) return false
   return true
+}
+
+/** The Right panel's left edge while it is open (else the viewport's right
+ *  edge): floating surfaces stay left of it so they never cover its controls. */
+function panelLeftEdge(vw) {
+  if (!panelVisible()) return vw
+  let width = PANEL_WIDTH
+  try {
+    const rect = panelEl && panelEl.getBoundingClientRect ? panelEl.getBoundingClientRect() : null
+    if (rect && rect.width > 0) width = rect.width
+  } catch {
+    // unmeasured: the docked default
+  }
+  return Math.max(0, vw - width)
+}
+
+/** Send the film from the watch window back into the Right panel. */
+function sendFilmToPanel() {
+  if (!ctxRef || disposed) return
+  if ($settings.get().panelEnabled === false) setPanelEnabled(true)
+  writeSettings({ filmBehind: false })
+  setVideoWindow(false)
+  syncBackdrop()
+  syncPanel(true)
+}
+
+/** Send the film from the watch window behind the chat. With the Right panel
+ *  closed, filling the window is the "Visual behind the app" opt-in, and this
+ *  click is that choice. */
+function sendFilmBehindChat() {
+  if (!ctxRef || disposed) return
+  writeSettings({ filmBehind: true })
+  if (!panelVisible() && $settings.get().windowVisual !== true) writeSettings({ windowVisual: true })
+  setVideoWindow(false)
+  syncBackdrop()
+  syncPanel(true)
+}
+
+/** Pop the film out of Hermes into a real OS window (another monitor, etc.). */
+function sendFilmToDesktop() {
+  if (!ctxRef || disposed) return
+  void setDesktopWindow(true)
 }
 
 function videoBarButton(label, aria, cmd, value) {
@@ -3304,8 +3356,44 @@ function mountVideoBar() {
   for (const node of [prev, backMin, back, play, fwd, fwdMin, next]) {
     transportRow.appendChild(node)
   }
+  // Where the film goes next, while it is in the watch window: back into the
+  // Right panel, behind the chat, or out of Hermes into its own OS window.
+  const sendRow = doc.createElement('div')
+  Object.assign(sendRow.style, {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px',
+    paddingTop: '3px', borderTop: '1px solid rgba(255,255,255,0.08)'
+  })
+  const sendLabel = doc.createElement('span')
+  sendLabel.textContent = 'Send to'
+  Object.assign(sendLabel.style, { fontSize: '10.5px', color: 'rgba(255,255,255,0.6)', marginRight: '2px' })
+  sendRow.appendChild(sendLabel)
+  for (const [text, aria, action] of [
+    ['Right panel', 'Send the film to the Right panel', sendFilmToPanel],
+    ['Behind chat', 'Send the film behind the chat', sendFilmBehindChat],
+    ['Desktop', 'Pop the film out to the desktop', sendFilmToDesktop]
+  ]) {
+    const button = doc.createElement('button')
+    button.type = 'button'
+    button.textContent = text
+    button.setAttribute('aria-label', aria)
+    button.title = aria
+    Object.assign(button.style, {
+      appearance: 'none', border: '1px solid rgba(255,255,255,0.18)', borderRadius: '999px',
+      background: 'transparent', color: 'inherit', font: 'inherit', fontSize: '10.5px',
+      padding: '3px 8px', cursor: 'pointer', lineHeight: '1'
+    })
+    button.addEventListener('mouseenter', () => { button.style.background = 'rgba(255,255,255,0.14)' })
+    button.addEventListener('mouseleave', () => { button.style.background = 'transparent' })
+    button.addEventListener('click', event => {
+      if (event && event.preventDefault) event.preventDefault()
+      action()
+    })
+    sendRow.appendChild(button)
+  }
+
   bar.appendChild(topRow)
   bar.appendChild(transportRow)
+  bar.appendChild(sendRow)
   // Grabbing empty strip (not a button) also drags the window.
   bar.addEventListener('mousedown', event => {
     if (!event || event.target !== bar) return
@@ -3324,7 +3412,7 @@ function mountVideoBar() {
 
   doc.body.appendChild(bar)
   videoBarEl = bar
-  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill, title }
+  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill, title, sendRow }
 }
 
 function removeVideoBar() {
@@ -4513,6 +4601,11 @@ function syncVideoBar(force) {
   const parts = videoBarParts
   if (!parts) return
   positionVideoBar()
+  // "Send to" belongs to the watch window; the tray-only strip has no window to move.
+  if (parts.sendRow) {
+    const display = videoWindowOn() ? 'flex' : 'none'
+    if (parts.sendRow.style.display !== display) parts.sendRow.style.display = display
+  }
   const state = $video.get()
   const settings = $settings.get()
   const barAlpha = clamp01(Number.isFinite(settings.videoBarOpacity)
@@ -5507,6 +5600,16 @@ function AuraQuickMenu() {
                     checked: settings.videoWindow === true,
                     'aria-label': 'Small frame in Hermes',
                     onCheckedChange: value => setVideoWindow(value)
+                  })
+                ),
+                // Its strip (drag grip, transport, Send to); off leaves the
+                // controls to the Right panel.
+                row(
+                  'Controls under the frame',
+                  jsx(Switch, {
+                    checked: settings.watchControls !== false,
+                    'aria-label': 'Controls under the watch window',
+                    onCheckedChange: value => { writeSettings({ watchControls: Boolean(value) }); syncVideoBar(true) }
                   })
                 ),
                 row(

@@ -834,6 +834,80 @@ for (const [mode, expectControls] of [['aura', true], ['video', false]]) {
 }
 
 // ===================================================================
+// Scenario J: the in-app watch window with the Right panel open. It must not
+// land on the panel (whose controls it would cover), and it carries its own
+// strip (drag grip, transport, and where to send the film next) unless that
+// strip is switched off in favour of the panel.
+// ===================================================================
+
+async function watchWindowScenario(extra) {
+  const bucket = makeCtx(new Map([['settings', {
+    enabled: true, backdropMode: 'video', panelEnabled: true, videoWindow: true,
+    videoUrl: SINTEL_URL, ...extra
+  }]]))
+  const dispose = pluginModule.default.register(bucket.ctx)
+  await tickPoll(bucket)
+  mountPane(bucket)
+  await tickPoll(bucket)
+  return { bucket, dispose }
+}
+
+const stripButton = label => {
+  const strip = videoBar()
+  return strip ? domFind(strip, node => node.attributes && node.attributes['aria-label'] === label) : null
+}
+
+{
+  const scenario = await watchWindowScenario({})
+  record('19. the watch window opens beside the Right panel, never on top of it', () => {
+    const frame = hostIframes().find(f => f.style.display !== 'none' && !['-1', '1'].includes(f.style.zIndex))
+    assert.ok(frame, 'no watch window')
+    const view = globalThis.document.defaultView || {}
+    const vw = Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
+    const right = parseFloat(frame.style.left) + parseFloat(frame.style.width)
+    assert.ok(right <= vw - 320, `the watch window reaches x=${right}, over the Right panel (starts at ${vw - 320})`)
+  })
+  record('20. with the Right panel open the watch window still carries its strip, with a drag grip', () => {
+    assert.ok(videoBar(), 'no control strip under the watch window while the Right panel is open')
+    assert.ok(domFind(videoBar(), node => node.attributes && node.attributes['aria-label'] === 'Drag to move the watch window'),
+      'the strip has no drag grip')
+  })
+  record('21. the strip offers where to send the film: Right panel, behind the chat, desktop', () => {
+    for (const label of ['Send the film to the Right panel', 'Send the film behind the chat', 'Pop the film out to the desktop']) {
+      assert.ok(stripButton(label), `the strip has no "${label}"`)
+    }
+  })
+  await recordAsync('22. "Right panel" on the strip puts the film back in the panel', async () => {
+    clickDom(stripButton('Send the film to the Right panel'))
+    await sleep(40)
+    const saved = scenario.bucket.storage.get('settings')
+    assert.equal(saved.videoWindow, false, 'the watch window stayed open')
+    assert.equal(saved.filmBehind, false, 'the film was not sent to the panel')
+  })
+  safeDispose('the watch-window scenario (J)', scenario.dispose)
+}
+
+{
+  const scenario = await watchWindowScenario({})
+  await recordAsync('23. "Behind the chat" on the strip moves the film behind the chat', async () => {
+    clickDom(stripButton('Send the film behind the chat'))
+    await sleep(40)
+    const saved = scenario.bucket.storage.get('settings')
+    assert.equal(saved.videoWindow, false, 'the watch window stayed open')
+    assert.equal(saved.filmBehind, true, 'the film was not sent behind the chat')
+  })
+  safeDispose('the watch-window behind-chat scenario (J)', scenario.dispose)
+}
+
+{
+  const scenario = await watchWindowScenario({ watchControls: false })
+  record('24. the strip under the watch window can be switched off in favour of the Right panel', () => {
+    assert.equal(videoBar(), undefined, 'the strip still shows with "Controls under the watch window" off')
+  })
+  safeDispose('the watch-window no-strip scenario (J)', scenario.dispose)
+}
+
+// ===================================================================
 // Scenario I: "Watch in: Panel | Behind chat". With the Right panel open the
 // film can play behind the chat while the panel stays the remote, without a
 // second picture in the panel.
