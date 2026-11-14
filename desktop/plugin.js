@@ -112,6 +112,12 @@ const VIDEO_OPACITY_PRESETS = Object.freeze([25, 50, 75, 100])
 const VIDEO_VOLUME = 0.7
 // How solid the floating strip is over the film.
 const VIDEO_BAR_OPACITY = 0.72
+// The floating strip's own width and the room kept under it for the status
+// bar. Both are used only when the strip cannot be measured yet, so the first
+// paint is already bottom-centre instead of jumping there on the next tick.
+const VIDEO_BAR_WIDTH = 340
+const VIDEO_BAR_HEIGHT = 96
+const VIDEO_BAR_STATUS_ROOM = 150
 // Backdrop opacity changes are debounced: music must hold >1.2 s to brighten
 // it and silence >4 s to dim it, or level flicker made the window pulse.
 const MUSIC_ON_DELAY_MS = 1200
@@ -178,6 +184,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   // anything at or below it is history.
   audioRequestSeq: 0,
   videoBarOpacity: VIDEO_BAR_OPACITY,
+  // Where the strip was last dragged in strip-only (tray) mode. null means
+  // "bottom-centre, above the status bar", computed from the window size only.
+  videoBarX: null,
+  videoBarY: null,
   videoWindow: false,
   videoWindowSize: VIDEO_WINDOW_DEFAULT_SIZE,
   videoWindowCorner: VIDEO_WINDOW_DEFAULT_CORNER,
@@ -623,6 +633,8 @@ function readSettings(ctx) {
     if (typeof raw.videoOpacityAuto === 'boolean') out.videoOpacityAuto = raw.videoOpacityAuto
     if (Number.isFinite(raw.videoVolume)) out.videoVolume = clamp01(raw.videoVolume)
     if (typeof raw.videoBarOpacity === 'number' || Number.isFinite(raw.videoBarOpacity)) out.videoBarOpacity = clamp01(raw.videoBarOpacity)
+    if (Number.isFinite(raw.videoBarX)) out.videoBarX = Math.round(raw.videoBarX)
+    if (Number.isFinite(raw.videoBarY)) out.videoBarY = Math.round(raw.videoBarY)
     if (typeof raw.videoWindow === 'boolean') out.videoWindow = raw.videoWindow
     if (typeof raw.videoWindowSize === 'string' && Object.prototype.hasOwnProperty.call(VIDEO_WINDOW_SIZES, raw.videoWindowSize)) {
       out.videoWindowSize = raw.videoWindowSize
@@ -2953,6 +2965,9 @@ let videoBarHideTimer = null
 // Live drag of the watch window (grip on the strip). Timers/listeners are
 // host-owned or removed in removeVideoBar; the position is persisted on drop.
 let windowDrag = null
+// Live drag of the strip itself in strip-only (tray) mode. Same contract: the
+// listeners die with the bar and the drop is remembered.
+let stripDrag = null
 
 function onWindowDragMove(event) {
   if (!windowDrag || !backdropEl || !event) return
@@ -3020,25 +3035,68 @@ let volumePushedFor = ''
 // you to the start of the film: the player is reloaded, then seeked to here.
 let resumeSavedAt = 0
 
-/** The chat composer's box, found by behaviour rather than by class name: the
- *  lowest wide text-entry field in the window. The strip parks itself just
- *  above it (owner ask: "just above the chat box"), and falls back to a safe
- *  bottom-left spot when the app's layout changes under us. */
-function composerRect() {
-  if (!doc || typeof doc.querySelectorAll !== 'function') return null
-  const view = doc.defaultView || globalThis
-  const height = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
-  const nodes = doc.querySelectorAll('textarea, [contenteditable="true"]')
-  let best = null
-  for (const node of nodes) {
-    if (!node || typeof node.getBoundingClientRect !== 'function') continue
-    const rect = node.getBoundingClientRect()
-    if (!rect || !rect.width || !rect.height) continue
-    if (rect.width < 160) continue
-    if (rect.top < height * 0.4) continue
-    if (!best || rect.top < best.top) best = rect
+/** Clamp a strip point to the window and left of the Right panel. The strip is
+ *  a floating surface of its own, so this reads only window/panel geometry —
+ *  never the chat composer's markup. */
+function clampVideoBarPoint(x, y) {
+  const view = doc && doc.defaultView
+  const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
+  const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
+  const rect = videoBarEl && videoBarEl.getBoundingClientRect
+    ? videoBarEl.getBoundingClientRect()
+    : null
+  const barWidth = rect && rect.width ? rect.width : VIDEO_BAR_WIDTH
+  const barHeight = rect && rect.height ? rect.height : VIDEO_BAR_HEIGHT
+  return {
+    x: Math.min(Math.max(8, Math.round(x)), Math.max(8, Math.round(panelLeftEdge(vw) - barWidth - 8))),
+    y: Math.min(Math.max(8, Math.round(y)), Math.max(8, Math.round(vh - barHeight - 8)))
   }
-  return best
+}
+
+function onStripDragMove(event) {
+  if (!stripDrag || !videoBarEl || !event) return
+  const point = clampVideoBarPoint(
+    stripDrag.startX + (event.clientX - stripDrag.pointerX),
+    stripDrag.startY + (event.clientY - stripDrag.pointerY)
+  )
+  stripDrag.x = point.x
+  stripDrag.y = point.y
+  videoBarEl.style.left = `${point.x}px`
+  videoBarEl.style.top = `${point.y}px`
+  videoBarEl.style.right = 'auto'
+  videoBarEl.style.bottom = 'auto'
+}
+
+function endStripDrag() {
+  if (!stripDrag) return
+  const { x, y } = stripDrag
+  stripDrag = null
+  if (doc) {
+    doc.removeEventListener('mousemove', onStripDragMove)
+    doc.removeEventListener('mouseup', endStripDrag)
+  }
+  // Remember it: this is the whole point of dragging.
+  writeSettings({ videoBarX: x, videoBarY: y })
+}
+
+function beginStripDrag(event) {
+  if (!videoBarEl || !event) return
+  try { event.preventDefault() } catch { /* synthetic */ }
+  const style = videoBarEl.style
+  const startX = parseFloat(style.left)
+  const startY = parseFloat(style.top)
+  stripDrag = {
+    pointerX: event.clientX,
+    pointerY: event.clientY,
+    startX: Number.isFinite(startX) ? startX : 24,
+    startY: Number.isFinite(startY) ? startY : 24,
+    x: 0,
+    y: 0
+  }
+  if (doc) {
+    doc.addEventListener('mousemove', onStripDragMove, { passive: true })
+    doc.addEventListener('mouseup', endStripDrag)
+  }
 }
 
 // The watch window: instead of the film sitting behind the whole app at 20%,
@@ -3206,8 +3264,9 @@ function positionVideoBar() {
   if (!videoBarEl) return
   // Never reposition mid-drag: the 4 Hz tick would snap the frame back to the
   // last saved spot while your mouse is still moving it.
-  if (windowDrag) return
+  if (windowDrag || stripDrag) return
   const view = doc && doc.defaultView
+  const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
   const height = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
   if (videoWindowOn()) {
     // Centre the strip under the film, the way a player's controls sit centred
@@ -3240,14 +3299,20 @@ function positionVideoBar() {
   }
   videoBarEl.style.right = 'auto'
   videoBarEl.style.top = 'auto'
-  const rect = composerRect()
-  if (rect) {
-    videoBarEl.style.left = `${Math.max(12, Math.round(rect.left))}px`
-    videoBarEl.style.bottom = `${Math.max(12, Math.round(height - rect.top + 10))}px`
-  } else {
-    videoBarEl.style.left = '24px'
-    videoBarEl.style.bottom = '150px'
-  }
+  const rect = videoBarEl.getBoundingClientRect ? videoBarEl.getBoundingClientRect() : null
+  const barWidth = rect && rect.width ? rect.width : VIDEO_BAR_WIDTH
+  const barHeight = rect && rect.height ? rect.height : VIDEO_BAR_HEIGHT
+  const settings = $settings.get()
+  // A saved free position (from a drag) wins. Otherwise park bottom-left, clear of the composer
+  // above the status bar, from the window size alone: no chat-composer lookup,
+  // so a host redesign cannot strand the strip.
+  const wanted = Number.isFinite(settings.videoBarX) && Number.isFinite(settings.videoBarY)
+    ? { x: settings.videoBarX, y: settings.videoBarY }
+    : { x: 24, y: height - barHeight - VIDEO_BAR_STATUS_ROOM }
+  const point = clampVideoBarPoint(wanted.x, wanted.y)
+  videoBarEl.style.left = `${point.x}px`
+  videoBarEl.style.top = `${point.y}px`
+  videoBarEl.style.bottom = 'auto'
 }
 
 function fmtClock(seconds) {
@@ -3492,12 +3557,14 @@ function mountVideoBar() {
     width: '1px', height: '16px', background: 'rgba(255,255,255,0.16)', margin: '0 3px'
   })
 
-  // Drag grip: the watch window goes wherever you drop it. Made obvious on
+  // Drag grip: in the watch window it moves the film; in strip-only mode it
+  // moves the strip itself and remembers where you dropped it. Made obvious on
   // purpose — the first version was a bare glyph nobody could find.
   const grip = doc.createElement('span')
   grip.textContent = '⠿'
-  grip.setAttribute('aria-label', 'Drag to move the watch window')
-  grip.title = 'Drag to move the watch window'
+  const gripLabel = videoWindowOn() ? 'Drag to move the watch window' : 'Drag to move the video controls'
+  grip.setAttribute('aria-label', gripLabel)
+  grip.title = gripLabel
   Object.assign(grip.style, {
     cursor: 'grab', fontSize: '12px', lineHeight: '1',
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -3506,7 +3573,10 @@ function mountVideoBar() {
     border: '1px solid rgba(255,255,255,0.22)', userSelect: 'none',
     color: 'inherit'
   })
-  grip.addEventListener('mousedown', event => beginWindowDrag(event))
+  grip.addEventListener('mousedown', event => {
+    if (videoWindowOn()) beginWindowDrag(event)
+    else beginStripDrag(event)
+  })
 
   // Close: pauses and takes the film off screen; Settings/quick menu can
   // reopen it, and it resumes where it stopped.
@@ -3620,10 +3690,12 @@ function mountVideoBar() {
   bar.appendChild(transportRow)
   bar.appendChild(sendRow)
   bar.appendChild(sizeRow)
-  // Grabbing empty strip (not a button) also drags the window.
+  // Grabbing empty strip (not a button) drags it too: the film in the watch
+  // window, or the strip itself when there is no watch window.
   bar.addEventListener('mousedown', event => {
     if (!event || event.target !== bar) return
-    beginWindowDrag(event)
+    if (videoWindowOn()) beginWindowDrag(event)
+    else beginStripDrag(event)
   })
   // Wheel over the strip = volume, the way every media player behaves. It is
   // the one gesture that is worth the surprise, and it only fires over the
@@ -3638,7 +3710,7 @@ function mountVideoBar() {
 
   doc.body.appendChild(bar)
   videoBarEl = bar
-  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill, title, sendRow, sizeRow, sizeButtons }
+  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill, title, grip, sendRow, sizeRow, sizeButtons }
 }
 
 function removeVideoBar() {
@@ -3655,6 +3727,11 @@ function removeVideoBar() {
     doc.removeEventListener('mouseup', endWindowDrag)
   }
   windowDrag = null
+  if (stripDrag && doc) {
+    doc.removeEventListener('mousemove', onStripDragMove)
+    doc.removeEventListener('mouseup', endStripDrag)
+  }
+  stripDrag = null
   if (videoBarEl && videoBarEl.parentNode) videoBarEl.parentNode.removeChild(videoBarEl)
   videoBarEl = null
   videoBarParts = null
@@ -5002,6 +5079,15 @@ function syncVideoBar(force) {
   const parts = videoBarParts
   if (!parts) return
   positionVideoBar()
+  // The grip moves whatever is floating: the watch window's film, or the strip
+  // itself in tray-only mode. Say which, so the control is never a mystery.
+  if (parts.grip) {
+    const label = videoWindowOn() ? 'Drag to move the watch window' : 'Drag to move the video controls'
+    if (parts.grip.getAttribute('aria-label') !== label) {
+      parts.grip.setAttribute('aria-label', label)
+      parts.grip.title = label
+    }
+  }
   // "Send to" belongs to the watch window; the tray-only strip has no window to move.
   if (parts.sendRow) {
     const display = videoWindowOn() ? 'flex' : 'none'

@@ -304,6 +304,12 @@ record('no new Function', () => assert.doesNotMatch(code, /new\s+Function\b/))
 record('no dynamic import()', () => assert.doesNotMatch(code, /\bimport\s*\(/))
 record('no JSX syntax', () => assert.doesNotMatch(code, /<[A-Za-z/]/))
 record('no document.querySelector on app markup', () => assert.doesNotMatch(source, /document\s*\.\s*querySelector/))
+record('the strip never scans the chat composer DOM', () => {
+  // Review ask: position the strip from the window/saved position, never by
+  // finding and measuring the host's text fields.
+  assert.doesNotMatch(source, /composerRect/)
+  assert.doesNotMatch(source, /querySelector(?:All)?\s*\(\s*['"][^'"]*(?:textarea|contenteditable|composer)/i)
+})
 record('no data-slot selector anywhere', () => assert.doesNotMatch(source, /data-slot/))
 record('no MutationObserver / document.body observer', () => assert.doesNotMatch(source, /MutationObserver/))
 record('no console output', () => assert.doesNotMatch(source, /console\s*\./))
@@ -386,7 +392,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, video: $video, settings: $settings };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, video: $video, settings: $settings };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -2003,6 +2009,94 @@ await recordAsync('video mode mounts the two-row control strip with grip, scrub 
   assert.equal(bar.style.flexDirection, 'column', 'the strip is not stacked')
   assert.equal(bar.style.width, '340px', 'the strip lost its half-width shape')
   assert.equal(bar.style.opacity, '1', 'the strip must start visible')
+})
+
+// ------------------------------------------ tray strip position and drag
+// Owner bug: the strip has a drag grip but in strip-only mode it could not be
+// moved — the grip always dragged the watch window (converting the film into
+// one) instead of the strip. Review ask: the strip's position must not be read
+// from the app's composer markup; a saved free position (with a bottom-centre
+// default from the window size) is the source of truth.
+
+const trayBar = () => bodyChildren.find(node => node.attributes && node.attributes.role === 'toolbar')
+function trayNodes(bar) {
+  const nodes = []
+  const collect = node => {
+    for (const child of node.children || []) {
+      nodes.push(child)
+      collect(child)
+    }
+  }
+  collect(bar)
+  return nodes
+}
+
+record('the tray strip parks bottom-left, clear of the composer, from the window size, not the composer DOM', () => {
+  const bar = trayBar()
+  assert.ok(bar, 'the video control strip never mounted')
+  const wiring = pluginModule.wiringTest
+  assert.equal(typeof wiring.positionVideoBar, 'function', 'positionVideoBar is missing')
+  wiring.positionVideoBar()
+  const left = parseInt(bar.style.left, 10)
+  const top = parseInt(bar.style.top, 10)
+  // The harness window is 1400x900: bottom-left, 150px up so it never covers the composer.
+  assert.equal(left, 24, `the default strip is not bottom-left (left: ${bar.style.left})`)
+  assert.ok(Number.isFinite(top) && top > 500 && top <= 900 - 96 - 150,
+    `the default strip sits over the composer (top: ${bar.style.top})`)
+  assert.equal(bar.style.bottom, 'auto', 'the strip still relies on the old bottom offset')
+})
+
+record('dragging the tray strip grip moves the strip and remembers the drop', () => {
+  const bar = trayBar()
+  const wiring = pluginModule.wiringTest
+  assert.equal(typeof wiring.onStripDragMove, 'function', 'strip drag is missing')
+  wiring.positionVideoBar()
+  const startLeft = parseInt(bar.style.left, 10)
+  const startTop = parseInt(bar.style.top, 10)
+  const grip = trayNodes(bar).find(node => node.textContent === '⠿')
+  assert.ok(grip, 'drag grip missing from the strip')
+  const down = (grip.__handlers.mousedown || [])[0]
+  assert.ok(down, 'the grip has no mousedown handler')
+  down({ clientX: 100, clientY: 100, preventDefault() {} })
+  assert.notEqual(v.storage.get('settings').videoWindow, true,
+    'the grip still converts the film into a watch window')
+  wiring.onStripDragMove({ clientX: 170, clientY: 135 })
+  assert.equal(bar.style.left, `${startLeft + 70}px`, 'the strip did not follow the drag')
+  assert.equal(bar.style.top, `${startTop + 35}px`, 'the strip did not follow the drag vertically')
+  wiring.endStripDrag()
+  const saved = v.storage.get('settings')
+  assert.equal(saved.videoBarX, startLeft + 70, 'the dropped strip x was not remembered')
+  assert.equal(saved.videoBarY, startTop + 35, 'the dropped strip y was not remembered')
+})
+
+record('a dragged tray strip is clamped inside the window and left of the Right panel', () => {
+  // Panel on but collapsed: the strip is the surface, and the panel's 320px
+  // still owns the right edge.
+  const scenario = makeCtx({
+    enabled: true,
+    backdropMode: 'video',
+    windowVisual: true,
+    panelEnabled: true,
+    panelCollapsed: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  const dispose = pluginModule.default.register(scenario.ctx)
+  try {
+    const bar = trayBar()
+    const wiring = pluginModule.wiringTest
+    wiring.positionVideoBar()
+    const down = (trayNodes(bar).find(node => node.textContent === '⠿').__handlers.mousedown || [])[0]
+    down({ clientX: 100, clientY: 100, preventDefault() {} })
+    wiring.onStripDragMove({ clientX: 10000, clientY: 10000 })
+    wiring.endStripDrag()
+    const saved = scenario.storage.get('settings')
+    assert.equal(saved.videoBarX, 1400 - 320 - 340 - 8,
+      'the strip can be dragged over the Right panel')
+    assert.equal(saved.videoBarY, 900 - 96 - 8,
+      'the strip can be dragged off the bottom of the window')
+  } finally {
+    dispose()
+  }
 })
 
 // ---------------------------------------------------- watch window size row
