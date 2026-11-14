@@ -139,8 +139,9 @@ const VIDEO_WINDOW_DEFAULT_SIZE = 'medium'
 
 const DEFAULT_SETTINGS = Object.freeze({
   enabled: true,
-  intensity: 0.5,
-  opacity: 0.35,
+  // First-run only (owner, 11-13); a saved setting keeps its own value.
+  intensity: 0,
+  opacity: 0.4,
   behavior: 'balanced',
   moodReactive: true,
   accentPulse: false,
@@ -5362,31 +5363,30 @@ function AuraStatusMode() {
   return modeToggle(settings.backdropMode, true)
 }
 
-/** Aura on/off on the status bar itself: one click on, "Turn off?" then off
- *  (pressPower, the same as the Right panel and the page). Turning on brings
+/** Aura on/off on the status bar itself: one click toggles, On <-> Off (owner,
+ *  11-13: the "Turn off?" step read as a broken switch). Turning on brings
  *  Visualizer | Video back beside it. */
 function AuraStatusPower() {
   const settings = useValue($settings)
   const live = useValue($live)
-  const armedUntil = useValue($powerArmed)
   const auraOn = live.ok ? live.enabled === true : settings.enabled
-  const armed = auraOn && armedUntil > Date.now()
   return jsx('button', {
     type: 'button',
-    'aria-label': powerLabel(auraOn),
-    title: powerLabel(auraOn),
+    'aria-label': auraOn ? 'Aura on — click to turn off' : 'Aura off — click to turn on',
+    title: auraOn ? 'Aura on — click to turn off' : 'Aura off — click to turn on',
     onClick: event => {
       if (event && event.preventDefault) event.preventDefault()
-      pressPower()
+      $powerArmed.set(0)
+      void setEnabled(!auraOn)
     },
     style: {
       appearance: 'none', cursor: 'pointer', font: 'inherit', fontSize: 10.5, lineHeight: 1.4,
       padding: '0 7px', borderRadius: 999,
       border: '1px solid ' + (auraOn ? 'var(--ui-accent)' : 'var(--ui-stroke-secondary)'),
-      background: armed ? 'rgba(255,120,90,0.18)' : 'transparent',
+      background: 'transparent',
       color: auraOn ? 'var(--ui-accent)' : 'var(--ui-text-tertiary)'
     },
-    children: armed ? 'Turn off?' : auraOn ? 'On' : 'Off'
+    children: auraOn ? 'On' : 'Off'
   })
 }
 
@@ -6602,8 +6602,6 @@ function AuraPage() {
   const live = useValue($live)
   const state = useValue($video)
   const auraOn = live.ok ? live.enabled === true : settings.enabled
-  const armedUntil = useValue($powerArmed)
-  const armed = auraOn && armedUntil > Date.now()
   const playing = state.playing === true
   // The film is a fixed-position frame glued to this stage's rect, so the rect
   // has to follow a scrolling page between poll ticks (4 Hz is a visible lag).
@@ -6803,17 +6801,39 @@ function AuraPage() {
         className: 'aura-hero-status',
         style: { display: 'flex', alignItems: 'center', gap: 10, flex: 'none' },
         children: [
-          jsx('button', {
+          jsxs('span', {
             key: 'flag',
-            type: 'button',
-            className: auraOn ? 'aura-pill is-on' : 'aura-pill',
-            'aria-label': powerLabel(auraOn),
-            title: powerLabel(auraOn),
-            onClick: event => {
-              if (event && event.preventDefault) event.preventDefault()
-              pressPower()
-            },
-            children: armed ? 'Turn off?' : auraOn ? 'Aura on' : 'Aura off'
+            role: 'group',
+            'aria-label': 'Aura power',
+            style: { display: 'inline-flex', alignItems: 'center', gap: 6 },
+            children: [
+              jsx('button', {
+                key: 'on',
+                type: 'button',
+                className: auraOn ? 'aura-pill is-on' : 'aura-pill',
+                'aria-pressed': auraOn,
+                'aria-label': 'Aura on',
+                title: 'Turn Aura on',
+                onClick: event => {
+                  if (event && event.preventDefault) event.preventDefault()
+                  if (!auraOn) void setEnabled(true)
+                },
+                children: 'Aura on'
+              }),
+              jsx('button', {
+                key: 'off',
+                type: 'button',
+                className: auraOn ? 'aura-pill' : 'aura-pill is-on',
+                'aria-pressed': !auraOn,
+                'aria-label': 'Aura off',
+                title: 'Turn Aura off: the film and visual stop',
+                onClick: event => {
+                  if (event && event.preventDefault) event.preventDefault()
+                  if (auraOn) void setEnabled(false)
+                },
+                children: 'Aura off'
+              })
+            ]
           }),
           // Visualizer | Video beside the on/off chip, like the status bar: the
           // same setBackdropMode, so the page, bar, menu and panel all agree.
@@ -6849,7 +6869,7 @@ function AuraPage() {
           jsx('span', { key: 'meta', className: 'aura-count', children: 'every switch Aura has' })
         ]
       }),
-      jsx(AuraSettings, { key: 'settings' })
+      jsx(AuraSettings, { key: 'settings', onPage: true })
     ]
   })
 
@@ -6997,7 +7017,8 @@ function VersionChip(props) {
   })
 }
 
-function AuraSettings() {
+function AuraSettings(props) {
+  const onPage = Boolean(props && props.onPage)
   const settings = useValue($settings)
   const live = useValue($live)
   const applied = useValue($themeApplied)
@@ -7030,19 +7051,34 @@ function AuraSettings() {
     })
 
   return jsxs('div', {
-    style: { display: 'flex', flexDirection: 'column', gap: 2, padding: '12px 4px', maxWidth: 640 },
+    style: onPage
+      ? {
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))',
+          columnGap: 36,
+          rowGap: 2,
+          padding: '12px 4px'
+        }
+      : { display: 'flex', flexDirection: 'column', gap: 2, padding: '12px 4px', maxWidth: 640 },
     children: [
-      jsxs('div', {
-        key: 'title',
-        style: { display: 'flex', alignItems: 'baseline', gap: 10 },
-        children: [
-          jsx('h3', { key: 'h', style: { margin: 0, fontSize: 13, color: 'var(--ui-text-primary)' }, children: 'Aura' }),
-          jsx(VersionChip, { key: 'build' })
-        ]
-      }),
+      onPage
+        ? null
+        : jsxs('div', {
+          key: 'title',
+          style: { display: 'flex', alignItems: 'baseline', gap: 10 },
+          children: [
+            jsx('h3', { key: 'h', style: { margin: 0, fontSize: 13, color: 'var(--ui-text-primary)' }, children: 'Aura' }),
+            jsx(VersionChip, { key: 'build' })
+          ]
+        }),
       jsx('div', {
         key: 'server',
-        style: { fontSize: 11, color: 'var(--ui-text-tertiary)', paddingBottom: 6 },
+        style: {
+          fontSize: 11,
+          color: 'var(--ui-text-tertiary)',
+          paddingBottom: 6,
+          ...(onPage ? { gridColumn: '1 / -1' } : {})
+        },
         children: serverLine
       }),
       jsx('div', {
@@ -7247,6 +7283,7 @@ function AuraSettings() {
       settings.backdropMode === 'video'
         ? jsxs('div', {
           key: 'videoUrl',
+          style: onPage ? { display: 'contents' } : undefined,
           children: [
             row(
               'Video URL',
@@ -7497,6 +7534,7 @@ function AuraSettings() {
       // REVamp does — one click away, no prizes, no nagging.
       jsx('div', {
         key: 'revamp',
+        style: onPage ? { gridColumn: '1 / -1' } : undefined,
         children: RevampLine()
       }),
       settings.backdropMode === 'video'

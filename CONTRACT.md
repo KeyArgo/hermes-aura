@@ -148,7 +148,7 @@ Additive to §1/§2/§4. No existing field changed meaning. New config keys are 
 
 | key | type | default | validation |
 |---|---|---|---|
-| `opacity` | number 0..1 | 0.35 | non-numeric/bool -> `opacity_must_be_number`; outside 0..1 -> `opacity_out_of_range` |
+| `opacity` | number 0..1 | 0.4 | non-numeric/bool -> `opacity_must_be_number`; outside 0..1 -> `opacity_out_of_range` |
 | `behavior` | `"calm"` \| `"balanced"` \| `"intense"` | `"balanced"` | non-string -> `behavior_must_be_string`; unknown -> `bad_behavior` |
 | `mood_reactive` | bool | `true` | non-bool -> `mood_reactive_must_be_bool` |
 | `accent_pulse` | bool | `false` | non-bool -> `accent_pulse_must_be_bool` |

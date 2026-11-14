@@ -1181,24 +1181,24 @@ const stripButton = label => {
   safeDispose('the adopted desktop-window scenario (N)', dispose)
 }
 
-// Scenario O: the Aura page header's on/off pill is a real control, with the
-// same two-click turn-off as the panel's power button.
+// Scenario O: the Aura page header has two buttons, Aura on | Aura off; the
+// active one is highlighted and one click on the other switches (owner, 11-13).
 {
   const scenario = await watchWindowScenario({})
   const enabledSent = () => scenario.bucket.controls.filter(c => c && typeof c.enabled === 'boolean').map(c => c.enabled)
-  const pill = () => pageAriaPrefix(pageTree(scenario.bucket), 'Aura on') || pageAriaPrefix(pageTree(scenario.bucket), 'Aura off') ||
-    pageAriaPrefix(pageTree(scenario.bucket), 'Click again')
-  await recordAsync('43. the page header Aura on/off pill turns Aura off (two clicks) and on (one click)', async () => {
-    const first = pill()
-    assert.ok(first && typeof first.props.onClick === 'function', 'the page header Aura on/off pill does nothing when clicked')
-    first.props.onClick({ preventDefault() {} })
+  const button = label => pageAriaPrefix(pageTree(scenario.bucket), label)
+  await recordAsync('43. the page header Aura on | Aura off buttons switch with one click and highlight the active one', async () => {
+    assert.ok(button('Aura on') && button('Aura off'), 'the page header needs both Aura on and Aura off')
+    assert.equal(button('Aura on').props['aria-pressed'], true, 'Aura on is not highlighted while on')
+    button('Aura on').props.onClick({ preventDefault() {} })
     await sleep(30)
-    assert.deepEqual(enabledSent(), [], 'one click turned Aura off (it needs a second click)')
-    pill().props.onClick({ preventDefault() {} })
+    assert.deepEqual(enabledSent(), [], 'clicking the active Aura on sent something')
+    button('Aura off').props.onClick({ preventDefault() {} })
     await sleep(30)
-    assert.deepEqual(enabledSent(), [false], 'the second click did not turn Aura off')
+    assert.deepEqual(enabledSent(), [false], 'one click on Aura off did not turn Aura off')
     await tickPoll(scenario.bucket)
-    pill().props.onClick({ preventDefault() {} })
+    assert.equal(button('Aura off').props['aria-pressed'], true, 'Aura off is not highlighted while off')
+    button('Aura on').props.onClick({ preventDefault() {} })
     await sleep(30)
     assert.deepEqual(enabledSent(), [false, true], 'one click did not turn Aura back on')
   })
@@ -1424,8 +1424,8 @@ const stripButton = label => {
     assert.ok(onBar('Aura mode'), 'Aura is on but the bar has no Visualizer | Video')
     const off = onBar('Aura on')
     assert.ok(off, 'the status bar has no Aura on/off control')
+    // One click turns it off (owner, 11-13: no "Turn off?" step on the bar).
     off.props.onClick({ preventDefault() {} })
-    onBar('Click again').props.onClick({ preventDefault() {} })
     await sleep(30)
     await tickPoll(bucket)
     assert.ok(bucket.controls.some(c => c && c.enabled === false), 'the bar did not turn Aura off')

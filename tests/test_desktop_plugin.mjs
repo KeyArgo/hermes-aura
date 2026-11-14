@@ -157,8 +157,8 @@ function makeCtx(settings) {
   const serverSettings = {
     motion: settings && typeof settings.motion === 'string' ? settings.motion : 'agent_music',
     behavior: settings && typeof settings.behavior === 'string' ? settings.behavior : 'balanced',
-    intensity: settings && Number.isFinite(settings.intensity) ? settings.intensity : 0.5,
-    opacity: settings && Number.isFinite(settings.opacity) ? settings.opacity : 0.35,
+    intensity: settings && Number.isFinite(settings.intensity) ? settings.intensity : 0,
+    opacity: settings && Number.isFinite(settings.opacity) ? settings.opacity : 0.4,
     reduced_motion: settings && typeof settings.reducedMotion === 'boolean' ? settings.reducedMotion : false
   }
   const serverFrame = {
@@ -1419,7 +1419,7 @@ await recordAsync('accent pulse and Aura Live are off by default', async () => {
   assert.equal(hostStyles().length, 0)
   assert.equal(hostIframes().length, 0)
 
-  // Desktop defaults for a new user: agent_music, balanced, 0.35 opacity,
+  // Desktop defaults for a new user: agent_music, balanced, 0.4 opacity, 0 intensity,
   // "Show: Always". Saved settings keep their own values (covered elsewhere).
   const motion = findSwitch(tree, 'Motion source')
   assert.equal(motion.props.value, 'agent_music', 'motion default is not agent_music')
@@ -1438,7 +1438,7 @@ await recordAsync('accent pulse and Aura Live are off by default', async () => {
     })
     return found
   })()
-  assert.equal(opacity.props.value, 35, 'opacity default is not 0.35')
+  assert.equal(opacity.props.value, 40, 'opacity default is not 0.4')
   const show = (() => {
     let found = null
     walk(tree, node => {
@@ -1454,7 +1454,7 @@ await recordAsync('accent pulse and Aura Live are off by default', async () => {
     })
     return found
   })()
-  assert.equal(intensity.props.value, 0.5, 'intensity default is not 0.5')
+  assert.equal(intensity.props.value, 0, 'intensity default is not 0')
 })
 
 record('dispose from the defaults scenario is clean', () => {
@@ -2457,6 +2457,58 @@ record('the REVamp button opens /revamp', () => {
   button.props.onClick()
   assert.equal(sdk.calls.navigations.length, before + 1, 'the button did not navigate')
   assert.equal(sdk.calls.navigations.at(-1), '/revamp', 'the button did not open REVamp')
+})
+
+const versionChipNodes = tree => {
+  const found = []
+  walk(tree, node => {
+    if (
+      node.type === 'button' &&
+      node.props &&
+      typeof node.props.title === 'string' &&
+      node.props.title.includes('click to copy this line')
+    ) found.push(node)
+  })
+  return found
+}
+
+record('the page hero carries Aura on/Aura off, not the pressPower chip', () => {
+  const tree = pageTree()
+  const group = pageAria(tree, 'Aura power')
+  assert.ok(group, 'the page hero has no Aura power group')
+  assert.equal(group.props.role, 'group', 'the power switch is not a group')
+  const buttons = []
+  walk(group, node => {
+    if (
+      node.type === 'button' &&
+      node.props &&
+      (node.props.children === 'Aura on' || node.props.children === 'Aura off')
+    ) buttons.push(node)
+  })
+  assert.equal(buttons.length, 2, 'the page hero does not have both Aura on and Aura off')
+  const on = buttons.find(button => button.props.children === 'Aura on')
+  const off = buttons.find(button => button.props.children === 'Aura off')
+  assert.equal(on.props.title, 'Turn Aura on')
+  assert.equal(off.props.title, 'Turn Aura off: the film and visual stop')
+  // This page starts on, so the on button is highlighted and pressed.
+  assert.equal(on.props.className, 'aura-pill is-on')
+  assert.equal(on.props['aria-pressed'], true)
+  assert.equal(off.props.className, 'aura-pill')
+  assert.equal(off.props['aria-pressed'], false)
+  assert.doesNotMatch(texts(tree), /Turn off\?/, 'the page still shows the old pressPower label')
+})
+
+record('AuraSettings drops the duplicate version chip on the page, keeps it in Settings', () => {
+  const tree = pageTree()
+  let setup = null
+  walk(tree, node => {
+    if (!setup && node.props && node.props['aria-label'] === 'Aura setup') setup = node
+  })
+  assert.ok(setup, 'the page has no setup section')
+  assert.equal(versionChipNodes(setup).length, 0, 'the setup section repeats the hero version chip')
+  assert.equal(versionChipNodes(tree).length, 1, 'the page should show exactly one version chip (the hero)')
+  const settingsTree = renderDeep(renderContribution(p.contributions.find(c => c.area === 'settings.plugins')))
+  assert.ok(versionChipNodes(settingsTree).length >= 1, 'Settings lost its version chip')
 })
 
 await recordAsync('the page stage takes the one player, and gives it back on leave', async () => {

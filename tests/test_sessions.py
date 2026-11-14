@@ -77,8 +77,11 @@ def test_registry_fallback_counts_live_entries(tmp_path, monkeypatch):
     assert sessions.active_session_count() == 2
 
 
-def test_server_config_event_carries_session_boost():
-    from aura_core import server
+def test_server_config_event_carries_session_boost(monkeypatch):
+    from aura_core import config, server
+
+    # A saved intensity (the first-run default is 0.0, which a boost could not move).
+    monkeypatch.setattr(config, "load_config", lambda: config.normalise({"intensity": 0.5}))
 
     with server._STATE.lock:
         old_count, old_boost = server._STATE.session_count, server._STATE.session_boost

@@ -28,7 +28,8 @@ DEFAULTS = {
     # Keep analysing system audio with nobody watching. Off by default: capture
     # and FFT cost ~4% of a core, which should buy something.
     "listen_background": False,
-    "intensity": 0.5,
+    # First-run only (owner, 11-13): no extra reaction until the user turns it up.
+    "intensity": 0.0,
     "preset": None,
     "reduced_motion": False,
     # Kept for /api/config (§1) even though the task text lists four fields.
@@ -37,7 +38,7 @@ DEFAULTS = {
     # together; behavior is a named profile with concrete render parameters.
     # These are first-run defaults only; a saved config keeps its own values
     # and a corrupt/missing key alone falls back here.
-    "opacity": 0.35,
+    "opacity": 0.4,
     "behavior": "balanced",
     "mood_reactive": True,
     # Opt-in: the host accent is never repainted unless the user asks for it.
