@@ -3645,6 +3645,8 @@ function panelCss() {
       color: #f3ece2; font: 12px/1.4 system-ui, -apple-system, sans-serif;
       background: linear-gradient(180deg, #16111f 0%, #1b1418 52%, #241a12 100%);
       border-radius: 12px;
+      /* The top row sits in the host's title-bar drag strip, which swallows real clicks. */
+      -webkit-app-region: no-drag; app-region: no-drag;
     }
     /* header ------------------------------------------------------------- */
     .ap-head { display: flex; align-items: center; gap: 8px; position: relative; z-index: 1; }

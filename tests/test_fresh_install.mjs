@@ -1185,6 +1185,21 @@ const stripButton = label => {
   safeDispose('the page header on/off scenario (O)', scenario.dispose)
 }
 
+// Scenario P: the Right panel's top row sits in the host's title-bar strip,
+// where Electron drag regions eat real mouse clicks (a scripted click still
+// works). The panel must opt out like the host's own title-bar buttons do.
+{
+  const scenario = await watchWindowScenario({})
+  record('44. the Right panel is a no-drag region, so its header buttons take real clicks', () => {
+    const style = headChildren.find(node => node.attributes && node.attributes.id === 'aura-panel-style')
+    assert.ok(style, 'no panel stylesheet')
+    const css = String(style.textContent || '')
+    const rule = /#aura-panel\s*\{[^}]*-webkit-app-region:\s*no-drag/.test(css)
+    assert.ok(rule, 'the Right panel does not opt out of the host title-bar drag region')
+  })
+  safeDispose('the no-drag scenario (P)', scenario.dispose)
+}
+
 // ===================================================================
 // Scenario I: "Watch in: Panel | Behind chat". With the Right panel open the
 // film can play behind the chat while the panel stays the remote, without a
