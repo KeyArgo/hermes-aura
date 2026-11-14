@@ -209,7 +209,9 @@ def test_reap_kills_only_our_profile(tmp_path, monkeypatch):
 
     killed = []
     monkeypatch.setattr("builtins.open", fake_open)
-    monkeypatch.setattr(window.os, "killpg", lambda pid, sig: killed.append(pid))
+    # raising=False: os.killpg does not exist on Windows; the reap logic is driven by
+    # the faked /proc data either way.
+    monkeypatch.setattr(window.os, "killpg", lambda pid, sig: killed.append(pid), raising=False)
     assert window.reap_orphan() is True
     assert killed == [987654]
     assert not (tmp_path / "aura" / window.LEASE).exists()

@@ -167,12 +167,19 @@ def _payload(line: str) -> dict:
 
 
 def _listen_count(port: int) -> int:
-    count = 0
+    """Listening TCP sockets on ``port``: /proc on Linux, netstat on Windows and macOS.
+
+    Reading only /proc made this 0 everywhere but Linux, so the one-server checks could
+    never pass on the other platforms the plugin claims.
+    """
+    rows = []
     for path in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
-            rows = Path(path).read_text(encoding="utf-8").splitlines()[1:]
+            rows += Path(path).read_text(encoding="utf-8").splitlines()[1:]
         except OSError:
             continue
+    if rows:
+        count = 0
         for row in rows:
             parts = row.split()
             if len(parts) < 4 or parts[3] != "0A":
@@ -183,6 +190,20 @@ def _listen_count(port: int) -> int:
                 continue
             if local_port == port:
                 count += 1
+        return count
+    windows = os.name == "nt"
+    args = ["netstat", "-ano", "-p", "TCP"] if windows else ["netstat", "-an", "-p", "tcp"]
+    out = subprocess.run(args, capture_output=True, text=True, timeout=20, check=True).stdout
+    count = 0
+    for line in out.splitlines():
+        parts = line.split()
+        if "LISTEN" not in line.upper() or len(parts) < 4:
+            continue
+        # Windows: "TCP 127.0.0.1:52345 0.0.0.0:0 LISTENING pid";
+        # macOS:   "tcp4 0 0 127.0.0.1.52345 *.* LISTEN".
+        local = parts[1] if windows else parts[3]
+        if local.rsplit(":" if windows else ".", 1)[-1] == str(port):
+            count += 1
     return count
 
 

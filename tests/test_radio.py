@@ -173,7 +173,8 @@ def test_favorites_roundtrip_and_dedupe_by_url(home):
     assert favs[0]["name"] == "Jazz FM better"
     assert favs[0]["id"] == added["id"]
     assert (home / "aura" / "radio_favorites.json").exists()
-    assert oct(os.stat(home / "aura" / "radio_favorites.json").st_mode)[-3:] == "600"
+    if os.name != "nt":  # NTFS has no POSIX mode bits; the profile ACL protects the file
+        assert oct(os.stat(home / "aura" / "radio_favorites.json").st_mode)[-3:] == "600"
     assert radio.remove_favorite(added["id"]) is True
     assert radio.favorites() == []
     assert radio.remove_favorite(added["id"]) is False

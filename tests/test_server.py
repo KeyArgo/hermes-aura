@@ -20,6 +20,10 @@ import pytest
 from aura_core import config, redact
 from aura_core import server
 
+# Owner-only file modes are a POSIX promise. NTFS has no mode bits (os.chmod only toggles
+# read-only); there the files live under the user's own profile, protected by its ACL.
+POSIX_MODES = os.name != "nt"
+
 
 # ---------------------------------------------------------------------------
 # fixtures
@@ -268,7 +272,8 @@ def test_unknown_path_is_404(live):
 def test_token_file_mode_and_rotation(live, tmp_path):
     path = tmp_path / "aura" / "token"
     assert path.exists()
-    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    if POSIX_MODES:
+        assert oct(path.stat().st_mode & 0o777) == "0o600"
     first = path.read_text(encoding="utf-8").strip()
     assert first == live["token"]
     assert len(first) >= 32
@@ -337,7 +342,8 @@ def test_control_applies_and_persists(live, tmp_path):
     assert stored["enabled"] is True
     assert stored["intensity"] == 0.7
     assert stored["preset"] == "aura-bloom"
-    assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
+    if POSIX_MODES:
+        assert oct(cfg_path.stat().st_mode & 0o777) == "0o600"
 
     status, payload = http_call(live["port"], "GET", "/api/state", token=live["token"])
     state = json_body(payload)
@@ -784,7 +790,8 @@ def test_config_tolerates_corrupt_json(tmp_path, monkeypatch):
     assert saved["enabled"] is True
     assert saved["intensity"] == 1.0
     assert saved["preset"] is None
-    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    if POSIX_MODES:
+        assert oct(path.stat().st_mode & 0o777) == "0o600"
     assert json.loads(path.read_text(encoding="utf-8"))["enabled"] is True
 
 

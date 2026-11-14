@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -339,6 +340,7 @@ def test_window_receives_reported_playlist_episode(monkeypatch):
     assert seen['position'] == 42
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="drives web/player.js with node, which is not installed")
 def test_desktop_queue_skips_history_and_acknowledges_load():
     """Exercise the actual page poller with delayed and overlapping responses."""
     import subprocess
@@ -389,6 +391,7 @@ def test_bootstrap_ticket_expires(monkeypatch):
     assert server.desktop_window.redeem_ticket(ticket) is None
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="drives web/player.js with node, which is not installed")
 def test_desktop_reload_reuses_session_credential_without_url_token():
     import subprocess
     from pathlib import Path

@@ -16,7 +16,7 @@ import json
 import os
 from pathlib import Path
 
-from . import config
+from . import config, proc
 
 __all__ = [
     "BOOST_PER_SESSION",
@@ -70,15 +70,10 @@ def dynamic_intensity(base, count=None) -> float:
 def _pid_alive(pid) -> bool:
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
         return True  # no usable pid: do not hide a lease we cannot judge
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    # Never os.kill(pid, 0) on Windows: there it sends Ctrl+C to the process group.
+    if os.name == "nt":
+        return proc.pid_alive_windows(pid)
+    return proc.pid_alive_posix(pid)
 
 
 def _read_registry_entries() -> list:
