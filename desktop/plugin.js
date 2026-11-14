@@ -5401,7 +5401,10 @@ function AuraQuickMenu() {
 
   const row = (label, control) =>
     jsxs('div', {
-      style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '7px 12px' },
+      style: {
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+        padding: '7px 12px', margin: '0 4px', borderRadius: 9
+      },
       children: [
         jsx('div', {
           style: { fontSize: 12, color: 'var(--ui-text-primary)', whiteSpace: 'nowrap' },
@@ -5409,6 +5412,16 @@ function AuraQuickMenu() {
         }),
         jsx('div', { style: { display: 'flex', alignItems: 'center', flex: 'none' }, children: control })
       ]
+    })
+  // Small uppercase section headings, the way the Right panel labels its rows.
+  const section = (key, label) =>
+    jsx('div', {
+      key,
+      style: {
+        fontSize: 9.5, letterSpacing: '0.14em', textTransform: 'uppercase',
+        color: 'rgba(243,236,226,0.48)', padding: '10px 16px 3px'
+      },
+      children: label
     })
 
   const sliderStyle = { width: 110, accentColor: 'var(--ui-accent)' }
@@ -5510,16 +5523,27 @@ function AuraQuickMenu() {
         // panel is docked: keep the panel clear so both can be used at once.
         collisionPadding: menuCollisionPadding(),
         'aria-label': 'Aura quick settings',
+        // The Right panel's look: warm dark gradient, soft edge, amber accents.
+        // Scrolls when it is taller than the space above the status bar.
         style: {
-          minWidth: 264,
-          padding: '6px 0',
-          background: 'var(--ui-bg-elevated, var(--ui-bg))',
-          border: '1px solid var(--ui-stroke-secondary)',
-          borderRadius: 10,
-          boxShadow: '0 8px 28px rgba(0,0,0,0.28)',
+          minWidth: 300,
+          maxHeight: 'min(78vh, 720px)',
+          overflowY: 'auto',
+          padding: '8px 4px 10px',
+          background: 'linear-gradient(180deg, #16111f 0%, #1b1418 55%, #241a12 100%)',
+          color: '#f3ece2',
+          border: '1px solid rgba(255,190,120,0.22)',
+          borderRadius: 14,
+          boxShadow: '0 18px 46px rgba(0,0,0,0.5), inset 0 0 40px rgba(255,150,80,0.05)',
           display: 'flex',
           flexDirection: 'column',
-          gap: 1
+          gap: 1,
+          '--ui-accent': '#ffbe78',
+          '--ui-text-primary': '#f3ece2',
+          '--ui-text-secondary': 'rgba(243,236,226,0.72)',
+          '--ui-text-tertiary': 'rgba(243,236,226,0.5)',
+          '--ui-stroke-secondary': 'rgba(255,255,255,0.14)',
+          '--ui-bg': 'rgba(255,255,255,0.06)'
         },
         children: [
           jsx('div', {
@@ -5548,6 +5572,7 @@ function AuraQuickMenu() {
           ),
           // Layout controls for either mode: put the Right panel away or bring it
           // back, and let the visual or the film fill the window.
+          section('layout', 'Layout'),
           row(
             'Right panel',
             jsx(Switch, {
@@ -5564,6 +5589,15 @@ function AuraQuickMenu() {
               onCheckedChange: value => setWindowVisual(value)
             })
           ),
+          row(
+            'Frosted glass',
+            jsx(Switch, {
+              checked: settings.frost !== false,
+              'aria-label': 'Frosted glass (quick menu)',
+              onCheckedChange: value => setFrost(value)
+            })
+          ),
+          settings.backdropMode === 'video' ? null : section('visual', 'Visual'),
           settings.backdropMode === 'video'
             ? null
             : jsxs('div', {
@@ -5576,9 +5610,10 @@ function AuraQuickMenu() {
               key: 'video',
               style: {
                 display: 'flex', flexDirection: 'column', gap: 2,
-                borderTop: '1px solid var(--ui-stroke-secondary)', marginTop: 2, paddingTop: 3
+                borderTop: '1px solid var(--ui-stroke-secondary)', marginTop: 4, paddingTop: 2
               },
               children: [
+                section('film', 'Video'),
                 row(
                   'Video',
                   jsxs('div', {
@@ -5670,6 +5705,26 @@ function AuraQuickMenu() {
                     )
                   })
                 ),
+                // Window = the small frame inside Hermes; its size lives here.
+                currentFilmPlace() === 'window'
+                  ? row(
+                    'Window size',
+                    jsxs('div', {
+                      style: { display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', justifyContent: 'flex-end' },
+                      children: Object.keys(VIDEO_WINDOW_SIZES).map(size =>
+                        jsx(Button, {
+                          key: size,
+                          size: 'micro',
+                          variant: settings.videoWindowSize === size ? 'default' : 'ghost',
+                          'aria-label': `Watch window size: ${VIDEO_WINDOW_SIZE_LABELS[size]}`,
+                          style: presetStyle,
+                          onClick: () => setVideoWindowSize(size),
+                          children: VIDEO_WINDOW_SIZE_LABELS[size]
+                        })
+                      )
+                    })
+                  )
+                  : null,
                 row(
                   'Video strength',
                   jsxs('div', {
@@ -5808,19 +5863,22 @@ function AuraQuickMenu() {
                     }
                   })
                 ),
-                // Three surfaces, chosen on purpose: the Aura page, the small
-                // in-app frame, and a real OS window. The in-app switch and the
-                // pop-out button are separate so one never turns on the other.
-                row(
-                  'Hidden episodes',
-                  jsx(Button, {
-                    variant: 'ghost',
-                    size: 'sm',
-                    onClick: () => { writeSettings({ videoHiddenIds: [] }); syncPanel(true) },
-                    children: `${(Array.isArray(settings.videoHiddenIds) ? settings.videoHiddenIds.length : 0)} hidden · show all again`
-                  })
-                ),
-                row(
+                // Playlist-only: ⌀ in the Right panel hides the playing episode
+                // (and skips it from then on); this brings them all back.
+                isPlaylistUrl(settings.videoUrl)
+                  ? row(
+                    'Hidden episodes',
+                    jsx(Button, {
+                      variant: 'ghost',
+                      size: 'sm',
+                      title: 'Episodes you hid with ⌀ in the Right panel are skipped. Click to show them all again.',
+                      disabled: !(Array.isArray(settings.videoHiddenIds) && settings.videoHiddenIds.length),
+                      onClick: () => { writeSettings({ videoHiddenIds: [] }); syncPanel(true) },
+                      children: `${(Array.isArray(settings.videoHiddenIds) ? settings.videoHiddenIds.length : 0)} hidden · show all again`
+                    })
+                  )
+                  : null,
+                isPlaylistUrl(settings.videoUrl) ? row(
                   'Edit this list on YouTube',
                   jsx(Button, {
                     variant: 'ghost',
@@ -5840,15 +5898,7 @@ function AuraQuickMenu() {
                     },
                     children: 'Open in YouTube'
                   })
-                ),
-                row(
-                  'Small frame in Hermes',
-                  jsx(Switch, {
-                    checked: settings.videoWindow === true,
-                    'aria-label': 'Small frame in Hermes',
-                    onCheckedChange: value => setVideoWindow(value)
-                  })
-                ),
+                ) : null,
                 // Its strip (drag grip, transport, Send to); off leaves the
                 // controls to the Right panel.
                 row(
@@ -5857,15 +5907,6 @@ function AuraQuickMenu() {
                     checked: settings.watchControls !== false,
                     'aria-label': 'Controls under the watch window',
                     onCheckedChange: value => { writeSettings({ watchControls: Boolean(value) }); syncVideoBar(true) }
-                  })
-                ),
-                row(
-                  'Pop out to its own window',
-                  jsx(Button, {
-                    variant: 'default',
-                    size: 'sm',
-                    onClick: () => { void setDesktopWindow(true) },
-                    children: 'Open on a screen'
                   })
                 ),
                 jsxs('div', {
@@ -5892,26 +5933,6 @@ function AuraQuickMenu() {
                     jsx('span', {
                       style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 30, textAlign: 'right' },
                       children: `${Math.round(clamp01(settings.videoVolume) * 100)}%`
-                    }),
-                    jsx(Switch, {
-                      checked: settings.videoWindow === true,
-                      'aria-label': 'Small frame in Hermes',
-                      onCheckedChange: value => { setVideoWindow(value) }
-                    }),
-                    jsx('select', { className: 'aura-select',
-                      value: settings.videoWindowSize,
-                      'aria-label': 'Watch window size',
-                      style: { ...selectStyle, colorScheme: 'light' },
-                      onChange: event => {
-                        setVideoWindowSize(String(event && event.target ? event.target.value : 'medium'))
-                      },
-                      children: ['small', 'medium', 'large'].map(size =>
-                        jsx('option', {
-                          key: size, value: size,
-                          style: { background: '#f1f1f1', color: '#111111' },
-                          children: size
-                        })
-                      )
                     })
                   ]
                 })

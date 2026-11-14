@@ -1479,6 +1479,13 @@ const quickTree = () => {
   assert.ok(menu, 'quick menu contribution vanished')
   return renderContribution(menu)
 }
+const findByText = (tree, text) => {
+  let found = null
+  walk(tree, node => {
+    if (!found && node.props && node.props.children === text) found = node
+  })
+  return found
+}
 const findByAria = (tree, label) => {
   let found = null
   walk(tree, node => {
@@ -2181,6 +2188,26 @@ await recordAsync('the quick menu offers Watch in, and Film strength only acts o
     assert.ok(!findByAria(behind.tree, '50% video strength').props.disabled, 'Film strength is greyed out for a film behind the chat')
   } finally {
     behind.dispose()
+  }
+})
+
+await recordAsync('the quick menu: Window carries its sizes; no duplicate frame or pop-out controls', async () => {
+  // "Small frame in Hermes" was the Window choice of Watch in under another
+  // name, and "Open on a screen" was Desktop: one control each, sizes beside Window.
+  const scenario = makeCtx({ enabled: true, backdropMode: 'video', videoWindow: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
+  const dispose = pluginModule.default.register(scenario.ctx)
+  try {
+    await sleep(20)
+    const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
+    assert.equal(findByAria(tree, 'Small frame in Hermes'), null, 'the menu still has the duplicate "Small frame in Hermes" switch')
+    for (const label of ['Small', 'Medium', 'Large', 'X-Large', 'Huge']) {
+      assert.ok(findByAria(tree, `Watch window size: ${label}`), `no "${label}" watch window size in the menu`)
+    }
+    assert.equal(findByText(tree, 'Open on a screen'), null, 'the menu still has the duplicate desktop pop-out button')
+    assert.equal(findByText(tree, 'Hidden episodes'), null, 'Hidden episodes shows for a single film')
+  } finally {
+    dispose()
   }
 })
 
