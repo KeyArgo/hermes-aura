@@ -5336,6 +5336,34 @@ function AuraStatusMode() {
   return modeToggle(settings.backdropMode, true)
 }
 
+/** Aura on/off on the status bar itself: one click on, "Turn off?" then off
+ *  (pressPower, the same as the Right panel and the page). Turning on brings
+ *  Visualizer | Video back beside it. */
+function AuraStatusPower() {
+  const settings = useValue($settings)
+  const live = useValue($live)
+  const armedUntil = useValue($powerArmed)
+  const auraOn = live.ok ? live.enabled === true : settings.enabled
+  const armed = auraOn && armedUntil > Date.now()
+  return jsx('button', {
+    type: 'button',
+    'aria-label': powerLabel(auraOn),
+    title: powerLabel(auraOn),
+    onClick: event => {
+      if (event && event.preventDefault) event.preventDefault()
+      pressPower()
+    },
+    style: {
+      appearance: 'none', cursor: 'pointer', font: 'inherit', fontSize: 10.5, lineHeight: 1.4,
+      padding: '0 7px', borderRadius: 999,
+      border: '1px solid ' + (auraOn ? 'var(--ui-accent)' : 'var(--ui-stroke-secondary)'),
+      background: armed ? 'rgba(255,120,90,0.18)' : 'transparent',
+      color: auraOn ? 'var(--ui-accent)' : 'var(--ui-text-tertiary)'
+    },
+    children: armed ? 'Turn off?' : auraOn ? 'On' : 'Off'
+  })
+}
+
 /** The visualiser's live controls: what it reacts to, intensity, transparency,
  *  style, gentle motion and when it shows. One set of rows, drawn by the status
  *  menu and by the Right panel in visualiser mode, so both drive the same
@@ -5612,7 +5640,8 @@ function AuraQuickMenu() {
               ]
             }),
             jsx(Switch, {
-              checked: settings.enabled,
+              // The server's flag while it answers, like every other control.
+              checked: auraOn,
               'aria-label': 'Aura enabled',
               onCheckedChange: value => {
                 void setEnabled(value)
@@ -6037,6 +6066,7 @@ function AuraQuickMenu() {
       // mode is the switch reached for most, so it should not need the menu.
       // Inside the popover root but outside its content, so it stays on the bar
       // while the dropdown portals away; same setBackdropMode as everywhere else.
+      jsx(AuraStatusPower, { key: 'power' }),
       jsx(AuraStatusMode, { key: 'mode' })
     ]
   })

@@ -1356,6 +1356,61 @@ const stripButton = label => {
   safeDispose('the stop scenario (T)', scenario.dispose)
 }
 
+// Scenario U: Aura on/off on the status bar itself. Off, the bar shows the
+// on/off pill; one click turns Aura on and Visualizer | Video appears beside it.
+{
+  const bucket = makeCtx(new Map([['settings', { enabled: true, backdropMode: 'aura', panelEnabled: false }]]))
+  const dispose = pluginModule.default.register(bucket.ctx)
+  await tickPoll(bucket)
+  const onBar = label => {
+    const item = bucket.contributions.find(c => c.id === 'quick-menu')
+    let found = null
+    const visit = (node, insideMenu) => {
+      if (!node || found) return
+      if (Array.isArray(node)) { node.forEach(child => visit(child, insideMenu)); return }
+      if (typeof node !== 'object' || !node.props) return
+      const nowInside = insideMenu || node.type === sdk.PopoverContent
+      if (!nowInside && typeof node.props['aria-label'] === 'string' && node.props['aria-label'].startsWith(label)) { found = node; return }
+      visit(node.props.children, nowInside)
+    }
+    visit(renderDeep(renderContribution(item)), false)
+    return found
+  }
+  const inMenu = label => {
+    const item = bucket.contributions.find(c => c.id === 'quick-menu')
+    return pageAria(renderDeep(renderContribution(item)), label)
+  }
+  await recordAsync('57. the status bar turns Aura off and on, and shows Visualizer | Video only while on', async () => {
+    assert.ok(onBar('Aura mode'), 'Aura is on but the bar has no Visualizer | Video')
+    const off = onBar('Aura on')
+    assert.ok(off, 'the status bar has no Aura on/off control')
+    off.props.onClick({ preventDefault() {} })
+    onBar('Click again').props.onClick({ preventDefault() {} })
+    await sleep(30)
+    await tickPoll(bucket)
+    assert.ok(bucket.controls.some(c => c && c.enabled === false), 'the bar did not turn Aura off')
+    assert.equal(onBar('Aura mode'), null, 'Visualizer | Video stayed on the bar with Aura off')
+    const on = onBar('Aura off')
+    assert.ok(on, 'with Aura off the bar has no way to turn it on')
+    on.props.onClick({ preventDefault() {} })
+    await sleep(30)
+    await tickPoll(bucket)
+    assert.ok(bucket.controls.some(c => c && c.enabled === true), 'one click on the bar did not turn Aura on')
+    assert.ok(onBar('Aura mode'), 'turning Aura on did not bring Visualizer | Video back to the bar')
+  })
+  await recordAsync('58. the menu’s Aura switch shows the server’s state, not a stale saved one', async () => {
+    // Saved says on, the server says off: the switch must say off, or clicking
+    // it sends "off" again and looks dead.
+    bucket.storage.set('settings', { ...bucket.storage.get('settings'), enabled: true })
+    await bucket.ctx.rest('/control', { method: 'POST', body: { enabled: false } })
+    await tickPoll(bucket)
+    const toggle = inMenu('Aura enabled')
+    assert.ok(toggle, 'no Aura switch in the menu')
+    assert.equal(toggle.props.checked, false, 'the menu switch says on while the server says off')
+  })
+  safeDispose('the status-bar power scenario (U)', dispose)
+}
+
 // ===================================================================
 // Scenario I: "Watch in: Panel | Behind chat". With the Right panel open the
 // film can play behind the chat while the panel stays the remote, without a
