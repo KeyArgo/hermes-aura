@@ -279,7 +279,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten)
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { video: $video };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -935,10 +935,12 @@ const stripButton = label => {
     assert.ok(onBar, 'Visualizer | Video is only inside the Aura menu, not on the status bar')
   })
 
-  record('26. the Right panel has the film tools: paste a link, jump to a time, close, pop out to desktop', () => {
-    for (const label of ['Paste a video or playlist link', 'Jump to time (Right panel)', 'Close the film', 'Pop the film out to the desktop (Right panel)']) {
+  record('26. the Right panel has the film tools: paste a link, jump to a time, close; Desktop lives in Watch in only', () => {
+    for (const label of ['Paste a video or playlist link', 'Jump to time (Right panel)', 'Close the film', 'Watch the film in a desktop window']) {
       assert.ok(paneControl(label), `the Right panel has no "${label}"`)
     }
+    assert.ok(!paneControl('Pop the film out to the desktop (Right panel)'),
+      'the redundant "Pop out to desktop" button is still in the Right panel')
   })
 
   record('27. with the film in the watch window, Watch in marks neither Panel nor Behind chat', () => {
@@ -989,13 +991,11 @@ const stripButton = label => {
     assert.equal(scenario.bucket.storage.get('settings').videoWindow, true, '⧉ did not open the watch window')
   })
 
-  record('31. playlist-only buttons are disabled for a single film, and say why', () => {
+  record('31. playlist-only buttons are not shown for a single film', () => {
     for (const label of ['Manage playlist', 'Hide this episode']) {
       const button = control(label)
       assert.ok(button, `the panel has no "${label}"`)
-      assert.equal(button.disabled === true || button.attributes.disabled !== undefined, true,
-        `"${label}" looks live for a single film but does nothing`)
-      assert.match(String(button.title || ''), /playlist/i, `"${label}" does not say it is for playlists`)
+      assert.equal(button.style.display, 'none', `"${label}" shows for a single film, where it does nothing`)
     }
   })
 
@@ -1075,7 +1075,7 @@ const stripButton = label => {
     return realRest(route, options)
   }
   const control = label => domFind(scenario.pane, node => node.attributes && node.attributes['aria-label'] === label)
-  clickDom(control('Pop the film out to the desktop (Right panel)'))
+  clickDom(control('Watch the film in a desktop window'))
   await sleep(80)
   await tickPoll(scenario.bucket)
 
@@ -1200,6 +1200,96 @@ const stripButton = label => {
   safeDispose('the no-drag scenario (P)', scenario.dispose)
 }
 
+// Scenario Q: the Right panel's position bar. It gets the full width (the time
+// moves under it) and can be dragged for fine adjustment, not only clicked.
+{
+  const scenario = await watchWindowScenario({ videoWindow: false })
+  const posted = []
+  const frame = hostIframes()[0]
+  if (frame) frame.contentWindow = { postMessage: message => posted.push(message) }
+  const track = domFind(scenario.pane, node => node.className === 'ap-track')
+  pluginModule.wiringTest.video.set({ ...pluginModule.wiringTest.video.get(), duration: 100, position: 10 })
+  record('45. the panel position bar has a row of its own', () => {
+    const style = headChildren.find(node => node.attributes && node.attributes.id === 'aura-panel-style')
+    const css = String(style && style.textContent || '')
+    assert.match(css, /\.ap-scrub\s*\{[^}]*flex-wrap:\s*wrap/, 'the time still shares the row with the position bar')
+    assert.match(css, /\.ap-track\s*\{[^}]*flex:\s*1 1 100%/, 'the position bar does not take the full width')
+  })
+  await recordAsync('46. dragging the panel position bar seeks to where it is let go', async () => {
+    assert.ok(track, 'no position bar')
+    track.getBoundingClientRect = () => ({ left: 100, top: 0, width: 200, height: 6, right: 300, bottom: 6 })
+    const fire = (type, x) => { for (const fn of (track.__handlers && track.__handlers[type]) || []) fn({ clientX: x, pointerId: 1, preventDefault() {} }) }
+    fire('pointerdown', 150)
+    fire('pointermove', 200)
+    fire('pointerup', 200)
+    await sleep(20)
+    const seeks = posted.filter(m => m && m.cmd === 'seekTo')
+    assert.ok(seeks.length >= 1, 'dragging the position bar never seeked')
+    assert.equal(Math.round(seeks[seeks.length - 1].value), 50, `let go at the middle, seeked to ${JSON.stringify(seeks)}`)
+  })
+  record('47. the panel power button says what its second click does', () => {
+    const power = domFind(scenario.pane, node => node.className === 'ap-power')
+    assert.ok(power, 'no power button')
+    clickDom(power)
+    assert.equal(power.textContent, 'Turn off?', `armed power button reads "${power.textContent}"`)
+  })
+  safeDispose('the position bar scenario (Q)', scenario.dispose)
+}
+
+// Scenario R: "Frosted glass" off. Hermes's glass rule
+// (:root[data-hermes-glass] { background-color: transparent !important })
+// beats Aura's solid base, so the frosted window material brightens everything
+// behind the visual. Off, Aura's base must win, exactly as on Linux.
+{
+  const bucket = makeCtx(new Map([['settings', { enabled: true, backdropMode: 'aura', windowVisual: true, panelEnabled: false }]]))
+  const dispose = pluginModule.default.register(bucket.ctx)
+  await tickPoll(bucket)
+  const glassCss = () => {
+    const style = headChildren.find(node => node.attributes && node.attributes.id === 'aura-glass')
+    return style ? String(style.textContent || '') : null
+  }
+  const winsOverHostGlass = css => /html:root\[data-hermes-glass\][^{]*\{[^}]*background:[^}]*!important/.test(css || '')
+  record('48. by default the host glass (frost) is left alone', () => {
+    assert.ok(glassCss() !== null, 'no glass stylesheet with the visual behind the app')
+    assert.equal(winsOverHostGlass(glassCss()), false, 'frost was overridden without being asked')
+  })
+  await recordAsync('49. Frosted glass off paints a solid base over the host glass, like Linux', async () => {
+    const settingsPage = bucket.contributions.find(c => c.area === 'settings.plugins')
+    assert.ok(settingsPage, 'no Aura settings page')
+    const toggle = pageAria(renderDeep(renderContribution(settingsPage)), 'Frosted glass')
+    assert.ok(toggle && typeof toggle.props.onCheckedChange === 'function', 'no Frosted glass switch in Aura settings')
+    toggle.props.onCheckedChange(false)
+    await tickPoll(bucket)
+    assert.equal(bucket.storage.get('settings').frost, false, 'the choice was not saved')
+    assert.ok(winsOverHostGlass(glassCss()), 'with frost off the host glass still shows through')
+  })
+  safeDispose('the frost scenario (R)', dispose)
+}
+
+// Scenario S: watch window sizes beyond small/medium/large, and a big one never
+// runs past the Right panel or off the window.
+{
+  const scenario = await watchWindowScenario({ videoWindowSize: 'huge' })
+  record('50. the watch window offers five sizes', () => {
+    const settingsPage = scenario.bucket.contributions.find(c => c.area === 'settings.plugins')
+    const select = pageAria(renderDeep(renderContribution(settingsPage)), 'Watch window size (settings)')
+    assert.ok(select, 'no watch window size picker in Aura settings')
+    const values = []
+    walk(select.props.children, node => { if (node.type === 'option') values.push(node.props.value) })
+    assert.deepEqual(values, ['small', 'medium', 'large', 'xlarge', 'huge'])
+  })
+  record('51. the largest watch window still fits left of the Right panel', () => {
+    const frame = hostIframes().find(f => f.style.display !== 'none' && !['-1', '1'].includes(f.style.zIndex))
+    assert.ok(frame, 'no watch window')
+    const view = globalThis.document.defaultView || {}
+    const vw = Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
+    const right = parseFloat(frame.style.left) + parseFloat(frame.style.width)
+    assert.ok(right <= vw - 320, `the huge watch window reaches x=${right}, over the Right panel`)
+    assert.ok(parseFloat(frame.style.left) >= 0, 'the huge watch window starts off-screen')
+  })
+  safeDispose('the sizes scenario (S)', scenario.dispose)
+}
+
 // ===================================================================
 // Scenario I: "Watch in: Panel | Behind chat". With the Right panel open the
 // film can play behind the chat while the panel stays the remote, without a
@@ -1219,7 +1309,7 @@ async function watchInScenario(filmBehind) {
   if (panelBox) panelBox.getBoundingClientRect = () => ({ left: 1180, top: 40, width: 340, height: 760, right: 1520, bottom: 800 })
   if (stage) stage.getBoundingClientRect = () => ({ left: 1200, top: 90, width: 300, height: 170, right: 1500, bottom: 260 })
   await tickPoll(bucket)
-  const seeThrough = domFind(pane, node => node.attributes && node.attributes['aria-label'] === '25% film strength')
+  const seeThrough = domFind(pane, node => node.attributes && node.attributes['aria-label'] === '25% video strength')
   const seeThroughRow = seeThrough && seeThrough.parentNode && seeThrough.parentNode.parentNode
   return { bucket, dispose, pane, stage, seeThroughRow }
 }

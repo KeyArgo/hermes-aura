@@ -121,7 +121,8 @@ const MUSIC_OFF_DELAY_MS = 4000
 const VIDEO_RESUME_TAIL_S = 12
 // The watch window: a real 16:9 frame above the app instead of the film sitting
 // behind it. Widths in CSS px. Declared before DEFAULT_SETTINGS uses the size.
-const VIDEO_WINDOW_SIZES = Object.freeze({ small: 320, medium: 480, large: 640 })
+const VIDEO_WINDOW_SIZES = Object.freeze({ small: 320, medium: 480, large: 640, xlarge: 880, huge: 1120 })
+const VIDEO_WINDOW_SIZE_LABELS = Object.freeze({ small: 'Small', medium: 'Medium', large: 'Large', xlarge: 'X-Large', huge: 'Huge' })
 /** Where the watch window parks. Top-right by default: the status bar lives
  *  along the bottom and the composer sits bottom-centre, so a bottom corner
  *  covers the Aura button it is being controlled from. */
@@ -149,6 +150,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   // instead of leaving the Aura skin on an idle window.
   themeIdleRestore: true,
   windowVisual: false,
+  // Windows/macOS: let Hermes's frosted glass show behind the visual. Off paints
+  // a solid base instead, the way Linux (no glass) always looks.
+  frost: true,
   motion: 'agent_music',
   // What the render gain does while the agent is idle: stop / ember / keep going.
   idleMotion: 'always',
@@ -603,6 +607,7 @@ function readSettings(ctx) {
     if (typeof raw.themeOptIn === 'boolean') out.themeOptIn = raw.themeOptIn
     if (typeof raw.themeIdleRestore === 'boolean') out.themeIdleRestore = raw.themeIdleRestore
     if (typeof raw.windowVisual === 'boolean') out.windowVisual = raw.windowVisual
+    if (typeof raw.frost === 'boolean') out.frost = raw.frost
     if (typeof raw.motion === 'string' && MOTIONS.includes(raw.motion)) out.motion = raw.motion
     if (typeof raw.idleMotion === 'string' && IDLE_MOTIONS.includes(raw.idleMotion)) out.idleMotion = raw.idleMotion
     if (typeof raw.reducedMotion === 'boolean') out.reducedMotion = raw.reducedMotion
@@ -768,11 +773,26 @@ function glassCss() {
     // !important: the theme writes these inline on <html>; a plain rule loses.
     if (color) declarations += `${name}: color-mix(in srgb, ${color} 90%, transparent) !important;`
   }
+  // Frost off: Hermes's `:root[data-hermes-glass] { background-color:
+  // transparent !important }` outranks a plain `html` rule and lets the frosted
+  // window material through. This selector outranks it; the dark fallback
+  // colour keeps the base solid even when the theme colour is translucent.
+  const solid = $settings.get().frost === false
+    ? `html:root[data-hermes-glass], html:root { background: linear-gradient(${base || 'var(--background)'}, ${base || 'var(--background)'}) #0d0c10 !important; }`
+    : ''
   return [
     base ? `html { background: ${base} !important; }` : '',
+    solid,
     'body, #root, #app { background: transparent !important; }',
     `:root { ${declarations} }`
   ].filter(Boolean).join('\n')
+}
+
+/** Frosted glass on/off (Windows/macOS); re-measures the glass if it is up. */
+function setFrost(on) {
+  if (!ctxRef || disposed) return
+  writeSettings({ frost: Boolean(on) })
+  if (glassStyleEl) applyGlassStyle()
 }
 
 function applyGlassStyle() {
@@ -2960,7 +2980,11 @@ function videoWindowOn() {
 
 function videoWindowWidth() {
   const settings = $settings.get()
-  return VIDEO_WINDOW_SIZES[settings.videoWindowSize] || VIDEO_WINDOW_SIZES[VIDEO_WINDOW_DEFAULT_SIZE]
+  const wanted = VIDEO_WINDOW_SIZES[settings.videoWindowSize] || VIDEO_WINDOW_SIZES[VIDEO_WINDOW_DEFAULT_SIZE]
+  // The big sizes shrink to fit left of the Right panel (and inside the window).
+  const view = doc && doc.defaultView
+  const vw = view && Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
+  return Math.max(VIDEO_WINDOW_SIZES.small, Math.min(wanted, panelLeftEdge(vw) - 16))
 }
 
 /** Lay the player out as the backdrop (full bleed, behind everything) or as a
@@ -3717,10 +3741,10 @@ function panelCss() {
       color: #241a12; box-shadow: 0 6px 18px rgba(255,170,110,0.28);
     }
     .ap-transport button[data-primary="true"]:hover { filter: brightness(1.06); }
-    .ap-scrub { display: flex; align-items: center; gap: 10px; }
+    .ap-scrub { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; row-gap: 5px; }
     .ap-track {
-      position: relative; flex: 1; height: 6px; border-radius: 999px;
-      background: rgba(255,255,255,0.18); cursor: pointer;
+      position: relative; flex: 1 1 100%; height: 8px; border-radius: 999px;
+      background: rgba(255,255,255,0.18); cursor: pointer; touch-action: none;
     }
     .ap-track:hover { background: rgba(255,255,255,0.26); }
     .ap-fill {
@@ -4152,14 +4176,32 @@ function mountPanelInto(hostNode) {
   time.textContent = '—'
   scrub.appendChild(track)
   scrub.appendChild(time)
-  track.addEventListener('click', event => {
-    const state = $video.get()
-    if (!state.duration || !track.getBoundingClientRect) return
-    const rect = track.getBoundingClientRect()
-    if (!rect || !rect.width) return
-    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
-    postToBackdrop({ cmd: 'seekTo', value: ratio * state.duration })
+  // Click or drag: the fill follows the pointer, the seek lands on release.
+  const ratioAt = event => {
+    const rect = track.getBoundingClientRect ? track.getBoundingClientRect() : null
+    if (!rect || !rect.width) return null
+    return Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
+  }
+  // data-dragging also stops syncPanel snapping the fill back mid-drag.
+  const dragging = on => track.setAttribute('data-dragging', on ? 'true' : 'false')
+  track.addEventListener('pointerdown', event => {
+    if (!$video.get().duration || ratioAt(event) == null) return
+    dragging(true)
+    try { track.setPointerCapture(event.pointerId) } catch { /* not capturable */ }
+    fill.style.width = `${ratioAt(event) * 100}%`
   })
+  track.addEventListener('pointermove', event => {
+    const ratio = track.getAttribute('data-dragging') === 'true' ? ratioAt(event) : null
+    if (ratio != null) fill.style.width = `${ratio * 100}%`
+  })
+  track.addEventListener('pointerup', event => {
+    if (track.getAttribute('data-dragging') !== 'true') return
+    dragging(false)
+    const ratio = ratioAt(event)
+    const duration = $video.get().duration
+    if (ratio != null && duration) postToBackdrop({ cmd: 'seekTo', value: ratio * duration })
+  })
+  track.addEventListener('pointercancel', () => dragging(false))
 
   // ---- volume + where the picture lives ----------------------------------
   const bar = doc.createElement('div')
@@ -4185,8 +4227,7 @@ function mountPanelInto(hostNode) {
   watch.type = 'button'
   watch.className = 'ap-watch'
   watch.textContent = '⧉'
-  // Pop out = the small watch window inside Hermes. The desktop window has its
-  // own button now ("Pop out to desktop"), so this one no longer opens it.
+  // Pop out = the small watch window inside Hermes (Desktop is in Watch in).
   watch.setAttribute('aria-label', 'Pop out (watch window in Hermes)')
   watch.addEventListener('click', event => {
     if (event && event.preventDefault) event.preventDefault()
@@ -4245,7 +4286,7 @@ function mountPanelInto(hostNode) {
   opacityLabel.className = 'ap-field-label'
   // The value is how solid the film is (100% = fully visible); calling it
   // "see-through" read backwards, so 25% looked like a nearly clear film.
-  opacityLabel.textContent = 'Film strength'
+  opacityLabel.textContent = 'Video strength'
   const opacityButtons = doc.createElement('div')
   opacityButtons.className = 'ap-pills'
   const opacityPills = []
@@ -4254,7 +4295,7 @@ function mountPanelInto(hostNode) {
     pill.type = 'button'
     pill.className = 'ap-pill'
     pill.textContent = `${preset}%`
-    pill.setAttribute('aria-label', `${preset}% film strength`)
+    pill.setAttribute('aria-label', `${preset}% video strength`)
     pill.addEventListener('click', event => {
       if (event && event.preventDefault) event.preventDefault()
       setVideoOpacity(preset / 100)
@@ -4292,7 +4333,7 @@ function mountPanelInto(hostNode) {
   watchInRow.appendChild(watchInButtons)
 
   // The film tools the status-bar menu has, here too: paste a link, jump to a
-  // time, close/open, pop out to the desktop. Same handlers as the menu.
+  // time, close/open. Same handlers as the menu; Desktop is in Watch in.
   const fieldInput = (aria, placeholder, width) => {
     const input = doc.createElement('input')
     input.type = 'text'
@@ -4345,10 +4386,8 @@ function mountPanelInto(hostNode) {
     if ($settings.get().videoClosed === true) openVideo()
     else closeVideo()
   })
-  const desktopOut = pillButton('Pop out to desktop', 'Pop the film out to the desktop (Right panel)', sendFilmToDesktop)
   toolsRow.appendChild(jump)
   toolsRow.appendChild(closeFilm)
-  toolsRow.appendChild(desktopOut)
 
   settingsBox.appendChild(watchInRow)
   settingsBox.appendChild(sourceRow)
@@ -4468,7 +4507,7 @@ function syncPanel(force) {
       parts.power.title = label
     }
     const flag = auraOn ? 'on' : 'off'
-    const text = armed ? 'Off?' : auraOn ? 'On' : 'Off'
+    const text = armed ? 'Turn off?' : auraOn ? 'On' : 'Off'
     if (parts.power.getAttribute('data-on') !== flag) parts.power.setAttribute('data-on', flag)
     if (parts.power.textContent !== text) parts.power.textContent = text
   }
@@ -4486,19 +4525,11 @@ function syncPanel(force) {
       parts.watch.title = watching ? 'Close the watch window' : 'Pop out into the watch window inside Hermes'
     }
   }
-  // Manage playlist / Hide episode only mean something for a playlist: greyed
-  // out with the reason for a single film, instead of a click that does nothing.
-  const playlist = isPlaylistUrl(settings.videoUrl)
-  for (const [node, live, idle] of [
-    [parts.manage, 'Open this playlist in its own window to edit it', 'Only for playlists: this film is not part of a playlist'],
-    [parts.hideEpisode, 'Hide this episode from the playlist', 'Only for playlists: this film is not part of a playlist']
-  ]) {
-    if (!node) continue
-    if (node.disabled !== !playlist) node.disabled = !playlist
-    const title = playlist ? live : idle
-    if (node.title !== title) node.title = title
-    const opacity = playlist ? '' : '0.4'
-    if (node.style.opacity !== opacity) node.style.opacity = opacity
+  // Manage playlist / Hide episode only mean something for a playlist: not
+  // shown at all for a single film.
+  const display = isPlaylistUrl(settings.videoUrl) ? '' : 'none'
+  for (const node of [parts.manage, parts.hideEpisode]) {
+    if (node && node.style.display !== display) node.style.display = display
   }
   if (parts.source) {
     // videoSourceOptions() returns <optgroup> elements; mirror them as real DOM.
@@ -4539,7 +4570,9 @@ function syncPanel(force) {
     ? `${fmtClock(state.position)} / ${fmtClock(state.duration)}`
     : '—'
   const progress = state.duration ? Math.min(1, Math.max(0, state.position / state.duration)) : 0
-  parts.fill.style.width = `${(progress * 100).toFixed(2)}%`
+  if (!parts.track || parts.track.getAttribute('data-dragging') !== 'true') {
+    parts.fill.style.width = `${(progress * 100).toFixed(2)}%`
+  }
   const baseHint = settings.videoClosed
     ? 'Film closed — press Open video in the A menu'
     : !settings.videoUrl
@@ -4874,7 +4907,7 @@ function syncVideoBar(force) {
       : `auto ${Math.round(effectiveVideoOpacity() * 100)}%`
     if (parts.opacity.textContent !== label) parts.opacity.textContent = label
     parts.opacity.title = settings.videoOpacityAuto === false
-      ? 'Film strength (click for the next level)'
+      ? 'Video strength (click for the next level)'
       : 'Automatic transparency — 20% working, 30% with music. Click to pin a level.'
   }
 
@@ -5638,14 +5671,14 @@ function AuraQuickMenu() {
                   })
                 ),
                 row(
-                  'Film strength',
+                  'Video strength',
                   jsxs('div', {
                     style: { display: 'flex', alignItems: 'center', gap: 2 },
                     children: [
                       jsx(Button, {
                         size: 'micro',
                         variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
-                        'aria-label': 'Automatic film strength',
+                        'aria-label': 'Automatic video strength',
                         title: filmPanelled ? FILM_STRENGTH_PANEL_TITLE : 'Automatic: 20% working, 30% with music, +3% per extra chat',
                         disabled: filmPanelled,
                         style: presetStyle,
@@ -5660,7 +5693,7 @@ function AuraQuickMenu() {
                             Math.round(clamp01(settings.videoOpacity) * 100) === preset
                             ? 'default'
                             : 'ghost',
-                          'aria-label': `${preset}% film strength`,
+                          'aria-label': `${preset}% video strength`,
                           title: filmPanelled ? FILM_STRENGTH_PANEL_TITLE : undefined,
                           disabled: filmPanelled,
                           style: presetStyle,
@@ -6588,7 +6621,7 @@ function AuraPage() {
               if (event && event.preventDefault) event.preventDefault()
               pressPower()
             },
-            children: armed ? 'Off?' : auraOn ? 'Aura on' : 'Aura off'
+            children: armed ? 'Turn off?' : auraOn ? 'Aura on' : 'Aura off'
           }),
           // Visualizer | Video beside the on/off chip, like the status bar: the
           // same setBackdropMode, so the page, bar, menu and panel all agree.
@@ -7052,7 +7085,7 @@ function AuraSettings() {
               })
             ),
             row(
-              'Film strength',
+              'Video strength',
               'Automatic by default: 20% while you work, 30% when audio is playing, plus 3% for every extra active chat. Pick a fixed level to override.',
               jsxs('div', {
                 style: { display: 'flex', alignItems: 'center', gap: 4 },
@@ -7060,7 +7093,7 @@ function AuraSettings() {
                   jsx(Button, {
                     size: 'micro',
                     variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
-                    'aria-label': 'Automatic film strength',
+                    'aria-label': 'Automatic video strength',
                     onClick: () => setVideoOpacityAuto(),
                     children: 'Auto'
                   }),
@@ -7072,7 +7105,7 @@ function AuraSettings() {
                         Math.round(clamp01(settings.videoOpacity) * 100) === preset
                         ? 'default'
                         : 'ghost',
-                      'aria-label': `${preset}% film strength`,
+                      'aria-label': `${preset}% video strength`,
                       onClick: () => setVideoOpacity(preset / 100),
                       children: `${preset}%`
                     })
@@ -7194,12 +7227,12 @@ function AuraSettings() {
                     onChange: event => {
                       setVideoWindowSize(String(event && event.target ? event.target.value : 'medium'))
                     },
-                    children: ['small', 'medium', 'large'].map(size =>
+                    children: Object.keys(VIDEO_WINDOW_SIZES).map(size =>
                       jsx('option', {
                         key: size,
                         value: size,
                         style: { background: '#f1f1f1', color: '#111111' },
-                        children: size
+                        children: VIDEO_WINDOW_SIZE_LABELS[size]
                       })
                     )
                   }),
@@ -7368,6 +7401,18 @@ function AuraSettings() {
             checked: settings.windowVisual,
             'aria-label': 'Visual behind the app',
             onCheckedChange: value => setWindowVisual(value)
+          })
+        )
+      }),
+      jsx('div', {
+        key: 'frost',
+        children: row(
+          'Frosted glass',
+          'Windows and macOS: Hermes’s frosted glass shows behind the visual and brightens it. Off gives a solid dark base, the way Linux looks.',
+          jsx(Switch, {
+            checked: settings.frost !== false,
+            'aria-label': 'Frosted glass',
+            onCheckedChange: value => setFrost(value)
           })
         )
       }),

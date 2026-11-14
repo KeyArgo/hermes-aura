@@ -313,6 +313,19 @@ async def window_close() -> JSONResponse:
     return JSONResponse(payload, status_code=code)
 
 
+@router.post("/window/manage")
+async def window_manage(request: Request) -> JSONResponse:
+    """The panel's ☰: a real web page (the playlist) in the pop-out window."""
+    try:
+        body: Any = await request.json()
+    except Exception:  # noqa: BLE001 - empty or malformed body
+        body = {}
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "body_must_be_object"}, status_code=400)
+    code, payload = _forward_json("/api/window/manage", body, timeout=15.0)
+    return JSONResponse(payload, status_code=code)
+
+
 def _version_dict() -> dict:
     """Which exact build is running: version, commit, dates, dirty, channel.
 

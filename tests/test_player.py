@@ -325,6 +325,20 @@ def test_queue_exposes_head_for_new_consumers():
     assert server.pending_commands(0)['head_seq'] == queued['seq']
 
 
+def test_play_and_pause_bring_the_desktop_window_forward(monkeypatch):
+    # The window must not stay hidden behind other windows when driven from Hermes.
+    raised = []
+    monkeypatch.setattr(server.desktop_window, 'is_open', lambda: True)
+    monkeypatch.setattr(server.desktop_window, 'raise_window', lambda: raised.append(1) or True)
+    for cmd in ('play', 'pause', 'toggle'):
+        server.enqueue_command({'cmd': cmd})
+    server.enqueue_command({'cmd': 'volume', 'value': 0.5})
+    assert len(raised) == 3, 'only play/pause/toggle raise; a volume drag must not'
+    monkeypatch.setattr(server.desktop_window, 'is_open', lambda: False)
+    server.enqueue_command({'cmd': 'pause'})
+    assert len(raised) == 3, 'no window, nothing to raise'
+
+
 def test_window_receives_reported_playlist_episode(monkeypatch):
     seen = {}
     def fake_open(port, token, url, **kwargs):

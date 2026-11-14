@@ -2171,14 +2171,14 @@ await recordAsync('the quick menu offers Watch in, and Film strength only acts o
   try {
     assert.ok(findByAria(inPanel.tree, 'Watch the film behind the chat (quick menu)'), 'the quick menu has no Behind chat choice')
     assert.ok(findByAria(inPanel.tree, 'Watch the film in the Right panel (quick menu)'), 'the quick menu has no Panel choice')
-    assert.equal(findByAria(inPanel.tree, '50% film strength').props.disabled, true,
+    assert.equal(findByAria(inPanel.tree, '50% video strength').props.disabled, true,
       'Film strength looks live while the film plays in the Right panel at full strength')
   } finally {
     inPanel.dispose()
   }
   const behind = await menuFor(true)
   try {
-    assert.ok(!findByAria(behind.tree, '50% film strength').props.disabled, 'Film strength is greyed out for a film behind the chat')
+    assert.ok(!findByAria(behind.tree, '50% video strength').props.disabled, 'Film strength is greyed out for a film behind the chat')
   } finally {
     behind.dispose()
   }
@@ -2192,7 +2192,7 @@ await recordAsync('the film controls in the quick menu are named for what they d
   try {
     await sleep(20)
     const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
-    assert.ok(findByAria(tree, '25% film strength'), 'the film presets are not labelled as film strength')
+    assert.ok(findByAria(tree, '25% video strength'), 'the film presets are not labelled as film strength')
     assert.equal(findByAria(tree, '25% video transparency'), null, 'a film preset is still labelled as transparency')
     assert.ok(findByAria(tree, 'Controls under the watch window'),
       'the quick menu has no switch for the strip under the watch window')
@@ -2526,7 +2526,7 @@ record('video mode hides the Aura-visual rows instead of greying them (quick men
     assert.equal(findByAria(tree, label), null, `${label} is still rendered in video mode`)
   }
   // The video's own transparency stays usable.
-  const preset = findByAria(tree, '50% film strength')
+  const preset = findByAria(tree, '50% video strength')
   assert.ok(preset, 'the film strength presets vanished')
   assert.ok(!preset.props.disabled, 'film strength must stay active in video mode')
   assert.ok(findByAria(tree, 'Video volume'), 'the volume slider vanished')
@@ -2540,7 +2540,7 @@ record('Settings hides the Aura-visual rows in video mode and offers the same sw
   }
   assert.ok(findByAria(tree, 'Aura mode'), 'Settings has no mode switch')
   // Film strength presets are still live.
-  assert.ok(!findByAria(tree, '25% film strength').props.disabled,
+  assert.ok(!findByAria(tree, '25% video strength').props.disabled,
     'film strength was hidden with the Aura controls')
   assert.equal(s.storage.get('settings').showWhen, 'active', 'Settings rewrote showWhen')
 })

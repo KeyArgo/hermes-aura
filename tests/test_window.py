@@ -60,6 +60,7 @@ def clean(tmp_path, monkeypatch):
     monkeypatch.setattr(window, "_proc", None)
     monkeypatch.setattr(window, "_closing", None)
     monkeypatch.setattr(window, "_film_url", "")
+    monkeypatch.setattr(window, "_kind", "", raising=False)
     yield
 
 
@@ -76,6 +77,8 @@ def popen(monkeypatch):
     monkeypatch.setattr(window.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(window.threading, "Thread", FakeThread)
     monkeypatch.setattr(window, "find_browser", lambda: "/usr/bin/chromium")
+    # Fake pids: never raise whatever real window happens to own one.
+    monkeypatch.setattr(window, "_raise_native", lambda pid: False)
     return calls
 
 
@@ -317,6 +320,36 @@ def test_open_page_reuses_a_live_window(popen):
     assert second["already"] is True, "a second page was launched over a live window"
     assert len(popen) == 1
     assert second["url"] == "https://example.test/one"
+
+
+def test_opening_again_brings_the_window_to_the_front(popen, monkeypatch):
+    # "Desktop" on an open window did nothing visible: it stayed behind Hermes.
+    raised = []
+    monkeypatch.setattr(window, "_raise_native", lambda pid: raised.append(pid) or True)
+    window.open_window(4567, "tok", "https://example.test/a.mp4")
+    window.open_window(4567, "tok", "https://example.test/a.mp4")
+    assert raised == [4242]
+    assert window.raise_window() is True and raised == [4242, 4242]
+
+
+def test_raise_without_a_window_does_nothing(monkeypatch):
+    raised = []
+    monkeypatch.setattr(window, "_raise_native", lambda pid: raised.append(pid) or True)
+    assert window.raise_window() is False
+    assert raised == []
+
+
+def test_the_film_replaces_a_playlist_page_in_the_window(popen, monkeypatch):
+    # After ☰ the window shows YouTube's playlist page; "Desktop" must put the
+    # film there, not answer "already open" and leave the page up.
+    monkeypatch.setattr(window, "_raise_native", lambda pid: True)
+    window.open_page("https://www.youtube.com/playlist?list=PL0123456789")
+    page = popen[0][2]
+    result = window.open_window(4567, "tok", "https://example.test/film.mp4")
+    assert page.terminated == 1, "the playlist page was left open"
+    assert result["already"] is False
+    app = next(arg for arg in popen[1][0] if arg.startswith("--app="))
+    assert "player.html" in app
 
 
 def test_open_page_that_exits_at_once_is_an_error(popen, monkeypatch):

@@ -899,6 +899,8 @@ def enqueue_command(data: Any) -> dict:
         _STATE.commands.append(command)
         if len(_STATE.commands) > MAX_QUEUED_COMMANDS:
             _STATE.commands = _STATE.commands[-MAX_QUEUED_COMMANDS:]
+    if cmd in ("play", "pause", "toggle") and desktop_window.is_open():
+        desktop_window.raise_window()  # never left hidden behind other windows
     return {"ok": True, "seq": command["seq"], "command": command}
 
 

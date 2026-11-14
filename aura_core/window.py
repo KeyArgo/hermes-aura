@@ -69,6 +69,7 @@ def redeem_ticket(ticket: str) -> Optional[str]:
     return item[0]
 
 _film_url = ""  # the video URL (never the player URL: that one carries the token)
+_kind = ""  # "player" (the film) or "page" (a real site, e.g. a playlist to edit)
 
 
 class WindowError(Exception):
@@ -253,14 +254,99 @@ def reap_orphan() -> bool:
 
 def _watch(proc: subprocess.Popen) -> None:
     proc.wait()
-    global _proc, _film_url
+    global _proc, _film_url, _kind
     with _lock:
         current = _proc is proc
     if current:
         with _lock:
             _proc = None
             _film_url = ""
+            _kind = ""
         _clear_lease()
+
+
+# -- bring to front --------------------------------------------------------------
+# A window opened by a background server does not get focus by itself; it opens
+# (or stays) behind Hermes. Best-effort per OS, never raises.
+
+def _raise_windows(pid: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    found: List[int] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _lparam):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid and user32.IsWindowVisible(hwnd) and user32.GetWindowTextLengthW(hwnd) > 0:
+            found.append(hwnd)
+            return False
+        return True
+
+    user32.EnumWindows(visit, 0)
+    if not found:
+        return False
+    hwnd = found[0]
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    # Windows refuses SetForegroundWindow from a background process unless its
+    # input is attached to the thread that owns the foreground window.
+    me = kernel32.GetCurrentThreadId()
+    front = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+    attached = bool(front and front != me and user32.AttachThreadInput(me, front, True))
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(me, front, False)
+    if user32.GetForegroundWindow() != hwnd:
+        # Still refused: at least put it above the other windows.
+        flags = 0x0001 | 0x0002 | 0x0040  # NOSIZE | NOMOVE | SHOWWINDOW
+        user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, flags)  # HWND_TOPMOST
+        user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, flags)  # HWND_NOTOPMOST
+    return True
+
+
+def _raise_native(pid: int) -> bool:
+    try:
+        if _on_windows():
+            return _raise_windows(pid)
+        if sys.platform == "darwin":
+            script = f'tell application "System Events" to set frontmost of (first process whose unix id is {int(pid)}) to true'
+            args = ["osascript", "-e", script]
+        elif shutil.which("xdotool"):
+            args = ["xdotool", "search", "--onlyvisible", "--pid", str(int(pid)), "windowactivate"]
+        else:
+            return False  # Wayland and bare X: the compositor decides
+        return subprocess.run(args, capture_output=True, check=False, timeout=3).returncode == 0
+    except Exception:  # noqa: BLE001 - raising a window is cosmetic
+        return False
+
+
+def raise_window() -> bool:
+    """Bring the open window to the front. False when there is none."""
+    with _lock:
+        pid = _proc.pid if (_proc is not None and _proc.poll() is None) else None
+    return _raise_native(pid) if pid is not None else False
+
+
+def _raise_when_shown(proc: subprocess.Popen) -> None:
+    """A new window takes a moment to appear; keep trying briefly."""
+    for _ in range(20):
+        time.sleep(0.25)
+        with _lock:
+            if _proc is not proc:
+                return
+        if _raise_native(proc.pid):
+            return
 
 
 def open_page(url: str, title: str = "") -> Dict[str, Any]:
@@ -271,13 +357,20 @@ def open_page(url: str, title: str = "") -> Dict[str, Any]:
     curated for real (add/remove) without any API scope: YouTube's own UI, the
     user's own session.
     """
-    global _proc, _film_url
+    global _proc, _film_url, _kind
     target = str(url or "").strip()
     if not (target.startswith("https://") or target.startswith("http://")):
         raise WindowError("only http(s) pages can be opened")
     with _lock:
         if _proc is not None and _proc.poll() is None:
-            return {"open": True, "already": True, "url": _film_url or target}
+            already = {"open": True, "already": True, "url": _film_url or target}
+            pid = _proc.pid
+        else:
+            already = None
+    if already:
+        _raise_native(pid)
+        return already
+    with _lock:
         browser = find_browser()
         if not browser:
             raise WindowError(
@@ -307,6 +400,7 @@ def open_page(url: str, title: str = "") -> Dict[str, Any]:
             raise WindowError(f"could not start the browser: {exc}") from exc
         _proc = proc
         _film_url = target
+        _kind = "page"
         # A browser forwarding to an instance already using this profile exits
         # at once; report that instead of pretending a window opened.
         try:
@@ -315,6 +409,7 @@ def open_page(url: str, title: str = "") -> Dict[str, Any]:
                 if _proc is proc:
                     _proc = None
                     _film_url = ""
+                    _kind = ""
             _clear_lease()
             raise WindowError(
                 f"{os.path.basename(browser)} exited immediately "
@@ -324,6 +419,7 @@ def open_page(url: str, title: str = "") -> Dict[str, Any]:
             pass
         _write_lease(proc.pid, target)
         threading.Thread(target=_watch, args=(proc,), name="aura-window", daemon=True).start()
+        threading.Thread(target=_raise_when_shown, args=(proc,), name="aura-window-raise", daemon=True).start()
         return {"open": True, "already": False, "url": target}
 
 
@@ -331,10 +427,22 @@ def open_window(port: int, token: Optional[str], url: str,
                 position: float = 0.0, label: str = "", video_id: str = "",
                 paused: bool = False) -> Dict[str, Any]:
     """Open the window (or report the one already open). Raises WindowError."""
-    global _proc, _film_url
+    global _proc, _film_url, _kind
+    with _lock:
+        live = _proc is not None and _proc.poll() is None
+        showing_page = live and _kind == "page"
+    if showing_page:
+        close_window()  # a playlist page is up (☰): the film takes the window back
     with _lock:
         if _proc is not None and _proc.poll() is None:
-            return {"open": True, "already": True, "url": _film_url or str(url or "")}
+            already = {"open": True, "already": True, "url": _film_url or str(url or "")}
+            pid = _proc.pid
+        else:
+            already = None
+    if already:
+        _raise_native(pid)
+        return already
+    with _lock:
         browser = find_browser()
         if not browser:
             raise WindowError(
@@ -367,6 +475,7 @@ def open_window(port: int, token: Optional[str], url: str,
             raise WindowError(f"could not start {browser}: {exc}") from exc
         _proc = proc
         _film_url = str(url or "")
+        _kind = "player"
     # A browser forwarding to an instance already using this profile exits at once.
     try:
         proc.wait(1.5)
@@ -374,6 +483,7 @@ def open_window(port: int, token: Optional[str], url: str,
             if _proc is proc:
                 _proc = None
                 _film_url = ""
+                _kind = ""
         _clear_lease()
         raise WindowError(
             f"{os.path.basename(browser)} exited immediately "
@@ -383,6 +493,7 @@ def open_window(port: int, token: Optional[str], url: str,
         pass
     _write_lease(proc.pid, str(url or ""))
     threading.Thread(target=_watch, args=(proc,), name="aura-window", daemon=True).start()
+    threading.Thread(target=_raise_when_shown, args=(proc,), name="aura-window-raise", daemon=True).start()
     return {"open": True, "already": False, "url": str(url or ""),
             "pid": proc.pid, "label": str(label or "")}
 

@@ -374,3 +374,18 @@ def test_dashboard_player_routes_forward_reports_and_commands(dashboard, monkeyp
     dashboard.player_commands(3)
     assert calls == [('/api/player/report', {'url': 'https://example.test/a.mp4', 'videoId': 'abcdefghijk'}),
                      ('/api/player', None), ('/api/player/commands?after=3', None)]
+
+
+def test_dashboard_forwards_manage_playlist_to_the_server(dashboard, monkeypatch):
+    # The panel's ☰ calls ctx.rest('/window/manage'); without this route every click failed.
+    import asyncio
+    calls = []
+    def forward(path, body=None, timeout=5):
+        calls.append((path, body))
+        return 200, {'ok': True, 'open': True}
+    monkeypatch.setattr(dashboard, '_forward_json', forward)
+    class Request:
+        async def json(self):
+            return {'url': 'https://www.youtube.com/playlist?list=PLabcdefghij'}
+    asyncio.run(dashboard.window_manage(Request()))
+    assert calls == [('/api/window/manage', {'url': 'https://www.youtube.com/playlist?list=PLabcdefghij'})]
