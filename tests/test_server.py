@@ -648,16 +648,23 @@ def test_ws_features_text_frame(live):
 def test_features_rate_is_capped(live):
     ws = WSClient(live["port"], live["token"])
     try:
-        start = time.time()
+        # Count from the first features frame, over a measured window: frames
+        # queued during the handshake arrive in a burst on a slow runner and are
+        # not the steady rate this caps.
         count = 0
-        while time.time() - start < 1.2:
+        first = None
+        while first is None or time.time() - first < 1.2:
             try:
                 opcode, payload = ws.recv()
             except (socket.timeout, EOFError):
                 break
             if opcode == 0x1 and json.loads(payload.decode())["type"] == "features":
+                if first is None:
+                    first = time.time()
+                    continue
                 count += 1
-        assert 5 <= count <= 13, f"features at {count}/1.2s"
+        elapsed = time.time() - (first or time.time())
+        assert 4 <= count <= int(10 * elapsed) + 2, f"features at {count}/{elapsed:.2f}s"
     finally:
         ws.close()
 

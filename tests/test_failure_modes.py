@@ -204,7 +204,9 @@ def test_device_lost_mid_playback_reports_capture_lost_once(monkeypatch):
     assert lost[0]["type"] == "error"
     assert lost[0]["message"]
     assert worker.is_alive(), "losing the device must not stop the loop"
-    assert _frames_since(start) > 50  # silence keeps the page alive
+    # Silence keeps the page alive: ~2.8 s of frames at ~20 Hz. Slow CI runners
+    # (macOS) land at 49; the point is "frames keep coming", not an exact rate.
+    assert _frames_since(start) > 40
 
     # Still lost: the error is not repeated.
     time.sleep(0.6)

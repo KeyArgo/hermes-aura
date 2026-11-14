@@ -111,6 +111,23 @@ if MODE == "follower_takeover":
 '''
 
 
+# Each helper's stderr goes to a file whose tail is put into a failure message:
+# a silent helper (stderr to DEVNULL) hid why it never reported on macOS CI.
+_ERR_FILES: list = []
+
+
+def _helper_errors() -> str:
+    tails = []
+    for path in _ERR_FILES[-4:]:
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if text:
+            tails.append(f"{Path(path).name}: {text[-600:]}")
+    return " | ".join(tails) or "no stderr"
+
+
 def _spawn(tmp_path: Path, home: Path, mode: str) -> subprocess.Popen:
     script = tmp_path / "aura_helper.py"
     if not script.exists():
@@ -120,10 +137,12 @@ def _spawn(tmp_path: Path, home: Path, mode: str) -> subprocess.Popen:
     env["AURA_CAPTURE"] = "none"
     env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     env["PYTHONUNBUFFERED"] = "1"
+    err = tmp_path / f"helper-{mode}-{len(_ERR_FILES)}.err"
+    _ERR_FILES.append(err)
     return subprocess.Popen(
         [sys.executable, str(script), mode, str(ROOT)],
         cwd=str(ROOT), env=env, stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, text=True, bufsize=1,
+        stderr=open(err, "w", encoding="utf-8"), text=True, bufsize=1,
     )
 
 
@@ -145,7 +164,7 @@ def _next(lines: queue.Queue, timeout: float) -> str:
     try:
         return lines.get(timeout=timeout)
     except queue.Empty:
-        pytest.fail("helper produced no line within %.1fs" % timeout)
+        pytest.fail("helper produced no line within %.1fs; stderr: %s" % (timeout, _helper_errors()))
 
 
 def _stop(*procs: subprocess.Popen) -> None:
