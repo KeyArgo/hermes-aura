@@ -3074,7 +3074,8 @@ await recordAsync('player coordinator reports, consumes commands, and restores a
   open = true // An agent, rather than the page button, opened the window.
   await pluginModule.wiringTest.sync()
   assert.equal(pluginModule.wiringTest.video.get().playing, false)
-  assert.equal(pluginModule.wiringTest.settings.get().videoWindow, true)
+  // One or the other: the desktop window owns the picture, no in-app watch window too.
+  assert.notEqual(pluginModule.wiringTest.settings.get().videoWindow, true)
   dispose()
 })
 

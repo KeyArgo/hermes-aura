@@ -1370,9 +1370,12 @@ async function syncPlayerOwnership() {
         lastDesktopPlayer = { ...$video.get(), url: $settings.get().videoUrl || '' }
         videoCommand('pause')
         desktopOwned = true
-        setVideoWindow(true)
+        // The desktop window is the picture: no in-app watch window as well.
+        if (videoWindowOn()) setVideoWindow(false)
+        else applyBackdropLayout()
       }
-      postToBackdrop({ cmd: 'pause' })
+      // Keep the parked in-app film quiet; never the desktop window itself.
+      postToFrame({ cmd: 'pause' })
       if (player.desktop === true) {
         lastDesktopPlayer = player
         $video.set({ ...$video.get(), ...player, reportedAt: Date.now() })
@@ -1432,11 +1435,12 @@ function restoreDesktopPlayback(player) {
     videoId: String(player.videoId || '') }
   handoffPlayback = { url, position: positions[url].position, videoId: positions[url].videoId,
     paused: player.playing !== true }
-  writeSettings({ videoUrl: url, videoPositions: positions, videoClosed: false, backdropMode: 'video' })
+  // The film comes back; the mode stays whatever the user chose.
+  writeSettings({ videoUrl: url, videoPositions: positions, videoClosed: false })
   $video.set({ ...$video.get(), ...player, desktop: false, reportedAt: Date.now() })
   removeBackdrop()
   syncBackdrop()
-  void pushControl({ video_url: url, backdrop_mode: 'video' })
+  void pushControl({ video_url: url })
 }
 let handoffPlayback = null
 
@@ -1528,7 +1532,7 @@ async function openDesktopWindow() {
       // Two players with sound is never right: park the in-app film the
       // moment the window owns it. Closing the window leaves it parked, ready
       // for the pane's own play control (the orchestrator brings it back).
-      postToBackdrop({ cmd: 'pause' })
+      postToFrame({ cmd: 'pause' })
       if (!desktopOwned) $video.set({ ...$video.get(), playing: false, reportedAt: Date.now() })
       return { open: true, already: result.already === true, url: result.url || videoUrl }
     }
@@ -2354,6 +2358,11 @@ function postToBackdrop(message) {
       return true
     }
   }
+  return postToFrame(message)
+}
+
+/** Post straight into the in-app frame, wherever the film is being watched. */
+function postToFrame(message) {
   try {
     const win = backdropEl && backdropEl.contentWindow
     if (!win) return false

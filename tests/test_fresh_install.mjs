@@ -1123,6 +1123,44 @@ const stripButton = label => {
   safeDispose('the desktop-window scenario (M)', scenario.dispose)
 }
 
+// Scenario N: Hermes starts while the desktop window is already open, in
+// visualiser mode. Adopting the window must not pause it on every poll, flip
+// the mode to video or switch the in-app watch window on.
+{
+  const sent = []
+  let windowOpen = true
+  const bucket = makeCtx(new Map([['settings', {
+    enabled: true, backdropMode: 'aura', panelEnabled: true, windowVisual: true,
+    videoWindow: false, videoUrl: SINTEL_URL
+  }]]))
+  const realRest = bucket.ctx.rest
+  bucket.ctx.rest = async (route, options = {}) => {
+    if (route === '/player/command') { sent.push(options.body); return { ok: true, seq: sent.length } }
+    if (route === '/player') return { ok: true, player: {}, seq: 0, window: { ok: true, open: windowOpen, available: true } }
+    if (route.startsWith('/player')) return { ok: true, commands: [], head_seq: 0 }
+    return realRest(route, options)
+  }
+  const dispose = pluginModule.default.register(bucket.ctx)
+  for (let i = 0; i < 4; i += 1) await tickPoll(bucket)
+  const saved = bucket.storage.get('settings') || {}
+
+  record('40. a poll with the desktop window open never pauses that window', () => {
+    assert.deepEqual(sent.filter(c => c && c.cmd === 'pause'), [],
+      `every poll paused the desktop film (sent ${JSON.stringify(sent)})`)
+  })
+  record('41. adopting an open desktop window keeps visualiser mode and no watch window', () => {
+    assert.equal(saved.backdropMode, 'aura', 'the mode flipped to video on start')
+    assert.notEqual(saved.videoWindow, true, 'the in-app watch window was switched on for a desktop film')
+  })
+  windowOpen = false
+  await tickPoll(bucket)
+  record('42. the desktop window closing in visualiser mode keeps visualiser mode', () => {
+    assert.equal((bucket.storage.get('settings') || {}).backdropMode, 'aura',
+      'closing the desktop window flipped the mode to video')
+  })
+  safeDispose('the adopted desktop-window scenario (N)', dispose)
+}
+
 // ===================================================================
 // Scenario I: "Watch in: Panel | Behind chat". With the Right panel open the
 // film can play behind the chat while the panel stays the remote, without a
