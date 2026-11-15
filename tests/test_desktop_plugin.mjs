@@ -3046,6 +3046,29 @@ record('Find in Plugins opens Plugins via findRevampInPlugins', () => {
   assert.match(source, /onClick:\s*findRevampInPlugins\b/, 'the button does not call findRevampInPlugins')
 })
 
+// Regression (owner, 11-15): in the narrow Right panel the settings squeezed each
+// hint into a one-word column beside a wide control. Rows now wrap the control
+// below a readable label, and the list is grouped under headings.
+record('settings rows wrap their control instead of squeezing the text, and are grouped', () => {
+  const settings = paneOnly.contributions.find(c => c.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  const rendered = typeof tree.type === 'function' ? tree.type(tree.props) : tree
+  let wrapRows = 0
+  let squeezed = 0
+  walk(rendered, node => {
+    const st = node && node.props && node.props.style
+    if (!st || st.display !== 'flex' || !Array.isArray(node.props.children)) return
+    const [label, control] = node.props.children
+    if (!label || !control || !label.props || !control.props || label.props.key !== 'label' || control.props.key !== 'control') return
+    if (st.flexWrap === 'wrap' && /200px/.test(String(label.props.style.flex))) wrapRows += 1
+    else squeezed += 1
+  })
+  assert.ok(wrapRows >= 5, `only ${wrapRows} settings rows wrap`)
+  assert.equal(squeezed, 0, `${squeezed} settings rows still squeeze their text beside the control`)
+  const text = texts(rendered)
+  for (const group of ['General', 'Window']) assert.ok(text.includes(group), `no ${group} heading in the settings`)
+})
+
 // Regression (pre-pin review 11-15): Aura stays out of the host's markup. The only
 // document-level DOM work left is the disclosed full-window backdrop iframe.
 record('no document-wide DOM lookups, and only the backdrop is appended to body', () => {

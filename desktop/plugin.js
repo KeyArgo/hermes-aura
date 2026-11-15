@@ -7801,20 +7801,51 @@ function AuraSettings(props) {
   const auraTitle = locked ? AURA_LOCK_TITLE : undefined
   const showTitle = locked ? SHOW_LOCK_TITLE : undefined
 
+  // One setting. The label and its hint keep a readable width (>= 200px); the
+  // control sits beside them when it fits and wraps onto its own line below
+  // when it does not, so a narrow Right panel never squeezes the text into a
+  // one-word column (owner, 11-15).
   const row = (label, hint, control) =>
     jsxs('div', {
-      style: { display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0' },
+      style: {
+        display: 'flex', flexWrap: 'wrap', alignItems: 'center',
+        columnGap: 12, rowGap: 6, padding: '9px 0'
+      },
       children: [
         jsxs('div', {
           key: 'label',
-          style: { flex: 1, minWidth: 0 },
+          style: { flex: '1 1 200px', minWidth: 0 },
           children: [
-            jsx('div', { key: 'title', style: { fontSize: 12, color: 'var(--ui-text-primary)' }, children: label }),
-            jsx('div', { key: 'hint', style: { fontSize: 11, color: 'var(--ui-text-tertiary)' }, children: hint })
+            jsx('div', { key: 'title', style: { fontSize: 12.5, fontWeight: 500, color: 'var(--ui-text-primary)' }, children: label }),
+            hint
+              ? jsx('div', { key: 'hint', style: { fontSize: 11, lineHeight: 1.4, marginTop: 2, color: 'var(--ui-text-tertiary)' }, children: hint })
+              : null
           ]
         }),
-        jsx('div', { key: 'control', style: { flex: 'none', display: 'flex', alignItems: 'center' }, children: control })
+        jsx('div', {
+          key: 'control',
+          style: {
+            flex: '0 1 auto', maxWidth: '100%', marginLeft: 'auto',
+            display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 4
+          },
+          children: control
+        })
       ]
+    })
+
+  // A group heading: the settings read as General / Visualizer / Video / Look &
+  // agent instead of one long undifferentiated list.
+  const heading = (key, text) =>
+    jsx('div', {
+      key,
+      style: {
+        ...(onPage ? { gridColumn: '1 / -1' } : {}),
+        marginTop: 14, paddingTop: 10, paddingBottom: 2,
+        borderTop: '1px solid var(--ui-stroke-tertiary, rgba(255,255,255,0.08))',
+        fontSize: 10.5, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase',
+        color: 'var(--ui-text-tertiary)'
+      },
+      children: text
     })
 
   return jsxs('div', {
@@ -7832,9 +7863,9 @@ function AuraSettings(props) {
         ? null
         : jsxs('div', {
           key: 'title',
-          style: { display: 'flex', alignItems: 'baseline', gap: 10 },
+          style: { display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', columnGap: 10, rowGap: 4 },
           children: [
-            jsx('h3', { key: 'h', style: { margin: 0, fontSize: 13, color: 'var(--ui-text-primary)' }, children: 'Aura' }),
+            jsx('h3', { key: 'h', style: { margin: 0, fontSize: 14, color: 'var(--ui-text-primary)' }, children: 'Aura' }),
             jsx(VersionChip, { key: 'build' })
           ]
         }),
@@ -7848,11 +7879,12 @@ function AuraSettings(props) {
         },
         children: serverLine
       }),
+      heading('h-general', 'General'),
       jsx('div', {
         key: 'enabled',
         children: row(
           'Aura enabled',
-          'Listens to system audio and drives the backdrop and the accent.',
+          'Listens to system audio and drives the backdrop and accent.',
           jsx(Switch, {
             checked: settings.enabled,
             'aria-label': 'Aura enabled',
@@ -7866,10 +7898,13 @@ function AuraSettings(props) {
         key: 'mode',
         children: row(
           'Mode',
-          'Visualizer: the audio-reactive visual behind the app. Video: a film you choose, in the right-hand pane. One at a time — switching either turns the other off.',
+          'Visualizer reacts to audio; Video plays a film. One at a time.',
           modeToggle(settings.backdropMode, true)
         )
       }),
+      settings.backdropMode === 'video'
+        ? null
+        : heading('h-visual', 'Visualizer'),
       settings.backdropMode === 'video'
         ? null
         : jsxs('div', {
@@ -7880,7 +7915,7 @@ function AuraSettings(props) {
         key: 'intensity',
         children: row(
           'Reaction strength',
-          'How strongly audio and mood move the backdrop and the accent. 0 returns your theme’s own accent.',
+          'How hard audio and mood move the visual. 0 = your theme’s own accent.',
           jsx('input', {
             type: 'range',
             min: 0,
@@ -7903,7 +7938,7 @@ function AuraSettings(props) {
         key: 'gentle',
         children: row(
           'Gentle motion (motion-sensitive)',
-          'The motion-sickness-friendly mode: calmer reaction, no strobe, no pulsing, and the reduced-motion visual profile in the window backdrop.',
+          'Motion-sensitive mode: calmer, no strobe, no pulsing.',
           jsx(Switch, {
             checked: settings.reducedMotion,
             disabled: locked,
@@ -7919,7 +7954,7 @@ function AuraSettings(props) {
         key: 'opacity',
         children: row(
           'Visual opacity',
-          'Dims the backdrop and its scrim together; chat text and controls stay fully legible.',
+          'Dims the visual; chat text stays fully readable.',
           jsxs('div', {
             style: { display: 'flex', alignItems: 'center', gap: 8 },
             children: [
@@ -7953,7 +7988,7 @@ function AuraSettings(props) {
         key: 'motion',
         children: row(
           'Motion source',
-          'Default (Agent + music) follows playback and agent activity; Music only settles in silence; Agent activity moves only while the agent works and pauses after 2.5 s idle; Music, or gentle designs rests on designs in silence.',
+          'What moves the visual: music, the agent, both, or gentle designs.',
           jsx('select', { className: 'aura-select',
             value: settings.motion,
             'aria-label': 'Motion source',
@@ -7980,7 +8015,7 @@ function AuraSettings(props) {
         key: 'idle-motion',
         children: row(
           'While idle',
-          'Between agent turns: Stop goes dark, Ember leaves a low glow, Keep moving is unchanged. An attention mood (approval, error) always shows.',
+          'Between agent turns. Approvals and errors always show.',
           jsx('select', { className: 'aura-select',
             value: settings.idleMotion,
             'aria-label': 'While idle',
@@ -8020,7 +8055,7 @@ function AuraSettings(props) {
         key: 'show',
         children: row(
           'Show',
-          'Always keeps the backdrop and glass mounted. Only while active shows them just while the visual is moving, fading in after 300 ms of activity and removing the glass entirely after 2.5 s idle.',
+          'Always, or only while the visual is moving.',
           jsx('select', { className: 'aura-select',
             value: settings.showWhen,
             'aria-label': 'Show',
@@ -8047,6 +8082,7 @@ function AuraSettings(props) {
       })
           ]
         }),
+      settings.backdropMode === 'video' ? heading('h-video', 'Video') : null,
       settings.backdropMode === 'video'
         ? jsxs('div', {
           key: 'videoUrl',
@@ -8054,7 +8090,7 @@ function AuraSettings(props) {
           children: [
             row(
               'Video URL',
-              'Paste a YouTube link (https://youtube.com/watch?v=...), a direct video file (.mp4/.webm/.ogg) or any embeddable page. Leave empty for a hint.',
+              'A YouTube link, a video file (.mp4, .webm) or an embeddable page.',
               jsx('input', {
                 type: 'text',
                 key: settings.videoUrl,
@@ -8069,8 +8105,9 @@ function AuraSettings(props) {
                   background: 'var(--ui-bg)',
                   border: '1px solid var(--ui-stroke-secondary)',
                   borderRadius: 6,
-                  padding: '3px 6px',
-                  width: 260
+                  padding: '4px 8px',
+                  width: 260,
+                  maxWidth: '100%'
                 },
                 onKeyDown: event => {
                   if (event && event.key === 'Enter' && event.currentTarget) event.currentTarget.blur()
@@ -8082,7 +8119,7 @@ function AuraSettings(props) {
             ),
             row(
               'Video strength',
-              'Automatic by default: 20% while you work, 30% when audio is playing, plus 3% for every extra active chat. Pick a fixed level to override.',
+              'Auto: 20% while you work, 30% with music. Or pick a fixed level.',
               jsxs('div', {
                 style: { display: 'flex', alignItems: 'center', gap: 4 },
                 children: [
@@ -8111,7 +8148,7 @@ function AuraSettings(props) {
             ),
             row(
               'Source',
-              'Saved sources and anything you have played recently. Prev/next in the controls walks this list.',
+              'Saved and recent films. Prev/next walks this list.',
               jsx('select', { className: 'aura-select',
                 value: settings.videoUrl,
                 'aria-label': 'Video source',
@@ -8139,7 +8176,7 @@ function AuraSettings(props) {
             ),
             row(
               'Edit sources',
-              'Add, rename or remove sources, playlists and starter films on the Aura page.',
+              'Add, rename or remove sources on the Aura page.',
               jsx(Button, {
                 size: 'micro',
                 variant: 'ghost',
@@ -8178,7 +8215,7 @@ function AuraSettings(props) {
             ),
             row(
               'Controls transparency',
-              'How solid the floating control strip is over the film. The strip still fades out when the mouse rests.',
+              'How solid the floating controls are. They fade when the mouse rests.',
               jsxs('div', {
                 style: { display: 'flex', alignItems: 'center', gap: 6 },
                 children: [
@@ -8200,7 +8237,7 @@ function AuraSettings(props) {
             ),
             row(
               'Watch window',
-              'Puts the film in its own 16:9 frame above the app instead of behind it, so you can watch it without text reading through.',
+              'The film in its own floating frame above the app.',
               jsxs('div', {
                 style: { display: 'flex', alignItems: 'center', gap: 6 },
                 children: [
@@ -8260,7 +8297,7 @@ function AuraSettings(props) {
             ),
             row(
               'Resume',
-              'Remembers where each film stopped and picks up there after an interruption. Counts as finished when it reaches the last seconds.',
+              'Each film picks up where it stopped.',
               jsx(Button, {
                 size: 'micro', variant: 'ghost',
                 'aria-label': 'Start this film over',
@@ -8270,7 +8307,7 @@ function AuraSettings(props) {
             ),
             row(
               'Picks',
-              'The built-in films and documentaries. Turn off once you have your own playlists.',
+              'The built-in films. Turn off once you have your own.',
               jsx(Switch, {
                 checked: !(Array.isArray(settings.videoHiddenStarters) && settings.videoHiddenStarters.length),
                 'aria-label': 'Show demo videos',
@@ -8304,6 +8341,9 @@ function AuraSettings(props) {
         style: onPage ? { gridColumn: '1 / -1' } : undefined,
         children: RevampLine()
       }),
+      settings.backdropMode === 'video'
+        ? null
+        : heading('h-look', 'Look & agent'),
       settings.backdropMode === 'video'
         ? null
         : jsxs('div', {
@@ -8343,7 +8383,7 @@ function AuraSettings(props) {
         key: 'mood',
         children: row(
           'React to agent mood',
-          'Lets thinking, tool, approval and error change the visual. Off drops any held mood.',
+          'Thinking, tools, approvals and errors change the visual.',
           jsx(Switch, {
             checked: settings.moodReactive,
             'aria-label': 'React to agent mood',
@@ -8357,7 +8397,7 @@ function AuraSettings(props) {
         key: 'accent',
         children: row(
           'Accent pulse',
-          'Pulses the accent of the theme you are using; the hue is never replaced.',
+          'Pulses your theme’s accent; its colour is never replaced.',
           jsx(Switch, {
             checked: settings.accentPulse,
             'aria-label': 'Accent pulse',
@@ -8371,7 +8411,7 @@ function AuraSettings(props) {
         key: 'autoPreset',
         children: row(
           'Automatic presets',
-          'Lets preset rotation follow the music and mood. Off keeps the current preset.',
+          'Presets follow the music and mood. Off keeps the current one.',
           jsx(Switch, {
             checked: settings.autoPreset,
             'aria-label': 'Automatic presets',
@@ -8383,6 +8423,7 @@ function AuraSettings(props) {
       }),
           ]
         }),
+      heading('h-window', 'Window'),
       // Both modes: in video mode this is what lets the film fill the window with
       // the Right panel closed, so it cannot live with the visualiser-only rows.
       jsx('div', {
@@ -8405,7 +8446,7 @@ function AuraSettings(props) {
         key: 'stopAll',
         children: row(
           'Stop everything',
-          'If Aura misbehaves: stops the video and audio, closes its windows and turns Aura off in one click.',
+          'Stops video and audio, closes Aura’s windows and turns it off.',
           jsx(Button, {
             size: 'sm', variant: 'outline', 'aria-label': 'Stop everything',
             onClick: event => { if (event && event.preventDefault) event.preventDefault(); void stopEverything() },
@@ -8417,7 +8458,7 @@ function AuraSettings(props) {
         key: 'frost',
         children: row(
           'Frosted glass',
-          'On: a frosted, brighter look behind the visual (Hermes’s own glass on Windows and macOS, a frost tint elsewhere). Off: a solid dark base. Works on every platform.',
+          'A frosted, brighter look behind the visual. Off: a solid dark base.',
           jsx(Switch, {
             checked: frostOn(),
             'aria-label': 'Frosted glass',
@@ -8431,7 +8472,7 @@ function AuraSettings(props) {
         key: 'panel',
         children: row(
           'Aura panel',
-          'A docked theatre pane on the right: the film, a scrubber and your sources — the way in without a status bar. Off leaves only the Aura menu in the status tray.',
+          'This Right panel: film, scrubber and sources. Off leaves only the status-bar menu.',
           jsx(Switch, {
             checked: settings.panelEnabled !== false,
             'aria-label': 'Right panel',
@@ -8474,7 +8515,7 @@ function AuraSettings(props) {
         key: 'restore',
         children: row(
           'Restore my theme',
-          'Turns off the window visual, the accent pulse and Aura Live, clears every override and restores your previous theme.',
+          'Turns off every visual effect and restores your previous theme.',
           jsx(Button, {
             size: 'sm',
             variant: 'outline',
