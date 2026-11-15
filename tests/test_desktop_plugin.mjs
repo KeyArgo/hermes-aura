@@ -2590,6 +2590,23 @@ await recordAsync('the pane film keeps allow-same-origin, and only for a cross-o
   }
 })
 
+// Regression (pre-pin review 11-15): an unmeasured panel film was fixed with
+// inset 0, i.e. over the whole window, and the scrolling pane column moved the
+// stage without moving the film until the next 250 ms tick.
+await recordAsync('the panel film starts hidden until placed, and follows the pane column scroll', () => {
+  const tree = renderContribution(paneOnly.contributions.find(c => c.id === 'panel'))
+  const film = filmNodes(tree)
+  const element = renderContribution({ render: () => film[0] })
+  assert.equal(element.props.style.visibility, 'hidden', 'an unmeasured panel film covers the whole window')
+  let column = null
+  walk(tree, node => {
+    if (!column && node.props && node.props.style && node.props.style.overflowY === 'auto' &&
+        Array.isArray(node.props.children) && node.props.children.includes(film[0])) column = node
+  })
+  assert.ok(column, 'the scrolling pane column holding the film was not found')
+  assert.equal(typeof column.props.onScroll, 'function', 'the pane column does not re-place the film on scroll')
+})
+
 // ------------------------------------- surfaces without the Right panel
 // The Right panel is the film's box and most people keep it closed. Drawing behind
 // the window stays opt-in ("Visual behind the app"); with that on, the visualiser

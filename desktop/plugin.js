@@ -867,7 +867,9 @@ function AuraFilm({ placement, src }) {
         ? { position: 'fixed', inset: 0, zIndex: placement === 'window' ? String(WATCH_WINDOW_Z) : String(PANEL_FILM_Z) }
         : { position: 'absolute', inset: 0, zIndex: '1' }),
       ...(placement === 'window' ? { borderRadius: 12, boxShadow: '0 14px 40px rgba(0,0,0,0.5)' } : {}),
-      ...(placement === 'panel' ? { borderRadius: 12 } : {})
+      // A panel film is placed over the stage once the stage is measured; until
+      // then it must not cover the whole window (fixed + inset 0).
+      ...(placement === 'panel' ? { borderRadius: 12, visibility: 'hidden' } : {})
     },
     ref: attach
   })
@@ -3641,7 +3643,11 @@ function applyFilmFrameLayout() {
   }
   if (placement === 'panel') {
     const slot = panelVideoSlot()
-    if (!slot) return
+    if (!slot) {
+      style.visibility = 'hidden'
+      return
+    }
+    style.visibility = 'visible'
     style.position = 'fixed'
     style.inset = 'auto'
     style.left = `${Math.round(slot.left)}px`
@@ -5490,6 +5496,9 @@ function AuraPane() {
       height: '100%', minHeight: 0, overflowY: 'auto',
       display: 'flex', flexDirection: 'column'
     },
+    // The panel film is fixed over the stage: follow the column's scroll now,
+    // not at the next 250 ms tick.
+    onScroll: () => applyFilmFrameLayout(),
     children: [theatre, film, visualSection, settingsSection]
   })
 }
