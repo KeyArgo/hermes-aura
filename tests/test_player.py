@@ -432,3 +432,14 @@ def test_player_page_fills_the_hermes_frame_edge_to_edge():
     assert "max(100vw, 177.78vh)" in html and "max(100vh, 56.25vw)" in html
     assert ".fit-cover #stage video { object-fit: cover; }" in html
     assert "if (!desktopMode) document.documentElement.classList.add('fit-cover')" in html
+
+
+def test_unknown_site_frames_carry_an_explicit_sandbox():
+    """Pre-pin review 11-15: a non-YouTube, non-file page is framed with a written sandbox
+    (scripts, its own origin, presentation) - never top navigation, popups or forms."""
+    page = (Path(__file__).resolve().parents[1] / 'web/player.html').read_text()
+    body = page[page.index('function addUnknownFrame'):]
+    body = body[:body.index('\n  }\n')]
+    assert "setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation')" in body
+    for token in ('allow-top-navigation', 'allow-popups', 'allow-forms'):
+        assert token not in body
