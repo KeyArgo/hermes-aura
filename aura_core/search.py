@@ -445,7 +445,9 @@ def check_play_url(url: Any) -> dict:
     if parts.path.lower().endswith(_MEDIA_SUFFIXES):
         # The agent may only send the browser to the public internet: a prompt or a page must
         # not be able to aim Aura at a router, a camera or a cloud metadata address. A Plex or
-        # LAN link the user pastes into Aura themselves never comes through here.
+        # LAN link the user pastes into Aura themselves never comes through here. Known limit:
+        # the browser fetches the file itself, so a public host that redirects (or rebinds) to a
+        # private address can still cause a blind GET; nothing it returns reaches the agent.
         if not _host_is_public(host):
             return {"ok": False,
                     "error": "that address is on a private or local network; paste it into "
