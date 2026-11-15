@@ -177,7 +177,7 @@ function domFindAll(root, predicate) {
 
 /** A brand-new install: NO settings key in storage unless a caller reuses an
  *  existing storage Map (scenario 8's re-register). */
-function makeCtx(storageMap) {
+function makeCtx(storageMap, opts = {}) {
   const contributions = []
   const timers = []
   const controls = []
@@ -187,7 +187,9 @@ function makeCtx(storageMap) {
   const storage = storageMap || new Map()
   // Mirrors the real server. A fresh install has never touched /control, so
   // the server is on with exactly the product defaults.
-  let serverEnabled = true
+  // opts.serverEnabled: false stages a server whose saved config says off
+  // (an older install the user switched off), to test what a new build does.
+  let serverEnabled = opts.serverEnabled === false ? false : true
   const serverSettings = {
     motion: 'agent_music',
     behavior: 'balanced',
@@ -212,6 +214,8 @@ function makeCtx(storageMap) {
       contributions.push(entry)
       // The host draws placement:'floating' panes as cards (strip + watch window).
       const unmount = mountFloatingPane(entry)
+      // Lets a test drop this card's DOM on its own (the host unmounting it late).
+      entry.unmountCard = unmount
       return () => {
         if (entry.removed) return
         entry.removed = true
@@ -300,8 +304,8 @@ function makeCtx(storageMap) {
       if (route === '/version') {
         return {
           version: '1.2.3',
-          commit: 'abcdef1234567890',
-          commit_short: 'abcdef12',
+          commit: opts.commit || 'abcdef1234567890',
+          commit_short: (opts.commit || 'abcdef1234567890').slice(0, 8),
           commit_date: '2026-11-09',
           channel: 'dev',
           dirty: false
@@ -311,7 +315,7 @@ function makeCtx(storageMap) {
     }
   }
 
-  return { ctx, contributions, timers, controls, disposers, listeners, requests, storage, serverSettings, serverFrame }
+  return { ctx, contributions, timers, controls, disposers, listeners, requests, storage, serverSettings, serverFrame, serverEnabled: () => serverEnabled }
 }
 
 // --------------------------------------------------------------- temp module
@@ -1927,6 +1931,87 @@ await recordAsync('9. fresh install: dispose leaves nothing behind - no contribu
   assert.equal(panelCards(hostNode).length, 0, 'the panel DOM survived dispose inside the pane box')
   assert.equal(hostNode.children.length, 0, 'the panel node survived inside the pane box')
   assert.doesNotThrow(() => disposeF(), 'dispose is not idempotent')
+})
+
+// ===================================================================
+// Scenario G: installing a build turns Aura on. (Tests 13-14)
+// The owner reinstalled Aura and saw nothing: a saved "off" from an older
+// build survived the reinstall, so Aura looked "not installed".
+// ===================================================================
+
+await recordAsync('13. a newly installed build turns Aura on, even when the saved settings and the server said off', async () => {
+  const storage = new Map([
+    ['settings', { enabled: false }],
+    ['seenBuild', 'olderbuild0000000']
+  ])
+  const g = makeCtx(storage, { serverEnabled: false, commit: 'newbuild11111111' })
+  const dispose = pluginModule.default.register(g.ctx)
+  await sleep(60)
+  await tickPoll(g)
+  assert.equal(g.storage.get('settings').enabled, true, 'the saved "off" from the older build survived the new install')
+  assert.ok(g.controls.some(body => body && body.enabled === true), 'the new build never told the server to switch Aura on')
+  assert.equal(g.serverEnabled(), true, 'the server is still off after the new build loaded')
+  assert.equal(g.storage.get('seenBuild'), 'newbuild11111111', 'the new build was not remembered, so it would switch Aura on at every start')
+  dispose()
+})
+
+await recordAsync('14. restarting the same build keeps the owner\'s own "off"', async () => {
+  const storage = new Map([
+    ['settings', { enabled: false }],
+    ['seenBuild', 'samebuild2222222']
+  ])
+  const g = makeCtx(storage, { serverEnabled: false, commit: 'samebuild2222222' })
+  const dispose = pluginModule.default.register(g.ctx)
+  await sleep(60)
+  await tickPoll(g)
+  assert.equal(g.storage.get('settings').enabled, false, 'a restart switched Aura back on although the owner turned it off on this build')
+  assert.ok(!g.controls.some(body => body && body.enabled === true), 'a restart told the server to switch Aura on')
+  dispose()
+})
+
+// ===================================================================
+// Scenario H: the floating controls card is never left empty. (Test 15)
+// The host can unmount the OLD floating pane after it mounted the NEW one
+// (switching strip <-> watch window re-registers the pane). The old pane's
+// ref(null) must not pull the strip out of the new card.
+// ===================================================================
+
+await recordAsync('15. the floating controls card keeps its strip when the old card unmounts after the new one mounted', async () => {
+  const g = makeCtx()
+  const dispose = pluginModule.default.register(g.ctx)
+  await sleep(40)
+  await tickPoll(g)
+  // Tray life: a film playing with the Right panel closed -> the strip lives in a floating card.
+  const pane = g.contributions.find(c => c.area === 'panes' && c.id !== 'watch')
+  const card = pageAria(pageTree(g), 'Play Sintel · Blender film')
+  assert.ok(card, 'no starter film to play')
+  card.props.onClick()
+  await sleep(60)
+  const quick = g.contributions.find(c => c.area === 'settings.plugins')
+  const panelSwitch = findByAria(renderDeep(renderContribution(quick)), 'Right panel')
+  if (panelSwitch && panelSwitch.props.checked) panelSwitch.props.onCheckedChange(false)
+  await sleep(40)
+  await tickPoll(g)
+  const watch = watchPane(g)
+  assert.ok(watch, 'precondition: no floating controls card with the Right panel closed')
+  assert.ok(videoBar(), 'precondition: the strip is not on screen')
+
+  assert.equal(typeof watch.unmountCard, 'function', 'precondition: the test host cannot unmount the card on its own')
+
+  // The host draws the NEW card first (same contribution, fresh DOM) and drops
+  // the OLD card a moment later, as React may when the pane is re-registered.
+  const firstHosts = floatingHosts.slice()
+  const unmountSecond = mountFloatingPane({ ...watch })
+  const newHost = floatingHosts.find(h => !firstHosts.includes(h))
+  assert.ok(newHost, 'precondition: the second card got no host node')
+  assert.ok(newHost.children.includes(videoBar()), 'precondition: the strip did not move into the new card')
+  watch.unmountCard()   // the OLD card's refs get null, after the new card mounted
+
+  const bar = videoBar()
+  assert.ok(bar, 'the strip vanished from the screen: the old card took it out of the new one (blank controls)')
+  assert.ok(newHost.children.includes(bar), 'the new floating card is empty: the strip is not inside it')
+  if (unmountSecond) unmountSecond()
+  dispose()
 })
 
 // --------------------------------------------------------------- reporting

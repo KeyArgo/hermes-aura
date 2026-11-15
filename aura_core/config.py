@@ -24,7 +24,9 @@ logger = logging.getLogger("aura.config")
 CONFIG_VERSION = 1
 
 DEFAULTS = {
-    "enabled": False,
+    # On out of the box, like the desktop half (owner, 11-15: a fresh install
+    # that starts off looks like Aura was never installed).
+    "enabled": True,
     # Keep analysing system audio with nobody watching. Off by default: capture
     # and FFT cost ~4% of a core, which should buy something.
     "listen_background": False,

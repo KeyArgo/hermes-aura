@@ -418,6 +418,10 @@ let ctxRef = null
 let disposed = false
 let pollDisposer = null
 let polling = false
+// A build not seen before is waiting for the server's first answer to be switched on.
+let turnOnPending = false
+// The user switched Aura on or off in this session; a new build then leaves it alone.
+let enabledTouched = false
 let liveFrame = null // latest /state frame — hot path, deliberately not an atom
 let liveKey = ''
 // The full-window backdrop is the ONE raw iframe Aura mounts on document.body,
@@ -1961,6 +1965,7 @@ async function poll() {
         at: Date.now()
       })
     }
+    applyPendingTurnOn()
     updateShow()
     syncBackdrop()
     syncPanel()
@@ -2197,8 +2202,47 @@ async function restoreMyTheme() {
 
 // ------------------------------------------------------------- enable switch
 
-async function setEnabled(next) {
+/** A build Aura has not run before (a fresh install, a reinstall, an update)
+ *  starts switched on. The owner reinstalled Aura and saw nothing: a saved
+ *  "off" from an older build outlived the install, so it looked uninstalled.
+ *  Switching off inside one build still sticks across restarts. */
+function turnOnForNewBuild(ctx, info) {
+  const id = String(info.commit || info.commit_short || info.version || '')
+  if (!id) return
+  let seen = null
+  try {
+    seen = ctx.storage.get('seenBuild', null)
+  } catch {
+    seen = null
+  }
+  if (seen === id) return
+  try {
+    ctx.storage.set('seenBuild', id)
+  } catch {
+    // best-effort: at worst Aura is switched on again at the next start
+  }
+  if (enabledTouched) return   // the user already chose on/off this session
+  turnOnPending = true
+  applyPendingTurnOn()
+}
+
+/** Act on a new build once the server has answered: switch Aura on only if the
+ *  saved setting or the server says off. A fresh install is already on, so it
+ *  sends nothing (no late /control racing whatever the user does first). */
+function applyPendingTurnOn() {
+  if (!turnOnPending) return
+  const live = $live.get()
+  if (!live.ok) return   // wait for /status: the server's own switch counts too
+  turnOnPending = false
+  if (!$settings.get().enabled || live.enabled !== true) void setEnabled(true, true)
+}
+
+async function setEnabled(next, fromNewBuild = false) {
   if (!ctxRef || disposed) return
+  // An explicit on/off settles it: a new build's switch-on must never override
+  // what the user chose, even if /version or /status answers after the click.
+  turnOnPending = false
+  if (!fromNewBuild) enabledTouched = true
   const enabled = Boolean(next)
   writeSettings({ enabled })
   if (!enabled) {
@@ -3286,16 +3330,25 @@ function syncStripPane() {
 /** Body of the floating pane: the film (watch window only) above the strip. */
 function AuraWatchPane() {
   const surface = useValue($filmSurface)
+  // This card's own host node. Re-registering the pane (strip <-> watch window,
+  // a resize) makes the host draw a NEW card, and it may drop the OLD card only
+  // after the new one mounted. The old card's ref(null) then must not touch the
+  // new card: it used to take the strip out of it, leaving a blank card.
+  const mine = useRef(null)
   const hostRef = node => {
     if (node) {
+      mine.current = node
       stripHostEl = node
       attachVideoBar()
-    } else if (stripHostEl && videoBarEl && videoBarEl.parentNode === stripHostEl) {
-      try { stripHostEl.removeChild(videoBarEl) } catch { /* already gone */ }
-      stripHostEl = null
-    } else {
-      stripHostEl = null
+      return
     }
+    const old = mine.current
+    mine.current = null
+    if (!old || stripHostEl !== old) return   // a newer card owns the strip now
+    if (videoBarEl && videoBarEl.parentNode === old) {
+      try { old.removeChild(videoBarEl) } catch { /* already gone */ }
+    }
+    stripHostEl = null
   }
   const film = surface.placement === 'window'
   return jsxs('div', {
@@ -8581,6 +8634,8 @@ export default {
     disposed = false
     ctxRef = ctx
     polling = false
+    turnOnPending = false
+    enabledTouched = false
     pollDisposer = null
     liveFrame = null
     liveKey = ''
@@ -8707,7 +8762,11 @@ export default {
     // the settings page that also shows it may never be opened.
     if (typeof ctx.rest === 'function') {
       Promise.resolve(ctx.rest('/version', { timeoutMs: 4000 }))
-        .then(info => { if (info && info.version) $build.set(info) })
+        .then(info => {
+          if (!info || !info.version) return
+          $build.set(info)
+          turnOnForNewBuild(ctx, info)
+        })
         .catch(() => {})   // no stamp beats a wrong one
     }
 

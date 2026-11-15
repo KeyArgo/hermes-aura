@@ -98,6 +98,15 @@ def test_first_run_defaults_are_agent_led_and_gentle():
     assert cfg == config.DEFAULTS
 
 
+def test_a_fresh_install_starts_enabled(tmp_path, monkeypatch):
+    # Owner, 11-15: Aura installed with nothing saved must be on, or it looks
+    # like it was never installed. A saved "off" is still honoured.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert config.load_config()["enabled"] is True
+    assert config.normalise({})["enabled"] is True
+    assert config.normalise({"enabled": False})["enabled"] is False
+
+
 def test_saved_config_keeps_its_values_and_only_fills_missing_keys(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     path = tmp_path / "aura" / "config.json"
