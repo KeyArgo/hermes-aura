@@ -1659,6 +1659,44 @@ for (const [name, extra] of [
   safeDispose('the stale status scenario', scenario.dispose)
 }
 
+// Same race one await later (Codex verify 11-15): Off pressed while /state is in flight.
+{
+  const scenario = await watchWindowScenario({ videoWindow: false })
+  const realRest = scenario.bucket.ctx.rest
+  let held = null
+  scenario.bucket.ctx.rest = async (route, options = {}) => {
+    if (route === '/status' && held === 'arm') {
+      const stale = await realRest(route, options)
+      held = 'state'
+      return { ...stale, enabled: true, capture: 'stale-backend-2' }
+    }
+    if (route === '/state' && held === 'state') {
+      const frame = await realRest(route, options)
+      return new Promise(resolve => { held = () => resolve(frame) })
+    }
+    return realRest(route, options)
+  }
+  await recordAsync('61b. Off pressed while /state is in flight also wins', async () => {
+    const live = () => hostIframes().filter(f => f.style.display !== 'none')
+    assert.ok(live().length >= 1, 'no film in the Right panel to begin with')
+    held = 'arm'
+    const tick = scenario.bucket.timers.find(t => t.kind === 'interval' && !t.cleared)
+    tick.fn()
+    await sleep(20)
+    assert.equal(typeof held, 'function', 'the /state answer was not held')
+    const power = domFind(scenario.pane, node => node.className === 'ap-power')
+    clickDom(power)
+    clickDom(power)
+    await sleep(30)
+    held()
+    held = null
+    await sleep(60)
+    rerenderFloating()
+    assert.equal(live().length, 0, 'an answer that was in flight during Off put the film back')
+  })
+  safeDispose('the stale state scenario', scenario.dispose)
+}
+
 // Found in review (11-14): turning Aura off while the desktop window was still
 // open let the next poll "adopt" the window again, and a slow or failed close was
 // never retried, so the OS window kept playing with Aura shown off.

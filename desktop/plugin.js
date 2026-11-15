@@ -1953,7 +1953,7 @@ async function poll() {
 
     const ok = Boolean(status && status.ok === true)
     // A late answer must not undo an Off (or On) pressed while it was in flight.
-    const enabled = ok && enabledEpoch === epochAtStart ? status.enabled === true : $settings.get().enabled
+    let enabled = ok && enabledEpoch === epochAtStart ? status.enabled === true : $settings.get().enabled
     let frame = null
     if (ok) {
       try {
@@ -1975,6 +1975,9 @@ async function poll() {
     // film": the server keeps the request, this consumes a new seq only.
     handleAudioRequests(frame)
     if (ok) await syncPlayerOwnership()
+    // Checked again after the awaits above: an Off pressed while /state or the
+    // player sync was in flight wins too.
+    if (enabledEpoch !== epochAtStart) enabled = $settings.get().enabled
     const key = [ok, port, capture, enabled, url, error, mood].join('|')
     if (key !== liveKey) {
       liveKey = key
