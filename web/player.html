@@ -172,9 +172,6 @@
         : 'https://www.youtube.com/embed/videoseries?' + query.join('&'))
       : 'https://www.youtube.com/embed/' + id + '?' + query.join('&')
     var el = document.createElement('iframe')
-    // Spelled out, not just inherited: an unknown site may run its own player
-    // scripts, but may never navigate the app, open popups or submit forms.
-    el.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation')
     el.src = src
     el.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen')
     el.setAttribute('allowfullscreen', '')

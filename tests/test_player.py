@@ -443,3 +443,10 @@ def test_unknown_site_frames_carry_an_explicit_sandbox():
     assert "setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation')" in body
     for token in ('allow-top-navigation', 'allow-popups', 'allow-forms'):
         assert token not in body
+
+
+def test_the_youtube_frame_keeps_its_original_attributes():
+    """YouTube playback was proven without a sandbox written on its own iframe; keep it so."""
+    page = (Path(__file__).resolve().parents[1] / 'web/player.html').read_text()
+    body = page[page.index('function addYouTube'):page.index('function addVideo')]
+    assert "setAttribute('sandbox'" not in body
