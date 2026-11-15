@@ -808,7 +808,7 @@ record('contributes the Aura page route and its sidebar row', () => {
   assert.equal(a.contributions.some(c => c.area === 'palette'), false, 'no palette command is wanted')
 })
 
-record('docks the theatre as an enforced right-hand pane the host lays out', () => {
+record('docks the theatre right once, never forcing it back over the user\'s layout', () => {
   const pane = a.contributions.find(c => c.area === 'panes')
   assert.ok(pane, 'no panes contribution: the panel has no home')
   assert.equal(pane.id, 'panel')
@@ -816,9 +816,10 @@ record('docks the theatre as an enforced right-hand pane the host lays out', () 
   assert.equal(pane.data.placement, 'right', 'owner prefers right-hand panels')
   assert.deepEqual(
     pane.data.dock,
-    { pane: 'workspace', pos: 'right', enforce: true },
-    'existing layouts must be moved to the right on boot'
+    { pane: 'workspace', pos: 'right' },
+    'the dock is a first-placement hint'
   )
+  assert.equal('enforce' in pane.data.dock, false, 'enforce re-homes the pane every boot and fights the user\'s layout')
   assert.match(String(pane.data.width), /^\d+px$/, 'the host needs a width')
   // The host remembers a dragged width per machine; without a floor a stale
   // 135px pane clipped the controls and shelf (Linux report, 11-13).

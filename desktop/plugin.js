@@ -5379,7 +5379,10 @@ function registerPanelPane(restore) {
     // (135px on Linux) clipped the controls and shelf. The floor stops that.
     data: {
       placement: 'right',
-      dock: { pane: 'workspace', pos: 'right', enforce: true },
+      // A first-placement hint only: the host docks it right of the chat once,
+      // then the user's own arrangement wins. `enforce` re-homed it on every
+      // boot and fought Advanced layouts (owner, 11-15).
+      dock: { pane: 'workspace', pos: 'right' },
       width: `${PANEL_WIDTH}px`,
       minWidth: `${PANEL_MIN_WIDTH}px`
     },
