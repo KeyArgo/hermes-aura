@@ -776,12 +776,29 @@ function filmPlacement() {
   return ''
 }
 
+/** A player address without its start hints: same identity = same film, same
+ *  server, same token and mute, so the running player is kept. */
+function filmIdentity(src) {
+  try {
+    const u = new URL(src)
+    for (const key of ['resume', 'paused', 'video']) u.searchParams.delete(key)
+    return u.toString()
+  } catch {
+    return String(src || '')
+  }
+}
+
 /** Publish the current surface into an atom so every React surface (pane,
  *  page, status-bar watch window) agrees on where the ONE film lives. */
 function refreshFilmSurface() {
   const placement = filmPlacement()
-  const src = placement ? filmSrc() : ''
+  let src = placement ? filmSrc() : ''
   const current = $filmSurface.get()
+  // The address carries where to START (resume / paused / episode), and Aura
+  // saves the position every 5 s. A film already showing must keep its address:
+  // a new one reloads the player, which resumed playing every few seconds
+  // (owner, 11-15: stutter with play/pause flipping, Stop undone).
+  if (src && current.src && filmIdentity(src) === filmIdentity(current.src)) src = current.src
   if (current.placement !== placement || current.src !== src) {
     $filmSurface.set({ placement, src })
   }

@@ -438,7 +438,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, panelHost: typeof panelHostRef === "function" ? panelHostRef : null, video: $video, settings: $settings };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, panelHost: typeof panelHostRef === "function" ? panelHostRef : null, video: $video, settings: $settings, remember: typeof rememberPosition === "function" ? rememberPosition : null, refreshFilm: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null, filmSurface: typeof $filmSurface === "object" ? $filmSurface : null };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -3853,6 +3853,34 @@ await recordAsync('player coordinator reports, consumes commands, and restores a
   assert.equal(pluginModule.wiringTest.video.get().playing, false)
   // One or the other: the desktop window owns the picture, no in-app watch window too.
   assert.notEqual(pluginModule.wiringTest.settings.get().videoWindow, true)
+  dispose()
+})
+
+await recordAsync('the playing film keeps its address when Aura saves its position (no reload every 5 s)', async () => {
+  // Owner, 11-15: the film stuttered (play/pause flipping) and Stop did not
+  // stop. The film's address carried &resume=<saved position>; Aura saves the
+  // position every 5 s, so the address changed, the player reloaded and
+  // resumed playing, again and again.
+  const film = 'https://example.test/stutter.mp4'
+  const x = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: film, panelEnabled: true, videoPositions: { [film]: { position: 40, duration: 600, at: 1 } } })
+  const dispose = pluginModule.default.register(x.ctx)
+  tick(x)
+  await sleep(80)
+  const w = pluginModule.wiringTest
+  assert.ok(w.remember && w.refreshFilm && w.filmSurface, 'precondition: test hooks missing')
+  w.refreshFilm()
+  const before = w.filmSurface.get().src
+  assert.ok(before && before.includes('resume=40'), `precondition: no film address with its resume point (${before})`)
+  // Playback goes on; the 5-second bookmark lands, then the next poll runs.
+  w.remember(film, 125, 600, false, '', true)
+  tick(x)
+  await sleep(40)
+  w.refreshFilm()
+  assert.equal(w.filmSurface.get().src, before, 'saving the position changed the film address, so the player reloads (stutter, Stop undone)')
+  // A different film still gets a new address.
+  w.settings.set({ ...w.settings.get(), videoUrl: 'https://example.test/other.mp4' })
+  w.refreshFilm()
+  assert.notEqual(w.filmSurface.get().src, before, 'switching films kept the old film address')
   dispose()
 })
 
