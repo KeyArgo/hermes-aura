@@ -4137,8 +4137,8 @@ function onVideoBarMouseMove() {
 // collapses to a slim rail, and can be switched off entirely, leaving only
 // the status tray. The pane contribution itself is registered only while the
 // panel is enabled, so switching it off removes the host's empty frame too.
-const PANEL_WIDTH = 320
-const PANEL_MIN_WIDTH = 260
+const PANEL_WIDTH = 440
+const PANEL_MIN_WIDTH = 340
 const PANEL_RAIL = 44
 const PANEL_SCORE_MAX = 12
 const PANE_ID = `${ID}:panel`

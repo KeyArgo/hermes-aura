@@ -1429,7 +1429,7 @@ const stripButton = label => {
     const pane = watchPane(scenario.bucket)
     assert.ok(pane, 'the watch window is not a floating pane')
     const width = parseFloat(pane.data.width)
-    assert.ok(width <= vw - 320, `the huge watch window is ${width}px wide, wider than the room left of the Right panel`)
+    assert.ok(width <= vw - 440, `the huge watch window is ${width}px wide, wider than the room left of the Right panel`)
   })
   safeDispose('the sizes scenario (S)', scenario.dispose)
 }
