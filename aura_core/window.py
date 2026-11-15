@@ -145,6 +145,20 @@ def player_url(port: int, token: Optional[str], url: str, position: float = 0.0,
     return f"http://127.0.0.1:{int(port)}/player.html?{urllib.parse.urlencode(query)}"
 
 
+def _feature_args() -> List[str]:
+    """Chrome features to switch off (one switch: Chrome honours only the last).
+
+    Windows: CalculateNativeWinOcclusion. Chrome stops painting a window it
+    believes is covered; the window we raise from a background server was
+    judged covered and stayed grey (title set, nothing drawn) until it was
+    minimised and restored (owner, 11-15).
+    """
+    features = ["Translate"]
+    if _on_windows():
+        features.append("CalculateNativeWinOcclusion")
+    return ["--disable-features=" + ",".join(features)]
+
+
 def _gpu_args() -> List[str]:
     """Native Wayland for the private profile when the session is Wayland.
 
@@ -396,10 +410,10 @@ def open_page(url: str, title: str = "") -> Dict[str, Any]:
             browser, f"--app={target}", f"--user-data-dir={profile}",
             f"--window-size={WINDOW_SIZE[0]},{WINDOW_SIZE[1]}",
             "--no-first-run", "--no-default-browser-check",
-            "--disable-features=Translate",
         ]
         if sys.platform.startswith("linux"):
             args.append("--class=Aura")
+        args.extend(_feature_args())
         args.extend(_gpu_args())
         try:
             proc = subprocess.Popen(
@@ -471,10 +485,10 @@ def open_window(port: int, token: Optional[str], url: str,
             f"--window-size={WINDOW_SIZE[0]},{WINDOW_SIZE[1]}",
             "--no-first-run", "--no-default-browser-check",
             "--autoplay-policy=no-user-gesture-required",
-            "--disable-features=Translate",
         ]
         if sys.platform.startswith("linux"):
             args.append("--class=Aura")
+        args.extend(_feature_args())
         args.extend(_gpu_args())
         try:
             proc = subprocess.Popen(

@@ -127,6 +127,31 @@ def test_open_window_builds_an_app_window_on_the_player(popen):
     assert proc.args is args
 
 
+def _disabled_features(args):
+    flags = [a for a in args if a.startswith("--disable-features=")]
+    # Chrome honours only the LAST --disable-features switch, so there must be one.
+    assert len(flags) == 1, f"expected one --disable-features switch, got {flags}"
+    return flags[0].split("=", 1)[1].split(",")
+
+
+def test_windows_popout_paints_even_when_chrome_thinks_it_is_covered(popen, monkeypatch):
+    # Owner, 11-15: "popping out to desktop just opens a popout that is grey".
+    # Seen live: the window had the film's title but painted nothing until it
+    # was minimised and restored. Chrome's native window-occlusion check had
+    # decided the freshly raised window was covered and skipped painting.
+    monkeypatch.setattr(window, "_on_windows", lambda: True)
+    window.open_window(4567, "tok", "https://example.test/film.mp4")
+    features = _disabled_features(popen[0][0])
+    assert "CalculateNativeWinOcclusion" in features
+    assert "Translate" in features
+
+
+def test_other_systems_keep_chromes_occlusion_default(popen, monkeypatch):
+    monkeypatch.setattr(window, "_on_windows", lambda: False)
+    window.open_window(4567, "tok", "https://example.test/film.mp4")
+    assert _disabled_features(popen[0][0]) == ["Translate"]
+
+
 def test_open_window_records_a_lease_and_status(popen, tmp_path):
     window.open_window(4567, "tok", "https://example.test/film.mp4", 3.0)
     lease = json.loads((tmp_path / "aura" / window.LEASE).read_text())
