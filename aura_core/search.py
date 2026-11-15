@@ -344,6 +344,8 @@ def youtube_search(query: str, limit: int = DEFAULT_LIMIT) -> List[Dict[str, Any
 _PRIVATE_SUFFIXES = (".localhost", ".local", ".lan", ".home", ".home.arpa", ".internal",
                      ".intranet", ".localdomain", ".corp", ".plex.direct")
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_NAT64_LOCAL = ipaddress.ip_network("64:ff9b:1::/48")
 
 
 def _address_is_public(text: str) -> bool:
@@ -353,6 +355,11 @@ def _address_is_public(text: str) -> bool:
         return False
     if address.version == 6 and address.ipv4_mapped:
         address = address.ipv4_mapped
+    elif address.version == 6 and address in _NAT64_LOCAL:
+        return False
+    elif address.version == 6 and address in _NAT64:
+        # 64:ff9b::/96 embeds an IPv4 address that a NAT64 gateway will reach.
+        address = ipaddress.ip_address(int(address) & 0xFFFFFFFF)
     return address.is_global and not (address.version == 4 and address in _CGNAT)
 
 

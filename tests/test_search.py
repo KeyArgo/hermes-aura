@@ -291,6 +291,8 @@ def test_watch_link_keeps_its_playlist_context():
     "http://127.0.0.1:32400/video.mp4",
     "http://[::1]/film.mp4",
     "http://[::ffff:10.0.0.5]/film.mp4",
+    "http://[64:ff9b::a00:1]/film.mp4",
+    "http://[64:ff9b:1::1]/film.mp4",
     "http://10.0.0.5/cam.mp4",
     "http://192.168.1.5:32400/library/parts/1/file.mkv.mp4",
     "http://100.64.0.9/film.mp4",

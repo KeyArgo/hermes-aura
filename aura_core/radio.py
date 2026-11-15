@@ -226,9 +226,19 @@ def _unreachable(exc: BaseException) -> bool:
         isinstance(reason, OSError) and getattr(reason, "errno", None) in _UNREACHABLE_ERRNOS)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """The directory API never needs a redirect; following one could leave the pinned HTTPS
+    connection (a plain-http hop goes through urllib's unpinned handler)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        raise RadioError("the station directory answered with a redirect")
+
+
 def _rb_open(req: urllib.request.Request, timeout: float):
     """One Radio Browser request (tests replace this to fake the network)."""
-    return urllib.request.build_opener(_FirstAddressHTTPSHandler()).open(req, timeout=timeout)
+    if urllib.parse.urlsplit(req.full_url).scheme.lower() != "https":
+        raise RadioError("the station directory must be reached over https")
+    return urllib.request.build_opener(_FirstAddressHTTPSHandler(), _NoRedirect()).open(req, timeout=timeout)
 
 
 def _rb_json(path: str, params: Optional[Dict[str, Any]] = None) -> Tuple[Any, Optional[int]]:

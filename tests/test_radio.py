@@ -404,3 +404,13 @@ def test_the_station_directory_connection_refuses_private_addresses(monkeypatch)
     conn = radio._FirstAddressHTTPSConnection("de1.api.radio-browser.info", 443, timeout=2)
     with pytest.raises(radio.RadioError):
         conn.connect()
+
+
+def test_the_station_directory_never_goes_plain_http_or_follows_redirects():
+    """Pre-pin review 11-15: an http override or a redirect left the pinned connection."""
+    with pytest.raises(radio.RadioError):
+        radio._rb_open(radio.urllib.request.Request("http://10.0.0.9/json/stations"), timeout=1)
+    handler = radio._NoRedirect()
+    req = radio.urllib.request.Request("https://de1.api.radio-browser.info/json/stations")
+    with pytest.raises(radio.RadioError):
+        handler.redirect_request(req, None, 302, "Found", {}, "http://10.0.0.9/")
