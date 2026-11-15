@@ -2014,6 +2014,38 @@ await recordAsync('15. the floating controls card keeps its strip when the old c
   dispose()
 })
 
+await recordAsync('16. a strip that floated on its own drops its screen position when a card takes it', async () => {
+  // Seen live on Windows: the strip still carried left:614px / top:398px from
+  // floating on its own, so inside the card it sat 614px right and 398px down,
+  // clipped out of view, and the card looked blank.
+  const g = makeCtx()
+  const dispose = pluginModule.default.register(g.ctx)
+  await sleep(40)
+  await tickPoll(g)
+  const card = pageAria(pageTree(g), 'Play Sintel · Blender film')
+  card.props.onClick()
+  await sleep(60)
+  const quick = g.contributions.find(c => c.area === 'settings.plugins')
+  const panelSwitch = findByAria(renderDeep(renderContribution(quick)), 'Right panel')
+  if (panelSwitch && panelSwitch.props.checked) panelSwitch.props.onCheckedChange(false)
+  await sleep(40)
+  await tickPoll(g)
+  const watch = watchPane(g)
+  const bar = videoBar()
+  assert.ok(watch && bar, 'precondition: no floating card with its strip')
+  // The strip floated on its own for a moment (between two cards) and got a screen position.
+  bar.style.left = '614px'
+  bar.style.top = '398px'
+  const unmountSecond = mountFloatingPane({ ...watch })
+  assert.equal(bar.style.left, '', `inside the card the strip still sits ${bar.style.left} from the card's left edge`)
+  assert.equal(bar.style.top, '', `inside the card the strip still sits ${bar.style.top} below the card's top`)
+  // And a layout tick while the card is up must not write a screen position again.
+  await tickPoll(g)
+  assert.equal(bar.style.left, '', 'a layout tick gave the strip a screen position inside the card')
+  if (unmountSecond) unmountSecond()
+  dispose()
+})
+
 // --------------------------------------------------------------- reporting
 
 console.log(results.join('\n'))

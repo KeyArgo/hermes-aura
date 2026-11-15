@@ -3260,6 +3260,16 @@ const FLOATING_HEADER = 30
 function attachVideoBar() {
   if (!videoBarEl || !stripHostEl || typeof stripHostEl.appendChild !== 'function') return
   if (videoBarEl.parentNode !== stripHostEl) stripHostEl.appendChild(videoBarEl)
+  // Inside the card the host owns placement. Drop any screen position the strip
+  // got while it floated on its own (e.g. between two cards): left:614px/top:398px
+  // pushed it out of the card's clipped box and the card looked blank.
+  const style = videoBarEl.style
+  if (style) {
+    style.left = ''
+    style.top = ''
+    style.right = ''
+    style.bottom = ''
+  }
 }
 
 /** The floating pane's size: the strip alone, or the watch window's film over it. */
@@ -3665,8 +3675,9 @@ function applyBackdropLayout() {
 
 function positionVideoBar() {
   if (!videoBarEl) return
-  // Inside the SDK floating pane the host owns placement.
-  if (stripHostEl) return
+  // Inside the SDK floating pane the host owns placement, also in the gap while
+  // a re-registered card is still being drawn (stripPaneOff set, host not yet).
+  if (stripHostEl || stripPaneOff) return
   // Never reposition mid-drag: the 4 Hz tick would snap the frame back to the
   // last saved spot while your mouse is still moving it.
   if (windowDrag || stripDrag) return
