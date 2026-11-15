@@ -842,6 +842,20 @@ record('new installs start at a fixed 25% video strength and 25% visual opacity'
   assert.match(source, /if \(typeof raw\.videoOpacityAuto === 'boolean'\) out\.videoOpacityAuto = raw\.videoOpacityAuto/)
 })
 
+// Owner (11-15): Frosted glass is a "how see-through" setting and sits right
+// after Video strength (video) and Visual opacity (visualizer), once each.
+record('Frosted glass sits with Video strength and Visual opacity', () => {
+  const start = source.indexOf('function AuraSettings(')
+  const body = source.slice(start, source.indexOf('\n}\n', start))
+  const at = text => body.indexOf(text)
+  assert.ok(at("'Visual opacity'") < at("frostRow('frost-visual')") && at("frostRow('frost-visual')") < at("'Motion source'"),
+    'Frosted glass is not right after Visual opacity in the visualizer group')
+  assert.ok(at("'Video strength'") < at("frostRow('frost-video')") && at("frostRow('frost-video')") < at("'Source',"),
+    'Frosted glass is not right after Video strength in the video group')
+  assert.equal(body.split("aria-label': 'Frosted glass'").length - 1, 1, 'Frosted glass is defined more than once (one shared row)')
+  assert.equal(body.includes("key: 'frost',"), false, 'the old Window-group Frosted glass row is still there')
+})
+
 // Owner (11-15): the pane embedded the whole Settings page under its own quick
 // controls - duplicate rows, a version line and an ad in a narrow column. The
 // pane now links to the full settings instead.

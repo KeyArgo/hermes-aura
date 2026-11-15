@@ -7848,6 +7848,23 @@ function AuraSettings(props) {
       children: text
     })
 
+
+  // Frosted glass is a "how see-through" setting: it sits with Video strength
+  // and Visual opacity, in whichever group is showing (owner, 11-15).
+  const frostRow = key =>
+    jsx('div', {
+      key,
+      children: row(
+        'Frosted glass',
+        'A frosted, brighter look behind the visual. Off: a solid dark base.',
+        jsx(Switch, {
+          checked: frostOn(),
+          'aria-label': 'Frosted glass',
+          onCheckedChange: value => setFrost(value)
+        })
+      )
+    })
+
   return jsxs('div', {
     style: onPage
       ? {
@@ -7984,6 +8001,7 @@ function AuraSettings(props) {
           })
         )
       }),
+      frostRow('frost-visual'),
       jsx('div', {
         key: 'motion',
         children: row(
@@ -8146,6 +8164,7 @@ function AuraSettings(props) {
                 ]
               })
             ),
+            frostRow('frost-video'),
             row(
               'Source',
               'Saved and recent films. Prev/next walks this list.',
@@ -8451,18 +8470,6 @@ function AuraSettings(props) {
             size: 'sm', variant: 'outline', 'aria-label': 'Stop everything',
             onClick: event => { if (event && event.preventDefault) event.preventDefault(); void stopEverything() },
             children: 'Stop everything'
-          })
-        )
-      }),
-      jsx('div', {
-        key: 'frost',
-        children: row(
-          'Frosted glass',
-          'A frosted, brighter look behind the visual. Off: a solid dark base.',
-          jsx(Switch, {
-            checked: frostOn(),
-            'aria-label': 'Frosted glass',
-            onCheckedChange: value => setFrost(value)
           })
         )
       }),
