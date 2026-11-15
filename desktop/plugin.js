@@ -3052,17 +3052,6 @@ function revampCard() {
   text.textContent = REVAMP_PITCH
   const row = doc.createElement('div')
   row.className = 'aura-revamp-actions'
-  const open = doc.createElement('button')
-  open.type = 'button'
-  open.className = 'aura-revamp-open'
-  open.textContent = 'Open REVamp'
-  open.addEventListener('click', () => {
-    try {
-      host.navigate('/revamp')
-    } catch {
-      // navigation is the host's business; a failure must not throw here
-    }
-  })
   const get = doc.createElement('button')
   get.type = 'button'
   get.className = 'aura-revamp-get'
@@ -3079,7 +3068,9 @@ function revampCard() {
       // a missing opener is not worth an error banner
     }
   })
-  row.appendChild(open)
+  // No "Open REVamp": Hermes offers plugins no way to know whether REVamp is
+  // installed, and /revamp is a dead page when it is not (owner, 11-15). The
+  // marketplace page lets people install it.
   row.appendChild(get)
   card.appendChild(text)
   card.appendChild(row)
@@ -6875,14 +6866,6 @@ function pageStageRef(node) {
 // REVamp is the owner's Winamp-style audio player for Hermes. Aura hears
 // whatever it plays, so the two belong together; one tasteful line, no prizes.
 
-function openRevamp() {
-  try {
-    host.navigate('/revamp')
-  } catch {
-    // A host without a router simply does not move; never throw from a click.
-  }
-}
-
 /** Open Capabilities > Plugins and tell the user what to search for. Aura never
  *  reaches into the host's catalog markup to type it (catalog review): the
  *  host's own page and search box stay the host's. */
@@ -6946,14 +6929,11 @@ function RevampCard() {
         key: 'actions',
         style: { display: 'flex', alignItems: 'center', gap: 10, flex: 'none' },
         children: [
+          // Find in Plugins first: Hermes's own page shows Install or Open, so
+          // the button is right whether or not REVamp is installed.
           jsx(Button, {
-            key: 'open', size: 'sm', variant: 'outline', 'aria-label': 'Open REVamp',
-            onClick: () => openRevamp(),
-            children: 'Open REVamp'
-          }),
-          jsx(Button, {
-            key: 'plugins', size: 'sm', variant: 'ghost', 'aria-label': 'Find REVamp in Plugins',
-            title: 'Opens Capabilities > Plugins and searches for REVamp so you can install it',
+            key: 'plugins', size: 'sm', variant: 'outline', 'aria-label': 'Find REVamp in Plugins',
+            title: 'Opens Plugins, where Hermes shows Install or Open for REVamp',
             onClick: findRevampInPlugins,
             children: 'Find in Plugins'
           }),
@@ -7005,9 +6985,9 @@ function RevampLine() {
         children: REVAMP_PITCH
       }),
       jsx(Button, {
-        key: 'open', size: 'micro', variant: 'ghost', 'aria-label': 'Open REVamp',
-        onClick: () => openRevamp(),
-        children: 'Open REVamp'
+        key: 'plugins', size: 'micro', variant: 'ghost', 'aria-label': 'Find REVamp in Plugins (settings)',
+        onClick: findRevampInPlugins,
+        children: 'Find in Plugins'
       })
     ]
   })

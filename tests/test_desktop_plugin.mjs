@@ -3042,8 +3042,9 @@ record('the page renders the player, the setup and the REVamp card', () => {
   // The settings page carries the one-line version too.
   const settingsTree = renderDeep(renderContribution(p.contributions.find(c => c.area === 'settings.plugins')))
   assert.match(texts(settingsTree), /Winamp-style player for Hermes/, 'AuraSettings has no REVamp line')
-  const line = pageAria(settingsTree, 'Open REVamp')
-  assert.ok(line, 'the settings REVamp line has no Open REVamp action')
+  const line = pageAria(settingsTree, 'Find REVamp in Plugins (settings)')
+  assert.ok(line, 'the settings REVamp line has no Find in Plugins action')
+  assert.equal(pageAria(settingsTree, 'Open REVamp'), null, 'Open REVamp leads to a dead page when REVamp is not installed')
 })
 
 record('REVAMP_URL is the marketplace root', () => {
@@ -3110,13 +3111,17 @@ record('the REVamp card renders the icon and its chips', () => {
   }
 })
 
-record('the REVamp button opens /revamp', () => {
-  const button = pageAria(pageTree(), 'Open REVamp')
-  assert.ok(button, 'no Open REVamp button on the page')
+// Owner (11-15): no "Open REVamp" (a dead /revamp page when it is not installed;
+// Hermes gives plugins no way to check). Find in Plugins lets Hermes show
+// Install or Open.
+record('the REVamp card offers Find in Plugins, never a blind Open REVamp', () => {
+  assert.equal(pageAria(pageTree(), 'Open REVamp'), null, 'Open REVamp is back')
+  const button = pageAria(pageTree(), 'Find REVamp in Plugins')
+  assert.ok(button, 'no Find in Plugins button on the page')
   const before = sdk.calls.navigations.length
   button.props.onClick()
-  assert.equal(sdk.calls.navigations.length, before + 1, 'the button did not navigate')
-  assert.equal(sdk.calls.navigations.at(-1), '/revamp', 'the button did not open REVamp')
+  assert.equal(sdk.calls.navigations.at(-1), '/capabilities?tab=plugins&plugin=revamp', 'Find in Plugins did not open Plugins at REVamp')
+  assert.ok(sdk.calls.navigations.length > before)
 })
 
 const versionChipNodes = tree => {

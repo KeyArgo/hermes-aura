@@ -13,7 +13,7 @@
  *      the same bridge and touch only their own setting (the video's mute is
  *      not the audio channel's);
  *   4. REVAMP_PITCH says what it must say, and revampCard() wires
- *      "Open REVamp" to host.navigate('/revamp') and "Get REVamp" to the
+ *      no "Open REVamp" (dead page when not installed); "Get REVamp" to the
  *      public repo.
  *
  * The plugin is imported from a temp copy with its three import specifiers
@@ -449,9 +449,8 @@ await record('REVAMP_PITCH names the pitch and revampCard wires both buttons', (
   assert.match(text, /Winamp-style player/)
   const open = all.find(node => node.textContent === 'Open REVamp')
   const get = all.find(node => node.textContent === 'Get REVamp')
-  assert.ok(open && get, 'revampCard() is missing a button')
-  open.__handlers.click[0]()
-  assert.deepEqual(sdkStub.calls.navigations.slice(-1), ['/revamp'])
+  assert.equal(open, undefined, 'Open REVamp leads to a dead page when REVamp is not installed')
+  assert.ok(get, 'revampCard() is missing Get REVamp')
   get.__handlers.click[0]()
   assert.deepEqual(sdkStub.calls.external.slice(-1), ['https://hermes-agent.nousresearch.com/marketplace'])
 })
