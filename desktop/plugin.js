@@ -794,7 +794,7 @@ function AuraFilm({ placement, src }) {
   const source = typeof src === 'string' && src ? src : filmSrc()
   const own = useRef(null)
   if (!source) return null
-  const fixed = placement !== 'page'
+  const fixed = placement === 'panel'
   useEffect(() => {
     applyFilmFrameLayout()
   }, [source, placement])
@@ -823,6 +823,8 @@ function AuraFilm({ placement, src }) {
       // The strip/panel controls are the remote: never let the frame eat a
       // click meant for them.
       pointerEvents: 'none',
+      // Electron's title-bar drag region must never swallow it.
+      WebkitAppRegion: 'no-drag',
       ...(fixed
         ? { position: 'fixed', inset: 0, zIndex: placement === 'window' ? String(WATCH_WINDOW_Z) : String(PANEL_FILM_Z) }
         : { position: 'absolute', inset: 0, zIndex: '1' }),
@@ -3190,6 +3192,114 @@ function onBackdropMessage(event) {
 // backdrop is actually on screen.
 const VIDEO_BAR_IDLE_MS = 3000
 let videoBarEl = null
+// The host node inside Aura's SDK floating pane that holds the strip (and, for
+// the watch window, the film above it). Set by AuraWatchPane while it is mounted.
+let stripHostEl = null
+let stripPaneOff = null
+let stripPaneKey = ''
+// Header the host draws on a floating pane (its drag handle), in px.
+const FLOATING_HEADER = 30
+
+/** Put the strip inside the floating pane's host node, once both exist. */
+function attachVideoBar() {
+  if (!videoBarEl || !stripHostEl || typeof stripHostEl.appendChild !== 'function') return
+  if (videoBarEl.parentNode !== stripHostEl) stripHostEl.appendChild(videoBarEl)
+}
+
+/** The floating pane's size: the strip alone, or the watch window's film over it. */
+function stripPaneSize() {
+  if (videoWindowOn()) {
+    // Film + strip + the host's header must fit the window below its title bar
+    // (34px) with the host's 12px margins, or a Huge window runs off a short screen.
+    const view = doc && doc.defaultView
+    const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
+    const chrome = VIDEO_BAR_HEIGHT + FLOATING_HEADER
+    const room = Math.max(120, vh - 34 - 24 - chrome)
+    const width = Math.min(videoWindowWidth(), Math.floor(room * 16 / 9))
+    return { width, height: Math.round(width * 9 / 16) + chrome }
+  }
+  return { width: VIDEO_BAR_WIDTH, height: VIDEO_BAR_HEIGHT + FLOATING_HEADER }
+}
+
+function unregisterStripPane() {
+  const off = stripPaneOff
+  stripPaneOff = null
+  stripPaneKey = ''
+  if (typeof off === 'function') {
+    try {
+      off()
+    } catch {
+      // a host that already dropped the contribution is fine
+    }
+  }
+}
+
+/** Register (or resize) the SDK floating pane that carries the strip and the
+ *  watch window (review 1: a placement:'floating' pane with anchor). The host
+ *  draws the card, makes its header the drag handle and remembers its spot. */
+function syncStripPane() {
+  if (!ctxRef || disposed || !videoBarActive()) {
+    unregisterStripPane()
+    return
+  }
+  const watching = videoWindowOn()
+  const size = stripPaneSize()
+  // Spawn corner only (the host remembers where the user drops it). A watch
+  // window must not open over the Right panel's controls.
+  const anchor = !watching ? 'bottom-left' : (panelVisible() ? 'top-left' : 'top-right')
+  const key = `${watching ? 'window' : 'strip'}:${anchor}:${size.width}x${size.height}`
+  if (key === stripPaneKey && stripPaneOff) return
+  unregisterStripPane()
+  try {
+    const off = ctxRef.register({
+      id: 'watch',
+      area: PANES_AREA,
+      title: watching ? 'Aura watch window' : 'Aura controls',
+      data: {
+        placement: 'floating',
+        anchor,
+        width: `${size.width}px`,
+        height: `${size.height}px`
+      },
+      render: () => jsx(AuraWatchPane, {})
+    })
+    stripPaneOff = typeof off === 'function' ? off : null
+    stripPaneKey = key
+  } catch {
+    stripPaneOff = null
+    stripPaneKey = ''
+  }
+}
+
+/** Body of the floating pane: the film (watch window only) above the strip. */
+function AuraWatchPane() {
+  const surface = useValue($filmSurface)
+  const hostRef = node => {
+    if (node) {
+      stripHostEl = node
+      attachVideoBar()
+    } else if (stripHostEl && videoBarEl && videoBarEl.parentNode === stripHostEl) {
+      try { stripHostEl.removeChild(videoBarEl) } catch { /* already gone */ }
+      stripHostEl = null
+    } else {
+      stripHostEl = null
+    }
+  }
+  const film = surface.placement === 'window'
+  return jsxs('div', {
+    style: { display: 'flex', flexDirection: 'column', width: '100%', height: '100%' },
+    children: [
+      film
+        ? jsx('div', {
+          key: 'film',
+          style: { position: 'relative', flex: '1 1 auto', minHeight: 0, background: '#000', overflow: 'hidden' },
+          children: jsx(AuraFilm, { placement: 'window', src: surface.src })
+        })
+        : null,
+      jsx('div', { key: 'strip', ref: hostRef, style: { flex: 'none' } })
+    ]
+  })
+}
 let videoBarParts = null
 let videoBarHideTimer = null
 // Live drag of the watch window (grip on the strip). Timers/listeners are
@@ -3235,6 +3345,8 @@ function endWindowDrag() {
 }
 
 function beginWindowDrag(event) {
+  // The floating pane's own header moves the watch window now.
+  if (stripHostEl) return
   if (!backdropEl || !event) return
   try { event.preventDefault() } catch { /* synthetic */ }
   // Dragging the grip while the film is a full-window backdrop is also how you
@@ -3310,6 +3422,8 @@ function endStripDrag() {
 }
 
 function beginStripDrag(event) {
+  // The floating pane's own header moves the strip now.
+  if (stripHostEl) return
   if (!videoBarEl || !event) return
   try { event.preventDefault() } catch { /* synthetic */ }
   const style = videoBarEl.style
@@ -3429,23 +3543,22 @@ function applyFilmFrameLayout() {
     return
   }
   if (placement === 'window') {
-    const width = videoWindowWidth()
-    const point = videoWindowPoint(width)
-    style.position = 'fixed'
-    style.inset = 'auto'
-    style.left = `${point.x}px`
-    style.top = `${point.y}px`
+    // The watch window is an SDK floating pane (review 1/3): the host draws the
+    // card, drags it and remembers where it was. The film just fills its box.
+    style.position = 'absolute'
+    style.inset = '0'
+    style.left = '0'
+    style.top = '0'
     style.right = 'auto'
     style.bottom = 'auto'
-    style.width = `${width}px`
-    style.height = `${Math.round(width * 9 / 16)}px`
-    style.borderRadius = '12px'
-    style.border = '1px solid rgba(255,255,255,0.16)'
-    style.boxShadow = '0 14px 40px rgba(0,0,0,0.5)'
+    style.width = '100%'
+    style.height = '100%'
+    style.borderRadius = '0'
+    style.border = '0'
+    style.boxShadow = 'none'
     style.overflow = 'hidden'
-    style.zIndex = String(WATCH_WINDOW_Z)
+    style.zIndex = '1'
     style.clipPath = 'none'
-    // Near the top, the host's title-bar drag strip would eat clicks on it.
     style.WebkitAppRegion = 'no-drag'
   }
 }
@@ -3487,6 +3600,8 @@ function applyBackdropLayout() {
 
 function positionVideoBar() {
   if (!videoBarEl) return
+  // Inside the SDK floating pane the host owns placement.
+  if (stripHostEl) return
   // Never reposition mid-drag: the 4 Hz tick would snap the frame back to the
   // last saved spot while your mouse is still moving it.
   if (windowDrag || stripDrag) return
@@ -3937,9 +4052,18 @@ function mountVideoBar() {
   bar.addEventListener('click', returnFocusAfterClick)
   bindAuraKeyHandlers(bar)
 
-  doc.body.appendChild(bar)
+  // Never on document.body (review 1/3): the strip lives inside Aura's own
+  // floating pane. It is styled to fill that card; attachVideoBar() moves it in
+  // as soon as the pane has rendered its host node.
+  Object.assign(bar.style, {
+    position: 'relative', left: 'auto', top: 'auto', right: 'auto', bottom: 'auto',
+    width: '100%', maxWidth: 'none', borderRadius: '0', boxShadow: 'none', border: '0',
+    zIndex: 'auto'
+  })
+  if (grip && grip.style) grip.style.display = 'none'
   videoBarEl = bar
   videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill, title, grip, sendRow, sizeRow, sizeButtons }
+  attachVideoBar()
 }
 
 function removeVideoBar() {
@@ -5317,6 +5441,7 @@ function setPanelCollapsed(on) {
 /** Keep the pill in step with settings/transport state. Called from the poll
  *  tick (4 Hz), so it costs one comparison per node at most. */
 function syncVideoBar(force) {
+  syncStripPane()
   if (!videoBarActive()) {
     removeVideoBar()
     return
@@ -5686,12 +5811,13 @@ function clearDevStatsTimer() {
 function openDevStats() {
   // Explicit only: the Ctrl+Shift+A handler is the one caller. Nothing mounts
   // on register, so a normal install never gets this panel.
-  if (disposed || !doc || !doc.body || typeof doc.body.appendChild !== 'function' || devStatsEl) return
+  // Inside Aura's own Right pane only, never document.body (review 3).
+  if (disposed || !doc || !panelEl || typeof panelEl.appendChild !== 'function' || devStatsEl) return
   devFps = 0
   devFpsLastSeq = null
   devFpsLastAt = 0
   devStatsEl = buildDevStatsPanel()
-  doc.body.appendChild(devStatsEl)
+  panelEl.appendChild(devStatsEl)
   devStatsTick()
   if (ctxRef && typeof ctxRef.setInterval === 'function') {
     try {
@@ -6560,13 +6686,8 @@ function AuraQuickMenu() {
       // Inside the popover root but outside its content, so it stays on the bar
       // while the dropdown portals away; same setBackdropMode as everywhere else.
       jsx(AuraStatusPower, { key: 'power' }),
-      jsx(AuraStatusMode, { key: 'mode' }),
-      // The watch window is a SandboxedFrame, not a body iframe. It is drawn
-      // here because the status-bar contribution stays mounted even when the
-      // Right panel is off, and the watch window is independent of it.
-      surface.placement === 'window'
-        ? jsx(AuraFilm, { key: 'watch', placement: 'window', src: surface.src })
-        : null
+      jsx(AuraStatusMode, { key: 'mode' })
+      // The watch window's film lives in Aura's floating pane (AuraWatchPane).
     ]
   })
 }
@@ -8361,6 +8482,8 @@ const AURA_THEME = {
 let instanceSeq = 0
 
 function teardown() {
+  unregisterStripPane()
+  stripHostEl = null
   if (pollDisposer) {
     try {
       pollDisposer()

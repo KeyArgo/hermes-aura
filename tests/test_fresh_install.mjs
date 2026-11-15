@@ -86,6 +86,47 @@ function walk(node, visit) {
   }
 }
 
+// Host nodes of mounted floating panes (the card body the real host renders).
+const floatingHosts = []
+const floatingRecords = new Set()
+/** Re-render every floating pane, as React would after a store change. */
+const rerenderFloating = () => { for (const record of floatingRecords) record.rerender() }
+function mountFloatingPane(record) {
+  if (!record || !record.data || record.data.placement !== 'floating' || typeof record.render !== 'function') return null
+  const refs = []
+  // Like React, a re-render keeps the same host nodes (by position) and hands
+  // them to the ref again; function components run again.
+  let slot = 0
+  const walk = element => {
+    if (!element || typeof element !== 'object') return
+    if (Array.isArray(element)) { element.forEach(walk); return }
+    if (typeof element.type === 'function') { walk(element.type(element.props || {})); return }
+    const props = element.props || {}
+    if (typeof props.ref === 'function' && typeof element.type === 'string') {
+      const existing = refs[slot]
+      slot += 1
+      if (existing) { existing.ref = props.ref; props.ref(existing.host); walk(props.children); return }
+      const host = globalThis.document.createElement(element.type)
+      floatingHosts.push(host)
+      refs.push({ ref: props.ref, host })
+      props.ref(host)
+    }
+    walk(props.children)
+  }
+  walk(record.render())
+  record.rerender = () => { slot = 0; walk(record.render()) }
+  floatingRecords.add(record)
+  return () => {
+    floatingRecords.delete(record)
+    for (const { ref, host } of refs) {
+      ref(null)
+      const index = floatingHosts.indexOf(host)
+      if (index >= 0) floatingHosts.splice(index, 1)
+    }
+  }
+}
+const floatingNodes = () => floatingHosts.flatMap(host => host.children)
+
 function renderContribution(contribution) {
   const element = contribution.render()
   assert.ok(element && typeof element === 'object', `contribution ${contribution.id} did not render an element`)
@@ -164,9 +205,12 @@ function makeCtx(storageMap) {
     register(contribution) {
       const entry = { ...contribution, removed: false }
       contributions.push(entry)
+      // The host draws placement:'floating' panes as cards (strip + watch window).
+      const unmount = mountFloatingPane(entry)
       return () => {
         if (entry.removed) return
         entry.removed = true
+        if (unmount) unmount()
         const index = contributions.indexOf(entry)
         if (index >= 0) contributions.splice(index, 1)
       }
@@ -515,7 +559,14 @@ const hostIframes = () => {
 // glass and theme injections the other suite covers.
 const UI_STYLE_IDS = new Set(['aura-panel-style', 'aura-ui-style'])
 const hostStyles = () => headChildren.filter(node => node.tagName === 'STYLE' && !UI_STYLE_IDS.has(node.attributes && node.attributes.id))
-const videoBar = () => bodyChildren.find(node => node.attributes && node.attributes.role === 'toolbar')
+// The watch window's film: the SandboxedFrame inside Aura's floating pane.
+const watchFrame = () => {
+  const wiring = pluginModule && pluginModule.wiringTest
+  const surface = wiring && wiring.surface ? wiring.surface() : null
+  return surface && surface.placement === 'window' && wiring.frame ? wiring.frame() : null
+}
+const watchPane = bucket => bucket.contributions.find(c => c.id === 'watch' && c.data && c.data.placement === 'floating')
+const videoBar = () => [...bodyChildren, ...floatingNodes()].find(node => node.attributes && node.attributes.role === 'toolbar')
 
 /** Dispose a scenario instance; a throwing teardown is a real finding, so it
  *  is reported, not swallowed. Scenario 9 owns the full dispose contract. */
@@ -619,6 +670,7 @@ async function tickPoll(bucket) {
   assert.ok(tick, 'no polling interval registered')
   tick.fn()
   await sleep(40)
+  rerenderFloating()
 }
 
 // ===================================================================
@@ -898,12 +950,12 @@ const stripButton = label => {
 {
   const scenario = await watchWindowScenario({})
   record('19. the watch window opens beside the Right panel, never on top of it', () => {
-    const frame = hostIframes().find(f => f.style.display !== 'none' && !['-1', '1'].includes(f.style.zIndex))
-    assert.ok(frame, 'no watch window')
-    const view = globalThis.document.defaultView || {}
-    const vw = Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
-    const right = parseFloat(frame.style.left) + parseFloat(frame.style.width)
-    assert.ok(right <= vw - 320, `the watch window reaches x=${right}, over the Right panel (starts at ${vw - 320})`)
+    // The watch window is an SDK floating pane; with the Right panel open it
+    // spawns top-left so it never opens over the panel's controls.
+    assert.ok(watchFrame(), 'no watch window')
+    const pane = watchPane(scenario.bucket)
+    assert.ok(pane, 'the watch window is not a floating pane')
+    assert.equal(pane.data.anchor, 'top-left', 'the watch window spawns over the Right panel')
   })
   record('20. with the Right panel open the watch window still carries its strip, with a drag grip', () => {
     assert.ok(videoBar(), 'no control strip under the watch window while the Right panel is open')
@@ -958,7 +1010,7 @@ const stripButton = label => {
   record('62. the watch window and its strip opt out of the host title-bar drag strip', () => {
     // Near the top of the window, Electron drag regions eat real clicks.
     assert.equal(videoBar().style.WebkitAppRegion, 'no-drag', 'the strip can be swallowed by the title-bar drag strip')
-    const frame = hostIframes().find(f => f.style.display !== 'none' && !['-1', '1'].includes(f.style.zIndex))
+    const frame = watchFrame()
     assert.ok(frame, 'no watch window')
     assert.equal(frame.style.WebkitAppRegion, 'no-drag', 'the watch window can be swallowed by the title-bar drag strip')
   })
@@ -1365,13 +1417,13 @@ const stripButton = label => {
     assert.deepEqual(values, ['small', 'medium', 'large', 'xlarge', 'huge'])
   })
   record('51. the largest watch window still fits left of the Right panel', () => {
-    const frame = hostIframes().find(f => f.style.display !== 'none' && !['-1', '1'].includes(f.style.zIndex))
-    assert.ok(frame, 'no watch window')
+    assert.ok(watchFrame(), 'no watch window')
     const view = globalThis.document.defaultView || {}
     const vw = Number.isFinite(view.innerWidth) ? view.innerWidth : 1400
-    const right = parseFloat(frame.style.left) + parseFloat(frame.style.width)
-    assert.ok(right <= vw - 320, `the huge watch window reaches x=${right}, over the Right panel`)
-    assert.ok(parseFloat(frame.style.left) >= 0, 'the huge watch window starts off-screen')
+    const pane = watchPane(scenario.bucket)
+    assert.ok(pane, 'the watch window is not a floating pane')
+    const width = parseFloat(pane.data.width)
+    assert.ok(width <= vw - 320, `the huge watch window is ${width}px wide, wider than the room left of the Right panel`)
   })
   safeDispose('the sizes scenario (S)', scenario.dispose)
 }
@@ -1636,8 +1688,7 @@ for (const [name, extra] of [
     renderDeep(renderContribution(bucket.contributions.find(c => c.id === 'quick-menu')))
   }
   record('60d. with the Right panel hidden, a film in the watch window stays on screen', () => {
-    const frame = hostIframes().find(f => f.style.display !== 'none' && !['-1', '1'].includes(f.style.zIndex))
-    assert.ok(frame, 'the Right panel is hidden and the watch-window film unmounted')
+    assert.ok(watchFrame(), 'the Right panel is hidden and the watch-window film unmounted')
   })
   safeDispose('the hidden panel watch window scenario', scenario.dispose)
 }
@@ -1652,10 +1703,11 @@ for (const [name, extra] of [
   const scenario = await watchWindowScenario({ videoWindow: true, videoWindowSize: 'huge' })
   for (let i = 0; i < 2; i += 1) await tickPoll(scenario.bucket)
   record('60e. a Huge watch window fits a short window', () => {
-    const frame = hostIframes().find(f => f.style.display !== 'none' && !['-1', '1'].includes(f.style.zIndex))
-    assert.ok(frame, 'no watch window')
-    const bottom = parseFloat(frame.style.top) + parseFloat(frame.style.height)
-    assert.ok(bottom <= 600, `the watch window reaches y=${bottom} in a 600 px tall window`)
+    assert.ok(watchFrame(), 'no watch window')
+    const pane = watchPane(scenario.bucket)
+    assert.ok(pane, 'the watch window is not a floating pane')
+    const height = parseFloat(pane.data.height)
+    assert.ok(height <= 600 - 34, `the watch window pane is ${height}px tall in a 600 px window`)
   })
   safeDispose('the short window scenario', scenario.dispose)
   if (hadView) globalThis.document.defaultView = realView
@@ -1749,7 +1801,12 @@ await recordAsync('7. fresh install: Pop out from the page moves the film to the
   await sleep(60)
   pageTree(freshD)
 
-  const onPage = () => hostIframes().filter(frame => frame.style.position === 'absolute' && frame.style.width === '100%')
+  const onPage = () => {
+    const surface = pluginModule.wiringTest.surface()
+    return surface && surface.placement === 'page'
+      ? hostIframes().filter(frame => frame.style.position === 'absolute' && frame.style.width === '100%')
+      : []
+  }
   assert.equal(onPage().length, 1, 'the picked film did not land on the page stage')
   assert.equal(onPage()[0].style.zIndex, '1', 'the page film must sit above the page')
 
@@ -1764,9 +1821,9 @@ await recordAsync('7. fresh install: Pop out from the page moves the film to the
   assert.equal(onPage().length, 0, 'Pop out left the film on the page')
   // The watch window floats above the app (not behind it at -1, not on the page
   // stage at 1) and still below the host's menus.
-  const floating = hostIframes().find(frame =>
-    frame.style.display !== 'none' && !['-1', '1'].includes(frame.style.zIndex) && Number(frame.style.zIndex) < 50)
-  assert.ok(floating, 'Pop out did not hand the film to the floating watch window')
+  rerenderFloating()
+  assert.ok(watchFrame(), 'Pop out did not hand the film to the floating watch window')
+  assert.ok(watchPane(freshD), 'the watch window is not an SDK floating pane')
   assert.equal(freshD.storage.get('settings').videoWindow, true, 'the watch window was not persisted')
 
   // Bring back: the same single player returns to the page stage.

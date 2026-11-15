@@ -132,6 +132,48 @@ function walk(node, visit) {
   }
 }
 
+// Host nodes of mounted floating panes (the card body the real host renders).
+const floatingHosts = []
+const floatingRecords = new Set()
+/** Re-render every floating pane, as React would after a store change. */
+const rerenderFloating = () => { for (const record of floatingRecords) record.rerender() }
+function mountFloatingPane(record) {
+  if (!record || !record.data || record.data.placement !== 'floating' || typeof record.render !== 'function') return null
+  const refs = []
+  // Like React, a re-render keeps the same host nodes (by position) and hands
+  // them to the ref again; function components run again.
+  let slot = 0
+  const walk = element => {
+    if (!element || typeof element !== 'object') return
+    if (Array.isArray(element)) { element.forEach(walk); return }
+    if (typeof element.type === 'function') { walk(element.type(element.props || {})); return }
+    const props = element.props || {}
+    if (typeof props.ref === 'function' && typeof element.type === 'string') {
+      const existing = refs[slot]
+      slot += 1
+      if (existing) { existing.ref = props.ref; props.ref(existing.host); walk(props.children); return }
+      const host = globalThis.document.createElement(element.type)
+      host.floatingPane = record.id
+      floatingHosts.push(host)
+      refs.push({ ref: props.ref, host })
+      props.ref(host)
+    }
+    walk(props.children)
+  }
+  walk(record.render())
+  record.rerender = () => { slot = 0; walk(record.render()) }
+  floatingRecords.add(record)
+  return () => {
+    floatingRecords.delete(record)
+    for (const { ref, host } of refs) {
+      ref(null)
+      const index = floatingHosts.indexOf(host)
+      if (index >= 0) floatingHosts.splice(index, 1)
+    }
+  }
+}
+const floatingNodes = () => floatingHosts.flatMap(host => host.children)
+
 function renderContribution(contribution) {
   const element = contribution.render()
   assert.ok(element && typeof element === 'object', `contribution ${contribution.id} did not render an element`)
@@ -176,9 +218,13 @@ function makeCtx(settings) {
     register(contribution) {
       const record = { ...contribution, removed: false }
       contributions.push(record)
+      // The host draws placement:'floating' panes as cards; mirror that so the
+      // strip/watch window inside Aura's floating pane is reachable in tests.
+      const unmount = mountFloatingPane(record)
       return () => {
         if (record.removed) return
         record.removed = true
+        if (unmount) unmount()
         const index = contributions.indexOf(record)
         if (index >= 0) contributions.splice(index, 1)
       }
@@ -392,7 +438,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, video: $video, settings: $settings };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, panelHost: typeof panelHostRef === "function" ? panelHostRef : null, video: $video, settings: $settings };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -1426,7 +1472,7 @@ await recordAsync('review 3a: Panel, Page and Window modes put no iframe on docu
     watch.timers.find(t => t.ms === 250).fn()
     await sleep(60)
     assert.equal(hostIframes().length, 0, 'Window mode appended a raw iframe to document.body')
-    const film = filmNodes(renderContribution(watch.contributions.find(c => c.id === 'quick-menu')))
+    const film = filmNodes(renderContribution(watch.contributions.find(c => c.id === 'watch')))
     assert.equal(film.length, 1, 'Window mode did not render AuraFilm for the watch window')
     assert.equal(film[0].props.placement, 'window')
   } finally {
@@ -2339,7 +2385,7 @@ await sleep(80)
 
 
 await recordAsync('video mode mounts the two-row control strip with grip, scrub and close', async () => {
-  const bar = bodyChildren.find(node => node.attributes && node.attributes.role === 'toolbar')
+  const bar = [...bodyChildren, ...floatingNodes()].find(node => node.attributes && node.attributes.role === 'toolbar')
   assert.ok(bar, 'the video control strip never mounted')
   const nodes = []
   const collect = node => {
@@ -2368,7 +2414,10 @@ await recordAsync('video mode mounts the two-row control strip with grip, scrub 
   }
   assert.equal(transport.style.justifyContent, 'center', 'the transport row is not centred')
   assert.equal(bar.style.flexDirection, 'column', 'the strip is not stacked')
-  assert.equal(bar.style.width, '340px', 'the strip lost its half-width shape')
+  // It fills Aura's floating pane, which the host sizes at 340px (review 1).
+  assert.equal(bar.style.width, '100%', 'the strip does not fill its floating pane')
+  const pane = v.contributions.find(c => c.id === 'watch')
+  assert.equal(pane && pane.data.width, '340px', 'the floating pane lost the half-width shape')
   assert.equal(bar.style.opacity, '1', 'the strip must start visible')
 })
 
@@ -2379,7 +2428,7 @@ await recordAsync('video mode mounts the two-row control strip with grip, scrub 
 // from the app's composer markup; a saved free position (with a bottom-centre
 // default from the window size) is the source of truth.
 
-const trayBar = () => bodyChildren.find(node => node.attributes && node.attributes.role === 'toolbar')
+const trayBar = () => [...bodyChildren, ...floatingNodes()].find(node => node.attributes && node.attributes.role === 'toolbar')
 function trayNodes(bar) {
   const nodes = []
   const collect = node => {
@@ -2392,72 +2441,27 @@ function trayNodes(bar) {
   return nodes
 }
 
-record('the tray strip parks bottom-left, clear of the composer, from the window size, not the composer DOM', () => {
+record('review 1: the strip lives in an SDK floating pane, never on document.body', () => {
   const bar = trayBar()
   assert.ok(bar, 'the video control strip never mounted')
-  const wiring = pluginModule.wiringTest
-  assert.equal(typeof wiring.positionVideoBar, 'function', 'positionVideoBar is missing')
-  wiring.positionVideoBar()
-  const left = parseInt(bar.style.left, 10)
-  const top = parseInt(bar.style.top, 10)
-  // The harness window is 1400x900: bottom-left, 150px up so it never covers the composer.
-  assert.equal(left, 24, `the default strip is not bottom-left (left: ${bar.style.left})`)
-  assert.ok(Number.isFinite(top) && top > 500 && top <= 900 - 96 - 150,
-    `the default strip sits over the composer (top: ${bar.style.top})`)
-  assert.equal(bar.style.bottom, 'auto', 'the strip still relies on the old bottom offset')
+  assert.equal(bodyChildren.includes(bar), false, 'the strip was appended to document.body')
+  const pane = v.contributions.find(c => c.id === 'watch')
+  assert.ok(pane, 'no floating pane was registered for the strip')
+  assert.equal(pane.area, 'panes', 'the strip pane is not a PANES_AREA contribution')
+  assert.equal(pane.data.placement, 'floating', 'the strip pane is not floating')
+  assert.equal(pane.data.anchor, 'bottom-left', 'the strip should spawn bottom-left, clear of the composer')
+  assert.ok(floatingNodes().includes(bar), 'the strip is not inside the floating pane')
 })
 
-record('dragging the tray strip grip moves the strip and remembers the drop', () => {
+record('review 1: the host drags the floating pane, so the old grip is hidden and drags nothing', () => {
   const bar = trayBar()
-  const wiring = pluginModule.wiringTest
-  assert.equal(typeof wiring.onStripDragMove, 'function', 'strip drag is missing')
-  wiring.positionVideoBar()
-  const startLeft = parseInt(bar.style.left, 10)
-  const startTop = parseInt(bar.style.top, 10)
   const grip = trayNodes(bar).find(node => node.textContent === '⠿')
-  assert.ok(grip, 'drag grip missing from the strip')
+  assert.ok(grip, 'drag grip node missing')
+  assert.equal(grip.style.display, 'none', 'the old grip still shows beside the host drag header')
   const down = (grip.__handlers.mousedown || [])[0]
-  assert.ok(down, 'the grip has no mousedown handler')
-  down({ clientX: 100, clientY: 100, preventDefault() {} })
-  assert.notEqual(v.storage.get('settings').videoWindow, true,
-    'the grip still converts the film into a watch window')
-  wiring.onStripDragMove({ clientX: 170, clientY: 135 })
-  assert.equal(bar.style.left, `${startLeft + 70}px`, 'the strip did not follow the drag')
-  assert.equal(bar.style.top, `${startTop + 35}px`, 'the strip did not follow the drag vertically')
-  wiring.endStripDrag()
-  const saved = v.storage.get('settings')
-  assert.equal(saved.videoBarX, startLeft + 70, 'the dropped strip x was not remembered')
-  assert.equal(saved.videoBarY, startTop + 35, 'the dropped strip y was not remembered')
-})
-
-record('a dragged tray strip is clamped inside the window and left of the Right panel', () => {
-  // Panel on but collapsed: the strip is the surface, and the panel's 320px
-  // still owns the right edge.
-  const scenario = makeCtx({
-    enabled: true,
-    backdropMode: 'video',
-    windowVisual: true,
-    panelEnabled: true,
-    panelCollapsed: true,
-    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
-  })
-  const dispose = pluginModule.default.register(scenario.ctx)
-  try {
-    const bar = trayBar()
-    const wiring = pluginModule.wiringTest
-    wiring.positionVideoBar()
-    const down = (trayNodes(bar).find(node => node.textContent === '⠿').__handlers.mousedown || [])[0]
-    down({ clientX: 100, clientY: 100, preventDefault() {} })
-    wiring.onStripDragMove({ clientX: 10000, clientY: 10000 })
-    wiring.endStripDrag()
-    const saved = scenario.storage.get('settings')
-    assert.equal(saved.videoBarX, 1400 - 320 - 340 - 8,
-      'the strip can be dragged over the Right panel')
-    assert.equal(saved.videoBarY, 900 - 96 - 8,
-      'the strip can be dragged off the bottom of the window')
-  } finally {
-    dispose()
-  }
+  if (down) down({ clientX: 100, clientY: 100, preventDefault() {} })
+  assert.notEqual(v.storage.get('settings').videoWindow, true, 'the grip still converts the film into a watch window')
+  assert.equal(bodyChildren.includes(bar), false, 'a drag put the strip back on document.body')
 })
 
 // ---------------------------------------------------- watch window size row
@@ -2477,7 +2481,7 @@ sizeCtx.timers.find(t => t.ms === 250).fn()
 await sleep(40)
 
 function watchBar() {
-  const bars = bodyChildren.filter(node => node.attributes && node.attributes.role === 'toolbar')
+  const bars = [...bodyChildren, ...floatingNodes()].filter(node => node.attributes && node.attributes.role === 'toolbar')
   return bars[bars.length - 1]
 }
 function watchNodes(bar) {
@@ -3557,7 +3561,7 @@ await recordAsync('a click on Aura\'s video strip hands focus back with host.com
   try {
     scenario.timers.find(timer => timer.ms === 250).fn()
     await sleep(40)
-    const bars = bodyChildren.filter(node => node.attributes && node.attributes.role === 'toolbar')
+    const bars = [...bodyChildren, ...floatingNodes()].filter(node => node.attributes && node.attributes.role === 'toolbar')
     const bar = bars[bars.length - 1]
     assert.ok(bar, 'the video strip never mounted')
     assert.ok(Array.isArray(bar.__handlers.click) && bar.__handlers.click.length > 0,
@@ -4021,7 +4025,17 @@ await recordAsync('manage playlist opens the real list page in the window', asyn
   const bucket = makeCtx({ enabled: false })
   const dispose = pluginModule.default.register(bucket.ctx)
   const added = (globalThis.document.__handlers.keydown || []).slice(seenBefore)
-  const devStats = () => bodyChildren.find(node => node.attributes && node.attributes.id === 'aura-dev-stats')
+  // Dev stats mount inside Aura's own Right pane, never document.body (review 3).
+  const paneHost = globalThis.document.createElement('div')
+  pluginModule.wiringTest.panelHost(paneHost)
+  const inPane = () => {
+    const out = []
+    const walk = node => { for (const child of (node && node.children) || []) { out.push(child); walk(child) } }
+    walk(paneHost)
+    return out
+  }
+  const devStats = () => inPane().find(node => node.attributes && node.attributes.id === 'aura-dev-stats') ||
+    bodyChildren.find(node => node.attributes && node.attributes.id === 'aura-dev-stats')
   // The shortcut lives on Aura's own panel and strip, never the host document (review ask 2).
   const hotkey = pluginModule.wiringTest.devStatsKey
 
@@ -4034,8 +4048,10 @@ await recordAsync('manage playlist opens the real list page in the window', asyn
   record('D12. Ctrl+Shift+A mounts exactly one dev-stats panel', () => {
     hotkey({ code: 'KeyA', ctrlKey: true, shiftKey: true, altKey: false, metaKey: false, repeat: false, defaultPrevented: false, preventDefault() {} })
     assert.ok(devStats(), 'the hotkey did not mount the dev-stats panel')
-    assert.equal(bodyChildren.filter(node => node.attributes && node.attributes.id === 'aura-dev-stats').length, 1,
+    assert.equal(inPane().filter(node => node.attributes && node.attributes.id === 'aura-dev-stats').length, 1,
       'the hotkey mounted more than one dev-stats panel')
+    assert.equal(bodyChildren.some(node => node.attributes && node.attributes.id === 'aura-dev-stats'), false,
+      'dev stats were appended to document.body')
   })
 
   sdk.failures.accent = 1
