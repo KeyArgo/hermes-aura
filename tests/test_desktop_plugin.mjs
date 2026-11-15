@@ -856,6 +856,16 @@ record('Frosted glass sits with Video strength and Visual opacity', () => {
   assert.equal(body.includes("key: 'frost',"), false, 'the old Window-group Frosted glass row is still there')
 })
 
+// Owner (11-15): with the full-window visual off (the opt-in default) the
+// visualizer looked like it did nothing. The quick card offers it in one click.
+record('the visualizer card offers Show the visual when the window visual is off', () => {
+  const start = source.indexOf('function AuraPaneVisualControls(')
+  const body = source.slice(start, source.indexOf('\n}\n', start))
+  assert.match(body, /settings\.windowVisual === true\s*\? null/, 'the button is not tied to the window visual being off')
+  assert.match(body, /'aria-label': 'Show the visual behind the app'/, 'no Show the visual button in the visualizer card')
+  assert.match(body, /onClick: \(\) => \{ void setWindowVisual\(true\) \}/, 'the button does not switch the window visual on')
+})
+
 // Owner (11-15): the pane embedded the whole Settings page under its own quick
 // controls - duplicate rows, a version line and an ad in a narrow column. The
 // pane now links to the full settings instead.

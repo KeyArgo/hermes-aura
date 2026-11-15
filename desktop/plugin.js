@@ -5525,11 +5525,27 @@ function AuraPaneVisualControls() {
       background: 'linear-gradient(180deg, #16111f 0%, #1b1418 55%, #241a12 100%)',
       color: '#f3ece2', borderRadius: 12, border: '1px solid rgba(255,255,255,0.08)'
     },
-    children: visualControlRows(settings, {
-      row, selectStyle, readout,
-      sliderStyle: { width: 110, accentColor: '#ffbe78' },
-      locked: false, auraTitle: undefined, showTitle: undefined
-    })
+    children: [
+      // The full-window visual is opt-in (it is the backdrop on the app's page,
+      // see #155903). When it is off, say so where people look and make it one
+      // click, instead of a visualizer that seems to do nothing (owner, 11-15).
+      settings.windowVisual === true
+        ? null
+        : jsx(Button, {
+          key: 'show-visual',
+          size: 'sm',
+          variant: 'default',
+          'aria-label': 'Show the visual behind the app',
+          style: { width: '100%', margin: '2px 0 6px' },
+          onClick: () => { void setWindowVisual(true) },
+          children: 'Show the visual behind the app'
+        }),
+      ...[].concat(visualControlRows(settings, {
+        row, selectStyle, readout,
+        sliderStyle: { width: 110, accentColor: '#ffbe78' },
+        locked: false, auraTitle: undefined, showTitle: undefined
+      }))
+    ]
   })
 }
 
