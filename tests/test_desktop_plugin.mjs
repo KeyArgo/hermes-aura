@@ -2416,7 +2416,7 @@ await recordAsync('video mode mounts the two-row control strip with grip, scrub 
   assert.equal(bar.style.flexDirection, 'column', 'the strip is not stacked')
   // It fills Aura's floating pane, which the host sizes at 340px (review 1).
   assert.equal(bar.style.width, '100%', 'the strip does not fill its floating pane')
-  const pane = v.contributions.find(c => c.id === 'watch')
+  const pane = v.contributions.find(c => c.id === 'strip')
   assert.equal(pane && pane.data.width, '340px', 'the floating pane lost the half-width shape')
   assert.equal(bar.style.opacity, '1', 'the strip must start visible')
 })
@@ -2445,7 +2445,7 @@ record('review 1: the strip lives in an SDK floating pane, never on document.bod
   const bar = trayBar()
   assert.ok(bar, 'the video control strip never mounted')
   assert.equal(bodyChildren.includes(bar), false, 'the strip was appended to document.body')
-  const pane = v.contributions.find(c => c.id === 'watch')
+  const pane = v.contributions.find(c => c.id === 'strip')
   assert.ok(pane, 'no floating pane was registered for the strip')
   assert.equal(pane.area, 'panes', 'the strip pane is not a PANES_AREA contribution')
   assert.equal(pane.data.placement, 'floating', 'the strip pane is not floating')

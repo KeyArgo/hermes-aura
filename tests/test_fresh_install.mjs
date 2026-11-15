@@ -574,7 +574,8 @@ const watchFrame = () => {
   const surface = wiring && wiring.surface ? wiring.surface() : null
   return surface && surface.placement === 'window' && wiring.frame ? wiring.frame() : null
 }
-const watchPane = bucket => bucket.contributions.find(c => c.id === 'watch' && c.data && c.data.placement === 'floating')
+// The watch window is 'watch'; the controls strip on its own is 'strip' (the host remembers each separately).
+const watchPane = bucket => bucket.contributions.find(c => (c.id === 'watch' || c.id === 'strip') && c.data && c.data.placement === 'floating')
 const videoBar = () => [...bodyChildren, ...floatingNodes()].find(node => node.attributes && node.attributes.role === 'toolbar')
 
 /** Dispose a scenario instance; a throwing teardown is a real finding, so it
@@ -1834,6 +1835,9 @@ await recordAsync('7. fresh install: Pop out from the page moves the film to the
   rerenderFloating()
   assert.ok(watchFrame(), 'Pop out did not hand the film to the floating watch window')
   assert.ok(watchPane(freshD), 'the watch window is not an SDK floating pane')
+  // Its own card id: the host remembers "collapsed" per id, and a strip the user
+  // once collapsed made every pop-out open collapsed (owner, 11-15).
+  assert.equal(watchPane(freshD).id, 'watch', 'the watch window shares a card id with something else')
   assert.equal(freshD.storage.get('settings').videoWindow, true, 'the watch window was not persisted')
 
   // Bring back: the same single player returns to the page stage.
@@ -1982,7 +1986,7 @@ await recordAsync('15. the floating controls card keeps its strip when the old c
   await sleep(40)
   await tickPoll(g)
   // Tray life: a film playing with the Right panel closed -> the strip lives in a floating card.
-  const pane = g.contributions.find(c => c.area === 'panes' && c.id !== 'watch')
+  const pane = g.contributions.find(c => c.area === 'panes' && c.id !== 'watch' && c.id !== 'strip')
   const card = pageAria(pageTree(g), 'Play Sintel · Blender film')
   assert.ok(card, 'no starter film to play')
   card.props.onClick()
@@ -1995,6 +1999,7 @@ await recordAsync('15. the floating controls card keeps its strip when the old c
   const watch = watchPane(g)
   assert.ok(watch, 'precondition: no floating controls card with the Right panel closed')
   assert.ok(videoBar(), 'precondition: the strip is not on screen')
+  assert.equal(watch.id, 'strip', 'the controls strip shares its card id with the watch window, so a collapsed strip makes pop-outs open collapsed')
 
   assert.equal(typeof watch.unmountCard, 'function', 'precondition: the test host cannot unmount the card on its own')
 

@@ -3335,7 +3335,11 @@ function syncStripPane() {
   unregisterStripPane()
   try {
     const off = ctxRef.register({
-      id: 'watch',
+      // Two ids, because the host remembers position AND "collapsed" per id: a
+      // strip the user once collapsed made every pop-out open collapsed
+      // ("window shade", owner 11-15). The strip and the watch window are
+      // different things to place and to fold.
+      id: watching ? 'watch' : 'strip',
       area: PANES_AREA,
       title: watching ? 'Aura watch window' : 'Aura controls',
       data: {
