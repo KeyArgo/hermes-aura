@@ -3024,9 +3024,20 @@ record('REVAMP_URL is the marketplace root', () => {
   assert.equal(link.props.href, 'https://hermes-agent.nousresearch.com/marketplace')
 })
 
-record('Find in Plugins searches for REVamp via findRevampInPlugins', () => {
+record('Find in Plugins opens Plugins via findRevampInPlugins', () => {
   assert.match(source, /function findRevampInPlugins\s*\(/, 'findRevampInPlugins is missing')
   assert.match(source, /onClick:\s*findRevampInPlugins\b/, 'the button does not call findRevampInPlugins')
+})
+
+// Regression (pre-pin review 11-15): Aura stays out of the host's markup. The only
+// document-level DOM work left is the disclosed full-window backdrop iframe.
+record('no document-wide DOM lookups, and only the backdrop is appended to body', () => {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.doesNotMatch(code, /\b(doc|document)\.querySelector(All)?\(/, 'a document-wide querySelector came back')
+  assert.doesNotMatch(code, /data-catalog-actions|main input/, 'Aura reaches into the host catalog markup again')
+  const appends = code.match(/\b(doc|document)\.body\.(append|appendChild|prepend|insertBefore)\([^)]*\)/g) || []
+  assert.deepEqual(appends, ['doc.body.appendChild(backdropEl)'], `unexpected body appends: ${appends}`)
+  assert.doesNotMatch(code, /createElement\('textarea'\)/, 'a hidden textarea copy came back')
 })
 
 record('REVAMP_ICON is an inline SVG data URL', () => {

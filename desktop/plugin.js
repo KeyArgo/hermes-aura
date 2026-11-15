@@ -6598,10 +6598,11 @@ function AuraQuickMenu() {
                       jsx(Button, {
                         size: 'micro', variant: 'ghost', 'aria-label': 'Apply video URL',
                         title: 'Apply video URL',
-                        onClick: () => {
-                          const field = doc && typeof doc.querySelector === 'function'
-                            ? doc.querySelector('input[aria-label="Video URL"]')
-                            : null
+                        onClick: event => {
+                          // The input beside this button, never a document-wide lookup: the
+                          // Settings page has a "Video URL" box with the same label.
+                          const row = event && event.currentTarget ? event.currentTarget.parentElement : null
+                          const field = row && typeof row.querySelector === 'function' ? row.querySelector('input') : null
                           if (field && typeof field.value === 'string') void applyUrlBox(field.value)
                         },
                         children: '⟳'
@@ -6848,69 +6849,16 @@ function openRevamp() {
   }
 }
 
-/** The Capabilities search field, if the host has rendered it yet. */
-function capabilitiesSearchInput() {
-  if (!doc) return null
-  try {
-    // A text box only: never a checkbox, radio or hidden field near the actions.
-    const textBox = 'input[type="search"], input[type="text"], input:not([type])'
-    const actions = doc.querySelector('[data-catalog-actions]')
-    for (let node = actions; node; node = node.parentElement) {
-      if (typeof node.querySelector !== 'function') continue
-      const input = node.querySelector(textBox)
-      if (input) return input
-    }
-  } catch {
-    // A host without the catalog markup: fall back to the main search box.
-  }
-  try {
-    return doc.querySelector('main input[type="search"], main input[type="text"][placeholder], main input:not([type])[placeholder]')
-  } catch {
-    return null
-  }
-}
-
-/** Open Capabilities > Plugins and type REVamp into its search box so the user
- *  lands on the install row instead of hunting for it. The host has no URL
- *  parameter for that box, so poll for it briefly, then never throw. */
-let revampSearchRun = 0
-
+/** Open Capabilities > Plugins and tell the user what to search for. Aura never
+ *  reaches into the host's catalog markup to type it (catalog review): the
+ *  host's own page and search box stay the host's. */
 function findRevampInPlugins() {
   try {
     host.navigate(REVAMP_PLUGINS_ROUTE)
   } catch {
     // older host without navigate
   }
-  if (!doc) {
-    note('In Plugins, search for "REVamp" to install it.', 6000)
-    return
-  }
-  const started = Date.now()
-  // One search at a time: a second click retires the first click's polling.
-  const run = ++revampSearchRun
-  const tick = () => {
-    if (disposed || run !== revampSearchRun) return
-    try {
-      const input = capabilitiesSearchInput()
-      if (input) {
-        // The click asked for REVamp: replace whatever was in the box.
-        if (input.value !== 'REVamp') {
-          const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value').set
-          setter.call(input, 'REVamp')
-          input.dispatchEvent(new Event('input', { bubbles: true }))
-        }
-        return
-      }
-    } catch {
-      // If the search box cannot be driven, the hint below still helps.
-    }
-    if (Date.now() - started >= 4000) {
-      note('In Plugins, search for "REVamp" to install it.', 6000)
-      return
-    }
-    setShowTimer(tick, 150)
-  }
-  tick()
+  note('In Plugins, search for "REVamp" to install it.', 6000)
 }
 
 /** The card on the Aura page. */
@@ -7716,25 +7664,16 @@ function ThemeProbe() {
 }
 
 // Copy that reports the truth: callers may only say "copied" when this returned true.
+// Clipboard API only: no hidden textarea appended to the host's document.body
+// (catalog review). Where the API is missing the caller says "copy failed".
 async function copyText(text) {
   try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
       await navigator.clipboard.writeText(text)
       return true
     }
-  } catch { /* fall through to the textarea */ }
-  try {
-    const area = document.createElement('textarea')
-    area.value = text
-    area.setAttribute('readonly', '')
-    area.style.position = 'fixed'
-    area.style.opacity = '0'
-    document.body.append(area)
-    area.select()
-    const ok = document.execCommand('copy')
-    area.remove()
-    return ok
-  } catch { return false }
+  } catch { /* reported as a failed copy */ }
+  return false
 }
 
 /** `v1.0.0-dev.57 · 2026-11-09 · a4b7a67d` (+ ` · modified` from a dirty tree). */
