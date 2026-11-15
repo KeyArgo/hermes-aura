@@ -39,7 +39,7 @@ DEFAULTS = {
     # These are first-run defaults only; a saved config keeps its own values
     # and a corrupt/missing key alone falls back here.
     "opacity": 0.4,
-    "behavior": "balanced",
+    "behavior": "calm",
     "mood_reactive": True,
     # Opt-in: the host accent is never repainted unless the user asks for it.
     "accent_pulse": False,

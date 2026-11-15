@@ -159,7 +159,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   // First-run only (owner, 11-13); a saved setting keeps its own value.
   intensity: 0,
   opacity: 0.4,
-  behavior: 'balanced',
+  behavior: 'calm',
   moodReactive: true,
   accentPulse: false,
   autoPreset: true,
