@@ -165,6 +165,9 @@ export const useTheme = () => ({
 })
 export const Button = () => null
 export const Switch = () => null
+// The film is rendered by the SDK's sandboxed frame; the stub only has to
+// resolve so the plugin can import it headlessly.
+export const SandboxedFrame = () => null
 export const Popover = () => null
 export const PopoverTrigger = () => null
 export const PopoverContent = () => null

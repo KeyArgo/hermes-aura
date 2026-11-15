@@ -50,9 +50,11 @@
  * the sidebar row, the palette command and the compact pane) was removed: the
  * backdrop and the Settings page are the product.
  *
- * Host safety: the backdrop iframe, its scoped `#aura-glass` style and the
+ * Host safety: the film in the Right panel, the Aura page and the watch window
+ * is an SDK `SandboxedFrame` rendered inside Aura's own surface. The only raw
+ * iframe is the full-window backdrop, and its scoped `#aura-glass` style and the
  * matching `data-aura-backdrop` attribute on <html> are mounted only behind
- * the opt-in above. Two other pieces of host DOM are Aura's own and go away
+ * the opt-in above (and only while that backdrop is actually showing). Two other pieces of host DOM are Aura's own and go away
  * with dispose: the floating video strip and the explicit Ctrl+Shift+A dev
  * readout (both appended to `body`). No host markup selectors are used to draw
  * the backdrop (colour tokens are read from the root's computed properties; no
@@ -79,6 +81,7 @@ import {
   PopoverTrigger,
   requestTheme,
   ROUTES_AREA,
+  SandboxedFrame,
   setAccentOverride,
   SETTINGS_PLUGINS_AREA,
   SIDEBAR_NAV_AREA,
@@ -89,7 +92,7 @@ import {
   useTheme,
   useValue
 } from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'aura'
@@ -418,7 +421,13 @@ let pollDisposer = null
 let polling = false
 let liveFrame = null // latest /state frame — hot path, deliberately not an atom
 let liveKey = ''
+// The full-window backdrop is the ONE raw iframe Aura mounts on document.body,
+// and it exists only while a full-window backdrop is actually showing (Behind
+// chat, or Visual behind the app). A film in the Right panel, the Aura page or
+// the watch window is a React SandboxedFrame instead; `filmFrame` is that
+// element, adopted so the postMessage transport keeps working.
 let backdropEl = null
+let filmFrame = null
 let backdropUrl = ''
 // What the backdrop page should be showing, independent of the server's port
 // and token: `videoUrl|reducedMotion|mode`. A key change reloads the frame; a
@@ -458,6 +467,10 @@ const $themeApplied = atom(false)
 // it) and the current pulse-dot opacity (recomputed by the poll ticker).
 const $menuOpen = atom(false)
 const $pulse = atom(0)
+// Where the film is drawn right now, as React sees it. `placement` names the
+// surface (panel/page/window) and `src` is the player URL. Recomputed from the
+// same gates the old body iframe used, so exactly one film surface exists.
+const $filmSurface = atom({ placement: '', src: '' })
 // The running build, read once from the backend's /version. An atom (not a constant)
 // because a number typed into this file would drift from the manifest and never say so.
 const $build = atom(null)
@@ -733,6 +746,91 @@ function backdropSrc(url) {
   if (settings.reducedMotion) params.push('reduced-motion=1')
   const separator = url.indexOf('?') === -1 ? '?' : '&'
   return `${url}${separator}${params.join('&')}`
+}
+
+/** The player URL for the film, or '' when there is no film to draw. The pane,
+ *  the page and the watch window all use this same URL the backdrop uses. */
+function filmSrc() {
+  const settings = $settings.get()
+  if (settings.backdropMode !== 'video' || settings.videoClosed || !settings.videoUrl) return ''
+  const url = liveUrl()
+  return url ? backdropSrc(url) : ''
+}
+
+/** Which of Aura's own React surfaces should hold the film: 'window', 'page',
+ *  'panel' or '' when the film is behind the app (the body iframe) or absent. */
+function filmPlacement() {
+  if (!filmSrc()) return ''
+  const settings = $settings.get()
+  const live = $live.get()
+  // Off is off: the pane/page/window film goes with Aura, like the backdrop.
+  const enabled = live.ok ? live.enabled === true : settings.enabled
+  if (!enabled) return ''
+  if (desktopOwned || desktopPending) return ''
+  if (videoWindowOn()) return 'window'
+  if (pageVisible()) return 'page'
+  if (filmInPanel()) return 'panel'
+  return ''
+}
+
+/** Publish the current surface into an atom so every React surface (pane,
+ *  page, status-bar watch window) agrees on where the ONE film lives. */
+function refreshFilmSurface() {
+  const placement = filmPlacement()
+  const src = placement ? filmSrc() : ''
+  const current = $filmSurface.get()
+  if (current.placement !== placement || current.src !== src) {
+    $filmSurface.set({ placement, src })
+  }
+  return placement
+}
+
+/** The film, drawn by the SDK's own SandboxedFrame. Never a raw iframe on
+ *  document.body: a film in a pane/page/window is rendered here, inside the
+ *  surface Aura already owns. The element is adopted into `filmFrame` so the
+ *  existing transport bridge (postToBackdrop/audioCommand/onBackdropMessage)
+ *  keeps working unchanged. */
+function AuraFilm({ placement, src }) {
+  const source = typeof src === 'string' && src ? src : filmSrc()
+  const own = useRef(null)
+  if (!source) return null
+  const fixed = placement !== 'page'
+  useEffect(() => {
+    applyFilmFrameLayout()
+  }, [source, placement])
+  // Never let a late unmount of the OLD surface clear the NEW surface's frame.
+  const attach = node => {
+    if (node) {
+      own.current = node
+      filmFrame = node
+      return
+    }
+    if (own.current && filmFrame === own.current) filmFrame = null
+    own.current = null
+  }
+  return jsx(SandboxedFrame, {
+    src: source,
+    title: 'Aura film',
+    // The SDK's allowlist keeps these tokens; the frame keeps an opaque origin.
+    sandbox: 'allow-scripts allow-presentation',
+    allow: 'autoplay; fullscreen; encrypted-media; picture-in-picture',
+    referrerPolicy: 'no-referrer',
+    style: {
+      width: '100%',
+      height: '100%',
+      border: 0,
+      background: '#000',
+      // The strip/panel controls are the remote: never let the frame eat a
+      // click meant for them.
+      pointerEvents: 'none',
+      ...(fixed
+        ? { position: 'fixed', inset: 0, zIndex: placement === 'window' ? String(WATCH_WINDOW_Z) : String(PANEL_FILM_Z) }
+        : { position: 'absolute', inset: 0, zIndex: '1' }),
+      ...(placement === 'window' ? { borderRadius: 12, boxShadow: '0 14px 40px rgba(0,0,0,0.5)' } : {}),
+      ...(placement === 'panel' ? { borderRadius: 12 } : {})
+    },
+    ref: attach
+  })
 }
 
 // Background-only tokens (never ink: `--ui-base` is the text colour). Big
@@ -1096,8 +1194,39 @@ function returnFocusAfterClick(event) {
   setTimeout(returnFocusToComposer, 0)
 }
 
+/** Is a full-window backdrop actually showing? This is the ONLY reason a raw
+ *  iframe belongs on document.body. A film framed in the pane, the page or the
+ *  watch window is a SandboxedFrame (AuraFilm) and must never create one. */
+function fullWindowBackdropWanted(settings) {
+  if (!doc) return false
+  const current = settings || $settings.get()
+  const framedFilm = current.backdropMode === 'video' && Boolean(current.videoUrl) && !current.videoClosed
+  if (videoWindowOn()) return false
+  if (framedFilm && (pageVisible() || filmInPanel())) return false
+  if (current.backdropMode === 'video') {
+    // The desktop window owns the film; it does not hide the visualiser.
+    if (desktopOwned || desktopPending) return false
+    if (current.videoClosed) return Boolean(current.audioUrl)
+    if (!current.videoUrl) return false
+    // "Behind chat" is the explicit full-window choice.
+    if (current.filmBehind === true) return true
+    // With the Right panel closed, the opted-in window visual is what lets a
+    // film fill the window (the panel is the film's box otherwise).
+    return !panelVisible() && Boolean(current.windowVisual || knownTheme === THEME_NAME)
+  }
+  // "Visual behind the app": the opt-in switch, the Aura Live theme, or the
+  // audio channel (which lives in the same full-window document).
+  return Boolean(current.windowVisual || current.audioUrl || knownTheme === THEME_NAME)
+}
+
 function mountBackdrop(url, opacity) {
   const src = backdropSrc(url)
+  // React owns every framed film now; the body iframe exists only for a real
+  // full-window backdrop. This guard is the invariant, not just a call-site.
+  if (!fullWindowBackdropWanted()) {
+    removeBackdrop()
+    return
+  }
   if (!backdropEl) {
     if (!doc.body || typeof doc.body.appendChild !== 'function') return
     backdropEl = doc.createElement('iframe')
@@ -1239,22 +1368,16 @@ function effectiveVideoOpacity() {
  *  can call it every 250 ms and the backdrop follows the music. */
 function applyVideoOpacity() {
   const settings = $settings.get()
-  if (!backdropEl || settings.backdropMode !== 'video' || settings.showWhen !== 'always') return
-  // The page is a window, not a wash: the film is watched, not read through.
-  if (pageVisible()) {
-    backdropEl.style.opacity = '1'
+  if (settings.backdropMode !== 'video' || settings.showWhen !== 'always') return
+  // Page, pane and watch window are windows, not washes: full strength. Their
+  // frame is AuraFilm (React), whose style already says 1.
+  const placement = $filmSurface.get().placement
+  if (placement === 'panel' || placement === 'page' || placement === 'window') {
+    if (filmFrame && filmFrame.style) filmFrame.style.opacity = '1'
     return
   }
-  if (videoWindowOn()) {
-    backdropEl.style.opacity = '1'
-    return
-  }
-  // So is the Right panel. Without this the tick pulled the pane film back to the
-  // see-through level a moment after mount set it to full, and it pulsed.
-  if (filmInPanel()) {
-    backdropEl.style.opacity = '1'
-    return
-  }
+  // Only the full-window backdrop follows the adaptive strength.
+  if (!backdropEl) return
   backdropEl.style.opacity = String(effectiveVideoOpacity())
 }
 
@@ -1276,6 +1399,8 @@ function backdropOpacity(settings) {
  *  the "Show" mode. In "active" mode the fade state machine owns mounting. */
 function syncBackdrop() {
   const settings = $settings.get()
+  // Decide first where the film lives, so React and the transport agree.
+  refreshFilmSurface()
   // A closed film normally means no backdrop, but the audio channel still
   // needs a document to live in while music is on.
   if (settings.backdropMode === 'video' && settings.videoClosed && !settings.audioUrl) {
@@ -1283,12 +1408,20 @@ function syncBackdrop() {
     removeBackdrop()
     return
   }
-  // The page is an explicit watch surface: while it is open the film stays
-  // mounted at full strength, whatever the fade state machine says, and goes
-  // back to the "only while active" rules when it closes.
+  // The page is an explicit watch surface: AuraFilm draws the film in the page
+  // stage, so the body iframe has no job. It goes back to the "only while
+  // active" rules when the page closes.
   if (pageFilmWanted()) {
     resetShow()
-    mountBackdrop(liveUrl(), 1)
+    removeBackdrop()
+    return
+  }
+  // A film in the Right panel or the watch window is a SandboxedFrame too.
+  // The body iframe must not exist while either one is showing it.
+  if (settings.backdropMode === 'video' && !settings.videoClosed && settings.videoUrl &&
+      (filmInPanel() || videoWindowOn() || desktopOwned || desktopPending)) {
+    resetShow()
+    removeBackdrop()
     return
   }
   if (!showEligible()) {
@@ -1300,11 +1433,12 @@ function syncBackdrop() {
   // belongs to the Aura visual, never to a movie.
   if (playingFilmAlwaysShows(settings)) {
     resetShow()
-    mountBackdrop(liveUrl(), backdropOpacity(settings))
+    if (fullWindowBackdropWanted(settings)) mountBackdrop(liveUrl(), backdropOpacity(settings))
+    else removeBackdrop()
     return
   }
   if (settings.showWhen === 'active') {
-    if (!showVisible) {
+    if (!showVisible || !fullWindowBackdropWanted(settings)) {
       removeBackdrop()
       return
     }
@@ -1312,10 +1446,12 @@ function syncBackdrop() {
     return
   }
   resetShow()
-  mountBackdrop(liveUrl(), backdropOpacity(settings))
+  if (fullWindowBackdropWanted(settings)) mountBackdrop(liveUrl(), backdropOpacity(settings))
+  else removeBackdrop()
 }
 
 function applyShowOpacity() {
+  // The fade state machine belongs to the full-window Aura visual only.
   if (backdropEl) backdropEl.style.opacity = String(clamp01(showOpacity))
 }
 
@@ -1389,9 +1525,9 @@ function beginFadeOut() {
  *  Short gaps between tool calls stay inside the hysteresis window. */
 function updateShow() {
   if (disposed) return
-  // A page that is open is a watch surface: the film stays at full strength and
-  // the "only while active" fade machine must not dim or remove it.
-  if (pageFilmWanted()) {
+  // A page, pane or watch window is a watch surface: the film stays at full
+  // strength and the "only while active" fade machine must not dim or remove it.
+  if (pageFilmWanted() || (filmSrc() && filmPlacement())) {
     resetShow()
     return
   }
@@ -1406,6 +1542,11 @@ function updateShow() {
   // visual gets the owner's own choice back when the film is done.
   if (playingFilmAlwaysShows(settings)) {
     resetShow()
+    return
+  }
+  if (!fullWindowBackdropWanted(settings)) {
+    resetShow()
+    removeBackdrop()
     return
   }
   if (settings.showWhen !== 'active') {
@@ -2048,6 +2189,8 @@ async function setEnabled(next) {
     saveCurrentPosition()
     resetShow()
     removeBackdrop()
+    // The pane/page/window film goes with Aura now, not one poll later.
+    $filmSurface.set({ placement: '', src: '' })
     removeVideoBar()
     clearAccent(true)
     restoreTheme()
@@ -2065,6 +2208,7 @@ async function setEnabled(next) {
   const ok = await pushControl({ enabled })
   if (ok) {
     setLive({ enabled, error: '' })
+    refreshFilmSurface()
     void poll()
   }
 }
@@ -2238,6 +2382,8 @@ function setVideoOpacity(value) {
   const videoOpacity = clamp01(Number(value))
   writeSettings({ videoOpacity, videoOpacityAuto: false })
   applyVideoOpacity()
+  // Strength is the full-window film's setting; a pane/page/window film is
+  // always full strength (applyVideoOpacity above leaves it at 1).
   if (backdropEl) backdropEl.style.opacity = String(videoOpacity)
 }
 
@@ -2269,6 +2415,9 @@ function setVideoVolume(value) {
 function setVideoWindow(on) {
   if (!ctxRef || disposed) return
   writeSettings({ videoWindow: Boolean(on) })
+  // The watch window is a SandboxedFrame; take the body iframe down now rather
+  // than waiting for the next poll tick.
+  syncBackdrop()
   applyBackdropLayout()
   applyVideoOpacity()
   positionVideoBar()
@@ -2305,6 +2454,7 @@ function closeVideo() {
   writeSettings({ videoClosed: true })
   resetShow()
   removeBackdrop()
+  refreshFilmSurface()
   removeVideoBar()
   syncThemeForActivity()
 }
@@ -2515,12 +2665,31 @@ function postToDesktop(message) {
   return true
 }
 
+/** The frame that is actually showing the film right now. A SandboxedFrame
+ *  (pane/page/watch window) wins when the surface says so; otherwise the
+ *  full-window backdrop document is the live one. */
+function liveFilmFrame() {
+  if ($filmSurface.get().placement && filmFrame && filmFrame.contentWindow) return filmFrame
+  if (backdropEl && backdropEl.contentWindow) return backdropEl
+  return null
+}
+
+/** Where to deliver a message. The full-window backdrop has the Aura server's
+ *  real origin, so name it. A SandboxedFrame deliberately has an OPAQUE origin
+ *  (`allow-same-origin` is not in its posture), which cannot be named as a
+ *  targetOrigin; '*' is required, and the receiver is still authenticated by
+ *  the `event.source === frame.contentWindow` check in onBackdropMessage. */
+function frameMessageOrigin(frame) {
+  return frame === filmFrame ? '*' : frameTargetOrigin()
+}
+
 /** Post straight into the in-app frame, wherever the film is being watched. */
 function postToFrame(message) {
   try {
-    const win = backdropEl && backdropEl.contentWindow
+    const frame = liveFilmFrame()
+    const win = frame && frame.contentWindow
     if (!win) return false
-    win.postMessage({ aura: 'transport', ...message }, frameTargetOrigin())
+    win.postMessage({ aura: 'transport', ...message }, frameMessageOrigin(frame))
     return true
   } catch {
     return false
@@ -2626,9 +2795,10 @@ function readAudioSettings(raw) {
 /** Send one command to the audio channel in the backdrop document. */
 function audioCommand(message) {
   try {
-    const win = backdropEl && backdropEl.contentWindow
+    const frame = liveFilmFrame()
+    const win = frame && frame.contentWindow
     if (!win) return false
-    win.postMessage({ aura: 'audio', ...message }, frameTargetOrigin())
+    win.postMessage({ aura: 'audio', ...message }, frameMessageOrigin(frame))
     lastAudioCommand = { ...message, at: Date.now() }
     return true
   } catch {
@@ -2953,8 +3123,11 @@ async function skipBlockedEpisode(reason) {
 
 /** player.html posts its transport state here (<= 4 Hz + on change). */
 function onBackdropMessage(event) {
-  if (disposed || !event || !backdropEl) return
-  if (event.source !== backdropEl.contentWindow) return
+  if (disposed || !event) return
+  // Only a live Aura film frame may drive the player/audio state: either the
+  // SandboxedFrame on the pane/page/watch window, or the full-window backdrop.
+  const live = [filmFrame, backdropEl].filter(Boolean)
+  if (!live.some(frame => frame.contentWindow && event.source === frame.contentWindow)) return
   const data = event.data
   // [listen lane] The audio channel reports through the same bridge. Its own
   // mute/volume are never folded into the video's.
@@ -3211,76 +3384,54 @@ function videoWindowPoint(width) {
   }
 }
 
-function applyBackdropLayout() {
-  if (!backdropEl) return
-  // Mid-drag the style is the truth; re-applying the saved point would fight it.
-  if (windowDrag) return
-  const style = backdropEl.style
-  const current = $settings.get()
-  // A popped-out OS window owns the picture: the in-app frame is parked, not
-  // shrunk into a corner. One film, one surface. Only the film: in visualiser
-  // mode the frame is the visualiser, which the desktop film must not hide.
-  if ((desktopOwned || desktopPending) && current.backdropMode === 'video') {
-    style.display = 'none'
-    style.width = '0px'
-    style.height = '0px'
+function applyFilmFrameLayout() {
+  const el = filmFrame
+  if (!el || !el.style) return
+  const placement = $filmSurface.get().placement
+  const style = el.style
+  if (placement === 'page') {
+    // Rendered inside the page's stage; fill it and let the stage clip corners.
+    style.position = 'absolute'
+    style.inset = '0'
+    style.left = '0'
+    style.top = '0'
+    style.right = 'auto'
+    style.bottom = 'auto'
+    style.width = '100%'
+    style.height = '100%'
+    style.borderRadius = '0'
+    style.border = '0'
+    style.boxShadow = 'none'
+    style.clipPath = 'none'
+    style.zIndex = '1'
+    style.WebkitAppRegion = 'no-drag'
     return
   }
-  style.display = ''
-  style.clipPath = 'none'
-  // The full page's stage outranks everything: it is the one place the film is
-  // meant to be watched, and the page is only open while the user is there.
-  if (pageVisible() && current.backdropMode === 'video' && !current.videoClosed) {
-    const slot = pageVideoSlot()
-    if (slot) {
-      style.inset = 'auto'
-      style.left = `${Math.round(slot.left)}px`
-      style.top = `${Math.round(slot.top)}px`
-      style.width = `${Math.round(slot.width)}px`
-      style.height = `${Math.round(slot.height)}px`
-      style.right = 'auto'
-      style.bottom = 'auto'
-      style.borderRadius = '12px'
-      style.border = '0'
-      style.boxShadow = 'none'
-      style.overflow = 'hidden'
-      // Above the page's own content, below host popovers: a page frame, not an
-      // app-wide overlay. Still click-through; the page's controls are the remote.
-      style.zIndex = '1'
-      style.background = '#000'
-      style.WebkitAppRegion = 'no-drag'
-      return
-    }
-  }
-  // Docked panel: the film lives inside the panel's stage, not behind the app.
-  if (filmInPanel() && !current.videoClosed && !videoWindowOn()) {
+  if (placement === 'panel') {
     const slot = panelVideoSlot()
-    if (slot) {
-      style.inset = 'auto'
-      style.left = `${Math.round(slot.left)}px`
-      style.top = `${Math.round(slot.top)}px`
-      style.width = `${Math.round(slot.width)}px`
-      style.height = `${Math.round(slot.height)}px`
-      style.right = 'auto'
-      style.bottom = 'auto'
-      style.borderRadius = '12px'
-      style.border = '0'
-      style.boxShadow = 'none'
-      style.overflow = 'hidden'
-      // Above the pane's own content, below the host's menus and popovers (z-50):
-      // the status-bar Aura menu opens over the Right panel and must stay on top.
-      style.zIndex = String(PANEL_FILM_Z)
-      // Trimmed to the visible pane, so a scrolled pane never draws the film
-      // over the status bar or the title bar.
-      style.clipPath = panelClipPath(slot)
-      style.background = '#000'
-      style.WebkitAppRegion = 'no-drag'
-      return
-    }
+    if (!slot) return
+    style.position = 'fixed'
+    style.inset = 'auto'
+    style.left = `${Math.round(slot.left)}px`
+    style.top = `${Math.round(slot.top)}px`
+    style.width = `${Math.round(slot.width)}px`
+    style.height = `${Math.round(slot.height)}px`
+    style.right = 'auto'
+    style.bottom = 'auto'
+    style.borderRadius = '12px'
+    style.border = '0'
+    style.boxShadow = 'none'
+    style.overflow = 'hidden'
+    // Above the pane's own content, below the host's menus and popovers (z-50).
+    style.zIndex = String(PANEL_FILM_Z)
+    style.clipPath = panelClipPath(slot)
+    style.WebkitAppRegion = 'no-drag'
+    return
   }
-  if (videoWindowOn()) {
+  if (placement === 'window') {
     const width = videoWindowWidth()
     const point = videoWindowPoint(width)
+    style.position = 'fixed'
     style.inset = 'auto'
     style.left = `${point.x}px`
     style.top = `${point.y}px`
@@ -3292,29 +3443,46 @@ function applyBackdropLayout() {
     style.border = '1px solid rgba(255,255,255,0.16)'
     style.boxShadow = '0 14px 40px rgba(0,0,0,0.5)'
     style.overflow = 'hidden'
-    // Above the app so the film is not read through by chat text, below the
-    // host's menus (z-50) so the status-bar Aura menu still opens over it.
-    // Still click-through: the strip is the remote.
     style.zIndex = String(WATCH_WINDOW_Z)
-    style.background = '#000'
+    style.clipPath = 'none'
     // Near the top, the host's title-bar drag strip would eat clicks on it.
     style.WebkitAppRegion = 'no-drag'
-  } else {
-    style.inset = '0'
-    style.left = '0'
-    style.right = 'auto'
-    style.bottom = 'auto'
-    style.width = '100vw'
-    style.height = '100vh'
-    style.borderRadius = '0'
-    style.border = '0'
-    style.boxShadow = 'none'
-    style.overflow = 'visible'
-    style.zIndex = '-1'
-    style.background = 'transparent'
-    // Full window: never no-drag, or the whole window could no longer be dragged.
-    style.WebkitAppRegion = ''
   }
+}
+
+function applyBackdropLayout() {
+  refreshFilmSurface()
+  applyFilmFrameLayout()
+  // The body iframe is only ever the full-window backdrop now.
+  if (!backdropEl) return
+  // Mid-drag the style is the truth; re-applying the saved point would fight it.
+  if (windowDrag) return
+  const style = backdropEl.style
+  const current = $settings.get()
+  // A popped-out OS window owns the picture: the in-app frame is parked, not
+  // shrunk into a corner.
+  if ((desktopOwned || desktopPending) && current.backdropMode === 'video') {
+    style.display = 'none'
+    style.width = '0px'
+    style.height = '0px'
+    return
+  }
+  style.display = ''
+  style.clipPath = 'none'
+  style.inset = '0'
+  style.left = '0'
+  style.right = 'auto'
+  style.bottom = 'auto'
+  style.width = '100vw'
+  style.height = '100vh'
+  style.borderRadius = '0'
+  style.border = '0'
+  style.boxShadow = 'none'
+  style.overflow = 'visible'
+  style.zIndex = '-1'
+  style.background = 'transparent'
+  // Full window: never no-drag, or the whole window could no longer be dragged.
+  style.WebkitAppRegion = ''
 }
 
 function positionVideoBar() {
@@ -5020,6 +5188,7 @@ function panelHostRef(node) {
  *  whole column scrolls when it is taller than the window. */
 function AuraPane() {
   const settings = useValue($settings)
+  const surface = useValue($filmSurface)
   if (settings.panelEnabled === false) return null
   const open = settings.panelSettingsOpen === true
   const theatre = jsx('div', {
@@ -5066,13 +5235,19 @@ function AuraPane() {
   const visualSection = settings.backdropMode === 'video'
     ? null
     : jsx(AuraPaneVisualControls, { key: 'visual' })
+  // The film stage is built imperatively inside `theatre`; the film itself is a
+  // SandboxedFrame rendered here (review ask 3) and laid over that stage by
+  // applyFilmFrameLayout. Exactly one surface renders it: see filmPlacement().
+  const film = surface.placement === 'panel'
+    ? jsx(AuraFilm, { key: 'film', placement: 'panel', src: surface.src })
+    : null
   return jsxs('div', {
     key: 'pane',
     style: {
       height: '100%', minHeight: 0, overflowY: 'auto',
       display: 'flex', flexDirection: 'column'
     },
-    children: [theatre, visualSection, settingsSection]
+    children: [theatre, film, visualSection, settingsSection]
   })
 }
 
@@ -5119,6 +5294,8 @@ function setPanelEnabled(on) {
   if (!ctxRef || disposed) return
   const next = Boolean(on)
   writeSettings({ panelEnabled: next })
+  refreshFilmSurface()
+  syncBackdrop()
   if (next) {
     registerPanelPane(true)
     syncPanel(true)
@@ -5769,6 +5946,7 @@ function AuraQuickMenu() {
   const live = useValue($live)
   const pulse = useValue($pulse)
   const videoState = useValue($video)
+  const surface = useValue($filmSurface)
   const useHostNav = host && typeof host.navigate === 'function'
   // Server flag wins while it answers, exactly like syncBackdrop does.
   const auraOn = live.ok ? live.enabled === true : settings.enabled
@@ -6382,7 +6560,13 @@ function AuraQuickMenu() {
       // Inside the popover root but outside its content, so it stays on the bar
       // while the dropdown portals away; same setBackdropMode as everywhere else.
       jsx(AuraStatusPower, { key: 'power' }),
-      jsx(AuraStatusMode, { key: 'mode' })
+      jsx(AuraStatusMode, { key: 'mode' }),
+      // The watch window is a SandboxedFrame, not a body iframe. It is drawn
+      // here because the status-bar contribution stays mounted even when the
+      // Right panel is off, and the watch window is independent of it.
+      surface.placement === 'window'
+        ? jsx(AuraFilm, { key: 'watch', placement: 'window', src: surface.src })
+        : null
     ]
   })
 }
@@ -6428,6 +6612,7 @@ function pageStageRef(node) {
   if (!doc || disposed) return
   // Entering the page is a reason to mount the film; leaving it hands the film
   // back to the pane, the watch window or the backdrop.
+  refreshFilmSurface()
   syncBackdrop()
   applyBackdropLayout()
   applyVideoOpacity()
@@ -6965,6 +7150,7 @@ function AuraPage() {
   const settings = useValue($settings)
   const live = useValue($live)
   const state = useValue($video)
+  const surface = useValue($filmSurface)
   const auraOn = live.ok ? live.enabled === true : settings.enabled
   const playing = state.playing === true
   // The film is a fixed-position frame glued to this stage's rect, so the rect
@@ -7017,18 +7203,23 @@ function AuraPage() {
       background: 'radial-gradient(circle at 50% 40%, #221a2e, #0d0a12 75%)',
       boxShadow: 'inset 0 0 40px rgba(255,150,80,0.06), 0 10px 30px rgba(0,0,0,0.35)'
     },
-    children: hint
-      ? jsx('div', {
-        key: 'hint',
-        className: 'aura-hint',
-        style: {
-          position: 'absolute', inset: 0, display: 'flex',
-          alignItems: 'center', justifyContent: 'center', textAlign: 'center',
-          padding: 16, fontSize: 12, color: '#cfc4b8'
-        },
-        children: hint
-      })
-      : null
+    children: [
+      hint
+        ? jsx('div', {
+          key: 'hint',
+          className: 'aura-hint',
+          style: {
+            position: 'absolute', inset: 0, display: 'flex',
+            alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+            padding: 16, fontSize: 12, color: '#cfc4b8'
+          },
+          children: hint
+        })
+        : null,
+      surface.placement === 'page'
+        ? jsx(AuraFilm, { key: 'film', placement: 'page', src: surface.src })
+        : null
+    ]
   })
 
   const scrub = jsxs('div', {
@@ -8186,6 +8377,8 @@ function teardown() {
   // disable or hot reload never leaves music playing with no Aura on screen.
   audioCommand({ cmd: 'stop' })
   removeBackdrop()
+  filmFrame = null
+  $filmSurface.set({ placement: '', src: '' })
   pageStageEl = null
   removeVideoBar()
   disposePaneRegistration()
@@ -8269,6 +8462,8 @@ export default {
     $themeApplied.set(false)
     $menuOpen.set(false)
     $pulse.set(0)
+    $filmSurface.set({ placement: '', src: '' })
+    filmFrame = null
     pulseIndex = 0
     resetShow()
     closeDevStats()

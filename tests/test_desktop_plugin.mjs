@@ -459,6 +459,30 @@ export const useTheme = () => ({
 export const Button = () => null
 export const Switch = () => null
 export const StatusDot = () => null
+
+// SandboxedFrame stand-in: records its props and hands the test a frame element
+// with a contentWindow, so the plugin's postMessage transport can be exercised
+// without a renderer.
+export const frames = []
+export const SandboxedFrame = props => {
+  const posted = []
+  const node = {
+    tagName: 'IFRAME',
+    src: props.src,
+    style: { ...(props.style || {}) },
+    dataset: {},
+    attributes: {},
+    contentWindow: {
+      posted,
+      postMessage: (message, origin) => posted.push({ message, origin })
+    },
+    getBoundingClientRect: () => ({ width: 320, height: 180, left: 10, top: 20, right: 330, bottom: 200 })
+  }
+  frames.push({ props, node })
+  if (typeof props.ref === 'function') props.ref(node)
+  else if (props.ref && typeof props.ref === 'object') props.ref.current = node
+  return node
+}
 // Host popover used by the status-bar quick menu; the real one owns
 // Escape/outside-click/focus, the stub just has to exist so the plugin's
 // import resolves and the descriptor tree can be walked.
@@ -674,6 +698,25 @@ function collectText(node, out) {
   return out
 }
 const texts = element => collectText(element, []).join('\n')
+// AuraFilm descriptors carry the surface they belong to. Finding one proves the
+// pane/page/watch-window film is an SDK SandboxedFrame, not a body iframe.
+const filmNodes = tree => {
+  const found = []
+  walk(tree, node => {
+    if (node.props && ['panel', 'page', 'window'].includes(node.props.placement) &&
+        typeof node.type === 'function') {
+      found.push(node)
+    }
+  })
+  return found
+}
+// Render just the AuraFilm component and its SandboxedFrame, so the stub hands
+// back the frame element and its contentWindow.
+const mountFilm = node => {
+  const film = renderContribution({ render: () => node })
+  const frame = film && film.type === sdk.SandboxedFrame ? sdk.SandboxedFrame(film.props) : null
+  return { film, frame }
+}
 const findSwitch = (tree, label) => {
   let found = null
   walk(tree, node => {
@@ -1274,10 +1317,13 @@ const newestGlassCss = () => {
   })
   const dispose = pluginModule.default.register(panelled.ctx)
   await sleep(30)
-  record('D6. a film framed in the Right panel never mounts the glass', () => {
-    assert.equal(hostIframes().length, 1, 'the panel film did not mount')
+  record('D6. a film framed in the Right panel never mounts the glass or a body iframe', () => {
+    assert.equal(hostIframes().length, 0, 'the pane film was appended to document.body')
     assert.equal(glassStyles().length, 0, 'the glass style exists over a panel film')
     assert.equal(rootHasBackdrop(), false, 'the scoping attribute exists over a panel film')
+    const film = filmNodes(renderContribution(panelled.contributions.find(c => c.id === 'panel')))
+    assert.equal(film.length, 1, 'the panel film is not a SandboxedFrame in AuraPane')
+    assert.match(film[0].props.src, /\/player\.html/, 'the pane frame is not on the player page')
   })
   dispose()
 }
@@ -1314,10 +1360,129 @@ const newestGlassCss = () => {
     assert.equal(glassStyles().length, 0, 'the glass style survived the failed load')
     assert.equal(rootHasBackdrop(), false, 'the scoping attribute survived the failed load')
     assert.equal(failing.storage.get('settings').filmBehind, false, 'the film did not fall back to the Right panel')
-    assert.equal(hostIframes().length, 1, 'the film frame was torn down instead of moving into the panel')
+    assert.equal(hostIframes().length, 0, 'the failed full-window iframe survived instead of handing over')
+    const film = filmNodes(renderContribution(failing.contributions.find(c => c.id === 'panel')))
+    assert.equal(film.length, 1, 'the film did not move into the Right panel as a SandboxedFrame')
   })
   dispose()
 }
+
+// ------------------------------------------------------- review 3: frames
+// The SDK SandboxedFrame is the film's home in the pane, the page and the watch
+// window. The raw body iframe survives ONLY as the full-window backdrop
+// ("Behind chat" / "Visual behind the app"), which has no SDK slot yet.
+
+await recordAsync('review 3a: Panel, Page and Window modes put no iframe on document.body', async () => {
+  // Panel.
+  const panel = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, windowVisual: false,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  let dispose = pluginModule.default.register(panel.ctx)
+  try {
+    panel.timers.find(t => t.ms === 250).fn()
+    await sleep(60)
+    assert.equal(hostIframes().length, 0, 'Panel mode appended a raw iframe to document.body')
+    const film = filmNodes(renderContribution(panel.contributions.find(c => c.id === 'panel')))
+    assert.equal(film.length, 1, 'Panel mode did not render AuraFilm in the pane')
+    assert.equal(film[0].props.placement, 'panel')
+  } finally {
+    dispose()
+  }
+
+  // Page: the stage ref makes the page the film's surface.
+  const page = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: false, windowVisual: false,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  dispose = pluginModule.default.register(page.ctx)
+  try {
+    page.timers.find(t => t.ms === 250).fn()
+    await sleep(40)
+    const route = page.contributions.find(c => c.area === 'routes')
+    let tree = renderContribution(route)
+    let stageRef = null
+    walk(tree, node => {
+      if (!stageRef && node.props && typeof node.props.ref === 'function') stageRef = node.props.ref
+    })
+    assert.equal(typeof stageRef, 'function', 'the page has no stage ref')
+    stageRef({ getBoundingClientRect: () => ({ left: 40, top: 60, width: 800, height: 450 }) })
+    tree = renderContribution(page.contributions.find(c => c.area === 'routes'))
+    assert.equal(hostIframes().length, 0, 'Page mode appended a raw iframe to document.body')
+    const film = filmNodes(tree)
+    assert.equal(film.length, 1, 'Page mode did not render AuraFilm in the stage')
+    assert.equal(film[0].props.placement, 'page')
+  } finally {
+    dispose()
+  }
+
+  // Watch window.
+  const watch = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: false, videoWindow: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  dispose = pluginModule.default.register(watch.ctx)
+  try {
+    watch.timers.find(t => t.ms === 250).fn()
+    await sleep(60)
+    assert.equal(hostIframes().length, 0, 'Window mode appended a raw iframe to document.body')
+    const film = filmNodes(renderContribution(watch.contributions.find(c => c.id === 'quick-menu')))
+    assert.equal(film.length, 1, 'Window mode did not render AuraFilm for the watch window')
+    assert.equal(film[0].props.placement, 'window')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('review 3b: Behind chat shows exactly one body iframe, and no SDK film', async () => {
+  const behind = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, filmBehind: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  const dispose = pluginModule.default.register(behind.ctx)
+  try {
+    behind.timers.find(t => t.ms === 250).fn()
+    await sleep(60)
+    const frames = hostIframes()
+    assert.equal(frames.length, 1, `Behind chat must own exactly one body iframe (got ${frames.length})`)
+    const src = String(frames[0].src || (frames[0].attributes && frames[0].attributes.src) || '')
+    assert.match(src, /\/player\.html/, 'the body iframe is not the player page')
+    const pane = renderContribution(behind.contributions.find(c => c.id === 'panel'))
+    assert.equal(filmNodes(pane).length, 0, 'Behind chat also rendered a SandboxedFrame film')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('review 3c: transport and audio posts reach the SandboxedFrame window', async () => {
+  const panel = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, windowVisual: false,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  const dispose = pluginModule.default.register(panel.ctx)
+  try {
+    panel.timers.find(t => t.ms === 250).fn()
+    await sleep(60)
+    const film = filmNodes(renderContribution(panel.contributions.find(c => c.id === 'panel')))
+    assert.equal(film.length, 1, 'no pane film to drive')
+    const { frame } = mountFilm(film[0])
+    assert.ok(frame, 'AuraFilm did not render a SandboxedFrame')
+    assert.ok(pluginModule.wiringTest.post({ cmd: 'pause' }), 'the transport post did not reach the SandboxedFrame')
+    pluginModule.wiringTest.audio({ cmd: 'mute' })
+    const posts = frame.contentWindow.posted
+    assert.ok(posts.some(entry => entry.message && entry.message.aura === 'transport' && entry.message.cmd === 'pause'),
+      'transport did not arrive at the SandboxedFrame window')
+    assert.ok(posts.some(entry => entry.message && entry.message.aura === 'audio' && entry.message.cmd === 'mute'),
+      'audio did not arrive at the SandboxedFrame window')
+    for (const entry of posts) {
+      // SandboxedFrame has an opaque origin; '*' is required, source is checked.
+      assert.equal(entry.origin, '*', `posted to ${entry.origin} instead of the opaque frame`)
+    }
+    assert.equal(hostIframes().length, 0, 'the framed film also created a body iframe')
+  } finally {
+    dispose()
+  }
+})
 
 {
   const root = globalThis.document.documentElement
@@ -2389,12 +2554,15 @@ pluginModule.default.register(paneOnly.ctx)
 paneOnly.timers.find(t => t.ms === 250).fn()
 await sleep(80)
 
-await recordAsync('the docked pane alone mounts the film', () => {
-  assert.ok(hostIframes().length >= 1, 'nothing mounted with the default settings: the pane would be empty')
-  // Opacity is not asserted here: the pane's placement depends on a real
-  // getBoundingClientRect, which the fake DOM does not provide, so the frame
-  // falls back to the backdrop branch in this harness. `backdropOpacity()`
-  // returns 1 whenever the pane is showing — verified in the app, not here.
+await recordAsync('the docked pane alone mounts the film as a SandboxedFrame', () => {
+  assert.equal(hostIframes().length, 0, 'the pane film was appended to document.body')
+  const film = filmNodes(renderContribution(paneOnly.contributions.find(c => c.id === 'panel')))
+  assert.equal(film.length, 1, 'nothing mounted with the default settings: the pane would be empty')
+  assert.match(film[0].props.src, /\/player\.html/, 'the pane frame is not on the player page')
+  const { frame } = mountFilm(film[0])
+  assert.ok(frame, 'the pane film did not render a SandboxedFrame')
+  // A film in the pane is a window, not a wash: full strength.
+  assert.equal(String(frame.style.opacity ?? '1'), '1', 'the pane film follows the see-through setting')
 })
 
 // ------------------------------------- surfaces without the Right panel
@@ -2420,7 +2588,7 @@ async function surfaceScenario(settings) {
   const all = hostIframes()
   const films = all.filter(node => frameSrc(node).includes('/player.html'))
   const visuals = all.filter(node => frameSrc(node) && !frameSrc(node).includes('/player.html'))
-  return { films, visuals, all, dispose }
+  return { scenario, films, visuals, all, dispose }
 }
 
 await recordAsync('with the Right panel closed, the opted-in visualiser fills the window', async () => {
@@ -2612,7 +2780,7 @@ await recordAsync('no glass while the film is framed in the Right panel, even wi
     videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
   })
   try {
-    assert.equal(films.length, 1, 'the pane film did not mount')
+    assert.equal(films.length, 0, 'the pane film was appended to document.body')
     assert.equal(glassStyles().length, 0, 'the app surfaces were cleared with nothing behind them')
   } finally {
     dispose()
@@ -2623,13 +2791,16 @@ await recordAsync('a film in the Right panel is always full strength', async () 
   // See-through is for the film behind the app. Inside its own box a 75% film is
   // a dim player, and the 250 ms tick used to pull it back to 75% after mount set
   // it to 100%, so the picture visibly pulsed.
-  const { films, dispose } = await surfaceScenario({
+  const { scenario, films, dispose } = await surfaceScenario({
     enabled: true, backdropMode: 'video', panelEnabled: true,
     videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ', videoOpacity: 0.75, videoOpacityAuto: false
   })
   try {
-    assert.equal(films.length, 1, 'the pane film did not mount')
-    assert.equal(String(films[0].style.opacity), '1', 'the pane film follows the see-through setting')
+    assert.equal(films.length, 0, 'the pane film was appended to document.body')
+    const film = filmNodes(renderContribution(scenario.contributions.find(c => c.id === 'panel')))
+    assert.equal(film.length, 1, 'the pane film did not mount')
+    const { frame } = mountFilm(film[0])
+    assert.equal(String(frame.style.opacity ?? '1'), '1', 'the pane film follows the see-through setting')
   } finally {
     dispose()
   }
@@ -2763,7 +2934,9 @@ const renderDeep = node => {
   if (node === null || node === undefined) return node
   if (Array.isArray(node)) return node.map(renderDeep)
   if (typeof node !== 'object' || !('type' in node) || !('props' in node)) return node
-  if (typeof node.type === 'function' && !SDK_COMPONENTS.has(node.type)) {
+  // AuraFilm carries the surface placement the tests need to see; leave it as a
+  // descriptor and render it explicitly with mountFilm().
+  if (typeof node.type === 'function' && node.type.name !== 'AuraFilm' && !SDK_COMPONENTS.has(node.type)) {
     return renderDeep(node.type(node.props))
   }
   return { ...node, props: { ...node.props, children: renderDeep(node.props.children) } }
@@ -2910,9 +3083,9 @@ record('AuraSettings drops the duplicate version chip on the page, keeps it in S
   assert.ok(versionChipNodes(settingsTree).length >= 1, 'Settings lost its version chip')
 })
 
-await recordAsync('the page stage takes the one player, and gives it back on leave', async () => {
+await recordAsync('the page stage takes the one player as a SandboxedFrame, and gives it back on leave', async () => {
   const before = hostIframes().length
-  const tree = pageTree()
+  let tree = pageTree()
   let stageRef = null
   walk(tree, node => {
     if (!stageRef && node.props && typeof node.props.ref === 'function') stageRef = node.props.ref
@@ -2920,36 +3093,27 @@ await recordAsync('the page stage takes the one player, and gives it back on lea
   assert.equal(typeof stageRef, 'function', 'the page has no stage ref')
   const stageNode = { getBoundingClientRect: () => ({ left: 40, top: 60, width: 800, height: 450 }) }
   stageRef(stageNode)
-  const placed = hostIframes().filter(frame => frame.style.width === '800px')
-  assert.equal(placed.length, 1, 'the film did not move into the page stage')
-  assert.equal(placed[0].style.left, '40px')
-  assert.equal(placed[0].style.top, '60px')
-  assert.equal(placed[0].style.height, '450px')
-  assert.equal(placed[0].style.zIndex, '1', 'the page film must sit above the page, not behind the app')
-  assert.ok(hostIframes().length <= before + 1, 'the page created a second player')
+  tree = pageTree()
+  let film = filmNodes(tree)
+  assert.equal(film.length, 1, 'the film did not move into the page stage')
+  assert.equal(film[0].props.placement, 'page', 'the film is not framed by the page')
+  assert.match(film[0].props.src, /\/player\.html/, 'the page frame is not on the player page')
+  const { frame } = mountFilm(film[0])
+  assert.ok(frame, 'the page film did not render a SandboxedFrame')
+  assert.equal(frame.style.width, '100%', 'the page frame does not fill its stage')
+  assert.equal(hostIframes().length, 0, 'the page put a second raw iframe on document.body')
+  assert.ok(hostIframes().length <= before, 'the page created a body player')
   // Pop out on the page pops the film out now (owner ask), Bring back returns it.
   const pop = pageAria(pageTree(), 'Pop out')
   assert.ok(pop, 'the page has no Pop out button')
   pop.props.onClick()
-  assert.equal(
-    hostIframes().some(frame => frame.style.width === '800px'),
-    false,
-    'Pop out left the film on the page'
-  )
+  assert.equal(filmNodes(pageTree()).length, 0, 'Pop out left the film on the page')
   const back = pageAria(pageTree(), 'Bring back')
   assert.ok(back, 'a popped-out film offers no Bring back')
   back.props.onClick()
-  assert.equal(
-    hostIframes().filter(frame => frame.style.width === '800px').length,
-    1,
-    'Bring back did not return the film to the page'
-  )
+  assert.equal(filmNodes(pageTree()).length, 1, 'Bring back did not return the film to the page')
   stageRef(null)
-  assert.equal(
-    hostIframes().some(frame => frame.style.width === '800px'),
-    false,
-    'the film stayed glued to a page that is no longer open'
-  )
+  assert.equal(filmNodes(pageTree()).length, 0, 'the film stayed glued to a page that is no longer open')
 })
 
 record('the page transport is centred with a large primary control', () => {

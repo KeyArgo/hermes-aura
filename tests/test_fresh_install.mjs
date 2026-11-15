@@ -279,7 +279,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { video: $video };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { video: $video, frame: () => filmFrame, surface: () => $filmSurface.get() };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -338,6 +338,24 @@ export const useTheme = () => ({
 
 export const Button = () => null
 export const Switch = () => null
+// The film is rendered by the SDK's sandboxed frame. The stub builds the frame
+// element (and calls its ref) so the transport and geometry can be exercised
+// headlessly, exactly like a real mounted iframe.
+export const SandboxedFrame = props => {
+  const posted = []
+  const node = {
+    tagName: 'IFRAME',
+    src: props.src,
+    style: { ...(props.style || {}) },
+    attributes: {},
+    dataset: {},
+    contentWindow: { posted, postMessage: (message, origin) => posted.push({ message, origin }) },
+    getBoundingClientRect: () => ({ width: 320, height: 180, left: 0, top: 0, right: 320, bottom: 180 })
+  }
+  if (typeof props.ref === 'function') props.ref(node)
+  else if (props.ref && typeof props.ref === 'object') props.ref.current = node
+  return node
+}
 export const StatusDot = () => null
 export const Popover = () => null
 export const PopoverTrigger = () => null
@@ -482,7 +500,16 @@ globalThis.getComputedStyle = () => ({
   getPropertyValue: () => ''
 })
 
-const hostIframes = () => bodyChildren.filter(node => node.tagName === 'IFRAME')
+// The film can be a body iframe (full-window backdrop) or an SDK SandboxedFrame
+// (pane/page/watch window). The player tests care about whichever is live.
+const hostIframes = () => {
+  const frames = bodyChildren.filter(node => node.tagName === 'IFRAME')
+  const wiring = pluginModule && pluginModule.wiringTest
+  const surface = wiring && wiring.surface ? wiring.surface() : null
+  const current = wiring && wiring.frame && surface && surface.placement ? wiring.frame() : null
+  if (current && !frames.includes(current)) frames.push(current)
+  return frames
+}
 // The panel/page stylesheets are product surfaces (id 'aura-panel-style' /
 // 'aura-ui-style'), not host injections; the guarded "effect" styles are the
 // glass and theme injections the other suite covers.
@@ -560,7 +587,7 @@ function findByAria(tree, label) {
 function mountPane(bucket) {
   const pane = bucket.contributions.find(c => c.area === 'panes')
   assert.ok(pane, 'no panes contribution to mount')
-  const tree = renderContribution(pane)
+  const tree = renderDeep(renderContribution(pane))
   let ref = null
   walk(tree, node => {
     if (!ref && node.props && typeof node.props.ref === 'function') ref = node.props.ref
@@ -724,6 +751,7 @@ await recordAsync('5. fresh install: picking a starter film on the Aura page swi
     'the film url never reached /control'
   )
   // "plays it": one player frame, pointing at the video player page.
+  mountPane(freshB)
   const frames = hostIframes()
   assert.equal(frames.length, 1, `the page pick should mount exactly one player, got ${frames.length}`)
   assert.match(frames[0].src, /player\.html/)
@@ -855,6 +883,9 @@ async function watchWindowScenario(extra) {
   const dispose = pluginModule.default.register(bucket.ctx)
   await tickPoll(bucket)
   const pane = mountPane(bucket)
+  // The watch window is drawn by the status-bar contribution, which is always
+  // mounted in the app; render it so the SandboxedFrame exists in the harness.
+  renderDeep(renderContribution(bucket.contributions.find(c => c.id === 'quick-menu')))
   await tickPoll(bucket)
   return { bucket, dispose, pane }
 }
@@ -1600,7 +1631,10 @@ for (const [name, extra] of [
     windowVisual: false, videoUrl: SINTEL_URL
   }]]))
   const scenario = { bucket, dispose: pluginModule.default.register(bucket.ctx) }
-  for (let i = 0; i < 3; i += 1) await tickPoll(scenario.bucket)
+  for (let i = 0; i < 3; i += 1) {
+    await tickPoll(scenario.bucket)
+    renderDeep(renderContribution(bucket.contributions.find(c => c.id === 'quick-menu')))
+  }
   record('60d. with the Right panel hidden, a film in the watch window stays on screen', () => {
     const frame = hostIframes().find(f => f.style.display !== 'none' && !['-1', '1'].includes(f.style.zIndex))
     assert.ok(frame, 'the Right panel is hidden and the watch-window film unmounted')
@@ -1713,8 +1747,9 @@ await recordAsync('7. fresh install: Pop out from the page moves the film to the
   assert.ok(card, 'the page does not offer the starter sources')
   card.props.onClick()
   await sleep(60)
+  pageTree(freshD)
 
-  const onPage = () => hostIframes().filter(frame => frame.style.width === '800px')
+  const onPage = () => hostIframes().filter(frame => frame.style.position === 'absolute' && frame.style.width === '100%')
   assert.equal(onPage().length, 1, 'the picked film did not land on the page stage')
   assert.equal(onPage()[0].style.zIndex, '1', 'the page film must sit above the page')
 
@@ -1725,6 +1760,7 @@ await recordAsync('7. fresh install: Pop out from the page moves the film to the
   assert.ok(pop, 'the page has no Pop out button')
   pop.props.onClick()
   await sleep(80)
+  renderDeep(renderContribution(freshD.contributions.find(c => c.id === 'quick-menu')))
   assert.equal(onPage().length, 0, 'Pop out left the film on the page')
   // The watch window floats above the app (not behind it at -1, not on the page
   // stage at 1) and still below the host's menus.
@@ -1738,6 +1774,7 @@ await recordAsync('7. fresh install: Pop out from the page moves the film to the
   assert.ok(back, 'a popped-out film offers no Bring back')
   back.props.onClick()
   await sleep(80)
+  pageTree(freshD)
   assert.equal(onPage().length, 1, 'Bring back did not return the film to the page')
   assert.equal(freshD.storage.get('settings').videoWindow, false, 'bring-back did not persist')
   assert.equal(hostIframes().length, 1, 'pop out / bring back grew a second player')
@@ -1809,6 +1846,7 @@ await recordAsync('9. fresh install: dispose leaves nothing behind - no contribu
   assert.ok(card, 'no starter source to pick')
   card.props.onClick()
   await sleep(60)
+  mountPane(freshF)
   assert.ok(hostIframes().length >= 1, 'precondition: no player mounted to clean up')
   const timersStarted = freshF.timers.length
   assert.ok(freshF.listeners.length > 0, 'precondition: no host listener was registered')
