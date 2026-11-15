@@ -643,7 +643,9 @@ class _FirstAddressHTTPSConnection(http.client.HTTPSConnection):
         if getattr(self, "_tunnel_host", None):
             return super().connect()
         t0 = time.monotonic()
-        answers = socket.getaddrinfo(self.host, self.port, type=socket.SOCK_STREAM)
+        # The directory mirrors are public hosts; an override (AURA_RADIO_BROWSER_SERVERS) or a
+        # poisoned resolver must not turn this into a request to the local network.
+        answers = _public_answers(socket.getaddrinfo(self.host, self.port, type=socket.SOCK_STREAM))
         sock = _connect_first(answers, self.timeout, self.source_address)
         if isinstance(self.timeout, (int, float)):
             sock.settimeout(max(0.5, self.timeout - (time.monotonic() - t0)))

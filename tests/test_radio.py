@@ -395,3 +395,12 @@ def test_shared_cgnat_space_is_not_public():
     """100.64.0.0/10 counts as global before Python 3.13; a stream there is still refused."""
     with pytest.raises(radio.RadioError):
         radio._public_answers([(2, 1, 6, "", ("100.64.0.9", 0))])
+
+
+def test_the_station_directory_connection_refuses_private_addresses(monkeypatch):
+    """Radio Browser lookups are pinned to public answers too (pre-pin review 11-15)."""
+    monkeypatch.setattr(radio.socket, "getaddrinfo",
+                        lambda *a, **k: [(2, 1, 6, "", ("192.168.1.9", 443))])
+    conn = radio._FirstAddressHTTPSConnection("de1.api.radio-browser.info", 443, timeout=2)
+    with pytest.raises(radio.RadioError):
+        conn.connect()
