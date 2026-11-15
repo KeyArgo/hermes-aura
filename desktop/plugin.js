@@ -5435,14 +5435,13 @@ function panelHostRef(node) {
  *  A pane is laid out by Hermes, so the theatre lives inside the box the app
  *  gives us: no fixed positioning, no z-index, nothing painted over the chat.
  *  React hands us the node through a ref; the panel DOM mounts into it once.
- *  Below it sits the same AuraSettings component the Settings page uses, in a
- *  collapsed drawer, so every control is reachable without duplicating it. The
- *  whole column scrolls when it is taller than the window. */
+ *  Below it, one "All settings" button opens the full list on the Settings
+ *  page; the pane never embeds a second copy of every control. The whole
+ *  column scrolls when it is taller than the window. */
 function AuraPane() {
   const settings = useValue($settings)
   const surface = useValue($filmSurface)
   if (settings.panelEnabled === false) return null
-  const open = settings.panelSettingsOpen === true
   const theatre = jsx('div', {
     key: 'theatre',
     ref: panelHostRef,
@@ -5451,36 +5450,32 @@ function AuraPane() {
     style: settings.backdropMode !== 'video'
       // Visualiser mode: only the header lives here, so do not fill the pane.
       ? { minHeight: 0, flex: '0 0 auto', display: 'flex', flexDirection: 'column' }
-      : open
-        ? { height: '100%', minHeight: 0, flex: '0 0 auto', display: 'flex', flexDirection: 'column' }
-        : { minHeight: 0, flex: '1 1 auto', display: 'flex', flexDirection: 'column' }
+      : { minHeight: 0, flex: '1 1 auto', display: 'flex', flexDirection: 'column' }
   })
-  const settingsSection = jsxs('section', {
+  // The pane is the remote you use while watching. The full settings list lives
+  // on the Settings page; the pane links there instead of embedding a second,
+  // squeezed copy of every control (owner, 11-15).
+  const settingsSection = jsx('section', {
     key: 'settings',
     'aria-label': 'Aura settings',
     style: {
-      flex: '0 0 auto', marginTop: 8, padding: '8px 2px 4px',
-      borderTop: '1px solid rgba(255,255,255,0.12)'
+      flex: '0 0 auto', marginTop: 8, padding: '10px 2px 6px',
+      borderTop: '1px solid rgba(255,255,255,0.12)',
+      display: 'flex', justifyContent: 'center'
     },
-    children: [
-      jsx('button', {
-        key: 'toggle',
-        type: 'button',
-        'aria-label': open ? 'Collapse Aura settings' : 'Expand Aura settings',
-        'aria-expanded': open,
-        onClick: () => {
-          writeSettings({ panelSettingsOpen: !open })
-        },
-        style: {
-          appearance: 'none', border: 0, background: 'transparent', color: 'inherit',
-          cursor: 'pointer', font: 'inherit', fontSize: 12, fontWeight: 600,
-          display: 'flex', alignItems: 'center', gap: 6, width: '100%',
-          padding: '4px 2px', textAlign: 'left'
-        },
-        children: `${open ? '▾' : '▸'} Aura settings`
-      }),
-      open ? jsx(AuraSettings, { key: 'controls' }) : null
-    ]
+    children: jsx(Button, {
+      size: 'sm',
+      variant: 'outline',
+      'aria-label': 'All Aura settings',
+      onClick: () => {
+        try {
+          host.navigate(SETTINGS_NAV_PATH)
+        } catch {
+          // older host without navigate: the status-bar menu still has Settings
+        }
+      },
+      children: 'All settings'
+    })
   })
   // Visualiser mode: the panel is the visualiser's remote (the film stage hides
   // itself in syncPanel), so its controls sit right under the header.

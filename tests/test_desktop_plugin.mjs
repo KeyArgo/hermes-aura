@@ -830,36 +830,22 @@ record('docks the theatre as an enforced right-hand pane the host lays out', () 
   assert.ok(!('position' in pane.data), 'pane must not set its own position')
 })
 
-record('the Right panel offers every Aura setting in a collapsible drawer', () => {
+// Owner (11-15): the pane embedded the whole Settings page under its own quick
+// controls - duplicate rows, a version line and an ad in a narrow column. The
+// pane now links to the full settings instead.
+record('the Right panel links to all settings instead of embedding a second copy', () => {
   const pane = a.contributions.find(c => c.area === 'panes')
-  let tree = renderContribution(pane)
+  const tree = renderContribution(pane)
   assert.equal(tree.props.style.overflowY, 'auto', 'the pane must scroll when content is taller than the window')
-  assert.ok(texts(tree).includes('Aura settings'), 'the settings drawer title is missing')
-  assert.equal(texts(tree).includes('Aura enabled'), false, 'the settings drawer must start collapsed')
-  let toggle = null
+  assert.equal(texts(tree).includes('Aura enabled'), false, 'the pane embeds the full settings list again')
+  let button = null
   walk(tree, node => {
-    if (!toggle && node.props && node.props['aria-label'] === 'Expand Aura settings') toggle = node
+    if (!button && node.props && node.props['aria-label'] === 'All Aura settings') button = node
   })
-  assert.ok(toggle, 'the settings drawer has no expand control')
-  toggle.props.onClick()
-  assert.equal(a.storage.get('settings').panelSettingsOpen, true, 'opening the drawer was not remembered')
-  tree = renderContribution(a.contributions.find(c => c.area === 'panes'))
-  let settingsNode = null
-  walk(tree, node => {
-    if (!settingsNode && node.props && node.props.key === 'controls' && typeof node.type === 'function') settingsNode = node
-  })
-  assert.ok(settingsNode, 'the pane does not render the AuraSettings component')
-  assert.ok(
-    texts(settingsNode.type(settingsNode.props)).includes('Aura enabled'),
-    'the full AuraSettings component is not rendered in the pane'
-  )
-  let collapse = null
-  walk(tree, node => {
-    if (!collapse && node.props && node.props['aria-label'] === 'Collapse Aura settings') collapse = node
-  })
-  assert.ok(collapse, 'the open drawer has no collapse control')
-  collapse.props.onClick()
-  assert.equal(a.storage.get('settings').panelSettingsOpen, false, 'closing the drawer was not remembered')
+  assert.ok(button, 'the pane has no All settings button')
+  const before = sdk.calls.navigations.length
+  button.props.onClick()
+  assert.equal(sdk.calls.navigations[before], '/settings?tab=plugins&agent=aura', 'All settings does not open Aura\'s settings page')
 })
 
 record('occupies the status bar with exactly one quick-menu contribution', () => {
