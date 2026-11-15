@@ -19,9 +19,11 @@ so the tool and the dashboard cannot disagree about what is playable.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import re
+import socket
 import threading
 import time
 import urllib.parse
@@ -339,6 +341,40 @@ def youtube_search(query: str, limit: int = DEFAULT_LIMIT) -> List[Dict[str, Any
 # public: what may be played
 # ---------------------------------------------------------------------------
 
+_PRIVATE_SUFFIXES = (".localhost", ".local", ".lan", ".home", ".home.arpa", ".internal",
+                     ".intranet", ".localdomain", ".corp", ".plex.direct")
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _address_is_public(text: str) -> bool:
+    try:
+        address = ipaddress.ip_address(text.split("%", 1)[0])
+    except ValueError:
+        return False
+    if address.version == 6 and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return address.is_global and not (address.version == 4 and address in _CGNAT)
+
+
+def _host_is_public(host: str) -> bool:
+    """True only for a host every one of whose addresses is on the public internet."""
+    host = host.strip("[]").rstrip(".").lower()
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        return _address_is_public(host)
+    except ValueError:
+        pass
+    if host == "localhost" or "." not in host or host.endswith(_PRIVATE_SUFFIXES):
+        return False
+    try:
+        answers = socket.getaddrinfo(host, None)
+    except (OSError, UnicodeError):
+        return False
+    return bool(answers) and all(_address_is_public(str(answer[4][0])) for answer in answers)
+
+
 def check_play_url(url: Any) -> dict:
     """Validate one play URL and normalise it.
 
@@ -400,6 +436,13 @@ def check_play_url(url: Any) -> dict:
                 "error": "that YouTube link is not a video, shorts, embed or playlist link"}
 
     if parts.path.lower().endswith(_MEDIA_SUFFIXES):
+        # The agent may only send the browser to the public internet: a prompt or a page must
+        # not be able to aim Aura at a router, a camera or a cloud metadata address. A Plex or
+        # LAN link the user pastes into Aura themselves never comes through here.
+        if not _host_is_public(host):
+            return {"ok": False,
+                    "error": "that address is on a private or local network; paste it into "
+                             "Aura yourself to play it"}
         return {"ok": True, "url": raw, "kind": "direct"}
     return {"ok": False,
             "error": "url must be a YouTube video/playlist link or a direct "

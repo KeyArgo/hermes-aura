@@ -10,6 +10,8 @@ import pathlib
 import sys
 import urllib.error
 
+import socket
+
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -201,6 +203,27 @@ def test_a_parser_bug_does_not_escape(monkeypatch, page):
 # check_play_url — the URL matrix
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _offline_dns(monkeypatch):
+    """No test reaches a real resolver: names map to fixed answers here."""
+    table = {
+        "example.org": "93.184.215.14",
+        "cdn.example.net": "93.184.215.15",
+        "rebind.example.com": "192.168.1.20",
+        "mixed.example.com": ("93.184.215.14", "10.1.2.3"),
+        "cgnat.example.com": "100.64.0.9",
+    }
+
+    def fake(host, *_args, **_kwargs):
+        if host not in table:
+            raise OSError("not found")
+        found = table[host]
+        found = found if isinstance(found, tuple) else (found,)
+        return [(2, 1, 6, "", (address, 0)) for address in found]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake)
+
+
 @pytest.mark.parametrize("url,expected", [
     ("https://www.youtube.com/watch?v=3GB-7qwwIp0",
      "https://www.youtube.com/watch?v=3GB-7qwwIp0"),
@@ -258,3 +281,33 @@ def test_watch_link_keeps_its_playlist_context():
         "https://www.youtube.com/watch?v=3GB-7qwwIp0&list=PLyayDEcNvgueXmwaNc3dWXZY18EipwUD6")
     assert result["ok"] is True
     assert "list=PLyayDEcNvgueXmwaNc3dWXZY18EipwUD6" in result["url"]
+
+
+# Regression (pre-pin review 11-15): the agent's aura_watch tool could aim the user's browser at
+# a home router, a camera or a cloud metadata address. Only the public internet passes; a LAN or
+# Plex link the user pastes into Aura themselves never goes through check_play_url.
+@pytest.mark.parametrize("url", [
+    "http://169.254.169.254/latest/meta-data/x.mp4",
+    "http://127.0.0.1:32400/video.mp4",
+    "http://[::1]/film.mp4",
+    "http://[::ffff:10.0.0.5]/film.mp4",
+    "http://10.0.0.5/cam.mp4",
+    "http://192.168.1.5:32400/library/parts/1/file.mkv.mp4",
+    "http://100.64.0.9/film.mp4",
+    "http://localhost/film.mp4",
+    "http://nas/film.mp4",
+    "http://tv.local/film.mp4",
+    "https://abc123.plex.direct:32400/film.mp4",
+    "https://rebind.example.com/film.mp4",
+    "https://mixed.example.com/film.mp4",
+    "https://cgnat.example.com/film.mp4",
+    "https://unknown-host.example/film.mp4",
+])
+def test_agent_play_urls_must_be_public(url):
+    result = search.check_play_url(url)
+    assert result["ok"] is False, url
+    assert "private" in result["error"]
+
+
+def test_a_public_media_host_still_plays():
+    assert search.check_play_url("https://cdn.example.net/films/a.mp4")["ok"] is True

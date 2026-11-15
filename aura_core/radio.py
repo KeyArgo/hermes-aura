@@ -534,6 +534,7 @@ def remove_favorite(sid: str) -> bool:
 # NAT64 prefixes count as global, but a DNS64 gateway turns them into the IPv4
 # address inside, so they are unwrapped (or refused for the local-use range).
 _NAT64 = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("64:ff9b:1::/48"))
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
 
 def _public_answers(answers: list) -> list:
@@ -551,7 +552,8 @@ def _public_answers(answers: list) -> list:
             raise RadioError("stream host is not a public address")
         elif address.version == 6 and address in _NAT64[0]:
             address = ipaddress.ip_address(int(address) & 0xFFFFFFFF)
-        if not address.is_global:
+        # is_global treats shared/CGNAT space (100.64.0.0/10) as global before Python 3.13.
+        if not address.is_global or (address.version == 4 and address in _CGNAT):
             raise RadioError("stream host resolves to a non-public address")
     return answers
 

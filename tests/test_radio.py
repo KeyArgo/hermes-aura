@@ -389,3 +389,9 @@ def test_dashboard_forwards_manage_playlist_to_the_server(dashboard, monkeypatch
             return {'url': 'https://www.youtube.com/playlist?list=PLabcdefghij'}
     asyncio.run(dashboard.window_manage(Request()))
     assert calls == [('/api/window/manage', {'url': 'https://www.youtube.com/playlist?list=PLabcdefghij'})]
+
+
+def test_shared_cgnat_space_is_not_public():
+    """100.64.0.0/10 counts as global before Python 3.13; a stream there is still refused."""
+    with pytest.raises(radio.RadioError):
+        radio._public_answers([(2, 1, 6, "", ("100.64.0.9", 0))])

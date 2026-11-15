@@ -277,8 +277,12 @@ def test_play_normalises_a_share_link(plugin, online):
     assert online.commands[-1]["label"] == "https://www.youtube.com/watch?v=3GB-7qwwIp0"
 
 
-def test_play_accepts_a_direct_media_file(plugin, online):
+def test_play_accepts_a_direct_media_file(plugin, online, monkeypatch):
     p, _ = plugin
+    # Offline: example.org answers with a public address, as it does on the internet.
+    import socket
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda host, *a, **k: [(2, 1, 6, "", ("93.184.215.14", 0))])
     payload = _call(p, {"action": "play", "url": "https://example.org/octopus.webm",
                         "label": "Octopus (local copy)"})
     assert payload["ok"] is True
@@ -517,3 +521,11 @@ def test_dashboard_reads_the_active_profiles_home(dashboard, monkeypatch, tmp_pa
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default"))
     monkeypatch.setattr(config, "_hermes_constants_home", lambda: profile)
     assert dashboard._hermes_home() == profile
+
+
+def test_play_refuses_a_private_network_file(plugin, online):
+    """The agent cannot aim the user's browser at the home network (pre-pin review 11-15)."""
+    p, _ = plugin
+    payload = _call(p, {"action": "play", "url": "http://192.168.1.5:32400/film.mp4"})
+    assert payload["ok"] is False
+    assert "private" in payload["error"]
