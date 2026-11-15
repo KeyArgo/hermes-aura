@@ -2952,6 +2952,20 @@ await recordAsync('the page stage takes the one player, and gives it back on lea
   )
 })
 
+record('the page transport is centred with a large primary control', () => {
+  const tree = pageTree()
+  let row = null
+  walk(tree, node => {
+    if (!row && node.props && node.props.className === 'aura-transport') row = node
+  })
+  assert.ok(row, 'the page has no transport row')
+  assert.equal(row.props.style.justifyContent, 'center', 'the transport row is not centred')
+  const primary = pageAria(tree, 'Play') || pageAria(tree, 'Pause')
+  assert.ok(primary, 'the page has no play/pause button')
+  const size = parseInt(primary.props.style.width ?? primary.props.style.minWidth, 10)
+  assert.ok(size >= 56, `the primary transport button is too small (${size}px)`)
+})
+
 record('dispose removes the page contributions and leaves no player behind', () => {
   disposeP()
   assert.equal(p.contributions.length, 0, 'the page route or sidebar row survived dispose')

@@ -4194,6 +4194,20 @@ function uiCss() {
     }
     #aura-page .aura-scrub { max-width: 100%; }
     #aura-page .aura-time { font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
+    #aura-page .aura-transport-lead { flex: 1 1 0; }
+    #aura-page .aura-transport-buttons {
+      display: flex; align-items: center; justify-content: center; gap: 12px; flex: 0 0 auto;
+    }
+    #aura-page .aura-transport-actions {
+      display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 1 1 0;
+    }
+    #aura-page .aura-transport-actions .aura-pill {
+      height: 36px; padding: 0 16px; white-space: nowrap; font-size: 13px;
+    }
+    @container (max-width: 640px) {
+      #aura-page .aura-transport-lead { display: none; }
+      #aura-page .aura-transport-actions { flex-basis: 100%; justify-content: center; }
+    }
     #aura-page .aura-url-row { flex-wrap: wrap; }
     #aura-page .aura-input {
       font: inherit; font-size: 12px; color: #f6efe6;
@@ -6625,11 +6639,12 @@ function pageButton(label, aria, onClick, primary) {
       if (event && event.preventDefault) event.preventDefault()
       onClick()
     },
-    // The Right panel's sizes: 38px buttons, a 48px round play.
+    // The page transport is the main control surface: 44px secondary buttons
+    // and a 60px round play, comfortably larger than the Right panel's 38/48.
     style: primary
       ? {
         appearance: 'none', border: '0', cursor: 'pointer',
-        minWidth: 48, height: 48, borderRadius: '50%', fontSize: 19,
+        width: 60, minWidth: 60, height: 60, borderRadius: '50%', fontSize: 22,
         background: 'linear-gradient(160deg, rgba(255,205,140,0.95), rgba(255,150,110,0.95))',
         color: '#241a12', boxShadow: '0 6px 18px rgba(255,170,110,0.28)',
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center'
@@ -6637,7 +6652,7 @@ function pageButton(label, aria, onClick, primary) {
       : {
         appearance: 'none', border: '0', background: 'transparent',
         color: 'var(--ui-text-primary)', cursor: 'pointer',
-        minWidth: 38, height: 38, borderRadius: 12, fontSize: 16,
+        width: 44, minWidth: 44, height: 44, borderRadius: 14, fontSize: 20,
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center'
       },
     children: label
@@ -7057,47 +7072,66 @@ function AuraPage() {
     ]
   })
 
+  // One row on wide layouts: an equal flex spacer on each side keeps the
+  // transport dead-centre while the two actions sit hard right. The row is a
+  // size container so its own width (not the window's) decides when the
+  // actions wrap onto their own centred row (see uiCss).
   const transport = jsxs('div', {
     className: 'aura-transport',
-    style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, width: '100%', flexWrap: 'wrap' },
+    style: {
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      gap: 12, width: '100%', flexWrap: 'wrap', containerType: 'inline-size'
+    },
     children: [
-      jsx('span', { key: 'p', style: { display: 'inline-flex' }, children: pageButton('⏮', 'Previous (episode in a playlist, else previous source)', () => videoCommand('prev')) }),
-      jsx('span', { key: 'b', style: { display: 'inline-flex' }, children: pageButton('⏪', 'Back 10 seconds', () => videoCommand('seek', -10)) }),
-      jsx('span', { key: 't', style: { display: 'inline-flex' }, children: pageButton(playing ? '⏸' : '▶', playing ? 'Pause' : 'Play', () => videoCommand('toggle'), true) }),
-      jsx('span', { key: 's', style: { display: 'inline-flex' }, children: pageButton('⏹', 'Stop', () => videoCommand('stop')) }),
-      jsx('span', { key: 'f', style: { display: 'inline-flex' }, children: pageButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10)) }),
-      jsx('span', { key: 'n', style: { display: 'inline-flex' }, children: pageButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next')) }),
-      jsx('span', { key: 'gap', style: { flex: 1 } }),
-      jsx(Button, {
-        key: 'pop',
-        size: 'micro',
-        variant: settings.videoWindow === true ? 'default' : 'ghost',
-        'aria-label': popoutBackLabel() === 'Bring back' ? 'Bring back' : 'Pop out',
-        title: settings.videoWindow === true
-          ? 'Bring the film back onto this page'
-          : 'Pop out — play in a floating window you can drag anywhere',
-        // Pop out = the watch window inside Hermes (Desktop is in Watch in);
-        // Bring back undoes either kind of pop-out.
-        onClick: () => {
-          if (desktopOwned || desktopPending) void setDesktopWindow(false)
-          else setVideoWindow(settings.videoWindow !== true)
-        },
-        children: popoutBackLabel()
+      jsx('span', { key: 'lead', className: 'aura-transport-lead' }),
+      jsxs('div', {
+        key: 'buttons',
+        className: 'aura-transport-buttons',
+        children: [
+          jsx('span', { key: 'p', style: { display: 'inline-flex' }, children: pageButton('⏮', 'Previous (episode in a playlist, else previous source)', () => videoCommand('prev')) }),
+          jsx('span', { key: 'b', style: { display: 'inline-flex' }, children: pageButton('⏪', 'Back 10 seconds', () => videoCommand('seek', -10)) }),
+          jsx('span', { key: 't', style: { display: 'inline-flex' }, children: pageButton(playing ? '⏸' : '▶', playing ? 'Pause' : 'Play', () => videoCommand('toggle'), true) }),
+          jsx('span', { key: 's', style: { display: 'inline-flex' }, children: pageButton('⏹', 'Stop', () => videoCommand('stop')) }),
+          jsx('span', { key: 'f', style: { display: 'inline-flex' }, children: pageButton('⏩', 'Forward 10 seconds', () => videoCommand('seek', 10)) }),
+          jsx('span', { key: 'n', style: { display: 'inline-flex' }, children: pageButton('⏭', 'Next (episode in a playlist, else next source)', () => videoCommand('next')) })
+        ]
       }),
-      jsx(Button, {
-        key: 'open',
-        size: 'micro',
-        variant: 'ghost',
-        'aria-label': settings.videoClosed ? 'Open video' : 'Close video',
-        onClick: () => (settings.videoClosed ? openVideo() : closeVideo()),
-        children: settings.videoClosed ? 'Open video' : 'Close video'
+      jsxs('div', {
+        key: 'actions',
+        className: 'aura-transport-actions',
+        children: [
+          jsx('button', {
+            key: 'pop',
+            type: 'button',
+            className: settings.videoWindow === true ? 'aura-pill is-on' : 'aura-pill',
+            'aria-label': popoutBackLabel() === 'Bring back' ? 'Bring back' : 'Pop out',
+            title: settings.videoWindow === true
+              ? 'Bring the film back onto this page'
+              : 'Pop out — play in a floating window you can drag anywhere',
+            // Pop out = the watch window inside Hermes (Desktop is in Watch in);
+            // Bring back undoes either kind of pop-out.
+            onClick: () => {
+              if (desktopOwned || desktopPending) void setDesktopWindow(false)
+              else setVideoWindow(settings.videoWindow !== true)
+            },
+            children: popoutBackLabel()
+          }),
+          jsx('button', {
+            key: 'open',
+            type: 'button',
+            className: 'aura-pill',
+            'aria-label': settings.videoClosed ? 'Open video' : 'Close video',
+            onClick: () => (settings.videoClosed ? openVideo() : closeVideo()),
+            children: settings.videoClosed ? 'Open video' : 'Close video'
+          })
+        ]
       })
     ]
   })
 
   const urlBox = jsxs('div', {
     className: 'aura-url-row',
-    style: { display: 'flex', alignItems: 'center', gap: 8, width: '100%' },
+    style: { display: 'flex', alignItems: 'center', gap: 10, width: '100%', flexWrap: 'nowrap' },
     children: [
       jsx('input', {
         key: 'url',
@@ -7108,12 +7142,16 @@ function AuraPage() {
         'aria-label': 'Film URL',
         spellCheck: false,
         style: {
-          flex: 1, minWidth: 0, font: 'inherit', fontSize: 12
+          flex: '1 1 auto', minWidth: 0, height: 36, font: 'inherit', fontSize: 13
         }
       }),
-      jsx(Button, {
-        key: 'vol-label', size: 'micro', variant: 'ghost', 'aria-label': 'Mute or unmute',
+      jsx('button', {
+        key: 'vol-label',
+        type: 'button',
+        className: 'aura-pill',
+        'aria-label': 'Mute or unmute',
         onClick: () => setVideoVolume(settings.videoVolume > 0 ? 0 : VIDEO_VOLUME),
+        style: { height: 36, padding: '0 14px', flex: 'none', whiteSpace: 'nowrap', fontSize: 13 },
         children: settings.videoVolume > 0 ? 'Mute' : 'Unmute'
       }),
       jsx('input', {
@@ -7122,7 +7160,7 @@ function AuraPage() {
         value: Math.round(clamp01(settings.videoVolume) * 100),
         'aria-label': 'Film volume',
         onChange: event => setVideoVolume(Number(event && event.target ? event.target.value : 70) / 100),
-        style: { width: 120, accentColor: 'var(--ui-accent)' }
+        style: { width: 140, flex: '0 0 140px', height: 36, margin: 0, accentColor: 'var(--ui-accent)' }
       })
     ]
   })
