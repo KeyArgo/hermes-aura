@@ -1623,6 +1623,42 @@ for (const [name, extra] of [
   safeDispose('the off closes desktop scenario', scenario.dispose)
 }
 
+// Regression (pre-pin review 11-15): a /status already in flight when the user
+// pressed Off answered "on" afterwards and put the film back up.
+{
+  const scenario = await watchWindowScenario({ videoWindow: false })
+  const realRest = scenario.bucket.ctx.rest
+  let held = null
+  scenario.bucket.ctx.rest = async (route, options = {}) => {
+    if (route === '/status' && held === 'arm') {
+      const stale = await realRest(route, options)
+      // Anything else that changed in the same answer (here the capture backend) makes it count.
+      return new Promise(resolve => { held = () => resolve({ ...stale, enabled: true, capture: 'stale-backend' }) })
+    }
+    return realRest(route, options)
+  }
+  await recordAsync('61. a late /status that says on cannot undo Off', async () => {
+    const live = () => hostIframes().filter(f => f.style.display !== 'none')
+    assert.ok(live().length >= 1, 'no film in the Right panel to begin with')
+    held = 'arm'
+    const tick = scenario.bucket.timers.find(t => t.kind === 'interval' && !t.cleared)
+    tick.fn()
+    await sleep(20)
+    assert.equal(typeof held, 'function', 'the stale /status was not held')
+    const power = domFind(scenario.pane, node => node.className === 'ap-power')
+    clickDom(power)
+    clickDom(power)
+    await sleep(30)
+    assert.ok(scenario.bucket.controls.some(c => c && c.enabled === false), 'the power button did not turn Aura off')
+    held()
+    held = null
+    await sleep(60)
+    rerenderFloating()
+    assert.equal(live().length, 0, 'a stale /status put the film back after Off')
+  })
+  safeDispose('the stale status scenario', scenario.dispose)
+}
+
 // Found in review (11-14): turning Aura off while the desktop window was still
 // open let the next poll "adopt" the window again, and a slow or failed close was
 // never retried, so the OS window kept playing with Aura shown off.

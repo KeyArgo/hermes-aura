@@ -422,6 +422,9 @@ let polling = false
 let turnOnPending = false
 // The user switched Aura on or off in this session; a new build then leaves it alone.
 let enabledTouched = false
+// Bumped by every on/off. A /status that started before the latest switch is
+// stale about `enabled`: the switch the user just pressed wins.
+let enabledEpoch = 0
 let liveFrame = null // latest /state frame — hot path, deliberately not an atom
 let liveKey = ''
 // The full-window backdrop is the ONE raw iframe Aura mounts on document.body,
@@ -1925,6 +1928,7 @@ function syncFromServer(frame) {
 async function poll() {
   if (!ctxRef || disposed || polling) return
   polling = true
+  const epochAtStart = enabledEpoch
   try {
     let status = null
     let error = ''
@@ -1946,7 +1950,8 @@ async function poll() {
     }
 
     const ok = Boolean(status && status.ok === true)
-    const enabled = ok ? status.enabled === true : $settings.get().enabled
+    // A late answer must not undo an Off (or On) pressed while it was in flight.
+    const enabled = ok && enabledEpoch === epochAtStart ? status.enabled === true : $settings.get().enabled
     let frame = null
     if (ok) {
       try {
@@ -2260,6 +2265,7 @@ async function setEnabled(next, fromNewBuild = false) {
   // what the user chose, even if /version or /status answers after the click.
   turnOnPending = false
   if (!fromNewBuild) enabledTouched = true
+  enabledEpoch += 1
   const enabled = Boolean(next)
   writeSettings({ enabled })
   if (!enabled) {
