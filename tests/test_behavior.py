@@ -80,7 +80,7 @@ def test_profile_families_exist_in_the_page_catalogue():
 def test_config_defaults_include_display_controls():
     cfg = config.normalise({})
     assert cfg["opacity"] == 0.4
-    assert cfg["behavior"] == "balanced"
+    assert cfg["behavior"] == "calm"
     assert cfg["mood_reactive"] is True
     assert cfg["accent_pulse"] is False
     assert cfg["auto_preset"] is True
@@ -93,7 +93,7 @@ def test_first_run_defaults_are_agent_led_and_gentle():
     cfg = config.normalise({})
     assert cfg["motion"] == "agent_music"
     assert cfg["intensity"] == 0.0
-    assert cfg["behavior"] == "balanced"
+    assert cfg["behavior"] == "calm"
     assert cfg["opacity"] == 0.4
     assert cfg == config.DEFAULTS
 
@@ -141,7 +141,7 @@ def test_config_coerces_bad_display_values_instead_of_raising():
         "auto_preset": "yes",
     })
     assert cfg["opacity"] == 1.0
-    assert cfg["behavior"] == "balanced"
+    assert cfg["behavior"] == "calm"
     assert cfg["mood_reactive"] is False
     assert cfg["accent_pulse"] is False
     assert cfg["auto_preset"] is True
@@ -152,7 +152,7 @@ def test_config_coerces_bad_display_values_instead_of_raising():
 
     cfg = config.normalise({"opacity": True, "behavior": 7})
     assert cfg["opacity"] == 0.4
-    assert cfg["behavior"] == "balanced"
+    assert cfg["behavior"] == "calm"
 
 
 def test_saved_intensity_and_strength_survive_the_new_defaults():

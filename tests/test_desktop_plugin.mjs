@@ -198,7 +198,7 @@ function makeCtx(settings) {
   let windowOpen = false
   const serverSettings = {
     motion: settings && typeof settings.motion === 'string' ? settings.motion : 'agent_music',
-    behavior: settings && typeof settings.behavior === 'string' ? settings.behavior : 'balanced',
+    behavior: settings && typeof settings.behavior === 'string' ? settings.behavior : 'calm',
     intensity: settings && Number.isFinite(settings.intensity) ? settings.intensity : 0,
     opacity: settings && Number.isFinite(settings.opacity) ? settings.opacity : 0.4,
     reduced_motion: settings && typeof settings.reducedMotion === 'boolean' ? settings.reducedMotion : false
@@ -1832,7 +1832,7 @@ await recordAsync('accent pulse and Aura Live are off by default', async () => {
   assert.equal(hostStyles().length, 0)
   assert.equal(hostIframes().length, 0)
 
-  // Desktop defaults for a new user: agent_music, balanced, 0.4 opacity, 0 intensity,
+  // Desktop defaults for a new user: agent_music, calm, 0.4 opacity, 0 intensity,
   // "Show: Always". Saved settings keep their own values (covered elsewhere).
   const motion = findSwitch(tree, 'Motion source')
   assert.equal(motion.props.value, 'agent_music', 'motion default is not agent_music')
@@ -1843,7 +1843,7 @@ await recordAsync('accent pulse and Aura Live are off by default', async () => {
     })
     return found
   })()
-  assert.equal(behavior.props.value, 'balanced', 'behaviour default is not balanced')
+  assert.equal(behavior.props.value, 'calm', 'behaviour default is not calm')
   const opacity = (() => {
     let found = null
     walk(tree, node => {
