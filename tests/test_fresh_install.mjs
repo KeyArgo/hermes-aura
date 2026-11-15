@@ -2009,6 +2009,35 @@ await recordAsync('14. restarting the same build keeps the owner\'s own "off"', 
   dispose()
 })
 
+// Regression (pre-pin review 11-15): an update must never switch Aura back on
+// after the USER turned it off (catalog: no re-enabling against the user's choice).
+await recordAsync('14b. an update keeps an Off the user chose; it only overrides an off nobody chose', async () => {
+  const storage = new Map([
+    ['settings', { enabled: true }],
+    ['seenBuild', 'userbuild3333333']
+  ])
+  const g = makeCtx(storage, { commit: 'userbuild3333333' })
+  const dispose = pluginModule.default.register(g.ctx)
+  await sleep(60)
+  await tickPoll(g)
+  const quick = g.contributions.find(c => c.area === 'settings.plugins')
+  const enabledSwitch = findByAria(renderContribution(quick), 'Aura enabled')
+  assert.ok(enabledSwitch, 'no Aura enabled switch')
+  enabledSwitch.props.onCheckedChange(false)
+  await sleep(60)
+  assert.equal(g.storage.get('settings').enabled, false, 'precondition: the user switched Aura off')
+  assert.equal(g.storage.get('userChoseOff'), true, 'the user\'s Off was not remembered as a choice')
+  dispose()
+
+  const next = makeCtx(g.storage, { serverEnabled: false, commit: 'updatedbuild4444' })
+  const disposeNext = pluginModule.default.register(next.ctx)
+  await sleep(60)
+  await tickPoll(next)
+  assert.equal(next.storage.get('settings').enabled, false, 'an update switched Aura back on against the user\'s Off')
+  assert.ok(!next.controls.some(body => body && body.enabled === true), 'an update told the server to switch Aura on')
+  disposeNext()
+})
+
 // ===================================================================
 // Scenario H: the floating controls card is never left empty. (Test 15)
 // The host can unmount the OLD floating pane after it mounted the NEW one

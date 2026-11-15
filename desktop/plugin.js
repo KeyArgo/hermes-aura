@@ -2225,9 +2225,9 @@ async function restoreMyTheme() {
 // ------------------------------------------------------------- enable switch
 
 /** A build Aura has not run before (a fresh install, a reinstall, an update)
- *  starts switched on. The owner reinstalled Aura and saw nothing: a saved
- *  "off" from an older build outlived the install, so it looked uninstalled.
- *  Switching off inside one build still sticks across restarts. */
+ *  starts switched on, unless the user themselves switched Aura off. The owner
+ *  reinstalled Aura and saw nothing: a saved "off" nobody chose (an older
+ *  build's default) outlived the install, so it looked uninstalled. */
 function turnOnForNewBuild(ctx, info) {
   const id = String(info.commit || info.commit_short || info.version || '')
   if (!id) return
@@ -2244,6 +2244,15 @@ function turnOnForNewBuild(ctx, info) {
     // best-effort: at worst Aura is switched on again at the next start
   }
   if (enabledTouched) return   // the user already chose on/off this session
+  // An Off the user pressed survives updates; only an off nobody chose (an old
+  // build's default) is switched on. Never re-enable against the user's choice.
+  let chosenOff = false
+  try {
+    chosenOff = ctx.storage.get('userChoseOff', false) === true
+  } catch {
+    chosenOff = false
+  }
+  if (chosenOff) return
   turnOnPending = true
   applyPendingTurnOn()
 }
@@ -2267,6 +2276,13 @@ async function setEnabled(next, fromNewBuild = false) {
   if (!fromNewBuild) enabledTouched = true
   enabledEpoch += 1
   const enabled = Boolean(next)
+  if (!fromNewBuild) {
+    try {
+      ctxRef.storage.set('userChoseOff', !enabled)
+    } catch {
+      // best-effort; at worst a later update switches Aura on once
+    }
+  }
   writeSettings({ enabled })
   if (!enabled) {
     saveCurrentPosition()

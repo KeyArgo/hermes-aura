@@ -10,7 +10,7 @@ description: >
   episodes with auto-skip of un-embeddable items, a draggable watch window, and agent moods that
   follow thinking, tool runs and approvals. Everything is analysed locally in memory from system
   loopback — never the microphone, no account, no uploads. Linux-first (PipeWire/PulseAudio);
-  Windows unproven, macOS needs a virtual audio device. Off until you turn it on, one click to stop.
+  Windows unproven, macOS needs a virtual audio device. On after install; one click turns it off, and it stays off.
 requires_hermes: ">=0.22.5"
 license: MIT
 provides_tools:
