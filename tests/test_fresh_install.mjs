@@ -101,6 +101,7 @@ function mountFloatingPane(record) {
     if (!element || typeof element !== 'object') return
     if (Array.isArray(element)) { element.forEach(walk); return }
     if (typeof element.type === 'function') { walk(element.type(element.props || {})); return }
+    if (isFilmIframe(element)) { sdk.SandboxedFrame(element.props); return }
     const props = element.props || {}
     if (typeof props.ref === 'function' && typeof element.type === 'string') {
       const existing = refs[slot]
@@ -126,6 +127,10 @@ function mountFloatingPane(record) {
   }
 }
 const floatingNodes = () => floatingHosts.flatMap(host => host.children)
+
+// Aura's film is its own <iframe> inside its pane/page/watch window; the
+// frame stub below builds the element (and calls its ref) for it.
+const isFilmIframe = el => !!el && el.type === 'iframe' && !!el.props && el.props.title === 'Aura film'
 
 function renderContribution(contribution) {
   const element = contribution.render()
@@ -598,6 +603,7 @@ const renderDeep = node => {
   if (node === null || node === undefined) return node
   if (Array.isArray(node)) return node.map(renderDeep)
   if (typeof node !== 'object' || !('type' in node) || !('props' in node)) return node
+  if (isFilmIframe(node)) return sdk.SandboxedFrame(node.props)
   if (typeof node.type === 'function' && !SDK_COMPONENTS.has(node.type)) {
     return renderDeep(node.type(node.props))
   }

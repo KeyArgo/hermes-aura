@@ -760,7 +760,7 @@ const filmNodes = tree => {
 // back the frame element and its contentWindow.
 const mountFilm = node => {
   const film = renderContribution({ render: () => node })
-  const frame = film && film.type === sdk.SandboxedFrame ? sdk.SandboxedFrame(film.props) : null
+  const frame = film && film.type === 'iframe' && film.props.title === 'Aura film' ? sdk.SandboxedFrame(film.props) : null
   return { film, frame }
 }
 const findSwitch = (tree, label) => {
@@ -1521,8 +1521,8 @@ await recordAsync('review 3c: transport and audio posts reach the SandboxedFrame
     assert.ok(posts.some(entry => entry.message && entry.message.aura === 'audio' && entry.message.cmd === 'mute'),
       'audio did not arrive at the SandboxedFrame window')
     for (const entry of posts) {
-      // SandboxedFrame has an opaque origin; '*' is required, source is checked.
-      assert.equal(entry.origin, '*', `posted to ${entry.origin} instead of the opaque frame`)
+      // The film frame has the Aura server's own origin: never post to '*'.
+      assert.equal(entry.origin, new URL(frame.src).origin, `posted to ${entry.origin} instead of the film's origin`)
     }
     assert.equal(hostIframes().length, 0, 'the framed film also created a body iframe')
   } finally {
@@ -2558,7 +2558,7 @@ pluginModule.default.register(paneOnly.ctx)
 paneOnly.timers.find(t => t.ms === 250).fn()
 await sleep(80)
 
-await recordAsync('the docked pane alone mounts the film as a SandboxedFrame', () => {
+await recordAsync('the docked pane alone mounts the film in Aura\'s own frame', () => {
   assert.equal(hostIframes().length, 0, 'the pane film was appended to document.body')
   const film = filmNodes(renderContribution(paneOnly.contributions.find(c => c.id === 'panel')))
   assert.equal(film.length, 1, 'nothing mounted with the default settings: the pane would be empty')
@@ -2567,6 +2567,27 @@ await recordAsync('the docked pane alone mounts the film as a SandboxedFrame', (
   assert.ok(frame, 'the pane film did not render a SandboxedFrame')
   // A film in the pane is a window, not a wash: full strength.
   assert.equal(String(frame.style.opacity ?? '1'), '1', 'the pane film follows the see-through setting')
+})
+
+// Regression (11-14): in the SDK SandboxedFrame (opaque origin) YouTube showed a
+// black frame and sent zero player messages; only `allow-same-origin` makes it
+// play. The film frame must keep it, and must refuse a src on the app's origin.
+await recordAsync('the pane film keeps allow-same-origin, and only for a cross-origin src', () => {
+  const film = filmNodes(renderContribution(paneOnly.contributions.find(c => c.id === 'panel')))
+  const element = renderContribution({ render: () => film[0] })
+  assert.equal(element && element.type, 'iframe', 'the pane film is not Aura\'s own iframe')
+  const tokens = String(element.props.sandbox).split(/\s+/)
+  for (const token of ['allow-scripts', 'allow-same-origin']) {
+    assert.ok(tokens.includes(token), `film sandbox lacks ${token}: YouTube will not play`)
+  }
+  const saved = globalThis.location
+  try {
+    globalThis.location = { origin: new URL(film[0].props.src).origin }
+    const sameOrigin = renderContribution({ render: () => film[0] })
+    assert.equal(sameOrigin, null, 'a film on the app\'s own origin was framed with allow-same-origin')
+  } finally {
+    globalThis.location = saved
+  }
 })
 
 // ------------------------------------- surfaces without the Right panel

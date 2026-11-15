@@ -51,7 +51,7 @@
  * backdrop and the Settings page are the product.
  *
  * Host safety: the film in the Right panel, the Aura page and the watch window
- * is an SDK `SandboxedFrame` rendered inside Aura's own surface. The only raw
+ * is Aura's own film iframe rendered inside Aura's own surface. The only raw
  * iframe is the full-window backdrop, and its scoped `#aura-glass` style and the
  * matching `data-aura-backdrop` attribute on <html> are mounted only behind
  * the opt-in above (and only while that backdrop is actually showing). Two other pieces of host DOM are Aura's own and go away
@@ -81,7 +81,6 @@ import {
   PopoverTrigger,
   requestTheme,
   ROUTES_AREA,
-  SandboxedFrame,
   setAccentOverride,
   SETTINGS_PLUGINS_AREA,
   SIDEBAR_NAV_AREA,
@@ -424,7 +423,7 @@ let liveKey = ''
 // The full-window backdrop is the ONE raw iframe Aura mounts on document.body,
 // and it exists only while a full-window backdrop is actually showing (Behind
 // chat, or Visual behind the app). A film in the Right panel, the Aura page or
-// the watch window is a React SandboxedFrame instead; `filmFrame` is that
+// the watch window is Aura's in-pane film iframe instead; `filmFrame` is that
 // element, adopted so the postMessage transport keeps working.
 let backdropEl = null
 let filmFrame = null
@@ -785,11 +784,25 @@ function refreshFilmSurface() {
   return placement
 }
 
-/** The film, drawn by the SDK's own SandboxedFrame. Never a raw iframe on
- *  document.body: a film in a pane/page/window is rendered here, inside the
- *  surface Aura already owns. The element is adopted into `filmFrame` so the
- *  existing transport bridge (postToBackdrop/audioCommand/onBackdropMessage)
- *  keeps working unchanged. */
+/** True when `url` is http(s) on a different origin from the app itself. */
+function isCrossOriginToApp(url) {
+  try {
+    const parsed = new URL(url)
+    const app = globalThis.location && globalThis.location.origin ? globalThis.location.origin : ''
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.origin !== app
+  } catch {
+    return false
+  }
+}
+
+/** The film, drawn as an iframe inside the surface Aura already owns (pane,
+ *  page or watch window). Never a raw iframe on document.body. It is not the
+ *  SDK SandboxedFrame: that frame always drops `allow-same-origin`, and YouTube
+ *  will not play in an opaque-origin frame (tested: black frame, zero player
+ *  messages; adding only `allow-same-origin` makes it play). The frame's src is
+ *  the Aura server's own origin, never the app's, so `allow-same-origin` gives
+ *  it that server's origin and no reach into the app. The element is adopted
+ *  into `filmFrame` so the transport bridge keeps working unchanged. */
 function AuraFilm({ placement, src }) {
   const source = typeof src === 'string' && src ? src : filmSrc()
   const own = useRef(null)
@@ -808,11 +821,12 @@ function AuraFilm({ placement, src }) {
     if (own.current && filmFrame === own.current) filmFrame = null
     own.current = null
   }
-  return jsx(SandboxedFrame, {
+  // allow-same-origin is only safe while the film is cross-origin to the app.
+  if (!isCrossOriginToApp(source)) return null
+  return jsx('iframe', {
     src: source,
     title: 'Aura film',
-    // The SDK's allowlist keeps these tokens; the frame keeps an opaque origin.
-    sandbox: 'allow-scripts allow-presentation',
+    sandbox: 'allow-scripts allow-same-origin allow-presentation',
     allow: 'autoplay; fullscreen; encrypted-media; picture-in-picture',
     referrerPolicy: 'no-referrer',
     style: {
@@ -1198,7 +1212,7 @@ function returnFocusAfterClick(event) {
 
 /** Is a full-window backdrop actually showing? This is the ONLY reason a raw
  *  iframe belongs on document.body. A film framed in the pane, the page or the
- *  watch window is a SandboxedFrame (AuraFilm) and must never create one. */
+ *  watch window is the in-pane film iframe (AuraFilm) and must never create one. */
 function fullWindowBackdropWanted(settings) {
   if (!doc) return false
   const current = settings || $settings.get()
@@ -1418,7 +1432,7 @@ function syncBackdrop() {
     removeBackdrop()
     return
   }
-  // A film in the Right panel or the watch window is a SandboxedFrame too.
+  // A film in the Right panel or the watch window is the in-pane film iframe too.
   // The body iframe must not exist while either one is showing it.
   if (settings.backdropMode === 'video' && !settings.videoClosed && settings.videoUrl &&
       (filmInPanel() || videoWindowOn() || desktopOwned || desktopPending)) {
@@ -2417,7 +2431,7 @@ function setVideoVolume(value) {
 function setVideoWindow(on) {
   if (!ctxRef || disposed) return
   writeSettings({ videoWindow: Boolean(on) })
-  // The watch window is a SandboxedFrame; take the body iframe down now rather
+  // The watch window is the in-pane film iframe; take the body iframe down now rather
   // than waiting for the next poll tick.
   syncBackdrop()
   applyBackdropLayout()
@@ -2667,7 +2681,7 @@ function postToDesktop(message) {
   return true
 }
 
-/** The frame that is actually showing the film right now. A SandboxedFrame
+/** The frame that is actually showing the film right now. The in-pane film
  *  (pane/page/watch window) wins when the surface says so; otherwise the
  *  full-window backdrop document is the live one. */
 function liveFilmFrame() {
@@ -2676,13 +2690,11 @@ function liveFilmFrame() {
   return null
 }
 
-/** Where to deliver a message. The full-window backdrop has the Aura server's
- *  real origin, so name it. A SandboxedFrame deliberately has an OPAQUE origin
- *  (`allow-same-origin` is not in its posture), which cannot be named as a
- *  targetOrigin; '*' is required, and the receiver is still authenticated by
- *  the `event.source === frame.contentWindow` check in onBackdropMessage. */
+/** Where to deliver a message: both the full-window backdrop and the in-pane
+ *  film have the Aura server's real origin, so name it. */
 function frameMessageOrigin(frame) {
-  return frame === filmFrame ? '*' : frameTargetOrigin()
+  const src = frame && typeof frame.src === 'string' ? frame.src : ''
+  return src && isCrossOriginToApp(src) ? new URL(src).origin : frameTargetOrigin()
 }
 
 /** Post straight into the in-app frame, wherever the film is being watched. */
@@ -3127,7 +3139,7 @@ async function skipBlockedEpisode(reason) {
 function onBackdropMessage(event) {
   if (disposed || !event) return
   // Only a live Aura film frame may drive the player/audio state: either the
-  // SandboxedFrame on the pane/page/watch window, or the full-window backdrop.
+  // in-pane film iframe on the pane/page/watch window, or the full-window backdrop.
   const live = [filmFrame, backdropEl].filter(Boolean)
   if (!live.some(frame => frame.contentWindow && event.source === frame.contentWindow)) return
   const data = event.data
@@ -5360,7 +5372,7 @@ function AuraPane() {
     ? null
     : jsx(AuraPaneVisualControls, { key: 'visual' })
   // The film stage is built imperatively inside `theatre`; the film itself is a
-  // SandboxedFrame rendered here (review ask 3) and laid over that stage by
+  // in-pane film iframe rendered here (review ask 3) and laid over that stage by
   // applyFilmFrameLayout. Exactly one surface renders it: see filmPlacement().
   const film = surface.placement === 'panel'
     ? jsx(AuraFilm, { key: 'film', placement: 'panel', src: surface.src })
