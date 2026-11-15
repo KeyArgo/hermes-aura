@@ -40,7 +40,7 @@ DEFAULTS = {
     # together; behavior is a named profile with concrete render parameters.
     # These are first-run defaults only; a saved config keeps its own values
     # and a corrupt/missing key alone falls back here.
-    "opacity": 0.4,
+    "opacity": 0.25,
     "behavior": "calm",
     "mood_reactive": True,
     # Opt-in: the host accent is never repainted unless the user asks for it.

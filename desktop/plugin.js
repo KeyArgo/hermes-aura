@@ -160,7 +160,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   enabled: true,
   // First-run only (owner, 11-13); a saved setting keeps its own value.
   intensity: 0,
-  opacity: 0.4,
+  opacity: 0.25,
   behavior: 'calm',
   moodReactive: true,
   accentPulse: false,
@@ -182,8 +182,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   showWhen: 'always',
   backdropMode: 'aura',
   videoUrl: '',
-  videoOpacity: VIDEO_OPACITY,
-  videoOpacityAuto: true,
+  // A fixed 25% out of the box (owner, 11-15); Auto (20% working, 30% with
+  // music) is one click away in Video strength.
+  videoOpacity: 0.25,
+  videoOpacityAuto: false,
   videoVolume: VIDEO_VOLUME,
   // [listen lane] The audio channel (radio / music) is its own little mixer:
   // independent of the film, so the film can be muted while this plays.

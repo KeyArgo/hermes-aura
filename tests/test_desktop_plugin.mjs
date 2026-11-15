@@ -200,7 +200,7 @@ function makeCtx(settings) {
     motion: settings && typeof settings.motion === 'string' ? settings.motion : 'agent_music',
     behavior: settings && typeof settings.behavior === 'string' ? settings.behavior : 'calm',
     intensity: settings && Number.isFinite(settings.intensity) ? settings.intensity : 0,
-    opacity: settings && Number.isFinite(settings.opacity) ? settings.opacity : 0.4,
+    opacity: settings && Number.isFinite(settings.opacity) ? settings.opacity : 0.25,
     reduced_motion: settings && typeof settings.reducedMotion === 'boolean' ? settings.reducedMotion : false
   }
   const serverFrame = {
@@ -829,6 +829,17 @@ record('docks the theatre right once, never forcing it back over the user\'s lay
   // A pane is laid out by the app; anything we would have to pin ourselves is
   // exactly what broke the layout before.
   assert.ok(!('position' in pane.data), 'pane must not set its own position')
+})
+
+// Owner (11-15): new installs start at a fixed 25% video strength and 25%
+// visual opacity; a level the user already chose (Auto included) is kept.
+record('new installs start at a fixed 25% video strength and 25% visual opacity', () => {
+  const defaults = source.slice(source.indexOf('const DEFAULT_SETTINGS'), source.indexOf('})', source.indexOf('const DEFAULT_SETTINGS')))
+  assert.match(defaults, /\n  opacity: 0\.25,/, 'the visual opacity default is not 25%')
+  assert.match(defaults, /videoOpacity: 0\.25,/, 'the video strength default is not 25%')
+  assert.match(defaults, /videoOpacityAuto: false,/, 'new installs still start on Auto video strength')
+  // A saved choice (Auto included) is read back as-is, never reset to the new default.
+  assert.match(source, /if \(typeof raw\.videoOpacityAuto === 'boolean'\) out\.videoOpacityAuto = raw\.videoOpacityAuto/)
 })
 
 // Owner (11-15): the pane embedded the whole Settings page under its own quick
@@ -1838,7 +1849,7 @@ await recordAsync('accent pulse and Aura Live are off by default', async () => {
     })
     return found
   })()
-  assert.equal(opacity.props.value, 40, 'opacity default is not 0.4')
+  assert.equal(opacity.props.value, 25, 'opacity default is not 0.25')
   const show = (() => {
     let found = null
     walk(tree, node => {
