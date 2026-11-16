@@ -3866,6 +3866,7 @@ function moveFilmTo(place) {
 function sendFilmToPanel() {
   if (!ctxRef || disposed) return
   if ($settings.get().panelEnabled === false) setPanelEnabled(true)
+  else revealPanelPane()
   writeSettings({ filmBehind: false })
   setVideoWindow(false)
   syncBackdrop()
@@ -5362,8 +5363,22 @@ function syncPanel(force) {
 /** Register the host pane. Called at boot only when the panel is enabled, and
  *  again when the user switches it back on. `restore` is the user action:
  *  a remembered Close must not strand the pane they just asked for. */
+/** Front the Right panel from a user action. Picking a Hermes layout can leave
+ *  the pane as a tab behind the sessions list; a reveal brings it back. */
+function revealPanelPane() {
+  try {
+    if (host && typeof host.revealPane === 'function') host.revealPane(PANE_ID)
+  } catch {
+    // older hosts may throw on an unknown pane
+  }
+}
+
 function registerPanelPane(restore) {
-  if (!ctxRef || disposed || paneRegistration) return
+  if (!ctxRef || disposed) return
+  if (paneRegistration) {
+    if (restore) revealPanelPane()
+    return
+  }
   const off = ctxRef.register({
     id: 'panel',
     area: PANES_AREA,
@@ -5389,11 +5404,7 @@ function registerPanelPane(restore) {
     } catch {
       // older hosts may throw on an unknown pane
     }
-    try {
-      if (host && typeof host.revealPane === 'function') host.revealPane(PANE_ID)
-    } catch {
-      // older hosts may throw on an unknown pane
-    }
+    revealPanelPane()
   }
 }
 

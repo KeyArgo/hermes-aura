@@ -2797,6 +2797,26 @@ await recordAsync('the quick menu offers Watch in, and Film strength only acts o
   }
 })
 
+await recordAsync('Panel fronts the Right panel even when it is already on (a Hermes layout pick hides it)', async () => {
+  // Picking any Hermes layout leaves a plugin pane the preset does not name as
+  // a tab behind the sessions list. Choosing Panel must bring it back.
+  const scenario = makeCtx({ enabled: true, backdropMode: 'video', panelEnabled: true, filmBehind: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
+  const dispose = pluginModule.default.register(scenario.ctx)
+  try {
+    await sleep(20)
+    const before = sdk.calls.revealed.length
+    const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
+    findByAria(tree, 'Watch the film in the Right panel (quick menu)').props.onClick()
+    await sleep(20)
+    assert.equal(sdk.calls.revealed.length, before + 1, 'Panel did not reveal the already-registered Right panel')
+    assert.equal(sdk.calls.revealed.at(-1), 'aura:panel', 'Panel revealed the wrong pane id')
+    assert.equal(scenario.contributions.filter(c => c.area === 'panes').length, 1, 'Panel registered a second pane')
+  } finally {
+    dispose()
+  }
+})
+
 await recordAsync('the quick menu: Window carries its sizes; no duplicate frame or pop-out controls', async () => {
   // "Small frame in Hermes" was the Window choice of Watch in under another
   // name, and "Open on a screen" was Desktop: one control each, sizes beside Window.
