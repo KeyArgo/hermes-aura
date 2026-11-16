@@ -212,6 +212,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   // Right panel: on by default so the app is usable without a status bar; the
   // switch leaves only the tray.
   panelEnabled: true,
+  // Which side of the chat the panel docks on. One pane at a time; each side has
+  // its own pane id because the host keeps a pane where it first placed it.
+  panelSide: 'right',
   panelCollapsed: false,
   // "Watch in": the film plays in the Right panel (false) or behind the chat
   // with the panel as its remote (true).
@@ -677,6 +680,7 @@ function readSettings(ctx) {
     if (Number.isFinite(raw.videoWindowY)) out.videoWindowY = Math.round(raw.videoWindowY)
     if (typeof raw.videoClosed === 'boolean') out.videoClosed = raw.videoClosed
     if (typeof raw.panelEnabled === 'boolean') out.panelEnabled = raw.panelEnabled
+    if (raw.panelSide === 'left' || raw.panelSide === 'right') out.panelSide = raw.panelSide
     if (typeof raw.panelCollapsed === 'boolean') out.panelCollapsed = raw.panelCollapsed
     if (typeof raw.filmBehind === 'boolean') out.filmBehind = raw.filmBehind
     if (typeof raw.watchControls === 'boolean') out.watchControls = raw.watchControls
@@ -3349,7 +3353,9 @@ function syncStripPane() {
   const size = stripPaneSize()
   // Spawn corner only (the host remembers where the user drops it). A watch
   // window must not open over the Right panel's controls.
-  const anchor = !watching ? 'bottom-left' : (panelVisible() ? 'top-left' : 'top-right')
+  const anchor = !watching
+    ? 'bottom-left'
+    : (panelVisible() && panelSide() === 'right' ? 'top-left' : 'top-right')
   const key = `${watching ? 'window' : 'strip'}:${anchor}:${size.width}x${size.height}`
   if (key === stripPaneKey && stripPaneOff) return
   unregisterStripPane()
@@ -3505,8 +3511,9 @@ function clampVideoBarPoint(x, y) {
     : null
   const barWidth = rect && rect.width ? rect.width : VIDEO_BAR_WIDTH
   const barHeight = rect && rect.height ? rect.height : VIDEO_BAR_HEIGHT
+  const span = panelFreeSpan(vw)
   return {
-    x: Math.min(Math.max(8, Math.round(x)), Math.max(8, Math.round(panelLeftEdge(vw) - barWidth - 8))),
+    x: Math.min(Math.max(span.lo + 8, Math.round(x)), Math.max(span.lo + 8, Math.round(span.hi - barWidth - 8))),
     y: Math.min(Math.max(8, Math.round(y)), Math.max(8, Math.round(vh - barHeight - 8)))
   }
 }
@@ -3580,7 +3587,8 @@ function videoWindowWidth() {
   // (Huge is 630 px tall and ran off the bottom of a short window).
   const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
   const byHeight = Math.floor((vh - 16 - VIDEO_WINDOW_STRIP_ROOM) * 16 / 9)
-  return Math.max(VIDEO_WINDOW_SIZES.small, Math.min(wanted, panelLeftEdge(vw) - 16, byHeight))
+  const span = panelFreeSpan(vw)
+  return Math.max(VIDEO_WINDOW_SIZES.small, Math.min(wanted, span.hi - span.lo - 16, byHeight))
 }
 
 /** Lay the player out as the backdrop (full bleed, behind everything) or as a
@@ -3596,8 +3604,8 @@ function videoWindowPoint(width) {
   const frameHeight = Math.round(width * 9 / 16)
   // The usable width ends at the Right panel while it is open, so the watch
   // window never lands on (or is dragged over) the panel's controls.
-  const edge = panelLeftEdge(vw)
-  const clampX = value => Math.min(Math.max(8, edge - width - 8), Math.max(8, value))
+  const { lo, hi: edge } = panelFreeSpan(vw)
+  const clampX = value => Math.min(Math.max(lo + 8, edge - width - 8), Math.max(lo + 8, value))
   const clampY = value => Math.min(Math.max(8, vh - frameHeight - 8), Math.max(8, value))
   if (settings.videoWindowCorner === 'free' &&
       Number.isFinite(settings.videoWindowX) && Number.isFinite(settings.videoWindowY)) {
@@ -3609,7 +3617,7 @@ function videoWindowPoint(width) {
   const right = corner.endsWith('right')
   const bottom = corner.startsWith('bottom')
   return {
-    x: right ? clampX(edge - width - VIDEO_WINDOW_RIGHT_MARGIN) : VIDEO_WINDOW_RIGHT_MARGIN,
+    x: right ? clampX(edge - width - VIDEO_WINDOW_RIGHT_MARGIN) : clampX(lo + VIDEO_WINDOW_RIGHT_MARGIN),
     y: bottom ? clampY(vh - frameHeight - VIDEO_WINDOW_BOTTOM) : VIDEO_WINDOW_TOP
   }
 }
@@ -3807,10 +3815,11 @@ function videoBarActive() {
   return true
 }
 
-/** The Right panel's left edge while it is open (else the viewport's right
- *  edge): floating surfaces stay left of it so they never cover its controls. */
-function panelLeftEdge(vw) {
-  if (!panelVisible()) return vw
+/** The window's free span beside the open panel (else the whole width):
+ *  floating surfaces stay on the chat side of it so they never cover its
+ *  controls. Reads only Aura's own panel node. */
+function panelFreeSpan(vw) {
+  if (!panelVisible()) return { lo: 0, hi: vw }
   let width = PANEL_WIDTH
   try {
     const rect = panelEl && panelEl.getBoundingClientRect ? panelEl.getBoundingClientRect() : null
@@ -3818,10 +3827,19 @@ function panelLeftEdge(vw) {
   } catch {
     // unmeasured: the docked default
   }
-  return Math.max(0, vw - width)
+  return panelSide() === 'left'
+    ? { lo: Math.min(vw, width), hi: vw }
+    : { lo: 0, hi: Math.max(0, vw - width) }
 }
 
 /** The four places a film can play, for Watch in (panel and menu). */
+function filmPlaces() {
+  return [
+    ['panel', 'Panel', `Watch the film in the ${panelName()}`],
+    ...FILM_PLACES.slice(1)
+  ]
+}
+
 const FILM_PLACES = [
   ['panel', 'Panel', 'Watch the film in the Right panel'],
   ['behind', 'Behind chat', 'Watch the film behind the chat'],
@@ -4086,7 +4104,7 @@ function mountVideoBar() {
   Object.assign(sendLabel.style, { fontSize: '10.5px', color: 'rgba(255,255,255,0.6)', marginRight: '2px' })
   sendRow.appendChild(sendLabel)
   for (const [text, aria, title, action] of [
-    ['Right panel', 'Send the film to the Right panel', 'Play the film in the Right panel', sendFilmToPanel],
+    [panelName(), `Send the film to the ${panelName()}`, `Play the film in the ${panelName()}`, sendFilmToPanel],
     ['Behind chat', 'Send the film behind the chat', 'Play the film behind the chat', sendFilmBehindChat],
     ['Desktop', 'Pop the film out to the desktop', 'Play the film in its own window on your desktop', sendFilmToDesktop]
   ]) {
@@ -4252,6 +4270,16 @@ const PANEL_MIN_WIDTH = 340
 const PANEL_RAIL = 44
 const PANEL_SCORE_MAX = 12
 const PANE_ID = `${ID}:panel`
+const PANE_ID_LEFT = `${ID}:panel-left`
+
+function panelSide() {
+  return $settings.get().panelSide === 'left' ? 'left' : 'right'
+}
+
+/** 'Right panel' / 'Left panel', for labels that name the panel. */
+function panelName() {
+  return panelSide() === 'left' ? 'Left panel' : 'Right panel'
+}
 
 let panelEl = null
 let panelParts = null
@@ -4305,6 +4333,12 @@ let panelStyleEl = null
 // The live `panes` registration, if any. Tracked through the disposer below so
 // plugin disposal (and switching the panel off) removes the host pane/tab/strip.
 let paneRegistration = null
+// The contribution-scoped id of that registration (`aura:panel` or `aura:panel-left`).
+let paneRegisteredId = ''
+
+function panelPaneId(side = panelSide()) {
+  return side === 'left' ? PANE_ID_LEFT : PANE_ID
+}
 
 /** The host's own answer about whether the pane is actually on screen (open
  *  tab, zone un-minimised, not dismissed). Feature-detected: older hosts do
@@ -4312,7 +4346,7 @@ let paneRegistration = null
 function hostPaneVisible() {
   if (!host || typeof host.paneVisibility !== 'function') return null
   try {
-    const state = host.paneVisibility(PANE_ID)
+    const state = host.paneVisibility(paneRegisteredId || panelPaneId())
     if (state && typeof state.get === 'function') return state.get() === true
     if (typeof state === 'boolean') return state
   } catch {
@@ -4351,10 +4385,12 @@ function menuCollisionPadding() {
   } catch {
     // unmeasured: the docked default
   }
-  return { top: 8, bottom: 8, left: 8, right: Math.round(width) + 12 }
+  return panelSide() === 'left'
+    ? { top: 8, bottom: 8, left: Math.round(width) + 12, right: 8 }
+    : { top: 8, bottom: 8, left: 8, right: Math.round(width) + 12 }
 }
 
-const FILM_STRENGTH_PANEL_TITLE = 'The film plays in the Right panel at full strength. Choose Behind chat to use strength.'
+const filmStrengthPanelTitle = () => `The film plays in the ${panelName()} at full strength. Choose Behind chat to use strength.`
 
 function setFilmBehind(on) {
   if (!ctxRef || disposed) return
@@ -4845,8 +4881,8 @@ function mountPanelInto(hostNode) {
   hidePanel.type = 'button'
   hidePanel.className = 'ap-hide'
   hidePanel.textContent = '⇥'
-  hidePanel.setAttribute('aria-label', 'Hide the Right panel')
-  hidePanel.title = 'Hide the Right panel (Aura keeps running). Bring it back from the Aura menu or with Ctrl+Shift+H.'
+  hidePanel.setAttribute('aria-label', `Hide the ${panelName()}`)
+  hidePanel.title = `Hide the ${panelName()} (Aura keeps running). Bring it back from the Aura menu or with Ctrl+Shift+H.`
   hidePanel.addEventListener('click', event => {
     if (event && event.preventDefault) event.preventDefault()
     setPanelEnabled(false)
@@ -5038,7 +5074,7 @@ function mountPanelInto(hostNode) {
   const watchInButtons = doc.createElement('div')
   watchInButtons.className = 'ap-pills'
   const watchInPills = []
-  for (const [place, label, aria] of FILM_PLACES) {
+  for (const [place, label, aria] of filmPlaces()) {
     const pill = doc.createElement('button')
     pill.type = 'button'
     pill.className = 'ap-pill'
@@ -5367,7 +5403,7 @@ function syncPanel(force) {
  *  the pane as a tab behind the sessions list; a reveal brings it back. */
 function revealPanelPane() {
   try {
-    if (host && typeof host.revealPane === 'function') host.revealPane(PANE_ID)
+    if (host && typeof host.revealPane === 'function') host.revealPane(paneRegisteredId || panelPaneId())
   } catch {
     // older hosts may throw on an unknown pane
   }
@@ -5379,28 +5415,30 @@ function registerPanelPane(restore) {
     if (restore) revealPanelPane()
     return
   }
+  const side = panelSide()
   const off = ctxRef.register({
-    id: 'panel',
+    id: side === 'left' ? 'panel-left' : 'panel',
     area: PANES_AREA,
     title: 'Aura',
     // minWidth: the host keeps a dragged width per machine; a stale narrow one
     // (135px on Linux) clipped the controls and shelf. The floor stops that.
     data: {
-      placement: 'right',
-      // A first-placement hint only: the host docks it right of the chat once,
+      placement: side,
+      // A first-placement hint only: the host docks it beside the chat once,
       // then the user's own arrangement wins. `enforce` re-homed it on every
       // boot and fought Advanced layouts (owner, 11-15).
-      dock: { pane: 'workspace', pos: 'right' },
+      dock: { pane: 'workspace', pos: side },
       width: `${PANEL_WIDTH}px`,
       minWidth: `${PANEL_MIN_WIDTH}px`
     },
     render: () => jsx(AuraPane, {})
   })
   paneRegistration = typeof off === 'function' ? off : null
+  paneRegisteredId = paneRegistration ? panelPaneId(side) : ''
   if (restore) {
     // The contribution-scoped id is `<pluginId>:<paneId>`.
     try {
-      if (host && typeof host.undismissPane === 'function') host.undismissPane(PANE_ID)
+      if (host && typeof host.undismissPane === 'function') host.undismissPane(paneRegisteredId || panelPaneId(side))
     } catch {
       // older hosts may throw on an unknown pane
     }
@@ -5412,6 +5450,7 @@ function registerPanelPane(restore) {
 function disposePaneRegistration() {
   const off = paneRegistration
   paneRegistration = null
+  paneRegisteredId = ''
   if (typeof off === 'function') {
     try {
       off()
@@ -5578,6 +5617,23 @@ function setPanelEnabled(on) {
     disposePaneRegistration()
     removePanel()
   }
+  syncVideoBar(true)
+}
+
+/** Dock the panel on the other side of the chat. Only one pane exists at a
+ *  time: the old side's contribution goes, the new side's is placed by its
+ *  dock hint and fronted. */
+function setPanelSide(side) {
+  if (!ctxRef || disposed) return
+  const next = side === 'left' ? 'left' : 'right'
+  if (next === panelSide()) return
+  writeSettings({ panelSide: next })
+  // Swap whatever pane exists; never add one the user does not have.
+  if (!paneRegistration) return
+  disposePaneRegistration()
+  removePanel()
+  registerPanelPane(true)
+  syncPanel(true)
   syncVideoBar(true)
 }
 
@@ -6425,13 +6481,27 @@ function AuraQuickMenu() {
           // back, and let the visual or the film fill the window.
           section('layout', 'Layout'),
           row(
-            'Right panel',
+            panelName(),
             jsx(Switch, {
               checked: settings.panelEnabled !== false,
-              'aria-label': 'Right panel (quick menu)',
+              'aria-label': `${panelName()} (quick menu)`,
               onCheckedChange: value => setPanelEnabled(value)
             }),
-            'Show the Aura panel on the right: the film, its controls and your shelf.'
+            `Show the Aura panel on the ${panelSide()}: the film, its controls and your shelf.`
+          ),
+          row(
+            'Panel side',
+            jsx('select', { className: 'aura-select',
+              value: panelSide(),
+              'aria-label': 'Panel side (quick menu)',
+              style: selectStyle,
+              onChange: event => setPanelSide(event && event.target ? String(event.target.value) : 'right'),
+              children: [
+                jsx('option', { key: 'right', value: 'right', children: 'Right of the chat' }),
+                jsx('option', { key: 'left', value: 'left', children: 'Left of the chat' })
+              ]
+            }),
+            'Dock the panel left or right of the chat. Picking a Hermes layout can move it; drag its tab back.'
           ),
           settings.backdropMode !== 'video'
             ? row(
@@ -6555,7 +6625,7 @@ function AuraQuickMenu() {
                   'Watch in',
                   jsxs('div', {
                     style: { display: 'flex', alignItems: 'center', gap: 2 },
-                    children: FILM_PLACES.map(([place, label, aria]) =>
+                    children: filmPlaces().map(([place, label, aria]) =>
                       jsx(Button, {
                         key: place,
                         size: 'micro',
@@ -6599,7 +6669,7 @@ function AuraQuickMenu() {
                         size: 'micro',
                         variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
                         'aria-label': 'Automatic video strength',
-                        title: filmPanelled ? FILM_STRENGTH_PANEL_TITLE : 'Automatic: 20% working, 30% with music, +3% per extra chat',
+                        title: filmPanelled ? filmStrengthPanelTitle() : 'Automatic: 20% working, 30% with music, +3% per extra chat',
                         disabled: filmPanelled,
                         style: presetStyle,
                         onClick: () => setVideoOpacityAuto(),
@@ -6614,7 +6684,7 @@ function AuraQuickMenu() {
                             ? 'default'
                             : 'ghost',
                           'aria-label': `${preset}% video strength`,
-                          title: filmPanelled ? FILM_STRENGTH_PANEL_TITLE : undefined,
+                          title: filmPanelled ? filmStrengthPanelTitle() : undefined,
                           disabled: filmPanelled,
                           style: presetStyle,
                           onClick: () => setVideoOpacity(preset / 100),
@@ -8486,12 +8556,37 @@ function AuraSettings(props) {
         key: 'panel',
         children: row(
           'Aura panel',
-          'This Right panel: film, scrubber and sources. Off leaves only the status-bar menu.',
+          `This ${panelName()}: film, scrubber and sources. Off leaves only the status-bar menu.`,
           jsx(Switch, {
             checked: settings.panelEnabled !== false,
-            'aria-label': 'Right panel',
+            'aria-label': panelName(),
             onCheckedChange: value => setPanelEnabled(value)
           })
+        )
+      }),
+      jsx('div', {
+        key: 'panel-side',
+        children: row(
+          'Panel side',
+          'Dock the panel left or right of the chat. Picking a Hermes layout can move it; drag its tab back.',
+          jsx('select', { className: 'aura-select',
+              value: panelSide(),
+              'aria-label': 'Panel side',
+              style: {
+              font: 'inherit',
+              fontSize: 11,
+              color: 'var(--ui-text-primary)',
+              background: 'var(--ui-bg)',
+              border: '1px solid var(--ui-stroke-secondary)',
+              borderRadius: 6,
+              padding: '3px 6px'
+            },
+              onChange: event => setPanelSide(event && event.target ? String(event.target.value) : 'right'),
+              children: [
+                jsx('option', { key: 'right', value: 'right', children: 'Right of the chat' }),
+                jsx('option', { key: 'left', value: 'left', children: 'Left of the chat' })
+              ]
+            })
         )
       }),
       jsx('div', {
