@@ -376,7 +376,7 @@ record('polls at most 4 Hz (250 ms)', () => assert.match(source, /POLL_MS\s*=\s*
 record('"Left panel" is only the name of the left side, never stale copy', () => {
   // The panel was once on the left; old copy must not survive. The name now
   // comes from panelName() only, which follows the Panel side setting.
-  const uses = source.split('\n').filter(line => /Left panel/.test(line) && !/^\s*(\/\/|\/?\*)/.test(line))
+  const uses = source.split(/\r?\n/).filter(line => /Left panel/.test(line) && !/^\s*(\/\/|\/?\*)/.test(line))
   assert.deepEqual(uses, ["  return panelSide() === 'left' ? 'Left panel' : 'Right panel'"])
 })
 
