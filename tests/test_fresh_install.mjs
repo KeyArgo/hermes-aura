@@ -8,7 +8,7 @@
  * test.
  *
  *   1. Aura ships enabled; the Right panel pane (panes / 'panel') is registered
- *      and docked right (first placement only; the user's layout wins after).
+ *      and docked right with enforce: true.
  *   2. The sidebar row (SIDEBAR_NAV_AREA) and the /aura route (ROUTES_AREA)
  *      are registered.
  *   3. The status-bar quick menu is registered and renders a version chip.
@@ -714,7 +714,7 @@ record('0. fresh install: the Right panel renders before the server reports its 
     `the Right panel threw on first paint: ${earlyPaneError && earlyPaneError.message}`)
 })
 
-record('1. fresh install: Aura is enabled by default and the Right panel pane is registered, docked right (a hint, never forced)', () => {
+record('1. fresh install: Aura is enabled by default and the Right panel pane is registered, docked right, enforce: true', () => {
   assert.ok(storageWasEmptyAtBoot, 'the scenario did not start from EMPTY storage (no "settings" key)')
   assert.equal(freshA.requests.some(r => r.route === '/status'), true, 'the plugin never asked the server /status')
 
@@ -731,8 +731,8 @@ record('1. fresh install: Aura is enabled by default and the Right panel pane is
   assert.equal(pane.data.placement, 'right', 'the pane must prefer the right')
   assert.deepEqual(
     pane.data.dock,
-    { pane: 'workspace', pos: 'right' },
-    'a new user gets the pane docked right; after that their own layout wins'
+    { pane: 'workspace', pos: 'right', enforce: true },
+    'a new user must get the pane docked right even if their layout disagrees'
   )
 })
 

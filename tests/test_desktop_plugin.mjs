@@ -373,12 +373,7 @@ record('clears the accent override with setAccentOverride(null)', () =>
   assert.match(source, /setAccentOverride\(null\)/)
 )
 record('polls at most 4 Hz (250 ms)', () => assert.match(source, /POLL_MS\s*=\s*250/))
-record('"Left panel" is only the name of the left side, never stale copy', () => {
-  // The panel was once on the left; old copy must not survive. The name now
-  // comes from panelName() only, which follows the Panel side setting.
-  const uses = source.split(/\r?\n/).filter(line => /Left panel/.test(line) && !/^\s*(\/\/|\/?\*)/.test(line))
-  assert.deepEqual(uses, ["  return panelSide() === 'left' ? 'Left panel' : 'Right panel'"])
-})
+record('no user-facing "Left panel" remains', () => assert.doesNotMatch(source, /Left panel/))
 
 // ------------------------------------------------------- page: idle motion
 // web/aura.js is a browser IIFE. This pulls the shipped idleGate() out of the
@@ -813,7 +808,7 @@ record('contributes the Aura page route and its sidebar row', () => {
   assert.equal(a.contributions.some(c => c.area === 'palette'), false, 'no palette command is wanted')
 })
 
-record('docks the theatre right once, never forcing it back over the user\'s layout', () => {
+record('docks the theatre as an enforced right-hand pane the host lays out', () => {
   const pane = a.contributions.find(c => c.area === 'panes')
   assert.ok(pane, 'no panes contribution: the panel has no home')
   assert.equal(pane.id, 'panel')
@@ -821,10 +816,9 @@ record('docks the theatre right once, never forcing it back over the user\'s lay
   assert.equal(pane.data.placement, 'right', 'owner prefers right-hand panels')
   assert.deepEqual(
     pane.data.dock,
-    { pane: 'workspace', pos: 'right' },
-    'the dock is a first-placement hint'
+    { pane: 'workspace', pos: 'right', enforce: true },
+    'existing layouts must be moved to the right on boot'
   )
-  assert.equal('enforce' in pane.data.dock, false, 'enforce re-homes the pane every boot and fights the user\'s layout')
   assert.match(String(pane.data.width), /^\d+px$/, 'the host needs a width')
   // The host remembers a dragged width per machine; without a floor a stale
   // 135px pane clipped the controls and shelf (Linux report, 11-13).
@@ -2749,8 +2743,8 @@ await recordAsync('Aura adds no blur of its own over a film behind the app', asy
 await recordAsync('the Aura menu opens clear of the Right panel so both can be used at once', async () => {
   // The menu pops up from the right end of the status bar, where the Right panel
   // is docked: with the panel open it keeps the panel's width clear on the right.
-  const paddingFor = async (panelEnabled, panelSide = 'right') => {
-    const scenario = makeCtx({ enabled: true, backdropMode: 'video', panelEnabled, panelSide,
+  const paddingFor = async panelEnabled => {
+    const scenario = makeCtx({ enabled: true, backdropMode: 'video', panelEnabled,
       videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
     const dispose = pluginModule.default.register(scenario.ctx)
     try {
@@ -2769,9 +2763,6 @@ await recordAsync('the Aura menu opens clear of the Right panel so both can be u
   const withPanel = await paddingFor(true)
   assert.ok(withPanel && Number(withPanel.right) >= 300,
     `with the Right panel open the menu does not keep clear of it (collisionPadding ${JSON.stringify(withPanel)})`)
-  const leftPanel = await paddingFor(true, 'left')
-  assert.ok(leftPanel && Number(leftPanel.left) >= 300 && Number(leftPanel.right) < 300,
-    `with the Left panel open the menu keeps the wrong side clear (collisionPadding ${JSON.stringify(leftPanel)})`)
   const withoutPanel = await paddingFor(false)
   assert.ok(!withoutPanel || !(Number(withoutPanel.right) >= 300),
     'with the Right panel closed the menu still keeps a panel-wide gap')
@@ -2820,123 +2811,6 @@ await recordAsync('Panel fronts the Right panel even when it is already on (a He
     assert.equal(sdk.calls.revealed.length, before + 1, 'Panel did not reveal the already-registered Right panel')
     assert.equal(sdk.calls.revealed.at(-1), 'aura:panel', 'Panel revealed the wrong pane id')
     assert.equal(scenario.contributions.filter(c => c.area === 'panes').length, 1, 'Panel registered a second pane')
-  } finally {
-    dispose()
-  }
-})
-
-const panelPanes = scenario => scenario.contributions.filter(c => c.area === 'panes' && c.data && c.data.placement !== 'floating')
-
-await recordAsync('Panel side: the default docks one pane right of the chat as aura:panel', async () => {
-  const scenario = makeCtx({ enabled: true, panelEnabled: true })
-  const dispose = pluginModule.default.register(scenario.ctx)
-  try {
-    await sleep(20)
-    const panes = panelPanes(scenario)
-    assert.equal(panes.length, 1, 'expected exactly one panel pane')
-    assert.equal(panes[0].id, 'panel', 'the right panel changed its id (saved layouts would lose it)')
-    assert.equal(panes[0].data.placement, 'right')
-    assert.deepEqual(panes[0].data.dock, { pane: 'workspace', pos: 'right' })
-  } finally {
-    dispose()
-  }
-})
-
-await recordAsync('Panel side Left docks its own pane left of the chat, and Panel fronts that one', async () => {
-  const scenario = makeCtx({ enabled: true, panelEnabled: true, panelSide: 'left', backdropMode: 'video', filmBehind: true,
-    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
-  const dispose = pluginModule.default.register(scenario.ctx)
-  try {
-    await sleep(20)
-    const panes = panelPanes(scenario)
-    assert.equal(panes.length, 1, 'expected exactly one panel pane')
-    assert.equal(panes[0].id, 'panel-left', 'the left panel must have its own id: the host keeps a pane where it first put it')
-    assert.equal(panes[0].data.placement, 'left')
-    assert.deepEqual(panes[0].data.dock, { pane: 'workspace', pos: 'left' })
-    const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
-    assert.ok(findByAria(tree, 'Left panel (quick menu)'), 'the quick menu still calls the left panel the Right panel')
-    const before = sdk.calls.revealed.length
-    findByAria(tree, 'Watch the film in the Left panel (quick menu)').props.onClick()
-    await sleep(20)
-    assert.equal(sdk.calls.revealed.at(-1), 'aura:panel-left', 'Panel fronted the wrong pane id')
-    assert.equal(sdk.calls.revealed.length, before + 1)
-  } finally {
-    dispose()
-  }
-})
-
-await recordAsync('switching Panel side keeps exactly one pane, places the new side and fronts it', async () => {
-  const scenario = makeCtx({ enabled: true, panelEnabled: true })
-  const dispose = pluginModule.default.register(scenario.ctx)
-  try {
-    await sleep(20)
-    for (const [side, id] of [['left', 'panel-left'], ['right', 'panel'], ['left', 'panel-left'], ['left', 'panel-left']]) {
-      const undismissed = sdk.calls.undismissed.length
-      const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
-      const select = findByAria(tree, 'Panel side (quick menu)')
-      assert.ok(select, 'no Panel side choice in the quick menu')
-      const changed = select.props.value !== side
-      select.props.onChange({ target: { value: side } })
-      await sleep(20)
-      const panes = panelPanes(scenario)
-      assert.equal(panes.length, 1, `after choosing ${side}: ${panes.length} panel panes`)
-      assert.equal(panes[0].id, id)
-      assert.equal(scenario.storage.get('settings').panelSide, side, 'the side was not saved')
-      if (changed) {
-        assert.equal(sdk.calls.undismissed.at(-1), `aura:${id}`, 'the new side was not un-dismissed (a past Close would strand it)')
-        assert.equal(sdk.calls.revealed.at(-1), `aura:${id}`, 'the new side was not fronted')
-      } else {
-        assert.equal(sdk.calls.undismissed.length, undismissed, 'choosing the same side re-registered the pane')
-      }
-    }
-  } finally {
-    dispose()
-  }
-})
-
-await recordAsync('Panel side never adds a pane, and never leaves the old side behind', async () => {
-  const scenario = makeCtx({ enabled: true, panelEnabled: true })
-  const dispose = pluginModule.default.register(scenario.ctx)
-  try {
-    await sleep(20)
-    const menu = () => renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
-    findByAria(menu(), 'Right panel (quick menu)').props.onCheckedChange(false)
-    await sleep(20)
-    assert.equal(panelPanes(scenario).length, 0, 'switching the panel off left a pane')
-    findByAria(menu(), 'Panel side (quick menu)').props.onChange({ target: { value: 'left' } })
-    await sleep(20)
-    assert.equal(panelPanes(scenario).length, 0, 'choosing a side turned the panel on')
-    assert.equal(scenario.storage.get('settings').panelSide, 'left')
-    findByAria(menu(), 'Left panel (quick menu)').props.onCheckedChange(true)
-    await sleep(20)
-    const panes = panelPanes(scenario)
-    assert.deepEqual(panes.map(p => p.id), ['panel-left'], 'switching on did not use the chosen side')
-  } finally {
-    dispose()
-  }
-})
-
-await recordAsync('an unknown saved Panel side falls back to the right', async () => {
-  const scenario = makeCtx({ enabled: true, panelEnabled: true, panelSide: 'top' })
-  const dispose = pluginModule.default.register(scenario.ctx)
-  try {
-    await sleep(20)
-    const panes = panelPanes(scenario)
-    assert.equal(panes.length, 1)
-    assert.equal(panes[0].id, 'panel')
-  } finally {
-    dispose()
-  }
-})
-
-await recordAsync('the settings page names the panel after its side and offers Panel side', async () => {
-  const scenario = makeCtx({ enabled: true, panelEnabled: true, panelSide: 'left' })
-  const dispose = pluginModule.default.register(scenario.ctx)
-  try {
-    await sleep(20)
-    const page = renderContribution(scenario.contributions.find(c => c.area === 'settings.plugins'))
-    assert.ok(findSwitch(page, 'Left panel'), 'the settings page has no Left panel switch with the side on left')
-    assert.ok(findByAria(page, 'Panel side'), 'the settings page has no Panel side choice')
   } finally {
     dispose()
   }
