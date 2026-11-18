@@ -18,12 +18,13 @@
  *      import, no imports outside the three allowed specifiers, no
  *      document.querySelector('[data-slot=...]'), no document.body observer,
  *      no console output,
- *   7. host safety: with nothing opted in and no Aura Live theme active no
- *      stylesheet and no backdrop iframe reach the host and no host
- *      html/body/root style is mutated; the backdrop and the #aura-glass
- *      style appear only behind an opt-in (the windowVisual switch or the
- *      active aura-live theme) and vanish on switch-off, turning Aura off,
- *      Restore my theme and dispose,
+ *   7. host safety: with nothing opted in no stylesheet and no backdrop
+ *      iframe reach the host and no host html/body/root style is mutated;
+ *      the backdrop and the #aura-glass style appear only behind the
+ *      windowVisual opt-in, and a leftover aura-live theme from an older
+ *      build does not mount them,
+ *      and both vanish on switch-off, turning Aura off, Restore my theme
+ *      and dispose,
  *   8. "Visual behind the app" turns Aura on when Aura was off, and shows a
  *      hint (instead of drawing nothing) when Aura is off while it is on,
  *   9. the status-bar quick menu registers on STATUSBAR_AREAS.right, renders
@@ -786,7 +787,7 @@ record('default export is { id: "aura", name: "Aura", register }', () => {
 
 // ------------------------------------------------------------- scenario A
 
-const a = makeCtx({ enabled: true, intensity: 0.5, followAudio: true, themeOptIn: false })
+const a = makeCtx({ enabled: true, intensity: 0.5, followAudio: true })
 let disposeA = null
 
 record('register() returns a disposer function', () => {
@@ -893,22 +894,9 @@ record('occupies the status bar with exactly one quick-menu contribution', () =>
   assert.ok(Number.isFinite(menu.order), 'quick menu needs a stable order')
 })
 
-record('contributes the Aura Live theme', () => {
+record('contributes no theme', () => {
   const theme = a.contributions.find(c => c.area === 'themes')
-  assert.ok(theme, 'no themes contribution')
-  assert.equal(theme.data.name, 'aura-live')
-  const required = [
-    'background', 'foreground', 'card', 'cardForeground', 'muted', 'mutedForeground',
-    'popover', 'popoverForeground', 'primary', 'primaryForeground', 'secondary',
-    'secondaryForeground', 'accent', 'accentForeground', 'border', 'input', 'ring',
-    'destructive', 'destructiveForeground'
-  ]
-  for (const key of required) {
-    assert.match(theme.data.colors[key], /^#[0-9a-f]{6}$/i, `colors.${key} is not a hex colour`)
-    assert.match(theme.data.darkColors[key], /^#[0-9a-f]{6}$/i, `darkColors.${key} is not a hex colour`)
-  }
-  assert.equal(typeof theme.data.typography.fontSans, 'string')
-  assert.equal(typeof theme.data.typography.fontMono, 'string')
+  assert.equal(theme, undefined, 'a themes contribution was registered')
 })
 
 record('contributes the settings page under settings.plugins', () => {
@@ -942,35 +930,20 @@ await recordAsync('status request leaves time for a cold gateway', async () => {
   assert.ok(status && status.options.timeoutMs >= 10000, 'status timeout is too short for cold startup')
 })
 
-await recordAsync('nothing is injected with no opt-in and no Aura Live theme', async () => {
+record('settings have no Aura theme rows', () => {
+  const settings = a.contributions.find(c => c.area === 'settings.plugins')
+  const tree = renderContribution(settings)
+  const body = texts(tree)
+  assert.equal(body.includes('Use Aura theme'), false, 'the Use Aura theme row is still rendered')
+  assert.equal(body.includes('Keep my theme when idle'), false, 'the Keep my theme when idle row is still rendered')
+  assert.equal(findSwitch(tree, 'Use Aura theme'), null, 'the Use Aura theme switch is still rendered')
+})
+
+await recordAsync('nothing is injected with no opt-in', async () => {
   await sleep(30)
   assert.equal(hostStyles().length, 0, 'injected a stylesheet into the host head')
   assert.equal(hostIframes().length, 0, 'mounted a backdrop iframe on the host body')
   assert.equal(hostHasNegativeZ(), false, 'a host node uses a negative z-index')
-  assert.deepEqual(Object.keys(documentElement.style), [], 'host html/root style was mutated')
-  assert.deepEqual(Object.keys(document.body.style), [], 'host body style was mutated')
-})
-
-await recordAsync('the Aura Live theme alone also shows the backdrop, and leaving it removes it', async () => {
-  // Intended behaviour: the active aura-live theme mounts the backdrop even
-  // with windowVisual off (same condition as syncBackdrop).
-  const probe = a.contributions.find(c => c.area === 'titleBar.center')
-  sdk.themeState.name = 'aura-live'
-  renderContribution(probe)
-  a.timers.find(t => t.ms === 250).fn()
-  await sleep(30)
-  assert.equal(hostStyles().length, 1, 'the Aura Live theme did not mount the glass style')
-  assert.equal(hostIframes().length, 1, 'the Aura Live theme did not mount the backdrop')
-  assert.equal(hostIframes()[0].style.pointerEvents, 'none')
-  assert.equal(hostIframes()[0].style.zIndex, '-1')
-  sdk.themeState.name = 'nous'
-  renderContribution(probe)
-  a.timers.find(t => t.ms === 250).fn()
-  await sleep(30)
-  assert.equal(glassStyles().length, 0, 'switching away from Aura Live left the #aura-glass style behind')
-  assert.equal(hostStyles().length, 0, 'switching away from Aura Live left a stylesheet behind')
-  assert.equal(hostIframes().length, 0, 'switching away from Aura Live left the backdrop behind')
-  assert.equal(hostHasNegativeZ(), false, 'a host node keeps a negative z-index')
   assert.deepEqual(Object.keys(documentElement.style), [], 'host html/root style was mutated')
   assert.deepEqual(Object.keys(document.body.style), [], 'host body style was mutated')
 })
@@ -1598,20 +1571,10 @@ await recordAsync('review 3c: transport and audio posts reach the SandboxedFrame
 // ------------------------------------------------------------- scenario B
 
 sdk.themeState.name = 'nous'
-const b = makeCtx({ enabled: true, intensity: 0.5, followAudio: true, themeOptIn: true })
-let disposeB = null
+const b = makeCtx({ enabled: true, intensity: 0.5, followAudio: true })
+const disposeB = pluginModule.default.register(b.ctx)
 
-await recordAsync('theme opt-in selects aura-live only after the active theme is known', async () => {
-  disposeB = pluginModule.default.register(b.ctx)
-  await sleep(20)
-  assert.equal(sdk.calls.themes.includes('aura-live'), false, 'theme applied before the probe mounted')
-  const probe = b.contributions.find(c => c.area === 'titleBar.center')
-  renderContribution(probe)
-  await sleep(20)
-  assert.ok(sdk.calls.themes.includes('aura-live'), 'aura-live was not requested')
-})
-
-await recordAsync('Restore my theme turns off effects, restores the previous theme and persists', async () => {
+await recordAsync('Restore my theme still works', async () => {
   const settings = b.contributions.find(c => c.area === 'settings.plugins')
   // Mount an effect first so the clean-up assertions are not vacuous.
   const switches = findSettingsSwitches(renderContribution(settings))
@@ -1627,13 +1590,12 @@ await recordAsync('Restore my theme turns off effects, restores the previous the
   assert.ok(restore, 'no Restore my theme control rendered')
   restore.props.onClick()
   await sleep(30)
-  assert.equal(sdk.calls.themes.at(-1), 'nous', 'previous theme was not restored')
   assert.equal(sdk.calls.accent.at(-1), null, 'accent override was not cleared')
   assert.deepEqual(b.controls.at(-1), { accent_pulse: false })
   const saved = b.storage.get('settings')
   assert.equal(saved.accentPulse, false, 'accent pulse was not turned off')
-  assert.equal(saved.themeOptIn, false, 'theme opt-in was not turned off')
   assert.equal(saved.windowVisual, false, 'the window visual was not turned off')
+  assert.equal('themeOptIn' in saved, false, 'Restore my theme still writes a theme opt-in')
   assert.equal(hostStyles().length, 0, 'Restore my theme left a host style')
   assert.equal(glassStyles().length, 0, 'Restore my theme left the #aura-glass style')
   assert.equal(hostIframes().length, 0, 'Restore my theme left a host iframe')
@@ -1648,84 +1610,50 @@ record('dispose after Restore my theme is clean and does not re-request a theme'
   assert.equal(sdk.calls.themes.length, themeCallsBefore, 'dispose requested a theme after restore')
 })
 
-// ------------------------------------------------------------- scenario D
-// The probe reports the theme the host is actually showing. A disable hands the
-// user's theme back; the host then reports it, and that report must not be read
-// as a fresh opt-in that drags the user onto aura-live again.
+// ------------------------------------------- upgrading from the old theme
+// The optional Aura Live theme is gone from this build, but an upgrading user's
+// host can still be wearing it. Aura must hand a real theme back once, and must
+// never mount the backdrop just because the old theme is active.
 
-sdk.themeState.name = 'nous'
-const th = makeCtx({ enabled: true, intensity: 0.5, themeOptIn: true })
-const disposeTh = pluginModule.default.register(th.ctx)
-const probeTh = th.contributions.find(c => c.area === 'titleBar.center')
-
-await recordAsync('disabling Aura keeps the restored theme when the probe reports it back', async () => {
-  renderContribution(probeTh)
-  await sleep(20)
-  sdk.themeState.name = 'aura-live'
-  renderContribution(probeTh)
-  await sleep(20)
-
-  const switches = findSettingsSwitches(renderContribution(th.contributions.find(c => c.area === 'settings.plugins')))
-  assert.ok(switches.enabled, 'no Aura enabled switch rendered')
-  switches.enabled.props.onCheckedChange(false)
-  await sleep(30)
-  assert.equal(sdk.calls.themes.at(-1), 'nous', 'disabling did not restore the previous theme')
-  const afterRestore = sdk.calls.themes.length
-
-  // The host now reports the theme it restored for the user. That is the user's
-  // own skin, not an opt-in request, so aura-live must not come back.
+await recordAsync('an active aura-live theme from an older version is handed back', async () => {
   sdk.themeState.name = 'nous'
-  renderContribution(probeTh)
-  await sleep(30)
-  assert.equal(sdk.calls.themes.length, afterRestore, 'the restored theme was immediately re-applied over')
-  assert.equal(sdk.calls.themes.at(-1), 'nous', 'Aura pulled the user back onto the aura-live theme')
-  assert.equal(hostIframes().length, 0, 'the backdrop survived the restore')
+  const old = makeCtx({ enabled: true, intensity: 0.5, windowVisual: false })
+  const disposeOld = pluginModule.default.register(old.ctx)
+  const probe = old.contributions.find(c => c.area === 'titleBar.center')
+  try {
+    // The user's own theme is known from this boot before the old skin appears.
+    renderContribution(probe)
+    await sleep(20)
+    const before = sdk.calls.themes.length
+    sdk.themeState.name = 'aura-live'
+    renderContribution(probe)
+    await sleep(20)
+    assert.equal(sdk.calls.themes.length, before + 1, 'the old aura-live theme was not handed back')
+    assert.equal(sdk.calls.themes.at(-1), 'nous', 'Aura did not hand back the previous user theme')
+    old.timers.filter(t => t.ms === 250).forEach(t => t.fn())
+    await sleep(30)
+    assert.equal(hostIframes().length, 0, 'the leftover aura-live theme mounted the backdrop')
+    assert.equal(glassStyles().length, 0, 'the leftover aura-live theme mounted the glass style')
+  } finally {
+    disposeOld()
+    sdk.themeState.name = 'nous'
+  }
 })
 
-record('dispose of the disabled instance is clean', () => {
-  disposeTh()
-  assert.equal(th.contributions.length, 0)
-})
-
-// ------------------------------------------------------------- scenario E
-// The probe can still be reporting our own skin at the moment Aura re-applies,
-// so "previous theme" must come from the last theme the USER wore, never from
-// aura-live. Otherwise every switch-off asks the host to keep Aura's theme.
-
-sdk.themeState.name = 'nous'
-const own = makeCtx({ enabled: true, intensity: 0.5, themeOptIn: true })
-const disposeOwn = pluginModule.default.register(own.ctx)
-const probeOwn = own.contributions.find(c => c.area === 'titleBar.center')
-const enabledSwitch = () => findSettingsSwitches(
-  renderContribution(own.contributions.find(c => c.area === 'settings.plugins'))).enabled
-
-await recordAsync('never hands back the Aura theme as the user previous theme', async () => {
-  await sleep(20)                       // let register settle, as scenario B does
-  renderContribution(probeOwn)          // first report: the user is on "nous"
-  await sleep(20)
-  assert.equal(sdk.calls.themes.at(-1), 'aura-live', 'the opt-in did not apply')
-  sdk.themeState.name = 'aura-live'     // the host is now wearing our skin
-  renderContribution(probeOwn)
-  await sleep(20)
-
-  enabledSwitch().props.onCheckedChange(false) // off: hands "nous" back
-  await sleep(30)
-  assert.equal(sdk.calls.themes.at(-1), 'nous', 'switching off did not restore the user theme')
-
-  enabledSwitch().props.onCheckedChange(true)  // on again, probe still says aura-live
-  await sleep(30)
-  const beforeSecondOff = sdk.calls.themes.length
-  enabledSwitch().props.onCheckedChange(false)
-  await sleep(30)
-  assert.equal(sdk.calls.themes.length, beforeSecondOff + 1,
-    'switching off did not request a restore')
-  assert.equal(sdk.calls.themes.at(-1), 'nous',
-    'switching off handed back the Aura theme (recorded as the user previous theme)')
-})
-
-record('dispose of the themed instance is clean', () => {
-  disposeOwn()
-  assert.equal(own.contributions.length, 0)
+await recordAsync('an aura-live theme with no known previous theme falls back to default', async () => {
+  sdk.themeState.name = 'aura-live'
+  const unknown = makeCtx({ enabled: true })
+  const disposeUnknown = pluginModule.default.register(unknown.ctx)
+  const probe = unknown.contributions.find(c => c.area === 'titleBar.center')
+  try {
+    renderContribution(probe)
+    await sleep(20)
+    assert.equal(sdk.calls.themes.at(-1), 'default', 'no previous theme was known and default was not requested')
+    assert.equal(hostIframes().length, 0, 'the leftover aura-live theme mounted the backdrop')
+  } finally {
+    disposeUnknown()
+    sdk.themeState.name = 'nous'
+  }
 })
 
 // ------------------------------------------------- a skin change keeps the visual
@@ -1734,7 +1662,7 @@ record('dispose of the themed instance is clean', () => {
 // glass is measured from the theme's colours, so it is re-measured instead.
 
 sdk.themeState.name = 'nous'
-const skin = makeCtx({ enabled: true, backdropMode: 'aura', windowVisual: true, themeOptIn: false, panelEnabled: false })
+const skin = makeCtx({ enabled: true, backdropMode: 'aura', windowVisual: true, panelEnabled: false })
 const disposeSkin = pluginModule.default.register(skin.ctx)
 const probeSkin = skin.contributions.find(c => c.area === 'titleBar.center')
 
@@ -1801,55 +1729,28 @@ record('dispose from the legacy-storage scenario is clean', () => {
   assert.ok(c.listeners.every(t => t.removed))
 })
 
-// ------------------------------------------------------------- scenario D
-// Disposal alone must restore the theme the user had before Aura.
-
-sdk.themeState.name = 'nous'
-const d = makeCtx({ enabled: true, intensity: 0.5, themeOptIn: true })
-const disposeD = pluginModule.default.register(d.ctx)
-
-await recordAsync('disposer restores the previous theme and removes listeners', async () => {
-  await sleep(20)
-  const probe = d.contributions.find(c => c.area === 'titleBar.center')
-  renderContribution(probe)
-  await sleep(20)
-  assert.ok(sdk.calls.themes.includes('aura-live'), 'aura-live was not requested')
-  disposeD()
-  assert.equal(sdk.calls.themes.at(-1), 'nous', 'previous theme was not restored on dispose')
-  assert.equal(d.contributions.length, 0)
-  assert.ok(d.timers.every(t => t.cleared))
-  assert.ok(d.listeners.every(t => t.removed))
-  assert.equal(hostStyles().length, 0)
-  assert.equal(hostIframes().length, 0)
-})
-
 // ------------------------------------------------------------- scenario E
-// Opt-in by default: a fresh install applies no accent override and no theme.
+// Opt-in by default: a fresh install applies no accent override.
 
 const e = makeCtx()
 const disposeE = pluginModule.default.register(e.ctx)
 
-await recordAsync('accent pulse and Aura Live are off by default', async () => {
+await recordAsync('accent pulse is off by default', async () => {
   await sleep(20)
   const accentBefore = sdk.calls.accent.length
-  const themesBefore = sdk.calls.themes.length
   const probe = e.contributions.find(c => c.area === 'titleBar.center')
   renderContribution(probe)
   e.timers.find(t => t.ms === 250).fn()
   await sleep(30)
   assert.equal(sdk.calls.accent.length, accentBefore, 'accent was applied without opt-in')
-  assert.equal(sdk.calls.themes.length, themesBefore, 'a theme was requested without opt-in')
   const settings = e.contributions.find(c => c.area === 'settings.plugins')
   const tree = renderContribution(settings)
   let accentSwitch = null
-  let themeSwitch = null
   walk(tree, node => {
     if (!accentSwitch && node.props && node.props['aria-label'] === 'Accent pulse') accentSwitch = node
-    if (!themeSwitch && node.props && node.props['aria-label'] === 'Use Aura theme') themeSwitch = node
   })
-  assert.ok(accentSwitch && themeSwitch, 'opt-in switches are missing')
+  assert.ok(accentSwitch, 'the accent switch is missing')
   assert.equal(accentSwitch.props.checked, false, 'accent pulse defaults on')
-  assert.equal(themeSwitch.props.checked, false, 'Aura Live theme defaults on')
   assert.equal(hostStyles().length, 0)
   assert.equal(hostIframes().length, 0)
 
@@ -2571,7 +2472,6 @@ const paneOnly = makeCtx({
   enabled: true,
   backdropMode: 'video',
   windowVisual: false,
-  themeOptIn: false,
   panelEnabled: true,
   videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
 })
@@ -2642,7 +2542,7 @@ const tick = scenario => scenario.timers.filter(t => t.ms === 250).forEach(t => 
 // scenarios may leave theirs mounted, so classify the frames by what they show
 // instead of counting new elements.
 async function surfaceScenario(settings) {
-  const scenario = makeCtx({ themeOptIn: false, windowVisual: false, ...settings })
+  const scenario = makeCtx({ windowVisual: false, ...settings })
   const dispose = pluginModule.default.register(scenario.ctx)
   tick(scenario)
   await sleep(80)
@@ -3001,7 +2901,6 @@ const p = makeCtx({
   enabled: true,
   backdropMode: 'video',
   windowVisual: false,
-  themeOptIn: false,
   panelEnabled: false,
   videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
 })

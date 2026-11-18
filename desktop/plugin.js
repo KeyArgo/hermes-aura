@@ -11,14 +11,12 @@
  *
  * What it contributes (Hermes Desktop plugin SDK only — no core edits):
  *   - a settings page (`SETTINGS_PLUGINS_AREA`) with enable / reaction strength /
- *     motion / accent-follow / window visual / theme controls, and Restore my
- *     theme,
- *   - an optional `THEMES_AREA` theme ('aura-live') the user must opt into,
+ *     motion / accent-follow / window visual controls, and Restore my theme,
  *   - "Visual behind the app": one fixed, click-through backdrop iframe at
  *     z-index -1 plus a single `#aura-glass` stylesheet that clears the app's
  *     own big surfaces so the moving visual shows through. It appears only
- *     when Aura is enabled AND the user opted in (the windowVisual switch or
- *     the Aura Live theme) and a live URL exists. Every glass rule is scoped
+ *     when Aura is enabled AND the user opted in (the windowVisual switch)
+ *     and a live URL exists. Every glass rule is scoped
  *     under a `data-aura-backdrop` attribute that is set on <html> with the
  *     style and removed with it, so the host appearance cannot leak. Turning
  *     the visual off, turning Aura off, Restore my theme, framing the film in
@@ -59,8 +57,8 @@
  * readout (both appended to `body`). No host markup selectors are used to draw
  * the backdrop (colour tokens are read from the root's computed properties; no
  * probe element is appended). All other appearance effects go through the SDK
- * (`setAccentOverride`, `requestTheme`). Accent pulse and the Aura Live theme
- * are opt-in and off by default.
+ * (`setAccentOverride`, `requestTheme`). Accent pulse is opt-in and off by
+ * default.
  *
  * Plain ESM, loaded uncompiled: `jsx()` calls only, no JSX syntax, no eval,
  * no dynamic import. Imports are limited to @hermes/plugin-sdk, react and
@@ -86,7 +84,6 @@ import {
   SIDEBAR_NAV_AREA,
   STATUSBAR_AREAS,
   Switch,
-  THEMES_AREA,
   TITLEBAR_AREAS,
   useTheme,
   useValue
@@ -165,10 +162,6 @@ const DEFAULT_SETTINGS = Object.freeze({
   moodReactive: true,
   accentPulse: false,
   autoPreset: true,
-  themeOptIn: false,
-  // When Aura is not showing anything, give the user their own theme back
-  // instead of leaving the Aura skin on an idle window.
-  themeIdleRestore: true,
   windowVisual: false,
   // Frosted (true) or solid (false) behind the visual, on every platform. null
   // follows the platform: frost where Hermes has glass (Windows/macOS), solid
@@ -449,6 +442,8 @@ let prevTheme = null
 let lastUserTheme = '' // last theme the host reported that is not our own
 let themeInfo = { name: '', accent: '' }
 let knownTheme = ''
+// One hand-back per boot: an older build's aura-live theme is no longer ours.
+let themeMigrated = false
 const disposers = []
 
 // "Only while active" fade state. showVisible means the backdrop/glass are
@@ -649,8 +644,6 @@ function readSettings(ctx) {
     // Legacy key from before accent_pulse existed: honour it, never write it.
     else if (typeof raw.followAudio === 'boolean') out.accentPulse = raw.followAudio
     if (typeof raw.autoPreset === 'boolean') out.autoPreset = raw.autoPreset
-    if (typeof raw.themeOptIn === 'boolean') out.themeOptIn = raw.themeOptIn
-    if (typeof raw.themeIdleRestore === 'boolean') out.themeIdleRestore = raw.themeIdleRestore
     if (typeof raw.windowVisual === 'boolean') out.windowVisual = raw.windowVisual
     if (typeof raw.frostLook === 'boolean') out.frostLook = raw.frostLook
     if (typeof raw.motion === 'string' && MOTIONS.includes(raw.motion)) out.motion = raw.motion
@@ -1126,7 +1119,7 @@ function showEligible() {
   // A pane or page film is Aura's own surface and needs no overlay permission;
   // everything else is the overlay and does. Off is off (owner): no film, no
   // visual, no audio channel, on any surface.
-  const overlay = Boolean(audio || knownTheme === THEME_NAME || settings.windowVisual)
+  const overlay = Boolean(audio || settings.windowVisual)
   return Boolean(doc && enabled && liveUrl() && (paneFilm || pageFilm || watchFilm || overlay))
 }
 
@@ -1256,11 +1249,11 @@ function fullWindowBackdropWanted(settings) {
     if (current.filmBehind === true) return true
     // With the Right panel closed, the opted-in window visual is what lets a
     // film fill the window (the panel is the film's box otherwise).
-    return !panelVisible() && Boolean(current.windowVisual || knownTheme === THEME_NAME)
+    return !panelVisible() && Boolean(current.windowVisual)
   }
-  // "Visual behind the app": the opt-in switch, the Aura Live theme, or the
-  // audio channel (which lives in the same full-window document).
-  return Boolean(current.windowVisual || current.audioUrl || knownTheme === THEME_NAME)
+  // "Visual behind the app": the opt-in switch or the audio channel (which
+  // lives in the same full-window document).
+  return Boolean(current.windowVisual || current.audioUrl)
 }
 
 function mountBackdrop(url, opacity) {
@@ -1343,7 +1336,7 @@ function mountBackdrop(url, opacity) {
   const framedElsewhere = settings.backdropMode === 'video' && !settings.videoClosed &&
     (filmInPanel() || pageVisible() || videoWindowOn() || desktopOwned || desktopPending)
   const fullBleed = !framedElsewhere && Boolean(settings.windowVisual || settings.audioUrl ||
-    knownTheme === THEME_NAME || settings.backdropMode === 'video')
+    settings.backdropMode === 'video')
   if (auraOn && fullBleed) {
     if (!glassStyleEl && !applyGlassStyle()) {
       handleBackdropFailure()
@@ -1902,7 +1895,7 @@ async function desktopWindowOpen() {
  * The server is the single source of truth for the display controls. Without
  * this, a quick menu built from stale local storage showed a different motion
  * or behaviour than the one actually driving the visual. Sync the five keys
- * the server owns; local-only preferences (windowVisual, themeOptIn, showWhen)
+ * the server owns; local-only preferences (windowVisual, showWhen)
  * are never touched here.
  */
 function syncFromServer(frame) {
@@ -2003,7 +1996,6 @@ async function poll() {
     applyBackdropLayout()
     syncVideoBar()
     applyVideoOpacity()
-    syncThemeForActivity()
     accentStep(Date.now())
     pulseStep()
   } finally {
@@ -2128,18 +2120,6 @@ function accentStep(now) {
 
 // ------------------------------------------------------------------- themes
 
-function applyThemeIfOptedIn() {
-  if (disposed || !ctxRef || $themeApplied.get()) return Boolean($themeApplied.get())
-  const before = themeInfo.name
-  if (!before) return false // the probe has not mounted yet; it retries
-  if (!requestTheme(THEME_NAME)) return false // refused rather than coerced
-  // What we owe the user is the theme they were wearing, never our own: the
-  // probe can still be reporting `aura-live` when Aura is switched back on.
-  prevTheme = before === THEME_NAME ? lastUserTheme : before
-  $themeApplied.set(true)
-  return true
-}
-
 function restoreTheme() {
   if (!$themeApplied.get()) return
   $themeApplied.set(false)
@@ -2147,29 +2127,6 @@ function restoreTheme() {
   prevTheme = null
   if (back === THEME_NAME) back = null // asking to keep the Aura theme is no restore
   if (back) requestTheme(back)
-}
-
-/** Is Aura actually showing anything right now? */
-function auraShowingSomething() {
-  const settings = $settings.get()
-  const live = $live.get()
-  const enabled = live.ok ? live.enabled === true : settings.enabled
-  if (!enabled) return false
-  if (settings.backdropMode === 'video') return Boolean(settings.videoUrl) && !settings.videoClosed
-  return Boolean(settings.windowVisual) || knownTheme === THEME_NAME
-}
-
-/** Keep the installed theme while Aura has nothing to show (owner ask): the
- *  Aura skin is for a window with a film or a visual in it, not an idle app.
- *  Re-applies the moment something is showing again. */
-function syncThemeForActivity() {
-  const settings = $settings.get()
-  if (!settings.themeOptIn) return
-  if (settings.themeIdleRestore !== false && !auraShowingSomething()) {
-    restoreTheme()
-    return
-  }
-  if (auraShowingSomething() && !$themeApplied.get()) applyThemeIfOptedIn()
 }
 
 /** The probe reports the active skin. A user skin change drops our retint so
@@ -2186,19 +2143,15 @@ function onThemeName(name) {
   // visual vanished and its switch had to be hunted down again. The glass is
   // measured from the theme's colours: re-measure it for the new theme instead.
   if (!first && glassStyleEl) applyGlassStyle()
-  // Only the probe's FIRST report retries an opt-in that register() could not
-  // make yet. Re-applying on every report undid the restore: the theme we had
-  // just handed back to the user came straight back as an opt-in request.
-  if (first && $settings.get().enabled && $settings.get().themeOptIn && !$themeApplied.get()) {
-    applyThemeIfOptedIn()
+  // Aura Live is no longer contributed, so an upgrading user whose host still
+  // shows it is stranded on a theme this build cannot keep. Hand back the last
+  // theme they chose (or the default), once per boot, so a later choice of
+  // theirs is never fought.
+  if (name === THEME_NAME && !themeMigrated) {
+    themeMigrated = true
+    requestTheme(lastUserTheme && lastUserTheme !== THEME_NAME ? lastUserTheme : 'default')
   }
   updateShow()
-}
-
-function setThemeOptIn(on) {
-  writeSettings({ themeOptIn: Boolean(on) })
-  if (on) applyThemeIfOptedIn()
-  else restoreTheme()
 }
 
 /**
@@ -2220,7 +2173,7 @@ async function setWindowVisual(on) {
  *  removes every effect Aura may have applied. The plugin stays mounted. */
 async function restoreMyTheme() {
   if (!ctxRef || disposed) return
-  writeSettings({ accentPulse: false, themeOptIn: false, windowVisual: false })
+  writeSettings({ accentPulse: false, windowVisual: false })
   resetShow()
   removeBackdrop()
   clearAccent(true)
@@ -2308,8 +2261,6 @@ async function setEnabled(next, fromNewBuild = false) {
       desktopPending = false
       void closeDesktopWindow()
     }
-  } else if ($settings.get().themeOptIn) {
-    applyThemeIfOptedIn()
   }
   const ok = await pushControl({ enabled })
   if (ok) {
@@ -2562,7 +2513,6 @@ function closeVideo() {
   removeBackdrop()
   refreshFilmSurface()
   removeVideoBar()
-  syncThemeForActivity()
 }
 
 /** Put the film back (window or backdrop, wherever it was). */
@@ -2571,7 +2521,6 @@ function openVideo() {
   writeSettings({ videoClosed: false })
   syncBackdrop()
   syncVideoBar(true)
-  syncThemeForActivity()
 }
 
 /** How solid the floating strip is over the film. */
@@ -7795,7 +7744,6 @@ function AuraSettings(props) {
   const onPage = Boolean(props && props.onPage)
   const settings = useValue($settings)
   const live = useValue($live)
-  const applied = useValue($themeApplied)
 
   const serverLine = live.ok
     ? `Server reachable on 127.0.0.1${live.port ? `:${live.port}` : ''}${live.capture ? ` · capture: ${live.capture}` : ''}`
@@ -8495,37 +8443,6 @@ function AuraSettings(props) {
         )
       }),
       jsx('div', {
-        key: 'theme',
-        children: row(
-          'Use Aura theme',
-          applied
-            ? 'Aura Live is active. Turning this off restores the theme you had before.'
-            : 'Optional deep-stage palette. Your current theme is restored when you turn it off.',
-          jsx(Switch, {
-            checked: settings.themeOptIn,
-            'aria-label': 'Use Aura theme',
-            onCheckedChange: value => setThemeOptIn(value)
-          })
-        )
-      }),
-      settings.themeOptIn
-        ? jsx('div', {
-          key: 'themeIdle',
-          children: row(
-            'Keep my theme when idle',
-            'Aura Live only while a film or visual is showing; an idle Aura gives your installed theme back.',
-            jsx(Switch, {
-              checked: settings.themeIdleRestore !== false,
-              'aria-label': 'Keep my theme when idle',
-              onCheckedChange: value => {
-                writeSettings({ themeIdleRestore: Boolean(value) })
-                syncThemeForActivity()
-              }
-            })
-          )
-        })
-        : null,
-      jsx('div', {
         key: 'restore',
         children: row(
           'Restore my theme',
@@ -8543,61 +8460,6 @@ function AuraSettings(props) {
       })
     ]
   })
-}
-
-// --------------------------------------------------------------- theme data
-// A contributed DesktopTheme must carry literal colours (the SDK has no token
-// resolution inside `data`), so this is the one place hex values are correct.
-const AURA_THEME = {
-  name: THEME_NAME,
-  label: 'Aura Live',
-  description: 'Deep-stage palette with an electric accent, for Aura’s window visual.',
-  colors: {
-    background: '#f7f5ff',
-    foreground: '#1a1730',
-    card: '#ffffff',
-    cardForeground: '#1a1730',
-    muted: '#ece8fb',
-    mutedForeground: '#6b6484',
-    popover: '#ffffff',
-    popoverForeground: '#1a1730',
-    primary: '#6f57f0',
-    primaryForeground: '#ffffff',
-    secondary: '#e7e1fa',
-    secondaryForeground: '#241f45',
-    accent: '#7f66ff',
-    accentForeground: '#ffffff',
-    border: '#d8d2ee',
-    input: '#ffffff',
-    ring: '#6f57f0',
-    destructive: '#d93a5c',
-    destructiveForeground: '#ffffff'
-  },
-  darkColors: {
-    background: '#0b0a14',
-    foreground: '#e9e6f7',
-    card: '#12101f',
-    cardForeground: '#e9e6f7',
-    muted: '#1a1730',
-    mutedForeground: '#a8a2c4',
-    popover: '#141126',
-    popoverForeground: '#e9e6f7',
-    primary: '#8f7bff',
-    primaryForeground: '#0b0a14',
-    secondary: '#221d3d',
-    secondaryForeground: '#d9d3f2',
-    accent: '#b7a4ff',
-    accentForeground: '#0b0a14',
-    border: '#2a2444',
-    input: '#221d3d',
-    ring: '#8f7bff',
-    destructive: '#ff5f7e',
-    destructiveForeground: '#0b0a14'
-  },
-  typography: {
-    fontSans: 'Inter, system-ui, sans-serif',
-    fontMono: 'ui-monospace, SFMono-Regular, Menlo, monospace'
-  }
 }
 
 // --------------------------------------------------------------- teardown
@@ -8661,6 +8523,7 @@ function teardown() {
   lastUserTheme = ''
   themeInfo = { name: '', accent: '' }
   knownTheme = ''
+  themeMigrated = false
   $settings.set({ ...DEFAULT_SETTINGS })
   // [listen lane] The audio channel's own state resets with the plugin.
   $audio.set({ ...EMPTY_AUDIO })
@@ -8678,7 +8541,7 @@ export default {
   id: ID,
   name: 'Aura',
   description:
-    'Audio-reactive window visual, accent pulse and optional theme for what this computer is playing. Local only: no recording, no account, no sound of its own.',
+    'Audio-reactive window visual and accent pulse for what this computer is playing. Local only: no recording, no account, no sound of its own.',
   // Pop-out surface, also callable by the pane's buttons once wired.
   openDesktopWindow,
   closeDesktopWindow,
@@ -8706,6 +8569,7 @@ export default {
     lastUserTheme = ''
     themeInfo = { name: '', accent: '' }
     knownTheme = ''
+    themeMigrated = false
     // A previous instance (hot reload) may still own a pane registration.
     disposePaneRegistration()
     disposers.length = 0
@@ -8736,14 +8600,6 @@ export default {
         id: 'theme-probe',
         area: TITLEBAR_AREAS.center,
         render: () => jsx(ThemeProbe, {})
-      })
-    )
-
-    track(
-      ctx.register({
-        id: THEME_NAME,
-        area: THEMES_AREA,
-        data: AURA_THEME
       })
     )
 
@@ -8869,7 +8725,6 @@ export default {
     syncPanel(true)
 
     void poll()
-    if (settings.themeOptIn) applyThemeIfOptedIn()
 
     return dispose
   }

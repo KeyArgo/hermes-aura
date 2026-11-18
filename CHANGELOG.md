@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Removed the optional Aura Live theme.
+
 ## 1.0.0 — 2026-11-11
 
 First public release.

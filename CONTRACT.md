@@ -288,20 +288,21 @@ Consequence for testing: a silence assertion is now a test of the gate, not of a
 ## 11. Host safety (additive, 2026-11-08)
 
 Aura owns no host document styles beyond one sanctioned, opt-in visual: while "Visual behind the
-app" (or the Aura Live theme) is on, Aura is enabled and a tokenised URL is live, the desktop half
+app" is on, Aura is enabled and a tokenised URL is live, the desktop half
 mounts exactly one fixed, click-through, negative-z backdrop iframe and one `#aura-glass`
 stylesheet that clears the app's big surfaces so the visual shows through. Switching the visual
 off, turning Aura off, **Restore my theme** and disposal remove both; while nothing is opted in no
 host node or style is added at all, and the host `html`/`body`/root styles are never written.
 
-The accent pulse and the optional Aura Live theme are opt-in and off by default. **Restore my
-theme** turns the window visual, the accent pulse and the theme off, clears the accent override
-through `setAccentOverride(null)`, restores the previous theme, and removes every effect Aura
-applied. Disposal does the same and also removes all contributions, timers and listeners.
+The accent pulse is opt-in and off by default. **Restore my
+theme** turns the window visual and the accent pulse off, clears the accent override
+through `setAccentOverride(null)`, restores the previous theme if Aura changed it, and removes
+every effect Aura applied. Disposal does the same and also removes all contributions, timers and
+listeners.
 
 The full-page stage (the `/aura` route, sidebar row, palette command and compact pane) was removed
 by owner decision: the backdrop and the Settings page are the product. The desktop half now
-contributes only the settings page, the theme, the backdrop, the accent pulse, the titlebar theme
+contributes only the settings page, the backdrop, the accent pulse, the titlebar theme
 probe and polling. If "Visual behind the app" is switched on while Aura is off, the desktop half
 enables Aura through the same door as the "Aura enabled" switch (writeSettings + `POST /control
 {enabled:true}`), so the visual never silently draws nothing.
