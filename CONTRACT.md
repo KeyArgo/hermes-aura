@@ -269,11 +269,13 @@ Consequence for testing: a silence assertion is now a test of the gate, not of a
 
 ## 11. Host safety (additive, 2026-11-08; backdrop removed 2026-11-18)
 
-The visualiser and the film render in Aura's own iframe, inside a surface Aura owns: the Right
-panel, the `/aura` page, or the floating watch window. This build does not append a backdrop
+The visualiser, the film, and radio render in Aura's own iframe, inside a surface Aura owns: the
+Right panel, the `/aura` page, or the floating watch window. The iframe is `position: absolute`
+with `inset: 0` inside that stage (the panel's `.ap-stage`, the page's `.aura-stage`, or the watch
+window's frame). It is not `position: fixed` over the host window, and the panel film has no z-index
+above the pane. Radio plays in that iframe in every mode. This build does not append a backdrop
 iframe to the host body, does not inject `#aura-glass`, and does not read or set host glass
-attributes. The full-window visual behind the app returns when Hermes ships a backdrop area
-(#155903).
+attributes. The full-window visual returns when Hermes ships a backdrop area (#155903).
 
 The accent pulse is opt-in and off by default. **Restore my theme** turns the accent pulse off,
 clears the accent override through `setAccentOverride(null)`, restores the previous theme if Aura

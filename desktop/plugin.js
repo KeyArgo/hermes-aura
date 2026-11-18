@@ -853,7 +853,6 @@ function AuraFilm({ placement, src }) {
   const source = typeof src === 'string' && src ? src : surfaceSrc()
   const own = useRef(null)
   if (!source) return null
-  const fixed = placement === 'panel'
   useEffect(() => {
     applyFilmFrameLayout()
   }, [source, placement])
@@ -862,6 +861,7 @@ function AuraFilm({ placement, src }) {
     if (node) {
       own.current = node
       filmFrame = node
+      applyFilmFrameLayout()
       return
     }
     if (own.current && filmFrame === own.current) filmFrame = null
@@ -888,13 +888,11 @@ function AuraFilm({ placement, src }) {
       pointerEvents: 'none',
       // Electron's title-bar drag region must never swallow it.
       WebkitAppRegion: 'no-drag',
-      ...(fixed
-        ? { position: 'fixed', inset: 0, zIndex: placement === 'window' ? String(WATCH_WINDOW_Z) : String(PANEL_FILM_Z) }
-        : { position: 'absolute', inset: 0, zIndex: '1' }),
-      ...(placement === 'window' ? { borderRadius: 12, boxShadow: '0 14px 40px rgba(0,0,0,0.5)' } : {}),
-      // A panel film is placed over the stage once the stage is measured; until
-      // then it must not cover the whole window (fixed + inset 0).
-      ...(placement === 'panel' ? { borderRadius: 12, visibility: 'hidden' } : {})
+      // Fill the stage this frame is rendered into. Never position:fixed, and
+      // never a z-index that stacks the panel film above the pane.
+      position: 'absolute',
+      inset: 0,
+      zIndex: placement === 'panel' ? '0' : '1'
     },
     ref: attach
   })
@@ -1514,8 +1512,7 @@ async function poll() {
     updateShow()
     syncBackdrop()
     syncPanel()
-    // Keep the film glued to the panel's stage (and to the window/corner) as
-    // the layout moves under us.
+    // The film fills the stage it is rendered into.
     applyBackdropLayout()
     syncVideoBar()
     applyVideoOpacity()
@@ -2261,7 +2258,11 @@ function videoCommand(cmd, value) {
     postToBackdrop({ cmd: 'pause' })
     $video.set({ ...$video.get(), playing: false, reportedAt: Date.now() })
     if (desktopOwned || desktopPending) {
-      void closeDesktopWindow().then(() => { desktopOwned = false })
+      // A failed close resolves { open: true, error }. Ownership stays with
+      // the window that is still open, so Stop does not start a second film.
+      void closeDesktopWindow().then(result => {
+        if (result && result.open === false) desktopOwned = false
+      })
     }
     closeVideo()
     return
@@ -2399,6 +2400,14 @@ function resumeAudioIn(frame) {
   }
 }
 
+// Bumped by every play and by Stop. A resolve that returns after the user has
+// stopped, or after a newer station was chosen, must not start the old one.
+let audioPlayGeneration = 0
+
+function audioPlayCurrent(generation) {
+  return generation === audioPlayGeneration && !disposed
+}
+
 /** Play a direct audio URL or radio stream on the audio channel.
  *  `.pls`/`.m3u` are resolved by the server first, because the page cannot
  *  follow a playlist file and must never be handed a private address. */
@@ -2409,15 +2418,19 @@ async function playAudioSource(url, label) {
   const audioLabel = typeof label === 'string' && label.trim()
     ? label.trim().slice(0, 120)
     : shortLabel(target)
+  const generation = ++audioPlayGeneration
   if (/\.(?:m3u|pls)(?:[?#]|$)/i.test(target)) {
     try {
       const resolved = await ctxRef.rest(`/radio/resolve?url=${encodeURIComponent(target)}`, { timeoutMs: 8000 })
+      if (!audioPlayCurrent(generation)) return false
       if (resolved && resolved.ok && typeof resolved.url === 'string' && resolved.url) target = resolved.url
     } catch {
       // Keep the original URL: a playlist the server could not read may still
       // be a direct stream, and the page will say so if it is not.
+      if (!audioPlayCurrent(generation)) return false
     }
   }
+  if (!audioPlayCurrent(generation)) return false
   writeSettings({ audioUrl: target, audioLabel })
   // A closed/absent backdrop is a common trap: make sure the current surface
   // is mounted before speaking to it, or the command would go nowhere.
@@ -2433,7 +2446,7 @@ async function playAudioSource(url, label) {
       // message posted into it is dropped, not queued. Send the play once more
       // after the page has had a moment to boot.
       setTimeout(() => {
-        if (!disposed) audioCommand({ cmd: 'play', url: target, label: audioLabel, volume })
+        if (audioPlayCurrent(generation)) audioCommand({ cmd: 'play', url: target, label: audioLabel, volume })
       }, 900)
     }
   }
@@ -2442,6 +2455,7 @@ async function playAudioSource(url, label) {
 
 /** Stop the audio channel. The film (if any) keeps playing. */
 function stopAudio() {
+  audioPlayGeneration += 1
   audioCommand({ cmd: 'stop' })
   writeSettings({ audioUrl: '', audioLabel: '' })
   $audio.set({ ...EMPTY_AUDIO, reportedAt: Date.now() })
@@ -3083,8 +3097,10 @@ function applyFilmFrameLayout() {
   if (!el || !el.style) return
   const placement = $filmSurface.get().placement
   const style = el.style
+  // React owns this iframe (AuraPane renders it inside .ap-stage). Moving it
+  // detaches that node and reloads YouTube on the next commit.
   if (audioCarrierActive()) {
-    // Present enough to load audio.js and play, hidden behind the video UI.
+    // Present enough to load audio.js and play, hidden inside the stage.
     style.position = 'absolute'
     style.inset = 'auto'
     style.left = '0'
@@ -3099,68 +3115,25 @@ function applyFilmFrameLayout() {
     style.overflow = 'hidden'
     return
   }
-  if (placement === 'page') {
-    // Rendered inside the page's stage; fill it and let the stage clip corners.
-    style.position = 'absolute'
-    style.inset = '0'
-    style.left = '0'
-    style.top = '0'
-    style.right = 'auto'
-    style.bottom = 'auto'
-    style.width = '100%'
-    style.height = '100%'
-    style.borderRadius = '0'
-    style.border = '0'
-    style.boxShadow = 'none'
-    style.clipPath = 'none'
-    style.zIndex = '1'
-    style.WebkitAppRegion = 'no-drag'
-    return
-  }
-  if (placement === 'panel') {
-    const slot = panelVideoSlot()
-    if (!slot) {
-      style.visibility = 'hidden'
-      return
-    }
-    style.visibility = 'visible'
-    style.position = 'fixed'
-    style.inset = 'auto'
-    style.left = `${Math.round(slot.left)}px`
-    style.top = `${Math.round(slot.top)}px`
-    style.width = `${Math.round(slot.width)}px`
-    style.height = `${Math.round(slot.height)}px`
-    style.right = 'auto'
-    style.bottom = 'auto'
-    style.borderRadius = '12px'
-    style.border = '0'
-    style.boxShadow = 'none'
-    style.overflow = 'hidden'
-    // Above the pane's own content, below the host's menus and popovers (z-50).
-    style.zIndex = String(PANEL_FILM_Z)
-    style.clipPath = panelClipPath(slot)
-    style.WebkitAppRegion = 'no-drag'
-    return
-  }
-  if (placement === 'window') {
-    // The watch window is an SDK floating pane (review 1/3): the host draws the
-    // card, drags it and remembers where it was. The film just fills its box.
-    style.position = 'absolute'
-    style.inset = '0'
-    style.left = '0'
-    style.top = '0'
-    style.right = 'auto'
-    style.bottom = 'auto'
-    style.width = '100%'
-    style.height = '100%'
-    style.borderRadius = '0'
-    style.border = '0'
-    style.boxShadow = 'none'
-    style.overflow = 'hidden'
-    style.zIndex = '1'
-    style.clipPath = 'none'
-    style.WebkitAppRegion = 'no-drag'
-  }
+  if (placement !== 'page' && placement !== 'panel' && placement !== 'window') return
+  // Fill the stage this frame is rendered into. The stage is the containing
+  // block: no viewport coordinates, no clip measured from the window.
+  style.visibility = 'visible'
+  style.position = 'absolute'
+  style.inset = '0'
+  style.left = '0'
+  style.top = '0'
+  style.right = '0'
+  style.bottom = '0'
+  style.width = '100%'
+  style.height = '100%'
+  style.borderRadius = '0'
+  style.border = '0'
+  style.boxShadow = 'none'
+  style.overflow = 'hidden'
+  style.clipPath = 'none'
+  style.zIndex = placement === 'panel' ? '0' : '1'
+  style.WebkitAppRegion = 'no-drag'
 }
 
 function applyBackdropLayout() {
@@ -3406,13 +3379,6 @@ function mountVideoBar() {
     WebkitAppRegion: 'no-drag',
     transition: 'opacity 220ms ease', userSelect: 'none'
   })
-  // Reveal/hide is attached to the bar's own document here rather than relying
-  // on one registration elsewhere: the strip must never become unfindable.
-  if (doc && typeof doc.addEventListener === 'function') {
-    doc.addEventListener('mousemove', onVideoBarMouseMove, { passive: true })
-    doc.addEventListener('mousedown', onVideoBarMouseMove, { passive: true })
-  }
-
   const prev = videoBarButton('⏮', 'Previous source', 'prev')
   const back = videoBarButton('⏪', 'Back 10 seconds', 'seek', -10)
   const backMin = videoBarButton('-1m', 'Back 1 minute', 'seek', -60)
@@ -3661,10 +3627,6 @@ function removeVideoBar() {
   if (videoBarHideTimer) {
     clearTimeout(videoBarHideTimer)
     videoBarHideTimer = null
-  }
-  if (doc && typeof doc.removeEventListener === 'function') {
-    doc.removeEventListener('mousemove', onVideoBarMouseMove)
-    doc.removeEventListener('mousedown', onVideoBarMouseMove)
   }
   if (windowDrag && doc) {
     doc.removeEventListener('mousemove', onWindowDragMove)
@@ -4252,8 +4214,48 @@ function panelButton(label, aria, onClick, primary) {
   return el
 }
 
+function hostChildList(node) {
+  const kids = node && node.children
+  // Element.children is an HTMLCollection in a browser, not an Array. The fake
+  // DOM uses a real array. Array.from accepts both.
+  if (!kids || typeof kids === 'string' || typeof kids.length !== 'number') return []
+  return Array.from(kids)
+}
+
+function findHostChild(node, pred) {
+  for (const child of hostChildList(node)) {
+    if (pred(child)) return child
+  }
+  return null
+}
+
+function slotName(node) {
+  if (!node) return ''
+  try {
+    if (typeof node.getAttribute === 'function') {
+      const value = node.getAttribute('data-aura-slot')
+      if (value) return String(value)
+    }
+  } catch {
+    // not an element
+  }
+  const attrs = node.attributes
+  return attrs && attrs['data-aura-slot'] ? String(attrs['data-aura-slot']) : ''
+}
+
+function moveHostChildren(from, to) {
+  if (!from || !to || typeof to.appendChild !== 'function') return
+  for (const child of hostChildList(from).slice()) {
+    if (typeof from.removeChild === 'function') {
+      try { from.removeChild(child) } catch { /* already detached */ }
+    }
+    to.appendChild(child)
+  }
+}
+
 function mountPanelInto(hostNode) {
   if (!doc || !hostNode) return
+  if (panelEl === hostNode && panelParts) return
   if (panelEl) removePanel()
   if (!doc.body) return
 
@@ -4561,59 +4563,105 @@ function mountPanelInto(hostNode) {
   controls.appendChild(scrub)
   controls.appendChild(bar)
 
-  panel.appendChild(head)
-  panel.appendChild(stage)
-  // Watch in sits outside the film body so Visualizer mode can hide that body
-  // and still offer a way to bring the visualiser back from the watch window.
-  panel.appendChild(watchInRow)
-  panel.appendChild(body)
+  // React already drew the shell (head slot, stage, watch slot, body slot) and
+  // parented the film inside the stage. Fill the empty slots; do not build a
+  // second panel over them. A test host is empty, so it takes the imperative
+  // panel below — the same DOM the stage measurements used to sit on.
+  const reactStage = findHostChild(hostNode, node => node && node.className === 'ap-stage')
+  const headSlot = findHostChild(hostNode, node => slotName(node) === 'head')
+  const watchSlot = findHostChild(hostNode, node => slotName(node) === 'watch')
+  const bodySlot = findHostChild(hostNode, node => slotName(node) === 'body')
+  let shell = panel
+  let stageNode = stage
+  let hintNode = hint
+  let bodyNode = body
+  if (reactStage && headSlot && bodySlot) {
+    moveHostChildren(head, headSlot)
+    if (watchSlot) watchSlot.appendChild(watchInRow)
+    moveHostChildren(body, bodySlot)
+    shell = hostNode
+    stageNode = reactStage
+    bodyNode = bodySlot
+    const existingHint = findHostChild(reactStage, node => node && node.className === 'ap-hint')
+    hintNode = existingHint || hint
+    if (!existingHint) reactStage.insertBefore ? reactStage.insertBefore(hint, reactStage.firstChild) : reactStage.appendChild(hint)
+    if (typeof shell.setAttribute === 'function' && shell.getAttribute('id') !== 'aura-panel') {
+      shell.setAttribute('id', 'aura-panel')
+    }
+  } else {
+    panel.appendChild(head)
+    panel.appendChild(stage)
+    // Watch in sits outside the film body so Visualizer mode can hide that body
+    // and still offer a way to bring the visualiser back from the watch window.
+    panel.appendChild(watchInRow)
+    panel.appendChild(body)
+    panel.__auraImperative = true
+    hostNode.appendChild(panel)
+  }
   // Clicks on Aura's own panel return the caret to the chat; text fields are
   // excluded so the URL box can still be typed in.
-  panel.addEventListener('click', returnFocusAfterClick)
-  bindAuraKeyHandlers(panel)
-  hostNode.appendChild(panel)
+  shell.addEventListener('click', returnFocusAfterClick)
+  bindAuraKeyHandlers(shell)
 
-  panelEl = panel
+  panelEl = shell
   panelParts = {
-    panel, body, stage, hint, track, fill, time, play, list, vol,
+    panel: shell, body: bodyNode, stage: stageNode, hint: hintNode, track, fill, time, play, list, vol,
     power, modeButtons, watch, source, controls,
     sourceRow, linkRow, toolsRow, watchInRow,
     watchInPills, closeFilm, manage, hideEpisode: hide
   }
+  // The film stays in the stage React rendered. Only createElement nodes
+  // (the slot chrome above) are appended by hand.
   syncPanel(true)
 }
 
+function clearHostChildren(node) {
+  if (!node) return
+  for (const child of hostChildList(node).slice()) {
+    if (typeof node.removeChild === 'function') {
+      try { node.removeChild(child) } catch { /* already gone */ }
+    }
+  }
+}
+
 function removePanel() {
-  if (panelEl && panelEl.parentNode) panelEl.parentNode.removeChild(panelEl)
+  // The React shell is the host's own node. Detach only the imperative panel.
+  // Slot chrome is ours; clear it so a second ref(node) does not stack a copy.
+  // The stage stays: its hint and film are React's.
+  if (panelEl && panelEl.__auraImperative && panelEl.parentNode) {
+    panelEl.parentNode.removeChild(panelEl)
+  } else if (panelEl) {
+    clearHostChildren(findHostChild(panelEl, node => slotName(node) === 'head'))
+    clearHostChildren(findHostChild(panelEl, node => slotName(node) === 'watch'))
+    clearHostChildren(findHostChild(panelEl, node => slotName(node) === 'body'))
+  }
   panelEl = null
   panelParts = null
   removePanelStyle()
 }
 
-/** The rect the film should occupy inside the panel, or null. */
-// Host menus and popovers sit at z-50; the film frames stay under them.
-const PANEL_FILM_Z = 40
-const WATCH_WINDOW_Z = 45
-
-/** The part of the film's slot that lies outside the visible pane, as a
- *  clip-path, or 'none' when the whole slot is inside it. */
-function panelClipPath(slot) {
-  const box = panelEl && typeof panelEl.getBoundingClientRect === 'function' ? panelEl.getBoundingClientRect() : null
-  if (!slot || !box || !box.width || !box.height) return 'none'
-  const top = Math.max(0, Math.round(box.top - slot.top))
-  const left = Math.max(0, Math.round(box.left - slot.left))
-  const right = Math.max(0, Math.round((slot.left + slot.width) - (box.left + box.width)))
-  const bottom = Math.max(0, Math.round((slot.top + slot.height) - (box.top + box.height)))
-  if (!top && !left && !right && !bottom) return 'none'
-  return `inset(${top}px ${right}px ${bottom}px ${left}px)`
-}
-
-function panelVideoSlot() {
-  const parts = panelParts
-  if (!parts || !parts.stage || !parts.stage.getBoundingClientRect) return null
-  const rect = parts.stage.getBoundingClientRect()
-  if (!rect || !rect.width || !rect.height) return null
-  return rect
+/** What the stage hint says right now. React and the DOM sync share it, so a
+ *  re-render does not wipe a note the poll just wrote. */
+function panelHintState() {
+  const settings = $settings.get()
+  const state = $video.get()
+  const liveNow = $live.get()
+  const auraOn = liveNow.ok ? liveNow.enabled === true : settings.enabled
+  const videoMode = settings.backdropMode === 'video'
+  const place = currentFilmPlace()
+  const baseHint = !auraOn
+    ? 'Aura is off. Turn it on from the header.'
+    : !videoMode
+      ? (place === 'window' ? 'In the watch window. Choose Panel under Watch in to bring it back.' : '')
+      : settings.videoClosed
+        ? 'Film closed — press Open video in the A menu'
+        : !settings.videoUrl
+          ? 'No source chosen yet'
+          : (state.blocked
+            ? 'This video (or the first one in the playlist) cannot be embedded. Remove it from the playlist, or paste a link to a different episode.'
+            : '')
+  if (!baseHint && paneNote && Date.now() < paneNoteUntil) return { text: paneNote, note: true }
+  return { text: baseHint, note: false }
 }
 
 function syncPanel(force) {
@@ -4726,23 +4774,11 @@ function syncPanel(force) {
   if (!parts.track || parts.track.getAttribute('data-dragging') !== 'true') {
     parts.fill.style.width = `${(progress * 100).toFixed(2)}%`
   }
-  const baseHint = !auraOn
-    ? 'Aura is off. Turn it on from the header.'
-    : !videoMode
-      ? (place === 'window' ? 'In the watch window. Choose Panel under Watch in to bring it back.' : '')
-      : settings.videoClosed
-        ? 'Film closed — press Open video in the A menu'
-        : !settings.videoUrl
-          ? 'No source chosen yet'
-          : (state.blocked
-            ? 'This video (or the first one in the playlist) cannot be embedded. Remove it from the playlist, or paste a link to a different episode.'
-            : '')
-  if (!baseHint && paneNote && Date.now() < paneNoteUntil) {
-    parts.hint.textContent = paneNote
-    parts.hint.setAttribute('data-note', 'true')
-  } else {
-    parts.hint.textContent = baseHint
-    parts.hint.setAttribute('data-note', 'false')
+  const hintState = panelHintState()
+  if (parts.hint) {
+    if (parts.hint.textContent !== hintState.text) parts.hint.textContent = hintState.text
+    const noteFlag = hintState.note ? 'true' : 'false'
+    if (parts.hint.getAttribute('data-note') !== noteFlag) parts.hint.setAttribute('data-note', noteFlag)
   }
   parts.vol.value = String(Math.round(clamp01(settings.videoVolume) * 100))
 
@@ -4880,8 +4916,15 @@ function AuraPane() {
   const settings = useValue($settings)
   const surface = useValue($filmSurface)
   if (settings.panelEnabled === false) return null
-  const theatre = jsx('div', {
+  const hintState = panelHintState()
+  // The film is a child of the stage, with a stable key, so a re-render does
+  // not reload the iframe. Exactly one surface renders it: see filmPlacement().
+  const film = surface.placement === 'panel'
+    ? jsx(AuraFilm, { key: 'film', placement: 'panel', src: surface.src })
+    : null
+  const theatre = jsxs('div', {
     key: 'theatre',
+    id: 'aura-panel',
     ref: panelHostRef,
     // Video mode fills the pane so the shelf can scroll inside it. Visualizer
     // mode sizes to the stage: a flex-grow theatre left a tall empty box
@@ -4889,8 +4932,27 @@ function AuraPane() {
     style: {
       minHeight: 0,
       flex: settings.backdropMode === 'video' ? '1 1 auto' : '0 0 auto',
-      display: 'flex', flexDirection: 'column'
-    }
+      display: 'flex', flexDirection: 'column', width: '100%'
+    },
+    children: [
+      jsx('style', { key: 'panel-style', id: 'aura-panel-style', children: panelCss() }),
+      jsx('div', { key: 'head', className: 'ap-head', 'data-aura-slot': 'head' }),
+      jsxs('div', {
+        key: 'stage',
+        className: 'ap-stage',
+        children: [
+          jsx('div', {
+            key: 'hint',
+            className: 'ap-hint',
+            'data-note': hintState.note ? 'true' : 'false',
+            children: hintState.text
+          }),
+          film
+        ]
+      }),
+      jsx('div', { key: 'watch', 'data-aura-slot': 'watch' }),
+      jsx('div', { key: 'body', className: 'ap-body', 'data-aura-slot': 'body' })
+    ]
   })
   // The pane is the remote you use while watching. The full settings list lives
   // on the Settings page; the pane links there instead of embedding a second,
@@ -4921,22 +4983,13 @@ function AuraPane() {
   const visualSection = settings.backdropMode === 'video'
     ? null
     : jsx(AuraPaneVisualControls, { key: 'visual' })
-  // The film stage is built imperatively inside `theatre`; the film itself is a
-  // in-pane film iframe rendered here (review ask 3) and laid over that stage by
-  // applyFilmFrameLayout. Exactly one surface renders it: see filmPlacement().
-  const film = surface.placement === 'panel'
-    ? jsx(AuraFilm, { key: 'film', placement: 'panel', src: surface.src })
-    : null
   return jsxs('div', {
     key: 'pane',
     style: {
       height: '100%', minHeight: 0, overflowY: 'auto',
       display: 'flex', flexDirection: 'column'
     },
-    // The panel film is fixed over the stage: follow the column's scroll now,
-    // not at the next 250 ms tick.
-    onScroll: () => applyFilmFrameLayout(),
-    children: [theatre, film, visualSection, settingsSection]
+    children: [theatre, visualSection, settingsSection]
   })
 }
 
@@ -6220,14 +6273,6 @@ function pageVisible() {
   return Boolean(doc && pageStageEl && !watchWindowOpen())
 }
 
-/** The rect the film should occupy on the page, or null. */
-function pageVideoSlot() {
-  if (!pageStageEl || typeof pageStageEl.getBoundingClientRect !== 'function') return null
-  const rect = pageStageEl.getBoundingClientRect()
-  if (!rect || !rect.width || !rect.height) return null
-  return rect
-}
-
 /** The page alone wants the film: like the pane, it is a watch surface. Gated
  *  exactly like showEligible, so Aura off (or no server) still draws nothing. */
 function pageFilmWanted() {
@@ -6723,25 +6768,11 @@ function AuraPage() {
   const surface = useValue($filmSurface)
   const auraOn = live.ok ? live.enabled === true : settings.enabled
   const playing = state.playing === true
-  // The film is a fixed-position frame glued to this stage's rect, so the rect
-  // has to follow a scrolling page between poll ticks (4 Hz is a visible lag).
-  // React owns this listener: it goes away with the page.
+  // The film is position:absolute inside this stage, so it scrolls with the
+  // page. Leaving the page throws away a half-typed add-source draft.
   useEffect(() => {
-    // Leaving the page throws away a half-typed add-source draft, so it can
-    // never be added by accident from a later visit.
     return () => {
       pageSourceDraft = { url: '', name: '' }
-    }
-  }, [])
-  useEffect(() => {
-    const view = doc && doc.defaultView
-    if (!view || typeof view.addEventListener !== 'function') return undefined
-    const onMove = () => applyBackdropLayout()
-    view.addEventListener('scroll', onMove, true)
-    view.addEventListener('resize', onMove)
-    return () => {
-      view.removeEventListener('scroll', onMove, true)
-      view.removeEventListener('resize', onMove)
     }
   }, [])
   const duration = Number(state.duration) || 0

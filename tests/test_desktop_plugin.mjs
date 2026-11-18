@@ -444,7 +444,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, panelHost: typeof panelHostRef === "function" ? panelHostRef : null, video: $video, settings: $settings, remember: typeof rememberPosition === "function" ? rememberPosition : null, refreshFilm: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null, filmSurface: typeof $filmSurface === "object" ? $filmSurface : null };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, panelHost: typeof panelHostRef === "function" ? panelHostRef : null, video: $video, settings: $settings, remember: typeof rememberPosition === "function" ? rememberPosition : null, refreshFilm: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null, filmSurface: typeof $filmSurface === "object" ? $filmSurface : null, owned: () => desktopOwned, command: (cmd, value) => videoCommand(cmd, value) };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -2404,29 +2404,35 @@ await recordAsync('the pane film keeps allow-same-origin, and only for a cross-o
   }
 })
 
-// Regression (pre-pin review 11-15): an unmeasured panel film was fixed with
-// inset 0, i.e. over the whole window, and the scrolling pane column moved the
-// stage without moving the film until the next 250 ms tick.
-await recordAsync('the panel film starts hidden until placed, and follows the pane column scroll', () => {
+// The panel film fills the stage it is rendered into. A fixed frame with a
+// z-index above the pane used to cover the window; scroll no longer has to
+// chase it, because the stage is the containing block.
+await recordAsync('the panel film is absolute inside the stage, never fixed over the window', () => {
   const tree = renderContribution(paneOnly.contributions.find(c => c.id === 'panel'))
   const film = filmNodes(tree)
+  assert.equal(film.length, 1, 'the pane did not render a film')
+  assert.equal(film[0].props.key, 'film')
   const element = renderContribution({ render: () => film[0] })
-  assert.equal(element.props.style.visibility, 'hidden', 'an unmeasured panel film covers the whole window')
-  let column = null
-  walk(tree, node => {
-    if (!column && node.props && node.props.style && node.props.style.overflowY === 'auto' &&
-        Array.isArray(node.props.children) && node.props.children.includes(film[0])) column = node
-  })
-  assert.ok(column, 'the scrolling pane column holding the film was not found')
-  assert.equal(typeof column.props.onScroll, 'function', 'the pane column does not re-place the film on scroll')
+  assert.notEqual(element.props.style.position, 'fixed', 'the panel film is position:fixed over the window')
+  assert.equal(element.props.style.position, 'absolute')
+  const z = element.props.style.zIndex
+  assert.ok(z == null || z === '' || Number(z) <= 1, `panel film z-index ${z} sits above the pane`)
+  const inside = (node, inStage) => {
+    if (!node || typeof node !== 'object') return false
+    if (Array.isArray(node)) return node.some(child => inside(child, inStage))
+    if (!node.props) return false
+    const here = inStage || String(node.props.className || '').split(/\s+/).includes('ap-stage')
+    if (here && node.props.placement === 'panel' && node.props.key === 'film') return true
+    return inside(node.props.children, here)
+  }
+  assert.equal(inside(tree, false), true, 'the panel film is not a descendant of the panel stage')
+  assert.equal(tree.props.onScroll, undefined, 'the pane column still measures the film on scroll')
 })
 
 // ------------------------------------- surfaces without the Right panel
-// The Right panel is the film's box and most people keep it closed. Drawing behind
-// the window stays opt-in ("Visual behind the app"); with that on, the visualiser
-// and a loaded film fill the window whether or not the panel is open. The panel's
-// own exception is for the film only: it used to mount the visualiser too, so the
-// visualiser seemed to need the panel, and vanished when the panel was closed.
+// The film and the visualiser live in the Right panel, the Aura page, or the
+// watch window. With the panel closed they stay in whichever of those is open.
+// The full-window visual returns on the SDK backdrop area (#155903).
 
 const frameSrc = node => String(node.src || (node.attributes && node.attributes.src) || '')
 const tick = scenario => scenario.timers.filter(t => t.ms === 250).forEach(t => t.fn())
@@ -3378,6 +3384,35 @@ record('hidden episodes survive a reload and drop junk ids', () => {
   }
 })
 
+await recordAsync('Stop keeps desktop ownership when closing the desktop window fails', async () => {
+  const scenario = makeCtx({
+    enabled: true,
+    backdropMode: 'video',
+    panelEnabled: true,
+    videoWindow: false,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ',
+    videoClosed: false
+  })
+  const original = scenario.ctx.rest.bind(scenario.ctx)
+  scenario.ctx.rest = async (route, options) => {
+    if (route === '/window/close') throw new Error('close failed')
+    return original(route, options)
+  }
+  const dispose = pluginModule.default.register(scenario.ctx)
+  try {
+    scenario.timers.find(timer => timer.ms === 250).fn()
+    await sleep(40)
+    await pluginModule.wiringTest.setWindow(true)
+    assert.equal(pluginModule.wiringTest.owned(), true, 'precondition: the desktop window does not own the film')
+    pluginModule.wiringTest.command('stop')
+    await sleep(40)
+    assert.equal(pluginModule.wiringTest.owned(), true, 'a failed close cleared desktop ownership')
+    assert.equal(pluginModule.wiringTest.filmSurface.get().placement, '', 'Stop started an in-app film after the close failed')
+  } finally {
+    dispose()
+  }
+})
+
 record('a pop-out resolves to ONE surface, never both at once', () => {
   // Owner: "popping out does both a pop out in hermes while trying to pop out
   // outside of hermes." The in-app frame and the OS window are alternatives:
@@ -3431,6 +3466,28 @@ await recordAsync('typing is never swallowed by a document keydown handler', asy
       entry.fn({ code: 'KeyA', key: 'a', preventDefault() { prevented = true } })
     }
     assert.equal(prevented, false, 'a keystroke was swallowed by Aura')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('mounting the video bar adds no raw document listeners', async () => {
+  const start = documentListeners.length
+  const scenario = makeCtx({
+    enabled: true, backdropMode: 'video', windowVisual: true,
+    panelEnabled: false, videoWindow: true, videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  const dispose = pluginModule.default.register(scenario.ctx)
+  try {
+    scenario.timers.find(timer => timer.ms === 250).fn()
+    await sleep(40)
+    const bars = [...bodyChildren, ...floatingNodes()].filter(node => node.attributes && node.attributes.role === 'toolbar')
+    assert.ok(bars.length > 0, 'precondition: the video bar never mounted')
+    const raw = documentListeners.slice(start).filter(entry =>
+      (entry.type === 'mousemove' || entry.type === 'mousedown') && entry.removed !== true)
+    assert.equal(raw.length, 0, `mountVideoBar added ${raw.length} raw document listeners`)
+    const tracked = scenario.listeners.filter(entry => entry.type === 'mousemove' && entry.removed !== true)
+    assert.equal(tracked.length, 1, 'the reveal is not exactly one tracked document listener')
   } finally {
     dispose()
   }

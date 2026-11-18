@@ -547,6 +547,70 @@ await record('the in-pane frame resumes the radio on load', () => {
   )
 })
 
+await record('a stop during radio resolve does not start the station', async () => {
+  let release
+  const held = new Promise(resolve => { release = resolve })
+  const { ctx } = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, audioUrl: '' })
+  const original = ctx.rest.bind(ctx)
+  ctx.rest = (route, options) => {
+    if (String(route).startsWith('/radio/resolve')) return held
+    return original(route, options)
+  }
+  const dispose = plugin.default.register(ctx)
+  const frame = makeElement('iframe')
+  frame.src = 'http://127.0.0.1:4321/?token=x&overlay=1'
+  plugin.audioResumeTest.surface.set({ placement: 'panel', src: frame.src })
+  plugin.audioResumeTest.setFilm(frame)
+  const before = sent.length
+  const pending = plugin.playAudioSource('https://ice.example/station.m3u', 'Held')
+  plugin.stopAudio()
+  release({ ok: true, url: 'https://ice.example/resolved-held.mp3' })
+  await pending
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const plays = sent.slice(before).filter(message =>
+    message.aura === 'audio' && message.cmd === 'play')
+  assert.equal(plays.length, 0, 'a station resolved after Stop still started')
+  assert.equal(plugin.audioState().settings.audioUrl, '', 'Stop left the resolved station in audioUrl')
+  dispose()
+})
+
+await record('a newer station wins a radio resolve still in flight', async () => {
+  let releaseA
+  let releaseB
+  const heldA = new Promise(resolve => { releaseA = resolve })
+  const heldB = new Promise(resolve => { releaseB = resolve })
+  const { ctx } = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, audioUrl: '' })
+  const original = ctx.rest.bind(ctx)
+  ctx.rest = (route, options) => {
+    const path = String(route)
+    if (path.startsWith('/radio/resolve') && path.includes('station-a')) return heldA
+    if (path.startsWith('/radio/resolve') && path.includes('station-b')) return heldB
+    return original(route, options)
+  }
+  const dispose = plugin.default.register(ctx)
+  const frame = makeElement('iframe')
+  frame.src = 'http://127.0.0.1:4321/?token=x&overlay=1'
+  plugin.audioResumeTest.surface.set({ placement: 'panel', src: frame.src })
+  plugin.audioResumeTest.setFilm(frame)
+  const before = sent.length
+  const pendingA = plugin.playAudioSource('https://ice.example/station-a.m3u', 'A')
+  const pendingB = plugin.playAudioSource('https://ice.example/station-b.m3u', 'B')
+  releaseA({ ok: true, url: 'https://ice.example/resolved-a.mp3' })
+  await pendingA
+  const playsA = sent.slice(before).filter(message =>
+    message.aura === 'audio' && message.cmd === 'play' && message.url === 'https://ice.example/resolved-a.mp3')
+  assert.equal(playsA.length, 0, 'station A played after station B was chosen')
+  assert.notEqual(plugin.audioState().settings.audioUrl, 'https://ice.example/resolved-a.mp3')
+  releaseB({ ok: true, url: 'https://ice.example/resolved-b.mp3' })
+  await pendingB
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(plugin.audioState().settings.audioUrl, 'https://ice.example/resolved-b.mp3')
+  const playsB = sent.slice(before).filter(message =>
+    message.aura === 'audio' && message.cmd === 'play' && message.url === 'https://ice.example/resolved-b.mp3')
+  assert.ok(playsB.length > 0, 'station B never played')
+  dispose()
+})
+
 // --------------------------------------------------------------------- report
 
 for (const line of results) console.log(line)

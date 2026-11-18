@@ -2,7 +2,10 @@
 
 ## Unreleased
 
+- Removed the full-window backdrop. It returns when Hermes ships an SDK backdrop area (#155903).
 - Removed the optional Aura Live theme.
+- Stop closes the film, and its desktop window, instead of leaving it on screen.
+- Radio plays in the Right panel, the Aura page, and the watch window, in every mode.
 
 ## 1.0.0 — 2026-11-11
 

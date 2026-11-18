@@ -351,6 +351,101 @@ await record('after register, radio, mode switches and dispose, Aura never touch
   assert.equal(glassReads.includes('data-hermes-glass-on'), false, 'Aura read data-hermes-glass-on')
 })
 
+function filmInside(root, className, placement) {
+  let found = null
+  const visit = (node, inside) => {
+    if (found || node == null || typeof node !== 'object') return
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child, inside)
+      return
+    }
+    if (!node.props) return
+    const here = inside || String(node.props.className || '').split(/\s+/).includes(className)
+    if (here && node.props.placement === placement && node.props.key === 'film' && typeof node.type === 'function') {
+      found = node
+      return
+    }
+    if (node.props.children) visit(node.props.children, here)
+    if (!found && typeof node.type === 'function' && node.props.placement !== placement) {
+      visit(node.type(node.props), here)
+    }
+  }
+  visit(root, false)
+  return found
+}
+
+await record('the panel film is absolute inside the stage, and Visualizer <-> Video still swaps src', async () => {
+  const bucket = makeCtx({
+    enabled: true, backdropMode: 'aura', panelEnabled: true, videoWindow: false, videoUrl: FILM
+  })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(30)
+    const panel = () => bucket.contributions.find(item => item.id === 'panel')
+    const host = makeElement('div')
+    const theatre = nodesOf(panel()).find(node => node.props && node.props.ref)
+    theatre.props.ref(host)
+    const visual = filmInside(panel().render(), 'ap-stage', 'panel')
+    assert.ok(visual, 'the panel film is not a descendant of the panel stage')
+    assert.equal(visual.props.key, 'film')
+    let view = iframeOf(visual)
+    assert.notEqual(view.props.style.position, 'fixed', 'the panel film is position:fixed over the window')
+    assert.equal(view.props.style.position, 'absolute')
+    assert.ok(Number(view.props.style.zIndex) <= 1, `panel film z-index ${view.props.style.zIndex} sits above the pane`)
+    const node = adopt(view)
+    // The stage is already in the host. React would commit the iframe inside
+    // it; the plugin must not move the node to get there.
+    const stage = domFind(host, item => item.className === 'ap-stage')
+    if (stage && !node.parentNode) stage.appendChild(node)
+    let parent = node.parentNode
+    let inStage = false
+    while (parent) {
+      if (parent.className === 'ap-stage') inStage = true
+      parent = parent.parentNode
+    }
+    assert.equal(inStage, true, 'the mounted panel film is not inside .ap-stage')
+    assert.notEqual(node.style.position, 'fixed')
+    assert.ok(node.style.zIndex == null || node.style.zIndex === '' || Number(node.style.zIndex) <= 1)
+    const visualSrc = view.props.src
+    await plugin.nobackdropTest.setBackdropMode('video')
+    const video = filmInside(panel().render(), 'ap-stage', 'panel')
+    assert.ok(video, 'Video mode took the film out of the panel stage')
+    assert.equal(video.props.key, 'film', 'switching Visualizer <-> Video changed the film key')
+    view = iframeOf(video)
+    assert.match(view.props.src, /player\.html/, 'Video mode did not swap the film src')
+    assert.notEqual(view.props.src, visualSrc)
+    assert.notEqual(view.props.style.position, 'fixed')
+    await plugin.nobackdropTest.setBackdropMode('aura')
+    const back = filmInside(panel().render(), 'ap-stage', 'panel')
+    assert.equal(back.props.key, 'film')
+    assert.match(iframeOf(back).props.src, /overlay=1/, 'Visualizer mode did not swap the film src back')
+
+    const page = bucket.contributions.find(item => item.id === 'aura-page')
+    const pageTree = nodesOf(page)
+    const stageRef = pageTree.find(item => item.props && item.props.className === 'aura-stage' && item.props.ref)
+    assert.ok(stageRef, 'the Aura page has no stage')
+    stageRef.props.ref(makeElement('div'))
+    const onPage = filmInside(page.render(), 'aura-stage', 'page')
+    assert.ok(onPage, 'the page film is not a descendant of the page stage')
+    const pageView = iframeOf(onPage)
+    assert.notEqual(pageView.props.style.position, 'fixed', 'the page film is position:fixed')
+    assert.equal(pageView.props.style.position, 'absolute')
+
+    stageRef.props.ref(null)
+    await plugin.nobackdropTest.setVideoWindow(true)
+    const watch = bucket.contributions.find(item => item.data && item.data.placement === 'floating' && item.removed !== true)
+    assert.ok(watch, 'the watch window did not register')
+    const inWindow = filmsIn(watch).find(item => item.props.placement === 'window')
+    assert.ok(inWindow, 'the watch window has no film')
+    const windowView = iframeOf(inWindow)
+    assert.notEqual(windowView.props.style.position, 'fixed', 'the watch-window film is position:fixed over the viewport')
+    assert.equal(windowView.props.style.position, 'absolute')
+    assert.ok(Number(windowView.props.style.zIndex) <= 1, `watch film z-index ${windowView.props.style.zIndex} leaves the pane`)
+  } finally {
+    dispose()
+  }
+})
+
 await record('Visualizer mode renders the visualiser page in the Right panel, Video swaps it, panel off removes it', async () => {
   const bucket = makeCtx({
     enabled: true, backdropMode: 'aura', panelEnabled: true, videoWindow: false, videoUrl: FILM
@@ -694,11 +789,181 @@ await record('F5. Only while active fades the in-pane visualiser, and Visual opa
   }
 })
 
-await record('F7. README and the watch hint do not describe a backdrop behind the work', async () => {
+function htmlCollection(items) {
+  const list = {
+    length: items.length,
+    item(index) {
+      const i = index >>> 0
+      return i < items.length ? items[i] : null
+    }
+  }
+  items.forEach((node, i) => { list[i] = node })
+  return list
+}
+
+function walkDom(node, visit) {
+  if (!node || typeof node !== 'object') return
+  visit(node)
+  const kids = node.children
+  if (!kids || typeof kids.length !== 'number') return
+  for (let i = 0; i < kids.length; i += 1) walkDom(kids[i], visit)
+}
+
+await record('an HTMLCollection of host children still finds the React stage, and no second panel is created', async () => {
+  const bucket = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, videoWindow: false, videoUrl: FILM
+  })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(30)
+    const head = makeElement('div')
+    head.className = 'ap-head'
+    head.setAttribute('data-aura-slot', 'head')
+    const stage = makeElement('div')
+    stage.className = 'ap-stage'
+    const hint = makeElement('div')
+    hint.className = 'ap-hint'
+    stage.appendChild(hint)
+    const watch = makeElement('div')
+    watch.setAttribute('data-aura-slot', 'watch')
+    const body = makeElement('div')
+    body.className = 'ap-body'
+    body.setAttribute('data-aura-slot', 'body')
+    const items = []
+    const host = makeElement('div')
+    host.setAttribute('id', 'aura-panel')
+    const publish = () => { host.children = htmlCollection(items) }
+    host.appendChild = child => {
+      child.parentNode = host
+      items.push(child)
+      publish()
+      return child
+    }
+    host.removeChild = child => {
+      const index = items.indexOf(child)
+      if (index >= 0) items.splice(index, 1)
+      if (child.parentNode === host) child.parentNode = null
+      publish()
+      return child
+    }
+    for (const child of [head, stage, watch, body]) host.appendChild(child)
+    assert.equal(Array.isArray(host.children), false, 'the fixture children are a real Array')
+    assert.equal(typeof host.children.item, 'function')
+    assert.equal(host.children.length, 4)
+    assert.equal(host.children.item(1), stage)
+    assert.equal(host.children[1], stage)
+    const panel = bucket.contributions.find(item => item.id === 'panel')
+    const theatre = nodesOf(panel).find(node => node.props && node.props.ref && node.props.id === 'aura-panel')
+    assert.equal(typeof (theatre && theatre.props.ref), 'function', 'the panel has no host ref')
+    theatre.props.ref(host)
+    const modes = []
+    const stages = []
+    walkDom(host, node => {
+      if (node.getAttribute && node.getAttribute('data-mode')) modes.push(node.getAttribute('data-mode'))
+      if (node.className === 'ap-stage') stages.push(node)
+    })
+    assert.deepEqual(modes, ['aura', 'video'], 'the React head slot was not filled')
+    assert.equal(stages.length, 1, 'a second panel stage was created')
+    assert.equal(stages[0], stage, 'the React stage was replaced')
+    assert.equal(items.length, 4, 'a second panel was appended to the host')
+    assert.equal(items.some(node => node.__auraImperative), false, 'the fallback panel was built')
+  } finally {
+    dispose()
+  }
+})
+
+await record('a React-created film iframe is never passed to appendChild or removeChild across re-render, mode switch and unmount', async () => {
+  const bucket = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, videoWindow: false, videoUrl: FILM
+  })
+  const dispose = plugin.default.register(bucket.ctx)
+  const origCreate = document.createElement
+  const restore = []
+  const ops = []
+  let arm = false
+  let film = null
+  const instrument = node => {
+    if (!node || node.__filmSpy || typeof node.appendChild !== 'function') return node
+    node.__filmSpy = true
+    const append = node.appendChild
+    const remove = node.removeChild
+    restore.push(() => {
+      node.appendChild = append
+      if (typeof remove === 'function') node.removeChild = remove
+      delete node.__filmSpy
+    })
+    node.appendChild = function(child) {
+      if (arm && child === film) ops.push('appendChild')
+      return append.call(this, child)
+    }
+    if (typeof remove === 'function') {
+      node.removeChild = function(child) {
+        if (arm && child === film) ops.push('removeChild')
+        return remove.call(this, child)
+      }
+    }
+    return node
+  }
+  document.createElement = function(tagName) {
+    return instrument(origCreate.call(document, tagName))
+  }
+  try {
+    await sleep(30)
+    assert.equal(plugin.nobackdropTest.surface.get().placement, 'panel', 'precondition: the film is not in the panel')
+    const panel = () => bucket.contributions.find(item => item.id === 'panel')
+    const theatre = nodesOf(panel()).find(node => node.props && node.props.ref)
+    assert.equal(typeof (theatre && theatre.props.ref), 'function', 'the panel has no host ref')
+    const view = iframeOf(filmInside(panel().render(), 'ap-stage', 'panel'))
+    assert.equal(view.props.style.position, 'absolute')
+    assert.notEqual(view.props.style.position, 'fixed')
+    // React created this iframe and parented it. The stage Aura mounts comes
+    // after this ref; Aura must not move the node to catch up.
+    film = makeElement('iframe')
+    const reactParent = makeElement('div')
+    instrument(film)
+    instrument(reactParent)
+    instrument(document.body)
+    instrument(document.head)
+    reactParent.appendChild(film)
+    const host = makeElement('div')
+    arm = true
+    view.props.ref(film)
+    theatre.props.ref(host)
+    const again = () => {
+      const next = filmInside(panel().render(), 'ap-stage', 'panel')
+      assert.ok(next, 'the panel film left the stage in the React tree')
+      const rendered = iframeOf(next)
+      assert.equal(rendered.props.style.position, 'absolute')
+      assert.notEqual(rendered.props.style.position, 'fixed')
+      return rendered
+    }
+    again()
+    await plugin.nobackdropTest.setBackdropMode('aura')
+    again()
+    await plugin.nobackdropTest.setBackdropMode('video')
+    again()
+    await plugin.nobackdropTest.poll()
+    view.props.ref(null)
+    theatre.props.ref(null)
+    arm = false
+    assert.deepEqual(ops, [], `Aura passed the React film iframe to ${ops.join(', ')}`)
+    assert.equal(film.parentNode, reactParent, 'the React film was reparented')
+  } finally {
+    arm = false
+    document.createElement = origCreate
+    for (const undo of restore) undo()
+    dispose()
+  }
+})
+
+await record('F7. plugin.yaml and README do not describe a backdrop behind the work', async () => {
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8')
+  const manifest = fs.readFileSync(path.join(ROOT, 'plugin.yaml'), 'utf8')
   const source = fs.readFileSync(PLUGIN, 'utf8')
-  assert.doesNotMatch(readme, /behind your work/)
-  assert.doesNotMatch(readme, /behind the interface/)
+  for (const text of [readme, manifest]) {
+    assert.doesNotMatch(text, /behind your work/)
+    assert.doesNotMatch(text, /behind the interface/)
+  }
   assert.doesNotMatch(readme, /Backdrop opacity that follows the room/)
   assert.match(readme, /#155903/)
   assert.doesNotMatch(source, /behind the chat/)

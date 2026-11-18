@@ -4,13 +4,13 @@ kind: standalone
 version: "1.0.0"
 author: InovinLabs
 description: >
-  Aura turns Hermes Desktop into a room you can live in: play a film, lecture or YouTube playlist
-  in a docked theatre pane on the right while you work, then switch the film off and let the same
-  system audio drive a MilkDrop-compatible visualiser behind the interface. Per-film resume, playlist
-  episodes with auto-skip of un-embeddable items, a draggable watch window, and agent moods that
-  follow thinking, tool runs and approvals. Everything is analysed locally in memory from system
-  loopback — never the microphone, no account, no uploads. Linux-first (PipeWire/PulseAudio);
-  Windows unproven, macOS needs a virtual audio device. On after install; one click turns it off, and it stays off.
+  Aura plays a film, a lecture, or a YouTube playlist in the Right panel, on the Aura page, or in
+  a watch window, and plays radio in that same frame. Switch the film off and the same system audio
+  drives a MilkDrop-compatible visualiser in those surfaces. Per-film resume, playlist episodes
+  with auto-skip of un-embeddable items, a draggable watch window, and agent moods that follow
+  thinking, tool runs and approvals. Everything is analysed locally in memory from system loopback —
+  never the microphone, no account, no uploads. Linux-first (PipeWire/PulseAudio); Windows unproven,
+  macOS needs a virtual audio device. On after install; one click turns it off, and it stays off.
 requires_hermes: ">=0.22.5"
 license: MIT
 provides_tools:

@@ -7,12 +7,12 @@
 <!--
   Aura visualizer page (L2).
 
-  Mounted by the desktop plugin in a stage route, a pane, or the empty-chat screen.
+  Mounted by the desktop plugin in the Right panel, the Aura page, or the watch window.
   It fills whatever box it is given: 100% width/height, no viewport units, canvas
   tracks its container with a ResizeObserver. All chrome colours come from the host
   theme vars (--ui-accent, --ui-text-secondary, --ui-bg, ...); the hex fallbacks in
   :root only apply when the page is opened outside Hermes (e.g. standalone preview).
-  No external network requests. Never plays sound.
+  No external network requests. audio.js, loaded below, plays radio and music in this page.
 -->
 <style>
   :root {
@@ -266,8 +266,8 @@
     #aura-message { bottom: 68px; }
   }
 
-  /* App overlay (?overlay=1): the page is only a canvas over the host window.
-     Everything else — chrome, labels, messages, scrims — stays unpainted. */
+  /* App overlay (?overlay=1): chrome, labels, messages and scrims stay unpainted
+     so the visual fills the stage Aura gives this page. */
   html.aura-overlay,
   html.aura-overlay body,
   html.aura-overlay #aura-root {

@@ -262,11 +262,12 @@ cannot start, Aura shows an accent-only fallback.
 
 The only host DOM Aura touches is opt-in and bounded:
 
-- The pane is a `PANES_AREA` contribution — **Hermes lays it out**. No fixed positioning, no z-index, no
-  `body` padding. (An earlier floating column did all three, pushed the host sidebar off its own panel and
-  swallowed clicks; it is gone.)
-- The visualiser and the film are Aura's own iframe, drawn in the Right panel, the Aura page, or the
-  watch window. Nothing is appended to the host body, and Aura does not clear the app's backgrounds.
+- The pane is a `PANES_AREA` contribution — **Hermes lays it out**. The film is `position: absolute`
+  inside the panel stage (`inset: 0`), a descendant of that stage. It is not `position: fixed` over
+  the window, and it has no z-index above the pane. The Aura page and the watch window keep their
+  film inside the box Hermes gives them, the same way. No `body` padding.
+- The visualiser, the film, and radio share Aura's own iframe in the Right panel, the Aura page, or
+  the watch window. Nothing is appended to the host body, and Aura does not clear the app's backgrounds.
   The full-window visual returns when Hermes ships a backdrop area (#155903).
 - Host `html`/`body`/root styles are never written. The accent override is the SDK's sanctioned mechanism.
 - Turning Aura off, **Restore my theme** and plugin disposal remove every effect Aura applied and

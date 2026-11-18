@@ -654,11 +654,14 @@ function findByAria(tree, label) {
 
 /** Mount the docked pane's real DOM: render the pane contribution, take the
  *  theatre ref and hand it a fake host node, exactly like the host layout
- *  arriving with a box for us to fill. */
+ *  arriving with a box for us to fill.
+ *  The stage is mounted before the film ref. A panel film that is still
+ *  detached is committed into that stage here — React's commit, not a move
+ *  inside the plugin. */
 function mountPane(bucket) {
   const pane = bucket.contributions.find(c => c.area === 'panes')
   assert.ok(pane, 'no panes contribution to mount')
-  const tree = renderDeep(renderContribution(pane))
+  const tree = renderContribution(pane)
   let ref = null
   walk(tree, node => {
     if (!ref && node.props && typeof node.props.ref === 'function') ref = node.props.ref
@@ -666,6 +669,13 @@ function mountPane(bucket) {
   assert.ok(typeof ref === 'function', 'the pane offers no mount ref')
   const hostNode = globalThis.document.createElement('div')
   ref(hostNode)
+  renderDeep(tree)
+  const surface = pluginModule.wiringTest.surface()
+  const frame = pluginModule.wiringTest.frame()
+  if (surface && surface.placement === 'panel' && frame && !frame.parentNode) {
+    const stage = domFind(hostNode, node => node.className === 'ap-stage')
+    if (stage) stage.appendChild(frame)
+  }
   return hostNode
 }
 
@@ -887,11 +897,21 @@ record('10. the Right panel film sits below the host menus (status-bar menu on t
     `the panel film is at z-index ${frame.style.zIndex}, above the host's popovers (z-50)`)
 })
 
-record('11. the Right panel film is clipped to the panel, never over the status bar', () => {
+record('11. the Right panel film lives inside the panel stage, never fixed over the window', () => {
   const frame = hostIframes()[0]
   assert.ok(frame, 'no film frame mounted for the Right panel')
-  assert.match(String(frame.style.clipPath || ''), /inset\(0px 0px 130px 0px\)/,
-    `the film is not clipped to the panel (clip-path: ${frame.style.clipPath || 'none'})`)
+  assert.notEqual(frame.style.position, 'fixed', 'the panel film is position:fixed over the window')
+  assert.equal(frame.style.position, 'absolute')
+  const z = frame.style.zIndex
+  assert.ok(z == null || z === '' || Number(z) <= 1, `panel film z-index ${z} sits above the pane`)
+  let node = frame
+  let inStage = false
+  while (node) {
+    if (node.className === 'ap-stage') inStage = true
+    node = node.parentNode
+  }
+  assert.equal(inStage, true, 'the film is not a descendant of the panel stage')
+  assert.equal(stageG && frame.parentNode === stageG, true, 'the film was not placed in the measured stage')
 })
 
 await recordAsync('12. one click on the panel header hides the Right panel, Aura stays on', async () => {
