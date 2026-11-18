@@ -160,7 +160,10 @@ jobs:
           if not port:
               raise SystemExit("Aura server did not start")
           try:
-              with urllib.request.urlopen("http://127.0.0.1:%d/healthz" % port, timeout=5) as resp:
+              # /healthz is token-gated like every data endpoint.
+              req = urllib.request.Request("http://127.0.0.1:%d/healthz" % port,
+                                           headers={"Authorization": "Bearer %s" % S.get_token()})
+              with urllib.request.urlopen(req, timeout=5) as resp:
                   body = json.loads(resp.read().decode("utf-8"))
               print("healthz:", body)
               assert body.get("ok") is True

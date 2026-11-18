@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import shutil
 import subprocess
 import tempfile
@@ -95,7 +96,10 @@ def _cdp_session(url: str):
     proc = subprocess.Popen(
         [CHROME, "--headless=new", "--mute-audio", "--autoplay-policy=no-user-gesture-required",
          f"--user-data-dir={prof}", "--remote-debugging-port=0", "--remote-allow-origins=*",
-         "--window-size=1280,860", "about:blank"],
+         "--window-size=1280,860",
+         # GitHub's Ubuntu runners forbid the namespaces Chrome's sandbox needs.
+         *(["--no-sandbox"] if os.environ.get("CI") == "true" and sys.platform.startswith("linux") else []),
+         "about:blank"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     import websocket  # provided by the shared venv
 

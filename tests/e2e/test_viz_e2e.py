@@ -24,6 +24,7 @@ import hashlib
 import json
 import math
 import os
+import sys
 import shutil
 import socket
 import struct
@@ -589,6 +590,9 @@ class Chrome:
             "--window-size=1200,900", "--no-first-run", "--no-default-browser-check",
             "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
             "--disable-backgrounding-occluded-windows",
+            # GitHub's Ubuntu runners forbid the user namespaces Chrome's sandbox
+            # needs, so Chrome exits at once there. CI only; never on a desktop.
+            *(["--no-sandbox"] if os.environ.get("CI") == "true" and sys.platform.startswith("linux") else []),
             "about:blank",
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         port_file = os.path.join(self.profile, "DevToolsActivePort")
