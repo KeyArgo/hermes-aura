@@ -92,11 +92,10 @@ kept per film, keyed by URL, so nothing restarts.
 - **One library, two pickers.** The source dropdowns in the A menu and in Settings list everything —
   saved playlists, your films, the starter pack and recents — grouped under `Playlists`, `Your films`,
   `Starters` and `Recent`. A small **Edit sources…** link opens the Aura page, where editing lives.
-- **A film owns the screen.** While Backdrop is **Video player**, Style, Intensity, the Aura
-  transparency and Gentle motion are greyed out (they only describe the Aura visual), and Show is
-  forced to Always in effect: a playing film is never faded out by "Only while active". The video's own
-  transparency stays live. Your stored Show choice is not overwritten — switch back to the Aura visual
-  and it returns.
+- **A film is the picture.** While Backdrop is **Video player**, Style, Intensity, the Aura
+  transparency and Gentle motion are greyed out (they only describe the Aura visual). The film plays
+  in the Right panel, the Aura page, or the watch window. The full-window visual behind the app
+  returns when Hermes ships a backdrop area (#155903).
 - **REVamp, next door.** Aura has no music library of its own. [REVamp](https://github.com/KeyArgo/hermes-revamp)
   is a Winamp-style player for Hermes, and Aura's visuals react to whatever it plays — one card on the page,
   one line in Settings.
@@ -228,7 +227,7 @@ cannot start, Aura shows an accent-only fallback.
 
 ## Troubleshooting
 
-- **The visual is black?** Turn on **Visual behind the app** and play some audio.
+- **The visual is black?** Open Aura's Right panel or the Aura page and play some audio. The full-window visual returns when Hermes ships a backdrop area (#155903).
 - **Nothing reacts to sound?** Check the Linux monitor source, Windows WASAPI
   loopback, or macOS virtual loopback routing above.
 - **YouTube is black or unavailable?** The uploader may block embedding. Try
@@ -264,12 +263,12 @@ The only host DOM Aura touches is opt-in and bounded:
 - The pane is a `PANES_AREA` contribution — **Hermes lays it out**. No fixed positioning, no z-index, no
   `body` padding. (An earlier floating column did all three, pushed the host sidebar off its own panel and
   swallowed clicks; it is gone.)
-- The backdrop is one click-through iframe at negative z-index, plus a single `#aura-glass` stylesheet,
-  mounted only while a visual is showing and removed when it stops. With **Show: Only while active** both
-  exist only while the visual moves.
+- The visualiser and the film are Aura's own iframe, drawn in the Right panel, the Aura page, or the
+  watch window. Nothing is appended to the host body, and Aura does not clear the app's backgrounds.
+  The full-window visual returns when Hermes ships a backdrop area (#155903).
 - Host `html`/`body`/root styles are never written. The accent override is the SDK's sanctioned mechanism.
-- Switching the visual off, turning Aura off, **Restore my theme** and plugin disposal all remove every
-  effect Aura applied and restore the theme that was there before.
+- Turning Aura off, **Restore my theme** and plugin disposal remove every effect Aura applied and
+  restore the theme that was there before.
 
 ---
 
@@ -280,7 +279,7 @@ plugin.yaml          manifest (hooks, tools, dashboard)
 __init__.py          Python plugin: hooks, aura_control tool
 aura_core/           capture, analysis, config, HTTP server, sessions, radio
 dashboard/           plugin_api.py — the desktop half's REST door (incl. /radio/*)
-desktop/plugin.js    Hermes Desktop half (status menu, pane, window, backdrop, audio)
+desktop/plugin.js    Hermes Desktop half (status menu, pane, page, watch window, audio)
 web/                 visualiser (aura.js), audio channel (audio.js), film stage (player.html), presets
 tests/               Python suite + the desktop DOM contract suite
 ```

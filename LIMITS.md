@@ -1,6 +1,6 @@
 # Aura limits
 
-The optional visual behind the app uses host background styling to show the visualizer through panels. It can affect layouts or contrast; turn off Visual behind the app or choose Restore my theme to remove it. Real-desktop layout and visual checks are still required.
+This build does not paint a visual behind the app. The visualiser and the film stay inside Aura's own panel, page, or watch window. The full-window visual returns when Hermes ships a backdrop area (#155903). Real-desktop layout and visual checks are still required.
 
 ## Single-server election
 

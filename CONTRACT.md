@@ -267,27 +267,22 @@ The page therefore treats audio as the thing being visualised, not as a garnish:
 Consequence for testing: a silence assertion is now a test of the gate, not of a lucky preset.
 `tools/silence_probe.py` measures the whole curated set (21/21 dark, mean 0, lit 0.000).
 
-## 11. Host safety (additive, 2026-11-08)
+## 11. Host safety (additive, 2026-11-08; backdrop removed 2026-11-18)
 
-Aura owns no host document styles beyond one sanctioned, opt-in visual: while "Visual behind the
-app" is on, Aura is enabled and a tokenised URL is live, the desktop half
-mounts exactly one fixed, click-through, negative-z backdrop iframe and one `#aura-glass`
-stylesheet that clears the app's big surfaces so the visual shows through. Switching the visual
-off, turning Aura off, **Restore my theme** and disposal remove both; while nothing is opted in no
-host node or style is added at all, and the host `html`/`body`/root styles are never written.
+The visualiser and the film render in Aura's own iframe, inside a surface Aura owns: the Right
+panel, the `/aura` page, or the floating watch window. This build does not append a backdrop
+iframe to the host body, does not inject `#aura-glass`, and does not read or set host glass
+attributes. The full-window visual behind the app returns when Hermes ships a backdrop area
+(#155903).
 
-The accent pulse is opt-in and off by default. **Restore my
-theme** turns the window visual and the accent pulse off, clears the accent override
-through `setAccentOverride(null)`, restores the previous theme if Aura changed it, and removes
-every effect Aura applied. Disposal does the same and also removes all contributions, timers and
-listeners.
+The accent pulse is opt-in and off by default. **Restore my theme** turns the accent pulse off,
+clears the accent override through `setAccentOverride(null)`, restores the previous theme if Aura
+changed it, and removes every effect Aura applied. Disposal does the same and also removes all
+contributions, timers and listeners.
 
-The full-page stage (the `/aura` route, sidebar row, palette command and compact pane) was removed
-by owner decision: the backdrop and the Settings page are the product. The desktop half now
-contributes only the settings page, the backdrop, the accent pulse, the titlebar theme
-probe and polling. If "Visual behind the app" is switched on while Aura is off, the desktop half
-enables Aura through the same door as the "Aura enabled" switch (writeSettings + `POST /control
-{enabled:true}`), so the visual never silently draws nothing.
+The desktop half contributes the settings page, the Right panel, the Aura page, the watch window,
+the accent pulse, the titlebar theme probe and polling. Host `html`/`body`/root styles are never
+written.
 
 ## 12. Capture gate (additive, 2026-11-10, plugin 1.0.0)
 

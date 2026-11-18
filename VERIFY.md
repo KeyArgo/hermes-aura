@@ -50,6 +50,10 @@ curl -s -H "Authorization: Bearer $(cat ~/.hermes/aura/token)" \
 # "capture" reads "none" once idle
 ```
 
+The full-window visual behind the app is not in this build. It returns when Hermes ships a backdrop
+area (#155903). These checks do not mount a backdrop iframe or an `#aura-glass` stylesheet on the
+host page.
+
 ## What is *not* verified here
 
 Player seek/resume, drag placement, and the look of the menus have not been recorded as

@@ -149,7 +149,7 @@ fs.writeFileSync(
   // The audio resume decision is driven by module state (which frame is live),
   // so the copy exposes a handle on it, like the desktop test's wiringTest.
   '\nexport const audioResumeTest = { resume: typeof resumeAudioIn === "function" ? resumeAudioIn : null,' +
-  ' live: typeof liveFilmFrame === "function" ? liveFilmFrame : null, backdrop: () => backdropEl,' +
+  ' live: typeof liveFilmFrame === "function" ? liveFilmFrame : null, frame: () => filmFrame,' +
   ' setFilm: node => { filmFrame = node }, surface: $filmSurface };\n'
 )
 
@@ -250,12 +250,18 @@ function makeCtx(initialSettings) {
 // not the DOM.
 const sent = []
 
-// A fresh instance with a mounted backdrop — the audio channel only exists
-// while the backdrop document does.
-async function remount(settings = {}) {
-  const { ctx } = makeCtx({ enabled: true, windowVisual: true, backdropMode: 'aura', ...settings })
+// A fresh instance. The radio talks to an in-pane frame when one is open;
+// nothing is appended to the host body.
+async function remount(settings = {}, options = {}) {
+  const { ctx } = makeCtx({ enabled: true, windowVisual: true, backdropMode: 'aura', panelEnabled: true, ...settings })
   const dispose = plugin.default.register(ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
+  if (options.frame !== false) {
+    const frame = makeElement('iframe')
+    frame.src = 'http://127.0.0.1:4321/?token=x&overlay=1'
+    plugin.audioResumeTest.surface.set({ placement: 'panel', src: frame.src })
+    plugin.audioResumeTest.setFilm(frame)
+  }
   return dispose
 }
 
@@ -360,21 +366,21 @@ await record('handleAudioRequests: every unseen request is applied in order', as
   dispose()
 })
 
-await record('audio-only still mounts the backdrop that hosts audio.js', async () => {
-  const before = new Set(bodyChildren)
+await record('audio-only does not append a backdrop iframe to the host body', async () => {
+  const before = bodyChildren.length
   const dispose = await remount({
     windowVisual: false,
     backdropMode: 'aura',
     audioUrl: 'https://ice.example/audio-only.mp3',
     audioLabel: 'Audio only'
-  })
-  const frame = bodyChildren.find(node => !before.has(node) && node.tagName === 'IFRAME' && node.src && node.src.includes('overlay=1'))
-  assert.ok(frame, 'no backdrop was mounted for an audio-only session')
+  }, { frame: false })
+  assert.equal(bodyChildren.length, before, 'audio-only appended a node to document.body')
+  assert.equal(bodyChildren.some(node => node.tagName === 'IFRAME'), false, 'a body iframe hosted the audio channel')
   dispose()
 })
 
-await record('a closed film does not tear down the audio-only backdrop', async () => {
-  const before = new Set(bodyChildren)
+await record('a closed film does not mount a body iframe for the audio channel', async () => {
+  const before = bodyChildren.length
   const dispose = await remount({
     windowVisual: false,
     backdropMode: 'video',
@@ -382,9 +388,9 @@ await record('a closed film does not tear down the audio-only backdrop', async (
     videoUrl: '',
     audioUrl: 'https://ice.example/audio-only.mp3',
     audioLabel: 'Audio only'
-  })
-  const frame = bodyChildren.find(node => !before.has(node) && node.tagName === 'IFRAME' && node.src && node.src.includes('player.html'))
-  assert.ok(frame, 'the closed-film branch removed the audio channel page')
+  }, { frame: false })
+  assert.equal(bodyChildren.length, before, 'a closed film appended a node to document.body')
+  assert.equal(plugin.audioResumeTest.surface.get().placement, '', 'a closed film still claimed a surface')
   dispose()
 })
 
@@ -486,7 +492,7 @@ await record('a frame that loads mid-session gets the radio back, the old one is
   })
   await plugin.playAudioSource(RADIO, 'Resume Radio')
   await new Promise(resolve => setTimeout(resolve, 0))
-  const oldFrame = plugin.audioResumeTest.backdrop()
+  const oldFrame = plugin.audioResumeTest.frame()
   assert.ok(oldFrame, 'precondition: no backdrop hosts the audio channel')
   assert.ok(
     oldFrame.__sent.some(message => message.aura === 'audio' && message.cmd === 'play'),
@@ -521,7 +527,7 @@ await record('a frame that loads mid-session gets the radio back, the old one is
 
 await record('a load with no radio selected sends nothing', async () => {
   const dispose = await remount({ windowVisual: true, backdropMode: 'aura', audioUrl: '' })
-  const frame = plugin.audioResumeTest.backdrop()
+  const frame = plugin.audioResumeTest.frame()
   assert.ok(frame, 'precondition: no backdrop mounted')
   frame.__sent.length = 0
   plugin.audioResumeTest.resume(frame)
@@ -529,12 +535,8 @@ await record('a load with no radio selected sends nothing', async () => {
   dispose()
 })
 
-await record('both player surfaces resume the radio on load', () => {
-  assert.match(
-    source,
-    /backdropEl\.addEventListener\('load', \(\) => resumeAudioIn\(backdropEl\)\)/,
-    'the full-window backdrop never resumes the radio'
-  )
+await record('the in-pane frame resumes the radio on load', () => {
+  assert.doesNotMatch(source, /backdropEl/, 'a body backdrop frame is still in the desktop half')
   assert.match(
     source,
     /onLoad: \(\) => resumeAudioIn\(filmFrame\)/,
