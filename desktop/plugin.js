@@ -848,6 +848,9 @@ function AuraFilm({ placement, src }) {
     sandbox: 'allow-scripts allow-same-origin allow-presentation',
     allow: 'autoplay; fullscreen; encrypted-media; picture-in-picture',
     referrerPolicy: 'no-referrer',
+    // Same as the body backdrop: the frame's own page boots silent, so the
+    // audio channel is restarted here when its document is ready.
+    onLoad: () => resumeAudioIn(filmFrame),
     style: {
       width: '100%',
       height: '100%',
@@ -1282,6 +1285,9 @@ function mountBackdrop(url, opacity) {
     // If the film/visual cannot load (server down, instead-of-a-page error),
     // hand over to the fail-safe instead of leaving a cleared chat.
     backdropEl.addEventListener('error', handleBackdropFailure)
+    // A fresh document (visualiser <-> film, a new source) starts silent: put
+    // the radio back if it was on.
+    backdropEl.addEventListener('load', () => resumeAudioIn(backdropEl))
     const style = backdropEl.style
     style.position = 'fixed'
     style.inset = '0'
@@ -2863,6 +2869,32 @@ function audioUnavailable() {
   setError('Music needs Aura’s visual or film on screen — turn on the window visual or open the film.')
 }
 
+/** A surface change mounts a NEW document (Visualizer <-> film, another "Watch
+ *  in"), and a fresh page starts silent while settings still say the radio is
+ *  on. Called from that document's load: restart the channel in the frame that
+ *  is live now, and stop the other one so two streams never play at once. */
+function resumeAudioIn(frame) {
+  if (disposed || !frame || !frame.contentWindow) return
+  const settings = $settings.get()
+  if (!settings.audioUrl || frame !== liveFilmFrame()) return
+  try {
+    frame.contentWindow.postMessage({
+      aura: 'audio',
+      cmd: 'play',
+      url: settings.audioUrl,
+      label: settings.audioLabel,
+      volume: settings.audioVolume
+    }, frameMessageOrigin(frame))
+    const other = frame === backdropEl ? filmFrame : backdropEl
+    if (other && other !== frame && other.contentWindow) {
+      other.contentWindow.postMessage({ aura: 'audio', cmd: 'stop' }, frameMessageOrigin(other))
+    }
+    lastAudioCommand = { cmd: 'play', url: settings.audioUrl, at: Date.now() }
+  } catch {
+    // a frame that is already gone has nothing to resume
+  }
+}
+
 /** Play a direct audio URL or radio stream on the audio channel.
  *  `.pls`/`.m3u` are resolved by the server first, because the page cannot
  *  follow a playlist file and must never be handed a private address. */
@@ -3296,9 +3328,14 @@ function syncStripPane() {
   }
   const watching = videoWindowOn()
   const size = stripPaneSize()
-  // Spawn corner only (the host remembers where the user drops it). A watch
-  // window must not open over the Right panel's controls.
-  const anchor = !watching ? 'bottom-left' : (panelVisible() ? 'top-left' : 'top-right')
+  // Spawn corner only (the host remembers where the user drops it). An explicit
+  // watch-window corner is the owner's choice; the default corner still gives
+  // way to the Right panel's controls, and 'free' (dragged) is the default.
+  const chosen = $settings.get().videoWindowCorner
+  const corner = VIDEO_WINDOW_CORNERS.includes(chosen) ? chosen : VIDEO_WINDOW_DEFAULT_CORNER
+  const anchor = !watching
+    ? 'bottom-left'
+    : (corner === VIDEO_WINDOW_DEFAULT_CORNER && panelVisible() ? 'top-left' : corner)
   const key = `${watching ? 'window' : 'strip'}:${anchor}:${size.width}x${size.height}`
   if (key === stripPaneKey && stripPaneOff) return
   unregisterStripPane()
@@ -8665,14 +8702,11 @@ export default {
     // the user has the panel on: switching it off disposes the contribution so
     // the host removes the empty frame/tab/strip too.
     track(disposePaneRegistration)
-    // `restore: true` at boot: the host also remembers its own "pane closed"
-    // state per layout, and that outlives our setting. With the panel on, a
-    // stale host dismissal must not leave the user with no pane at all — the
-    // ✕ in the pane writes panelEnabled=false, which is the real opt-out.
-    // Always at boot: a remembered close (ours or the host's own dismissal)
-    // must not leave the user with no Aura surface at all. The ✕ disposes the
-    // pane for this session.
-    registerPanelPane(true)
+    // The switch's own state survives a restart, so honour it here: registering
+    // unconditionally brought a switched-off panel back as an empty column.
+    // `restore: true`: a remembered host Close must not strand a pane that is
+    // still switched on. The Right panel switch is the real opt-out.
+    if (settings.panelEnabled !== false) registerPanelPane(true)
 
     // One read of the build stamp: the pane's chip is useless without it, and
     // the settings page that also shows it may never be opened.

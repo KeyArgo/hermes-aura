@@ -4114,6 +4114,74 @@ await recordAsync('manage playlist opens the real list page in the window', asyn
   })
 }
 
+// ------------------------------------------------- regression F2: boot panel
+// The panel switch is remembered in settings, so boot has to honour it. It
+// used to register the pane unconditionally, which brought a switched-off
+// panel back after a restart as an empty column (the pane renders null).
+{
+  const off = makeCtx({ enabled: true, panelEnabled: false })
+  const disposeOff = pluginModule.default.register(off.ctx)
+  await sleep(30)
+  await recordAsync('a panel switched off before the restart stays off at boot', async () => {
+    assert.equal(
+      off.contributions.some(c => c.id === 'panel'),
+      false,
+      'the pane registered at boot although the user had switched the panel off'
+    )
+  })
+  disposeOff()
+
+  const on = makeCtx({ enabled: true })
+  const disposeOn = pluginModule.default.register(on.ctx)
+  await sleep(30)
+  await recordAsync('the default settings still register the pane at boot', () => {
+    assert.ok(on.contributions.some(c => c.id === 'panel'), 'the pane did not register with the default settings')
+  })
+  disposeOn()
+}
+
+// ------------------------------------------- regression F4: watch window corner
+// "Watch window corner" in settings never reached the pane registration, so
+// the window always spawned top-left/top-right whatever the owner chose.
+async function watchPaneFor(settings) {
+  const bucket = makeCtx({
+    enabled: true,
+    backdropMode: 'video',
+    windowVisual: true,
+    videoWindow: true,
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ',
+    ...settings
+  })
+  const dispose = pluginModule.default.register(bucket.ctx)
+  bucket.timers.find(t => t.ms === 250).fn()
+  await sleep(40)
+  const pane = bucket.contributions.find(c => c.id === 'watch' && c.area === 'panes')
+  return { pane, bucket, dispose }
+}
+
+{
+  const chosen = await watchPaneFor({ panelEnabled: true, videoWindowCorner: 'bottom-right' })
+  try {
+    await recordAsync('the chosen watch-window corner reaches the floating pane', () => {
+      assert.ok(chosen.pane, 'the watch window pane never registered')
+      assert.equal(chosen.pane.data.placement, 'floating')
+      assert.equal(chosen.pane.data.anchor, 'bottom-right', 'the corner setting was ignored')
+    })
+  } finally {
+    chosen.dispose()
+  }
+
+  const fallback = await watchPaneFor({ panelEnabled: true })
+  try {
+    await recordAsync('the default corner still gives way to the open Right panel', () => {
+      assert.ok(fallback.pane, 'the watch window pane never registered')
+      assert.equal(fallback.pane.data.anchor, 'top-left', 'the watch window would open over the panel controls')
+    })
+  } finally {
+    fallback.dispose()
+  }
+}
+
 // --------------------------------------------------------------- reporting
 
 console.log(results.join('\n'))

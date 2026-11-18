@@ -246,6 +246,9 @@ def reap_orphan() -> bool:
     profile = str(_profile())
     cmd = _command_line(pid)
     if not cmd:
+        # The window is already gone, so the lease is dead too. Leaving it made
+        # every start run the probe again (PowerShell on Windows) for nothing.
+        _clear_lease()
         return False
     # Ours only if it runs on this home's own browser profile (PIDs get reused).
     # Windows quotes an argument with spaces ("--user-data-dir=C:\...") and its

@@ -221,6 +221,36 @@ def test_reap_ignores_a_pid_that_is_not_ours(tmp_path, monkeypatch):
     assert window.reap_orphan() is False
 
 
+def test_reap_clears_the_lease_of_a_dead_pid(tmp_path, monkeypatch):
+    """A dead PID means a dead lease.
+
+    The window's process is gone, so there is nothing to close — but the lease
+    file stayed, and every server start probed for that PID again (PowerShell on
+    Windows, ps elsewhere) only to find nothing.
+    """
+    import os
+
+    profile = str(window._profile())
+    lease = _write_lease(tmp_path, 987655, profile)
+    real_open = open
+
+    def no_proc(path, *args, **kwargs):
+        if str(path).startswith("/proc/"):
+            raise FileNotFoundError(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", no_proc)
+    # No ps answer either: the PID is simply not there any more.
+    monkeypatch.setattr(
+        window.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, stdout="", stderr=""),
+    )
+    assert window.reap_orphan() is False
+    assert not lease.exists(), "the lease of a dead PID was left behind: every start probes it again"
+    assert os.getpid() != 987655
+
+
 def test_reap_kills_only_our_profile(tmp_path, monkeypatch):
     import io
     import os

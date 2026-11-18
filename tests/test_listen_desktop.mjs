@@ -104,7 +104,13 @@ function makeElement(tagName) {
   if (String(tagName).toLowerCase() === 'iframe') {
     // Every iframe the plugin mounts talks back: that is how the audio and
     // video commands are observed from here.
-    node.contentWindow = { postMessage: message => { sent.push(message) } }
+    node.__sent = []
+    node.contentWindow = {
+      postMessage: message => {
+        node.__sent.push(message)
+        sent.push(message)
+      }
+    }
   }
   return node
 }
@@ -139,7 +145,12 @@ fs.writeFileSync(
   source
     .replace(/from\s+'@hermes\/plugin-sdk'/g, "from './sdk-stub.mjs'")
     .replace(/from\s+'react'/g, "from './react-stub.mjs'")
-    .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-stub.mjs'")
+    .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-stub.mjs'") +
+  // The audio resume decision is driven by module state (which frame is live),
+  // so the copy exposes a handle on it, like the desktop test's wiringTest.
+  '\nexport const audioResumeTest = { resume: typeof resumeAudioIn === "function" ? resumeAudioIn : null,' +
+  ' live: typeof liveFilmFrame === "function" ? liveFilmFrame : null, backdrop: () => backdropEl,' +
+  ' setFilm: node => { filmFrame = node }, surface: $filmSurface };\n'
 )
 
 fs.writeFileSync(path.join(tmp, 'sdk-stub.mjs'), `
@@ -458,6 +469,77 @@ await record('REVAMP_PITCH names the pitch and revampCard wires both buttons', (
 await record('the video backdrop carries mute=1 when the film is muted', () => {
   // The player page reads ?mute=1; without it a muted film comes back loud.
   assert.match(source, /if \(settings\.videoMuted\) query\.append\('mute', '1'\)/)
+})
+
+// Regression F3: the radio lives inside the frame that holds it, so a surface
+// change (Visualizer <-> film, another "Watch in") mounts a fresh document and
+// the music stopped there while settings.audioUrl still said it was on. The new
+// document's load restarts the channel in it and stops the old one.
+await record('a frame that loads mid-session gets the radio back, the old one is stopped', async () => {
+  const RADIO = 'https://ice.example/resume.mp3'
+  const dispose = await remount({
+    windowVisual: false,
+    backdropMode: 'aura',
+    audioUrl: RADIO,
+    audioLabel: 'Resume Radio',
+    audioVolume: 0.6
+  })
+  await plugin.playAudioSource(RADIO, 'Resume Radio')
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const oldFrame = plugin.audioResumeTest.backdrop()
+  assert.ok(oldFrame, 'precondition: no backdrop hosts the audio channel')
+  assert.ok(
+    oldFrame.__sent.some(message => message.aura === 'audio' && message.cmd === 'play'),
+    'precondition: the radio never started in the backdrop'
+  )
+
+  // The film surface mounts its own frame, and its load makes it the live one.
+  const film = makeElement('iframe')
+  film.src = 'http://127.0.0.1:4321/player.html?url=https%3A%2F%2Fexample.test%2Ffilm.mp4'
+  plugin.audioResumeTest.surface.set({ placement: 'panel', src: film.src })
+  plugin.audioResumeTest.setFilm(film)
+  oldFrame.__sent.length = 0
+  plugin.audioResumeTest.resume(film)
+
+  const play = film.__sent.find(message => message.aura === 'audio' && message.cmd === 'play')
+  assert.ok(play, 'the frame that just loaded was never sent the radio')
+  assert.equal(play.url, RADIO, 'the resumed stream is not the one the user was listening to')
+  assert.equal(play.volume, 0.6, 'the resumed stream lost the user volume')
+  assert.ok(
+    oldFrame.__sent.some(message => message.aura === 'audio' && message.cmd === 'stop'),
+    'the old frame keeps a second stream playing'
+  )
+
+  // A load from a frame that is no longer live must change nothing.
+  oldFrame.__sent.length = 0
+  film.__sent.length = 0
+  plugin.audioResumeTest.resume(oldFrame)
+  assert.equal(oldFrame.__sent.length, 0, 'the stale frame was restarted')
+  assert.equal(film.__sent.length, 0, 'the live frame was restarted by a stale load')
+  dispose()
+})
+
+await record('a load with no radio selected sends nothing', async () => {
+  const dispose = await remount({ windowVisual: true, backdropMode: 'aura', audioUrl: '' })
+  const frame = plugin.audioResumeTest.backdrop()
+  assert.ok(frame, 'precondition: no backdrop mounted')
+  frame.__sent.length = 0
+  plugin.audioResumeTest.resume(frame)
+  assert.equal(frame.__sent.length, 0, 'a play was sent although no radio is on')
+  dispose()
+})
+
+await record('both player surfaces resume the radio on load', () => {
+  assert.match(
+    source,
+    /backdropEl\.addEventListener\('load', \(\) => resumeAudioIn\(backdropEl\)\)/,
+    'the full-window backdrop never resumes the radio'
+  )
+  assert.match(
+    source,
+    /onLoad: \(\) => resumeAudioIn\(filmFrame\)/,
+    'the in-pane film never resumes the radio'
+  )
 })
 
 // --------------------------------------------------------------------- report

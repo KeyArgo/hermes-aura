@@ -36,3 +36,6 @@ python_dependencies:
   # macOS has no WASAPI/soundcard path: capture goes through PortAudio, i.e.
   # sounddevice against a virtual loopback device (BlackHole and friends).
   - 'sounddevice>=0.4,<0.6; sys_platform == "darwin"'
+  # sounddevice's InputStream imports numpy, and Hermes core does not ship it:
+  # without this a macOS install starts capture and dies on ImportError.
+  - 'numpy>=1.24,<3; sys_platform == "darwin"'
