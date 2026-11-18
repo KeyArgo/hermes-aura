@@ -39,9 +39,9 @@
  *   - an opt-in, audio-reactive accent pulse via the sanctioned
  *     `setAccentOverride`,
  *   - a hidden dev readout: Ctrl+Shift+A toggles a fixed bottom-right stats
- *     panel (sessions, session boost, intensity, mood, music level, silence,
- *     fps, preset), refreshed every 100 ms from liveFrame and the state
- *     atoms; its shortcut is bound to Aura's own controls and the timer dies
+ *     panel (sessions, neutral boost, intensity, mood, music level, silence,
+ *     fps, preset); chats do not change intensity. Refreshed every 100 ms
+ *     from liveFrame and the state atoms; its shortcut is bound to Aura's own controls and the timer dies
  *     with dispose.
  *
  * The old full-page stage and everything that opened it (the `/aura` route,
@@ -1386,8 +1386,7 @@ function activeSessions() {
   return Math.max(1, Math.round(count))
 }
 
-/** The automatic level: 20% working, 30% with music, +3% per extra active
- *  chat, clamped. This is the owner's spec and the default. */
+/** The automatic level: 20% working, 30% with music; no per-chat change. */
 function autoVideoOpacity() {
   const base = musicBoostActive() ? VIDEO_OPACITY_MUSIC : VIDEO_OPACITY
   const extra = (activeSessions() - 1) * VIDEO_OPACITY_SESSION_STEP
@@ -6548,7 +6547,7 @@ function AuraQuickMenu() {
                         size: 'micro',
                         variant: settings.videoOpacityAuto !== false ? 'default' : 'ghost',
                         'aria-label': 'Automatic video strength',
-                        title: filmPanelled ? FILM_STRENGTH_PANEL_TITLE : 'Automatic: 20% working, 30% with music, +3% per extra chat',
+                        title: filmPanelled ? FILM_STRENGTH_PANEL_TITLE : 'Automatic: 20% working, 30% with music',
                         disabled: filmPanelled,
                         style: presetStyle,
                         onClick: () => setVideoOpacityAuto(),

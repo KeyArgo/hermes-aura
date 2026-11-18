@@ -204,14 +204,43 @@ other plugin, and Aura's visuals react to whatever it plays.
 
 ---
 
-## Install
+## Install and set up by OS
 
 ```bash
-hermes plugins install KeyArgo/hermes-aura
+hermes plugins install https://github.com/KeyArgo/hermes-aura --enable
 ```
 
-Turn it on in **Settings ▸ Plugins ▸ Aura**. The Aura pane appears on the right; closing it leaves only
-the status-bar menu. Nothing is captured until Aura is enabled.
+Restart Hermes Desktop after installation.
+
+- **Linux:** Aura automatically uses a PipeWire or PulseAudio monitor source.
+- **Windows:** Aura captures system audio through WASAPI loopback, not the microphone.
+  The plugin installs `soundcard` and `numpy` dependencies.
+- **macOS:** Install a virtual loopback device, for example BlackHole 2ch with
+  `brew install --cask blackhole-2ch`. In Audio MIDI Setup, create a Multi-Output
+  Device containing your speakers and BlackHole, then select it as your output.
+  Aura recognizes input device names containing BlackHole, Loopback, Soundflower,
+  or Existential Audio.
+
+Aura reacts to Hermes lifecycle events and does not depend on your AI model or
+provider. It needs no NVIDIA GPU or CUDA. The visualiser uses WebGL2; software
+WebGL runs at reduced resolution and frame rate. If WebGL2 or the visualiser
+cannot start, Aura shows an accent-only fallback.
+
+## Troubleshooting
+
+- **The visual is black?** Turn on **Visual behind the app** and play some audio.
+- **Nothing reacts to sound?** Check the Linux monitor source, Windows WASAPI
+  loopback, or macOS virtual loopback routing above.
+- **YouTube is black or unavailable?** The uploader may block embedding. Try
+  **Watch in → Desktop**, which opens the film in its own window; some videos
+  are still unavailable.
+- **The panel is behind Sessions after choosing a layout?** Restart Hermes Desktop,
+  or use **Aura menu → Panel**.
+- **Radio stopped?** Try another station or start the stream again; the station
+  or its stream may be unavailable.
+- **How do I reset the look?** Choose **Restore my theme**, or turn Aura off and on.
+- **Where are the logs?** Check Hermes Desktop's logs for messages from `aura`,
+  `aura.server`, or `aura.capture`; Aura uses Python logging.
 
 ---
 
