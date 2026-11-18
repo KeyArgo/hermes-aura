@@ -86,6 +86,16 @@ const THEME_NAME = 'aura-live'
 // poll of /status (plus /state only while Aura is enabled), and the accent is
 // re-applied at most once per tick, so the app never repaints faster than 4 Hz.
 const POLL_MS = 250
+// The tick stays at 4 Hz, but an idle Aura (switched off, nothing playing, no
+// window) has nothing to learn 4 times a second: polling then was 12-16
+// requests a second all day for a UI that does not exist ("Aura is eating my
+// CPU and I'm not even using it"). Idle glances every 3 s, and every 15 s while
+// the window is hidden — nobody is looking at the numbers then.
+const POLL_IDLE_MS = 3000
+const POLL_HIDDEN_MS = 15000
+// A click, a play or an agent request keeps the fast cadence for this long, so
+// the answer to a button is never one idle glance away.
+const POLL_BUSY_HOLD_MS = 10000
 const ACCENT_MIN_GAP_MS = 250
 // Attention moods (approval/error) must not pulse faster than 2 Hz (CONTRACT §4).
 const ATTENTION_MIN_GAP_MS = 500
@@ -401,6 +411,11 @@ let ctxRef = null
 let disposed = false
 let pollDisposer = null
 let polling = false
+// When the last network poll started, and when Aura was last used (a click, a
+// play, an agent request). Together they decide whether a tick is worth a
+// round-trip; see pollDue().
+let lastPollAt = 0
+let lastBusyAt = 0
 // A build not seen before is waiting for the server's first answer to be switched on.
 let turnOnPending = false
 // The user switched Aura on or off in this session; a new build then leaves it alone.
@@ -674,6 +689,10 @@ function readSettings(ctx) {
 }
 
 function writeSettings(patch) {
+  // A settings write is a person (or a button) touching Aura. Not while a poll
+  // is syncing the server's own values, though: that would keep Aura "busy"
+  // forever and the idle back-off would never happen.
+  if (!polling) markBusy()
   const next = { ...$settings.get(), ...patch }
   $settings.set(next)
   try {
@@ -1291,6 +1310,9 @@ function popoutSurface(available, opened) {
 }
 
 async function setDesktopWindow(on) {
+  // A pop-out (or its close) is the user moving the film: keep the fast cadence
+  // until the window settles, then desktopOwned holds it.
+  markBusy()
   // Any later move away from the desktop bumps this, so a slow open cannot claim
   // the film after the user already picked somewhere else.
   const generation = ++desktopGeneration
@@ -1445,9 +1467,55 @@ function syncFromServer(frame) {
   if (Object.keys(patch).length) writeSettings(patch)
 }
 
+// ------------------------------------------------------------- poll cadence
+// Polling was the CPU bill: /status, /state and /player every 250 ms, all day,
+// also with Aura off, nothing playing and the window hidden. The tick stays
+// cheap; how often it is worth a round-trip follows what Aura is doing.
+
+/** A click, a play or an agent request: fast polling for the next 10 s. */
+function markBusy() {
+  lastBusyAt = Date.now()
+}
+
+/** Is Aura doing anything a 4 Hz poll is worth paying for? Deliberately
+ *  generous: a wrong "idle" leaves a live surface looking stuck, a wrong
+ *  "busy" only costs a few requests while someone is using Aura anyway. */
+function auraBusy() {
+  const settings = $settings.get()
+  const live = $live.get()
+  if (settings.enabled || (live.ok && live.enabled === true)) return true
+  if ($video.get().playing === true) return true
+  // A film (or the visualiser) is placed in a panel, page or watch window:
+  // those read /state for levels, so they must keep up while they are open.
+  const surface = $filmSurface.get()
+  if (surface && (surface.placement || surface.src)) return true
+  if (videoWindowOn()) return true
+  // Radio / music on the audio channel.
+  if ($audio.get().playing === true) return true
+  // A desktop window is ours to drive and to check for a close.
+  if (desktopOwned || desktopPending || desktopClosing) return true
+  return Date.now() - lastBusyAt < POLL_BUSY_HOLD_MS
+}
+
+/** How often the backend is worth asking right now. */
+function pollDueMs() {
+  if (auraBusy()) return POLL_MS
+  return doc && doc.hidden === true ? POLL_HIDDEN_MS : POLL_IDLE_MS
+}
+
+/** Should this tick hit the network? While Aura is busy the tick itself is the
+ *  cadence and never runs faster than POLL_MS, so every tick is due; the
+ *  elapsed check only has to hold the idle cadence back. */
+function pollDue() {
+  if (polling) return false
+  if (auraBusy()) return true
+  return Date.now() - lastPollAt >= pollDueMs()
+}
+
 async function poll() {
   if (!ctxRef || disposed || polling) return
   polling = true
+  lastPollAt = Date.now()
   const epochAtStart = enabledEpoch
   try {
     let status = null
@@ -1735,6 +1803,9 @@ function applyPendingTurnOn() {
 
 async function setEnabled(next, fromNewBuild = false) {
   if (!ctxRef || disposed) return
+  // Turning Aura on (or off) is the biggest "already busy" there is: poll at
+  // once, and keep the fast cadence while the switch settles.
+  markBusy()
   // An explicit on/off settles it: a new build's switch-on must never override
   // what the user chose, even if /version or /status answers after the click.
   turnOnPending = false
@@ -2254,6 +2325,8 @@ function postToFrame(message) {
 
 /** One entry point for every transport control, wherever it is clicked. */
 function videoCommand(cmd, value) {
+  // A transport button (or the agent) just touched the film.
+  markBusy()
   if (cmd === 'stop') {
     // Stop = stop and leave (owner, 11-18): pausing in place left the film on
     // screen. It closes wherever it plays, its own window included; Open video
@@ -2355,6 +2428,8 @@ function readAudioSettings(raw) {
 
 /** Send one command to the audio channel in the in-pane frame. */
 function audioCommand(message) {
+  // Every radio/music transport action counts as Aura being used.
+  markBusy()
   try {
     const frame = liveFilmFrame()
     const win = frame && frame.contentWindow
@@ -2504,6 +2579,9 @@ function handleAudioRequest(frame) {
     writeSettings({ audioRequestSeq: seq })
     return 'stale'
   }
+  // An agent (or the tool) asked for audio: Aura is working, so the cadence
+  // must not fall back to an idle glance mid-request.
+  markBusy()
   writeSettings({ audioRequestSeq: seq })
   const action = typeof request.action === 'string' ? request.action : 'play'
   if (action === 'stop') {
@@ -2707,6 +2785,8 @@ function onBackdropMessage(event) {
   // Only the in-pane frame (visualiser or film) may drive player and audio state.
   const live = [filmFrame].filter(Boolean)
   if (!live.some(frame => frame.contentWindow && event.source === frame.contentWindow)) return
+  // The page is talking (a play, a seek, a level report): Aura is in use.
+  markBusy()
   const data = event.data
   // [listen lane] The audio channel reports through the same bridge. Its own
   // mute/volume are never folded into the video's.
@@ -3703,6 +3783,9 @@ function showVideoBar() {
 }
 
 function onVideoBarMouseMove() {
+  // Not markBusy(): this listener sees every pointer move over the whole app, so
+  // it would keep an unused Aura polling at 4 Hz. An open strip means a film is
+  // placed, and that already keeps the fast cadence.
   if (videoBarEl) showVideoBar()
 }
 
@@ -8057,9 +8140,11 @@ export default {
     }
 
     // Polling is the only timer; the host owns it, so it cannot outlive the
-    // plugin even if the returned disposer is never called.
+    // plugin even if the returned disposer is never called. The tick is always
+    // 4 Hz so coming back to Aura is instant; only the network call is skipped
+    // while Aura is idle (see pollDue).
     pollDisposer = ctx.setInterval(() => {
-      void poll()
+      if (pollDue()) void poll()
     }, POLL_MS)
 
     if (doc) {
