@@ -508,9 +508,22 @@ class FakeAura:
 # ---------------------------------------------------------------------------
 
 def _chrome_binary():
-    if os.path.exists(CHROME):
-        return CHROME
-    for cand in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+    override = os.environ.get("CHROME_PATH")
+    if override and os.path.exists(override):
+        return override
+    fixed = [
+        CHROME,
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ]
+    for env in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        base = os.environ.get(env)
+        if base:
+            fixed.append(os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
+    for path in fixed:
+        if path and os.path.exists(path):
+            return path
+    for cand in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"):
         p = shutil.which(cand)
         if p:
             return p
@@ -817,7 +830,12 @@ def test_silence_black_tone_moves_and_cpu(chrome, aura):
         print("PASS tone-moves mean=%d lit=%d->%d hash=%d->%d" % (
             c["mean"], c["lit"], d["lit"], c["hash"], d["hash"]), flush=True)
 
-        # CPU over ~8 s at the degraded (software GL) resolution.
+        # CPU over ~8 s at the degraded (software GL) resolution. cpu_seconds()
+        # reads /proc, which only exists on Linux; the silence/tone assertions
+        # above are the cross-platform part of this test and have already run.
+        if not os.path.isdir("/proc"):
+            pytest.skip("cpu_seconds reads /proc, which exists only on Linux; "
+                        "silence/tone assertions above ran on this OS")
         snap = snapshot(tab)
         frames0 = snap["frames"]
         cpu0 = chrome.cpu_seconds()
