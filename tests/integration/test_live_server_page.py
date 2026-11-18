@@ -29,11 +29,25 @@ import urllib.request
 
 import pytest
 
-CHROME = next(
-    (p for p in ("/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-                 "/usr/bin/chromium", shutil.which("chromium") or "") if p and os.path.exists(p)),
-    None,
-)
+def _find_chrome():
+    override = os.environ.get("CHROME_PATH")
+    if override and os.path.exists(override):
+        return override
+    candidates = [
+        "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/usr/bin/chromium",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ]
+    for env in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        base = os.environ.get(env)
+        if base:
+            candidates.append(os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
+    for name in ("google-chrome-stable", "google-chrome", "chromium", "chrome"):
+        candidates.append(shutil.which(name) or "")
+    return next((p for p in candidates if p and os.path.exists(p)), None)
+
+
+CHROME = _find_chrome()
 
 
 @pytest.fixture(scope="module")

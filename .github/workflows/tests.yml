@@ -63,6 +63,112 @@ jobs:
           printf '  %s\n' "${files[@]}"
           node --test "${files[@]}"
 
+  browser:
+    name: browser suite (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    # Report-only for now: two display-control e2e tests miss frames on a loaded
+    # machine (they fail on be9d76f too). Red here shows what a Mac or Windows
+    # browser could not do, without blocking the gating jobs above.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip pytest websocket-client pyyaml
+      # The e2e/integration tests drive a real headless Chrome over CDP. Install
+      # the platform's declared capture deps too, so a Windows runner can actually
+      # reach the WASAPI loopback instead of only proving the skip path.
+      - name: install declared python deps
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, subprocess, sys
+          import yaml
+          deps = yaml.safe_load(pathlib.Path("plugin.yaml").read_text(encoding="utf-8")).get("python_dependencies") or []
+          print("declared python_dependencies:", deps)
+          if deps:
+              subprocess.check_call([sys.executable, "-m", "pip", "install", *deps])
+          PY
+      - id: chrome
+        uses: browser-actions/setup-chrome@v1
+      - name: export CHROME_PATH
+        shell: bash
+        run: printf 'CHROME_PATH=%s\n' '${{ steps.chrome.outputs.chrome-path }}' >> "$GITHUB_ENV"
+      # -rs prints every skip with its reason, so each OS shows what it did NOT
+      # prove as well as what it did.
+      - run: python -m pytest tests/integration tests/e2e/test_viz_e2e.py tests/e2e/test_display_controls_e2e.py -q -rs -p no:cacheprovider
+
+  macos-install-smoke:
+    name: install smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: create venv
+        shell: bash
+        run: python -m venv .venv
+      # Prove the line plugin.yaml claims for this OS installs. macOS is the one
+      # nobody can check by hand: sounddevice/PortAudio must build or wheel.
+      - name: install declared python deps
+        shell: bash
+        run: |
+          if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=.venv/Scripts/python.exe; fi
+          "$PY" - <<'PY'
+          import pathlib, subprocess, sys
+          subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "pyyaml"])
+          import yaml
+          deps = yaml.safe_load(pathlib.Path("plugin.yaml").read_text(encoding="utf-8")).get("python_dependencies") or []
+          print("declared python_dependencies:", deps)
+          if deps:
+              subprocess.check_call([sys.executable, "-m", "pip", "install", *deps])
+          PY
+      - name: import aura_core
+        shell: bash
+        run: |
+          if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=.venv/Scripts/python.exe; fi
+          "$PY" -c "import aura_core, aura_core.server, aura_core.capture"
+      # Start the local server the same way tests/integration does, hit its
+      # unauthenticated health endpoint, then stop it.
+      - name: start server, hit /healthz, stop
+        shell: bash
+        run: |
+          if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=.venv/Scripts/python.exe; fi
+          "$PY" - <<'PY'
+          import json, os, tempfile, time, urllib.request
+          os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="aura-smoke-")
+          from aura_core import server as S
+          S.stop_server()
+          S.ensure_server()
+          port = None
+          for _ in range(40):
+              port = S.get_port()
+              if port:
+                  break
+              time.sleep(0.25)
+          if not port:
+              raise SystemExit("Aura server did not start")
+          try:
+              with urllib.request.urlopen("http://127.0.0.1:%d/healthz" % port, timeout=5) as resp:
+                  body = json.loads(resp.read().decode("utf-8"))
+              print("healthz:", body)
+              assert body.get("ok") is True
+          finally:
+              S.stop_server()
+          print("server started, answered /healthz, and stopped")
+          PY
+
   manifest:
     name: manifest gate
     runs-on: ubuntu-latest
