@@ -1448,14 +1448,16 @@ const stripButton = label => {
   if (frame) frame.contentWindow = { postMessage: message => posted.push(message) }
   pluginModule.wiringTest.video.set({ ...pluginModule.wiringTest.video.get(), playing: true, duration: 100, position: 40 })
 
-  await recordAsync('52. the Right panel has Stop: it pauses and goes back to the start', async () => {
+  await recordAsync('52. the Right panel has Stop: it stops the film and closes it', async () => {
     const stop = domFind(scenario.pane, node => node.attributes && node.attributes['aria-label'] === 'Stop')
     assert.ok(stop, 'the Right panel has no Stop button')
     clickDom(stop)
     await sleep(20)
     assert.ok(posted.some(m => m && m.cmd === 'pause'), `Stop did not pause (posted ${JSON.stringify(posted)})`)
-    assert.ok(posted.some(m => m && m.cmd === 'seekTo' && m.value === 0), 'Stop did not go back to the start')
     assert.equal(pluginModule.wiringTest.video.get().playing, false, 'Stop left the film marked as playing')
+    // Owner, 11-18: Stop must leave the film, not pause it on screen.
+    assert.equal(scenario.bucket.storage.get('settings').videoClosed, true, 'Stop left the film open')
+    assert.equal((pluginModule.wiringTest.surface().placement || ''), '', 'Stop left a film surface on screen')
   })
 
   record('53. the Aura page transport is as big as the panel’s, with Stop', () => {

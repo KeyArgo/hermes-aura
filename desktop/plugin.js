@@ -2757,10 +2757,15 @@ function postToFrame(message) {
 /** One entry point for every transport control, wherever it is clicked. */
 function videoCommand(cmd, value) {
   if (cmd === 'stop') {
-    // Stop = pause and back to the start, wherever the film plays.
+    // Stop = stop and leave (owner, 11-18): pausing in place left the film on
+    // screen. It closes wherever it plays, its own window included; Open video
+    // brings it back at the saved point.
     postToBackdrop({ cmd: 'pause' })
-    postToBackdrop({ cmd: 'seekTo', value: 0 })
-    $video.set({ ...$video.get(), playing: false, position: 0, reportedAt: Date.now() })
+    $video.set({ ...$video.get(), playing: false, reportedAt: Date.now() })
+    if (desktopOwned || desktopPending) {
+      void closeDesktopWindow().then(() => { desktopOwned = false })
+    }
+    closeVideo()
     return
   }
   if (desktopOwned) {
