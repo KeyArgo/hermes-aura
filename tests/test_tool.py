@@ -123,7 +123,8 @@ def test_schema_is_valid_and_complete(plugin):
     assert props["intensity"]["minimum"] == 0.0
     assert props["intensity"]["maximum"] == 1.0
     assert props["mood"]["enum"] == list(p._mood.MOODS)
-    assert "null" in props["preset"]["type"]
+    assert props["preset"]["type"] == "string"
+    assert "empty string resets" in props["preset"]["description"]
     json.dumps(schema)  # must be JSON-serializable
     # The review's description text, adjusted to stay true after the fixes.
     assert "last search's rows" in p.SCHEMA_AURA_LISTEN["description"]

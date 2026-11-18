@@ -25,8 +25,8 @@ hermes plugins validate .
 #   → exit 0 · "ok": true · 0 errors · 1 warning
 ```
 
-The warning names one private-core import (`aura_core/sessions.py`, used to count live chat
-sessions). It is inside a `try` with a file-based fallback, so Aura works without it.
+The validation output above is historical. Aura no longer imports the private
+active-session registry or reads its file.
 
 ## Idle cost
 
