@@ -6,6 +6,12 @@
 - Removed the optional Aura Live theme.
 - Stop closes the film, and its desktop window, instead of leaving it on screen.
 - Radio plays in the Right panel, the Aura page, and the watch window, in every mode.
+- Aura stops polling when it is not being used. The 4 Hz tick used to cost the backend ~12-16
+  requests a second all day — also with Aura switched off and the window hidden ("Aura is eating my
+  CPU and I'm not even using it"). The tick stays at 4 Hz; the network call now only happens while
+  Aura is busy (switched on, a film or the visualiser on screen, radio or music playing, a desktop
+  window open, or ten seconds after a click or an agent request), every 3 s while idle, and every
+  15 s while the Hermes window is hidden. Nothing gets slower while something plays.
 
 ## 1.0.0 — 2026-11-11
 

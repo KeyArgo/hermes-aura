@@ -54,6 +54,22 @@ The full-window visual behind the app is not in this build. It returns when Herm
 area (#155903). These checks do not mount a backdrop iframe or an `#aura-glass` stylesheet on the
 host page.
 
+### Polling
+
+The desktop half keeps its 4 Hz tick but only reaches the backend when Aura is doing something:
+switched on, a film or the visualiser on screen, radio or music playing, a desktop window open, or
+ten seconds after a click or an agent request. Idle it asks every 3 s, and every 15 s while the
+Hermes window is hidden. Counted by `tests/test_idle_poll.mjs` with a fake clock:
+
+| Window | `/status` calls before | after |
+|---|---|---|
+| Aura off, nothing playing, visible, 10 s | 40 | 3 |
+| Aura off, nothing playing, window hidden, 30 s | 120 | 2 |
+| Aura on, 2 s | 8 | 8 |
+
+While a film plays nothing changed: the surface owns the fast cadence, so the player, its
+position and its volume are reported as often as before.
+
 ## What is *not* verified here
 
 Player seek/resume, drag placement, and the look of the menus have not been recorded as
