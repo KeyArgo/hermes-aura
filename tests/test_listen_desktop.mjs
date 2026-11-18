@@ -379,7 +379,7 @@ await record('audio-only does not append a backdrop iframe to the host body', as
   dispose()
 })
 
-await record('a closed film does not mount a body iframe for the audio channel', async () => {
+await record('a closed film keeps radio in the panel and off the host body', async () => {
   const before = bodyChildren.length
   const dispose = await remount({
     windowVisual: false,
@@ -390,7 +390,10 @@ await record('a closed film does not mount a body iframe for the audio channel',
     audioLabel: 'Audio only'
   }, { frame: false })
   assert.equal(bodyChildren.length, before, 'a closed film appended a node to document.body')
-  assert.equal(plugin.audioResumeTest.surface.get().placement, '', 'a closed film still claimed a surface')
+  assert.equal(bodyChildren.some(node => node.tagName === 'IFRAME'), false, 'a body iframe hosted the closed film')
+  const surface = plugin.audioResumeTest.surface.get()
+  assert.equal(surface.placement, 'panel', 'closing the film dropped the radio')
+  assert.match(surface.src, /overlay=1/, 'the radio carrier is not the visualiser page')
   dispose()
 })
 

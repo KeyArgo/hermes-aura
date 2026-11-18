@@ -146,7 +146,7 @@ fs.writeFileSync(
     .replace(/from\s+'@hermes\/plugin-sdk'/g, "from './sdk-stub.mjs'")
     .replace(/from\s+'react'/g, "from './react-stub.mjs'")
     .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-stub.mjs'") +
-  '\nexport const nobackdropTest = { setBackdropMode, setPanelEnabled, playAudioSource, settings: $settings, surface: $filmSurface }\n'
+  '\nexport const nobackdropTest = { setBackdropMode, setPanelEnabled, setVideoWindow, setShowWhen, setOpacity, playAudioSource, closeVideo, setDesktopWindow, updateShow, applyVideoOpacity, poll, settings: $settings, surface: $filmSurface, live: $live, audioFrame: () => audioFrame }\n'
 )
 
 fs.writeFileSync(path.join(tmp, 'sdk-stub.mjs'), `
@@ -209,6 +209,10 @@ const plugin = await import(pathToFileURL(pluginCopy).href)
 function makeCtx(settings) {
   const contributions = []
   const storage = new Map()
+  const timers = []
+  const serverFrame = {
+    level: 0, bands: [0, 0, 0, 0, 0, 0, 0, 0], silence: true, mood: 'idle', enabled: true
+  }
   if (settings) storage.set('settings', settings)
   const ctx = {
     source: 'plugin:aura',
@@ -226,7 +230,11 @@ function makeCtx(settings) {
     },
     onDispose() {},
     setInterval() { return () => {} },
-    setTimeout() { return () => {} },
+    setTimeout(fn, ms) {
+      const record = { fn, ms, cleared: false }
+      timers.push(record)
+      return () => { record.cleared = true }
+    },
     addEventListener() { return () => {} },
     storage: {
       get(key, fallback) { return storage.has(key) ? storage.get(key) : fallback },
@@ -237,15 +245,40 @@ function makeCtx(settings) {
       if (route === '/status') {
         return { ok: true, port: 4321, url: 'http://127.0.0.1:4321/?token=not-shown-in-ui', capture: 'none', enabled: true }
       }
-      if (route === '/state') {
-        return { level: 0.2, bands: [0, 0, 0, 0, 0, 0, 0, 0], silence: false, mood: 'thinking', enabled: true }
-      }
+      if (route === '/state') return { ...serverFrame, bands: [...serverFrame.bands] }
       if (route === '/version') return { version: '1.2.3' }
       if (route === '/control') return { ok: true }
+      if (route === '/window') return { ok: true, available: true, open: false }
+      if (route === '/window/open') return { ok: true, open: true }
+      if (route === '/window/close') return { ok: true, closed: true }
+      if (route === '/player') return { ok: true }
       return { ok: true }
     }
   }
-  return { ctx, contributions, storage }
+  return { ctx, contributions, storage, timers, serverFrame }
+}
+
+function domFind(node, pred) {
+  if (!node || typeof node !== 'object') return null
+  if (pred(node)) return node
+  for (const child of node.children || []) {
+    const found = domFind(child, pred)
+    if (found) return found
+  }
+  return null
+}
+
+function shown(node) {
+  let current = node
+  while (current) {
+    if (current.style && current.style.display === 'none') return false
+    current = current.parentNode
+  }
+  return true
+}
+
+function byAria(nodes, label) {
+  return nodes.find(node => node.props && node.props['aria-label'] === label) || null
 }
 
 function expand(node, acc) {
@@ -450,6 +483,226 @@ await record('old saved settings with windowVisual:true boot and render nothing 
   assert.equal(glassStyles.length, 0, 'windowVisual:true created #aura-glass')
   assert.equal(backdropAttrs.length, 0, 'windowVisual:true set data-aura-backdrop')
   dispose()
+})
+
+await record('F1. the visualiser watch window is a 16:9 stage and Watch in sends it back', async () => {
+  const bucket = makeCtx({
+    enabled: true, backdropMode: 'aura', panelEnabled: true, videoWindow: true, videoUrl: ''
+  })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(40)
+    const pane = bucket.contributions.find(item => item.id === 'watch' && item.removed !== true)
+    assert.ok(pane, 'Visualizer mode did not open the watch pane')
+    const width = parseFloat(pane.data.width)
+    const height = parseFloat(pane.data.height)
+    assert.ok(width >= 480, `watch pane is a strip (${pane.data.width} wide), not a stage`)
+    assert.equal(height - 30, Math.round(width * 9 / 16),
+      `watch pane ${width}x${height} is not a 16:9 stage under the host header`)
+    const frame = filmsIn(pane)
+    assert.equal(frame.length, 1, 'the watch pane has no visualiser frame')
+    assert.match(iframeOf(frame[0]).props.src, /overlay=1/)
+    const panel = bucket.contributions.find(item => item.id === 'panel')
+    const host = makeElement('div')
+    const theatre = nodesOf(panel).find(node => node.props && node.props.ref)
+    theatre.props.ref(host)
+    const back = domFind(host, node => node.attributes && node.attributes['aria-label'] === 'Watch the film in the Right panel')
+    assert.ok(back, 'the Right panel has no Watch in control in Visualizer mode')
+    assert.equal(shown(back), true, 'Watch in is in the tree but hidden in Visualizer mode')
+    const menu = nodesOf(bucket.contributions.find(item => item.id === 'quick-menu'))
+    const menuBack = byAria(menu, 'Watch the film in the Right panel (quick menu)')
+    assert.ok(menuBack, 'the quick menu has no Watch in control in Visualizer mode')
+    const settings = nodesOf(bucket.contributions.find(item => item.area === 'settings.plugins'))
+    assert.ok(byAria(settings, 'Watch the film in the Right panel (settings)'),
+      'Settings has no Watch in control in Visualizer mode')
+    const page = nodesOf(bucket.contributions.find(item => item.area === 'routes'))
+    const pop = byAria(page, 'Bring back')
+    assert.ok(pop, 'the Aura page still says Pop out while the visualiser is in the watch window')
+    assert.equal(pop.props.children, 'Bring back')
+    back.attributes && back.click && back.click()
+    const click = (back.__handlers.click || [])[0]
+    assert.equal(typeof click, 'function', 'the Panel pill has no click handler')
+    click({ preventDefault() {} })
+    await sleep(20)
+    assert.equal(plugin.nobackdropTest.settings.get().videoWindow, false, 'Panel did not leave the watch window')
+    assert.equal(plugin.nobackdropTest.surface.get().placement, 'panel', 'the visualiser did not return to the panel')
+  } finally {
+    dispose()
+  }
+})
+
+await record('F2. radio stays up with no film, after close, and on the desktop — and nowhere with no surface', async () => {
+  const bucket = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: '', videoClosed: false
+  })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(40)
+    const panel = () => bucket.contributions.find(item => item.id === 'panel')
+    const played = await plugin.nobackdropTest.playAudioSource('https://ice.example/bare.mp3', 'Bare')
+    assert.equal(played, true)
+    await sleep(20)
+    let film = filmsIn(panel())
+    assert.equal(film.length, 1, 'Video mode with no film unmounted the audio carrier')
+    let view = iframeOf(film[0])
+    assert.match(view.props.src, /overlay=1/, 'the carrier is not the visualiser page (audio.js)')
+    assert.doesNotMatch(view.props.src, /player\.html/)
+    const carrier = adopt(view)
+    view.props.onLoad()
+    assert.ok(carrier.__sent.some(message => message.aura === 'audio' && message.cmd === 'play' &&
+      message.url === 'https://ice.example/bare.mp3'), 'the carrier did not start the radio')
+
+    // A film, then Close, must keep the carrier (Stop uses the same close).
+    plugin.nobackdropTest.settings.set({ ...plugin.nobackdropTest.settings.get(), videoUrl: FILM, videoClosed: false })
+    await plugin.nobackdropTest.poll()
+    film = filmsIn(panel())
+    assert.match(iframeOf(film[0]).props.src, /player\.html/, 'opening a film did not mount the player')
+    const player = adopt(iframeOf(film[0]))
+    iframeOf(film[0]).props.onLoad()
+    plugin.nobackdropTest.closeVideo()
+    film = filmsIn(panel())
+    assert.equal(film.length, 1, 'closing the film dropped the radio carrier')
+    view = iframeOf(film[0])
+    assert.match(view.props.src, /overlay=1/)
+    const afterClose = adopt(view)
+    view.props.onLoad()
+    assert.ok(afterClose.__sent.some(message => message.cmd === 'play'), 'close did not resume the radio')
+    assert.ok(player.__sent.some(message => message.cmd === 'stop'), 'the closed film kept a second stream')
+
+    plugin.nobackdropTest.settings.set({ ...plugin.nobackdropTest.settings.get(), videoUrl: FILM, videoClosed: false })
+    await plugin.nobackdropTest.poll()
+    film = filmsIn(panel())
+    const desktopView = iframeOf(film[0])
+    const beforeDesktop = adopt(desktopView)
+    desktopView.props.onLoad()
+    await plugin.nobackdropTest.setDesktopWindow(true)
+    film = filmsIn(panel())
+    assert.equal(film.length, 1, 'popping the film to the desktop dropped the radio')
+    view = iframeOf(film[0])
+    assert.match(view.props.src, /overlay=1/, 'the desktop hand-off left the player mounted in the panel')
+    const parked = adopt(view)
+    view.props.onLoad()
+    assert.ok(parked.__sent.some(message => message.cmd === 'play'), 'the desktop hand-off did not resume radio')
+    assert.ok(beforeDesktop.__sent.some(message => message.cmd === 'stop'), 'desktop pop-out left the in-app player streaming')
+    assert.equal(filmsIn(panel()).length, 1, 'two in-app frames were mounted')
+
+    plugin.nobackdropTest.setPanelEnabled(false)
+    plugin.nobackdropTest.live.set({ ...plugin.nobackdropTest.live.get(), error: '' })
+    await plugin.nobackdropTest.playAudioSource('https://ice.example/nowhere.mp3', 'Nowhere')
+    await sleep(20)
+    assert.equal(plugin.nobackdropTest.surface.get().placement, '', 'a frame mounted with no Aura surface')
+    assert.match(plugin.nobackdropTest.live.get().error, /Music needs Aura.s panel or page open/)
+    dispose()
+    assert.equal(plugin.nobackdropTest.audioFrame(), null, 'dispose left the previous radio frame registered')
+  } finally {
+    dispose()
+  }
+})
+
+await record('F3. Visualizer mode does not stretch an empty panel or show film hints', async () => {
+  const bucket = makeCtx({
+    enabled: true, backdropMode: 'aura', panelEnabled: true, videoUrl: FILM, videoClosed: true
+  })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(30)
+    const panel = bucket.contributions.find(item => item.id === 'panel')
+    const tree = nodesOf(panel)
+    const theatre = tree.find(node => node.props && node.props.ref && node.props.style && node.props.style.flex)
+    assert.equal(theatre.props.style.flex, '0 0 auto', 'the visualiser theatre still grows to fill the window')
+    const host = makeElement('div')
+    theatre.props.ref(host)
+    const root = domFind(host, node => node.attributes && node.attributes.id === 'aura-panel')
+    assert.equal(root.style.height, 'auto', 'the visualiser panel is stretched to the full pane')
+    const hint = domFind(host, node => node.className === 'ap-hint')
+    assert.ok(hint, 'the stage hint is missing')
+    assert.equal(hint.textContent, '', `Visualizer mode shows a film hint: ${hint.textContent}`)
+    const page = nodesOf(bucket.contributions.find(item => item.area === 'routes'))
+    const off = page.find(node => node.props && typeof node.props.children === 'string' && /Aura is off/.test(node.props.children))
+    assert.equal(off, undefined, 'Aura is on, so the page must not say it is off')
+    plugin.nobackdropTest.settings.set({ ...plugin.nobackdropTest.settings.get(), enabled: false })
+    plugin.nobackdropTest.live.set({ ...plugin.nobackdropTest.live.get(), ok: true, enabled: false })
+    const pageOff = nodesOf(bucket.contributions.find(item => item.area === 'routes'))
+    const offHint = pageOff.find(node => node.props && typeof node.props.children === 'string' && /Aura is off/.test(node.props.children))
+    assert.ok(offHint, 'Visualizer mode hides the Aura-is-off hint')
+  } finally {
+    dispose()
+  }
+})
+
+await record('F4. a hidden panel with no film surface does not float a dead control strip', async () => {
+  const bucket = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: false, videoWindow: false,
+    videoUrl: FILM, videoClosed: false
+  })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(40)
+    const floating = bucket.contributions.filter(item => item.removed !== true &&
+      (item.id === 'strip' || item.id === 'watch'))
+    assert.equal(floating.length, 0, `a control strip mounted with nothing to control (${floating.map(item => item.id).join(',')})`)
+    const route = bucket.contributions.find(item => item.area === 'routes')
+    const page = nodesOf(route)
+    const stage = page.find(node => node.props && typeof node.props.ref === 'function' && node.props.className === 'aura-stage')
+    assert.ok(stage, 'the page has no stage')
+    stage.props.ref({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 450 }) })
+    await plugin.nobackdropTest.poll()
+    const overPage = bucket.contributions.filter(item => item.removed !== true && item.id === 'strip')
+    assert.equal(overPage.length, 0, 'the control strip floats over the Aura page')
+  } finally {
+    dispose()
+  }
+})
+
+await record('F5. Only while active fades the in-pane visualiser, and Visual opacity still reaches it', async () => {
+  const bucket = makeCtx({
+    enabled: true, backdropMode: 'aura', panelEnabled: true, showWhen: 'active', opacity: 0.4
+  })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(40)
+    const panel = bucket.contributions.find(item => item.id === 'panel')
+    const film = filmsIn(panel)
+    assert.equal(film.length, 1, 'the visualiser is not in the panel')
+    const view = iframeOf(film[0])
+    const frame = adopt(view)
+    plugin.nobackdropTest.updateShow()
+    plugin.nobackdropTest.applyVideoOpacity()
+    assert.equal(frame.style.opacity, '0', 'an idle visualiser stayed fully visible under Only while active')
+    bucket.serverFrame.mood = 'thinking'
+    bucket.serverFrame.silence = false
+    bucket.serverFrame.level = 0.8
+    await plugin.nobackdropTest.poll()
+    const delay = bucket.timers.find(timer => timer.ms === 300 && timer.cleared !== true)
+    assert.ok(delay, 'activity did not schedule the show delay')
+    delay.fn()
+    const step = bucket.timers.filter(timer => timer.ms === 250 && timer.cleared !== true).pop()
+    assert.ok(step, 'the visualiser did not start fading back in')
+    step.fn()
+    assert.ok(Number(frame.style.opacity) > 0, 'the active visualiser stayed faded out')
+    const menu = nodesOf(bucket.contributions.find(item => item.id === 'quick-menu'))
+    const strength = byAria(menu, 'Visual strength')
+    assert.ok(strength, 'Visual strength was removed')
+    strength.props.onChange({ target: { value: '25' } })
+    await sleep(20)
+    assert.equal(plugin.nobackdropTest.settings.get().opacity, 0.25, 'Visual strength did not change opacity')
+    const page = fs.readFileSync(path.join(ROOT, 'web', 'aura.js'), 'utf8')
+    assert.match(page, /setOpacityUI\(clamp\(cfg\.opacity, 0, 1\)\)/,
+      'the visualiser page no longer applies Visual opacity')
+  } finally {
+    dispose()
+  }
+})
+
+await record('F7. README and the watch hint do not describe a backdrop behind the work', async () => {
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8')
+  const source = fs.readFileSync(PLUGIN, 'utf8')
+  assert.doesNotMatch(readme, /behind your work/)
+  assert.doesNotMatch(readme, /behind the interface/)
+  assert.doesNotMatch(readme, /Backdrop opacity that follows the room/)
+  assert.match(readme, /#155903/)
+  assert.doesNotMatch(source, /behind the chat/)
+  assert.match(source, /#155903/)
 })
 
 for (const line of results) console.log(line)

@@ -1384,21 +1384,12 @@ const stripButton = label => {
   const winsOverHostGlass = css => /html:root\[data-hermes-glass\][^{]*\{[^}]*background:[^}]*!important/.test(css || '')
   const imitatesFrost = css => /html:not\(\[data-hermes-glass\]\)[^{]*\{[^}]*background:[^}]*!important/.test(css || '')
   const frostSwitch = () => pageAria(renderDeep(renderContribution(bucket.contributions.find(c => c.area === 'settings.plugins'))), 'Frosted glass')
-  record('63. this build does not mount a full-window visual', () => {
+  record('48. this build paints no host glass and has no Frosted glass control', () => {
     assert.equal(hostIframes().length, 0, 'a visual was painted on the host page')
     assert.equal(glassCss(), null, 'a glass stylesheet was injected')
-  })
-  record('48. the host page gets no glass stylesheet', () => {
-    assert.equal(glassCss(), null, 'a glass stylesheet was injected')
     assert.equal(frostSwitch(), null, 'Frosted glass is still a setting')
-  })
-  await recordAsync('49. Frosted glass is not a setting in this build', async () => {
-    assert.equal(frostSwitch(), null, 'Frosted glass is still a setting')
-    assert.equal(glassCss(), null, 'frost injected a stylesheet')
-  })
-  await recordAsync('56. there is no frost control left to paint over the host', async () => {
-    assert.equal(frostSwitch(), null, 'Frosted glass is still a setting')
-    assert.equal(glassCss(), null, 'frost injected a stylesheet')
+    assert.equal(winsOverHostGlass(glassCss()), false)
+    assert.equal(imitatesFrost(glassCss()), false)
   })
   safeDispose('the frost scenario (R)', dispose)
 }
@@ -1410,10 +1401,13 @@ const stripButton = label => {
   const bucket = makeCtx(new Map([['settings', { enabled: true, backdropMode: 'aura', windowVisual: true, panelEnabled: false, frost: true }]]))
   const dispose = pluginModule.default.register(bucket.ctx)
   await tickPoll(bucket)
-  record('65. a stale saved frost default does not turn the frost look on (Linux keeps its look)', () => {
+  record('65. a stale saved frost value does not paint the host or restore the control', () => {
+  assert.ok(bucket.contributions.length > 0, 'a stale frost value stopped Aura from registering')
+    assert.equal(hostIframes().length, 0, 'a saved frost flag painted the host page')
     const style = headChildren.find(node => node.attributes && node.attributes.id === 'aura-glass')
-    const css = style ? String(style.textContent || '') : ''
-    assert.equal(/html:not\(\[data-hermes-glass\]\)/.test(css), false, 'an old saved default switched the frost look on')
+    assert.equal(style, undefined, 'a saved frost flag injected a glass stylesheet')
+    const page = renderDeep(renderContribution(bucket.contributions.find(c => c.area === 'settings.plugins')))
+    assert.equal(pageAria(page, 'Frosted glass'), null, 'a saved frost flag brought the control back')
   })
   safeDispose('the stale frost scenario (R2)', dispose)
 }
@@ -1460,7 +1454,10 @@ const stripButton = label => {
     assert.equal(pluginModule.wiringTest.video.get().playing, false, 'Stop left the film marked as playing')
     // Owner, 11-18: Stop must leave the film, not pause it on screen.
     assert.equal(scenario.bucket.storage.get('settings').videoClosed, true, 'Stop left the film open')
-    assert.equal((pluginModule.wiringTest.surface().placement || ''), '', 'Stop left a film surface on screen')
+    const surface = pluginModule.wiringTest.surface()
+    assert.equal(surface.placement, 'panel', 'Stop dropped the radio that was already playing')
+    assert.match(surface.src, /overlay=1/, 'Stop left the film player up instead of the radio carrier')
+    assert.doesNotMatch(surface.src, /player\.html/, 'Stop left the film player mounted')
   })
 
   record('53. the Aura page transport is as big as the panel’s, with Stop', () => {
@@ -2093,21 +2090,20 @@ await recordAsync('15. the floating controls card keeps its strip when the old c
   const dispose = pluginModule.default.register(g.ctx)
   await sleep(40)
   await tickPoll(g)
-  // Tray life: a film playing with the Right panel closed -> the strip lives in a floating card.
-  const pane = g.contributions.find(c => c.area === 'panes' && c.id !== 'watch' && c.id !== 'strip')
   const card = pageAria(pageTree(g), 'Play Sintel · Blender film')
   assert.ok(card, 'no starter film to play')
   card.props.onClick()
   await sleep(60)
   const quick = g.contributions.find(c => c.area === 'settings.plugins')
-  const panelSwitch = findByAria(renderDeep(renderContribution(quick)), 'Right panel')
-  if (panelSwitch && panelSwitch.props.checked) panelSwitch.props.onCheckedChange(false)
+  const watchSwitch = findByAria(renderContribution(quick), 'Watch window (settings)')
+  assert.ok(watchSwitch && typeof watchSwitch.props.onCheckedChange === 'function', 'no Watch window switch')
+  watchSwitch.props.onCheckedChange(true)
   await sleep(40)
   await tickPoll(g)
   const watch = watchPane(g)
-  assert.ok(watch, 'precondition: no floating controls card with the Right panel closed')
+  assert.ok(watch, 'precondition: the watch window did not open')
   assert.ok(videoBar(), 'precondition: the strip is not on screen')
-  assert.equal(watch.id, 'strip', 'the controls strip shares its card id with the watch window, so a collapsed strip makes pop-outs open collapsed')
+  assert.equal(watch.id, 'watch', 'the film strip is not inside the watch window')
 
   assert.equal(typeof watch.unmountCard, 'function', 'precondition: the test host cannot unmount the card on its own')
 
@@ -2139,13 +2135,14 @@ await recordAsync('16. a strip that floated on its own drops its screen position
   card.props.onClick()
   await sleep(60)
   const quick = g.contributions.find(c => c.area === 'settings.plugins')
-  const panelSwitch = findByAria(renderDeep(renderContribution(quick)), 'Right panel')
-  if (panelSwitch && panelSwitch.props.checked) panelSwitch.props.onCheckedChange(false)
+  const watchSwitch = findByAria(renderContribution(quick), 'Watch window (settings)')
+  assert.ok(watchSwitch && typeof watchSwitch.props.onCheckedChange === 'function', 'no Watch window switch')
+  watchSwitch.props.onCheckedChange(true)
   await sleep(40)
   await tickPoll(g)
   const watch = watchPane(g)
   const bar = videoBar()
-  assert.ok(watch && bar, 'precondition: no floating card with its strip')
+  assert.ok(watch && bar, 'precondition: the watch window has no strip')
   // The strip floated on its own for a moment (between two cards) and got a screen position.
   bar.style.left = '614px'
   bar.style.top = '398px'

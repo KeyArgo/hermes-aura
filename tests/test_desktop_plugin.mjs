@@ -1276,11 +1276,25 @@ const newestGlassCss = () => {
     assert.doesNotMatch(source, /data-aura-backdrop/, 'Aura still sets a backdrop attribute')
   })
 
-  record('D3. the in-pane iframe sandbox stays scripts, same-origin and presentation', () => {
-    assert.equal(hostIframes().length, 0, 'a body iframe was mounted')
-    assert.match(source, /sandbox: 'allow-scripts allow-same-origin allow-presentation'/)
-    assert.doesNotMatch(source, /allow-forms/)
-    assert.match(source, /allow: 'autoplay; fullscreen; encrypted-media; picture-in-picture'/)
+  await recordAsync('D3. the in-pane iframe sandbox stays scripts, same-origin and presentation', async () => {
+    const placed = makeCtx({
+      enabled: true, backdropMode: 'video', panelEnabled: true,
+      videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+    })
+    const stop = pluginModule.default.register(placed.ctx)
+    try {
+      placed.timers.find(t => t.ms === 250).fn()
+      await sleep(40)
+      const film = filmNodes(renderContribution(placed.contributions.find(c => c.id === 'panel')))
+      assert.equal(film.length, 1, 'the panel did not mount a film to check')
+      const element = renderContribution({ render: () => film[0] })
+      assert.equal(element.type, 'iframe', 'the panel film is not an iframe')
+      assert.equal(element.props.sandbox, 'allow-scripts allow-same-origin allow-presentation')
+      assert.equal(element.props.allow, 'autoplay; fullscreen; encrypted-media; picture-in-picture')
+      assert.equal(hostIframes().length, 0, 'the panel film was appended to the host body')
+    } finally {
+      stop()
+    }
   })
 
   await recordAsync('D4. with no Aura surface open, transport has no host frame to post into', async () => {
@@ -1484,29 +1498,6 @@ await recordAsync('review 3c: transport and audio posts reach the SandboxedFrame
   }
 }
 
-{
-  let divAppends = 0
-  const body = globalThis.document.body
-  const appendChild = body.appendChild
-  body.appendChild = function (node) {
-    if (node && node.tagName === 'DIV' && node.attributes && node.attributes.id !== 'aura-dev-stats') divAppends += 1
-    return appendChild.call(this, node)
-  }
-  const bucket = makeCtx({ enabled: true, backdropMode: 'aura', windowVisual: true, panelEnabled: false })
-  const dispose = pluginModule.default.register(bucket.ctx)
-  try {
-    await sleep(30)
-    record('D10. measuring the glass colours appends no probe element to the host body', () => {
-      assert.equal(glassStyles().length, 0, 'windowVisual mounted #aura-glass')
-      assert.equal(divAppends, 0, `Aura appended ${divAppends} probe element(s) to the host body`)
-      assert.equal(hostIframes().length, 0, 'windowVisual mounted a body iframe')
-    })
-  } finally {
-    body.appendChild = appendChild
-    dispose()
-  }
-}
-
 // ------------------------------------------------------------- scenario B
 
 sdk.themeState.name = 'nous'
@@ -1594,21 +1585,24 @@ await recordAsync('an aura-live theme with no known previous theme falls back to
 // glass is measured from the theme's colours, so it is re-measured instead.
 
 sdk.themeState.name = 'nous'
-const skin = makeCtx({ enabled: true, backdropMode: 'aura', windowVisual: true, panelEnabled: false })
+const skin = makeCtx({ enabled: true, backdropMode: 'aura', windowVisual: true, panelEnabled: true })
 const disposeSkin = pluginModule.default.register(skin.ctx)
 const probeSkin = skin.contributions.find(c => c.area === 'titleBar.center')
 
-await recordAsync('changing the app theme keeps "Visual behind the app" on', async () => {
-  renderContribution(probeSkin)          // first report: the user's theme
-  skin.timers.filter(t => t.ms === 250).forEach(t => t.fn())
-  await sleep(40)
-  assert.equal(skin.storage.get('settings').windowVisual, true, 'the visual was not on to begin with')
-  sdk.themeState.name = 'midnight'       // the user picks another skin
+await recordAsync('changing the app theme leaves the in-pane visualiser mounted and paints nothing on the host', async () => {
   renderContribution(probeSkin)
   skin.timers.filter(t => t.ms === 250).forEach(t => t.fn())
   await sleep(40)
-  assert.equal(skin.storage.get('settings').windowVisual, true,
-    'a theme change switched "Visual behind the app" off')
+  const before = filmNodes(renderContribution(skin.contributions.find(c => c.id === 'panel')))
+  assert.equal(before.length, 1, 'the visualiser was not in the panel before the theme change')
+  assert.match(before[0].props.src, /overlay=1/)
+  sdk.themeState.name = 'midnight'
+  renderContribution(probeSkin)
+  skin.timers.filter(t => t.ms === 250).forEach(t => t.fn())
+  await sleep(40)
+  const again = filmNodes(renderContribution(skin.contributions.find(c => c.id === 'panel')))
+  assert.equal(again.length, 1, 'a theme change unmounted the in-pane visualiser')
+  assert.match(again[0].props.src, /overlay=1/)
   assert.equal(hostIframes().length, 0, 'a theme change painted the host page')
   assert.equal(glassStyles().length, 0, 'a theme change mounted #aura-glass')
 })
@@ -2059,14 +2053,17 @@ const g = makeCtx({
 const disposeG = pluginModule.default.register(g.ctx)
 await sleep(40)
 
-await recordAsync('Only while active never mounts a host backdrop', async () => {
+await recordAsync('Only while active fades the in-pane visualiser and never the host page', async () => {
   assert.equal(hostIframes().length, 0, 'Show active mounted a body iframe')
   assert.equal(glassStyles().length, 0, 'Show active mounted #aura-glass')
-  assert.equal(
-    g.timers.some(t => t.kind === 'timeout' && (t.ms === 300 || t.ms === 2500) && !t.cleared),
-    false,
-    'Show active scheduled a backdrop fade'
-  )
+  const delay = g.timers.find(t => t.kind === 'timeout' && t.ms === 300 && !t.cleared)
+  if (delay) {
+    delay.fired = true
+    delay.fn()
+  }
+  await sleep(20)
+  assert.equal(hostIframes().length, 0, 'the in-pane fade mounted a body iframe')
+  assert.equal(glassStyles().length, 0, 'the in-pane fade mounted #aura-glass')
   await firePoll(g)
   assert.equal(hostIframes().length, 0, 'a poll mounted a body iframe')
   assert.equal(glassStyles().length, 0, 'a poll mounted #aura-glass')
@@ -2175,19 +2172,36 @@ const v = makeCtx({
   enabled: true,
   backdropMode: 'video',
   windowVisual: true,
-  // Tray-only life: no docked panel, so the floating strip is the surface.
+  // No panel, no page, no watch window, no desktop film: nothing for a strip to drive.
   panelEnabled: false,
   videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
 })
 pluginModule.default.register(v.ctx)
-// Drive one poll tick: the strip mounts from the poll, exactly like the app.
 v.timers.find(t => t.ms === 250).fn()
 await sleep(80)
 
-
-await recordAsync('video mode mounts the two-row control strip with grip, scrub and close', async () => {
+await recordAsync('video mode does not float a control strip when no film surface is open', async () => {
   const bar = [...bodyChildren, ...floatingNodes()].find(node => node.attributes && node.attributes.role === 'toolbar')
-  assert.ok(bar, 'the video control strip never mounted')
+  assert.equal(bar, undefined, 'a control strip mounted with no film to control')
+  assert.equal(v.contributions.find(c => c.id === 'strip' && c.removed !== true), undefined,
+    'the strip pane was registered with nothing to control')
+})
+
+const stripFilm = makeCtx({
+  enabled: true,
+  backdropMode: 'video',
+  windowVisual: true,
+  videoWindow: true,
+  panelEnabled: false,
+  videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+})
+pluginModule.default.register(stripFilm.ctx)
+stripFilm.timers.find(t => t.ms === 250).fn()
+await sleep(40)
+
+await recordAsync('the watch window still mounts the two-row control strip with grip, scrub and close', async () => {
+  const bar = [...bodyChildren, ...floatingNodes()].find(node => node.attributes && node.attributes.role === 'toolbar')
+  assert.ok(bar, 'the watch-window control strip never mounted')
   const nodes = []
   const collect = node => {
     for (const child of node.children || []) {
@@ -2204,21 +2218,21 @@ await recordAsync('video mode mounts the two-row control strip with grip, scrub 
     nodes.some(node => node.attributes && node.attributes.role === 'slider'),
     'scrub bar missing from the strip'
   )
-  // Two visible rows: the film line over a centred transport row. A third,
-  // "Send to", belongs to the watch window and stays hidden without one.
-  const visibleRows = bar.children.filter(row => row.style.display !== 'none')
-  assert.equal(visibleRows.length, 2, 'the strip is not drawn as two rows')
-  const transport = bar.children[1]
+  const transport = bar.children.find(row => (row.children || []).some(child => child.textContent === '▶' || child.textContent === '⏸'))
+  assert.ok(transport, 'the strip has no transport row')
   const transportText = (transport.children || []).map(child => child.textContent || '').join('')
-  for (const glyph of ['⏮', '⏪', '▶', '⏩', '⏭']) {
+  for (const glyph of ['⏮', '⏪', '⏩', '⏭']) {
     assert.ok(transportText.includes(glyph), `transport row is missing ${glyph}`)
   }
   assert.equal(transport.style.justifyContent, 'center', 'the transport row is not centred')
   assert.equal(bar.style.flexDirection, 'column', 'the strip is not stacked')
-  // It fills Aura's floating pane, which the host sizes at 340px (review 1).
   assert.equal(bar.style.width, '100%', 'the strip does not fill its floating pane')
-  const pane = v.contributions.find(c => c.id === 'strip')
-  assert.equal(pane && pane.data.width, '340px', 'the floating pane lost the half-width shape')
+  const pane = stripFilm.contributions.find(c => c.id === 'watch' && c.removed !== true)
+  assert.ok(pane, 'the watch window pane was not registered')
+  const width = parseFloat(pane.data.width)
+  const height = parseFloat(pane.data.height)
+  assert.ok(width >= 480, `the watch pane is ${pane.data.width}, not a stage`)
+  assert.equal(height - 30, Math.round(width * 9 / 16) + 96, 'the film stage is not 16:9 above its strip')
   assert.equal(bar.style.opacity, '1', 'the strip must start visible')
 })
 
@@ -2242,15 +2256,15 @@ function trayNodes(bar) {
   return nodes
 }
 
-record('review 1: the strip lives in an SDK floating pane, never on document.body', () => {
+record('review 1: the watch-window strip lives in an SDK floating pane, never on document.body', () => {
   const bar = trayBar()
-  assert.ok(bar, 'the video control strip never mounted')
+  assert.ok(bar, 'the watch-window control strip never mounted')
   assert.equal(bodyChildren.includes(bar), false, 'the strip was appended to document.body')
-  const pane = v.contributions.find(c => c.id === 'strip')
-  assert.ok(pane, 'no floating pane was registered for the strip')
-  assert.equal(pane.area, 'panes', 'the strip pane is not a PANES_AREA contribution')
-  assert.equal(pane.data.placement, 'floating', 'the strip pane is not floating')
-  assert.equal(pane.data.anchor, 'bottom-left', 'the strip should spawn bottom-left, clear of the composer')
+  const pane = stripFilm.contributions.find(c => c.id === 'watch' && c.removed !== true)
+  assert.ok(pane, 'no floating pane was registered for the watch window')
+  assert.equal(pane.area, 'panes', 'the watch pane is not a PANES_AREA contribution')
+  assert.equal(pane.data.placement, 'floating', 'the watch pane is not floating')
+  assert.equal(pane.data.anchor, 'top-right', 'the watch window should spawn top-right when the panel is closed')
   assert.ok(floatingNodes().includes(bar), 'the strip is not inside the floating pane')
 })
 
@@ -2261,7 +2275,7 @@ record('review 1: the host drags the floating pane, so the old grip is hidden an
   assert.equal(grip.style.display, 'none', 'the old grip still shows beside the host drag header')
   const down = (grip.__handlers.mousedown || [])[0]
   if (down) down({ clientX: 100, clientY: 100, preventDefault() {} })
-  assert.notEqual(v.storage.get('settings').videoWindow, true, 'the grip still converts the film into a watch window')
+  assert.equal(stripFilm.storage.get('settings').videoWindow, true, 'the grip closed the watch window')
   assert.equal(bodyChildren.includes(bar), false, 'a drag put the strip back on document.body')
 })
 
@@ -3089,7 +3103,7 @@ const s = makeCtx({
   intensity: 0.5,
   opacity: 0.4,
   reducedMotion: false,
-  panelEnabled: false,
+  panelEnabled: true,
   windowVisual: true,
   videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
 })
@@ -3122,20 +3136,24 @@ record('Settings hides the Aura-visual rows in video mode and offers the same sw
 })
 
 await recordAsync('a playing film is never faded out by "Only while active"', async () => {
-  s.timers.find(t => t.ms === 250).fn()
-  await sleep(60)
-  assert.equal(hostIframes().length, 0, 'Show active mounted a body iframe for the film')
   s.serverFrame.mood = 'idle'
   s.serverFrame.silence = true
   s.serverFrame.level = 0
   s.timers.find(t => t.ms === 250).fn()
-  await sleep(60)
+  await sleep(40)
+  const film = filmNodes(renderContribution(s.contributions.find(c => c.id === 'panel')))
+  assert.equal(film.length, 1, 'the playing film was not mounted, so the fade could not be observed')
+  const { frame } = mountFilm(film[0])
+  assert.ok(frame, 'the film frame did not mount')
+  s.timers.find(t => t.ms === 250).fn()
+  await sleep(20)
+  assert.equal(String(frame.style.opacity ?? '1'), '1', 'Only while active faded a playing film')
   assert.equal(
-    s.timers.some(t => t.kind === 'timeout' && t.ms === 2500 && !t.cleared && !t.fired),
+    s.timers.some(t => t.kind === 'timeout' && t.ms === 2500 && !t.cleared),
     false,
     'a fade-out timer was scheduled for a playing film'
   )
-  assert.equal(hostIframes().length, 0, 'a playing film was appended to the host page while idle')
+  assert.equal(hostIframes().length, 0, 'the film was appended to the host page')
   assert.equal(s.storage.get('settings').showWhen, 'active', 'the stored Show value changed')
 })
 
@@ -3423,7 +3441,7 @@ await recordAsync('a click on Aura\'s video strip hands focus back with host.com
   // The SDK's own verb addresses the current surface, so the chat gets its
   // keyboard back without Aura touching app markup.
   const scenario = makeCtx({ enabled: true, backdropMode: 'video', windowVisual: true,
-    panelEnabled: false, videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
+    panelEnabled: false, videoWindow: true, videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
   const dispose = pluginModule.default.register(scenario.ctx)
   try {
     scenario.timers.find(timer => timer.ms === 250).fn()

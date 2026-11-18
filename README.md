@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/hero.svg" alt="Aura — a film behind your work, and an app that breathes with your audio" width="100%">
+  <img src="assets/hero.svg" alt="Aura — a film in the pane, and an app that breathes with your audio" width="100%">
 </p>
 
 <p align="center">
@@ -21,14 +21,15 @@
   <img alt="capture: system loopback, never the microphone" src="https://img.shields.io/badge/capture-system%20loopback%2C%20not%20mic-e11d48?style=flat-square">
 </p>
 
-<h3 align="center">A film behind your work, and an app that breathes with your audio.</h3>
+<h3 align="center">A film beside your work, and an app that breathes with your audio.</h3>
 
 <p align="center"><i>Applies to v1.0.0 · revised 2026-11-11 · <a href="VERIFY.md">what was verified, and how</a></i></p>
 
 Aura turns Hermes Desktop into a room you can live in. Put any film, lecture or playlist in the
 right-hand pane and keep working; switch the film off and the same audio drives a MilkDrop-compatible
-visualiser behind the interface. It listens to what the machine is already playing — system loopback,
-never the microphone — and nothing leaves the computer: no account, no uploads, no recording.
+visualiser in that pane, on the Aura page, or in the watch window. The full-window visual returns
+when Hermes ships a backdrop area (#155903). It listens to what the machine is already playing —
+system loopback, never the microphone — and nothing leaves the computer: no account, no uploads, no recording.
 
 > Aura is not a music-service integration. It needs no Spotify, no YouTube Music and no account of any
 > kind. If the speakers are making a sound, Aura can see it.
@@ -162,7 +163,8 @@ also exposes the same search as `GET /api/plugins/aura/search?q=…&limit=…`.
 <p align="center"><img src="assets/audio-path.svg" alt="Audio path: system loopback, capture thread, /api/stream, Butterchurn, the screen" width="100%"></p>
 
 - A MilkDrop-compatible WebGL visualiser driven by system audio — level, bands, silence gating.
-- Backdrop opacity that follows the room: dim when quiet, brighter with music, with manual presets.
+  It lives in the Right panel, the Aura page, or the watch window. The full-window visual returns
+  when Hermes ships a backdrop area (#155903).
 - An optional accent that follows the audio, and agent moods: thinking, running tools, waiting for
   approval, erroring, streaming, finished — each restores itself, nothing latches.
 

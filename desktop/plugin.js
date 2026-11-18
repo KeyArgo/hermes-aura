@@ -730,15 +730,55 @@ function backdropSrc(url) {
   return `${url}${separator}${params.join('&')}`
 }
 
+/** The visualiser page (web/index.html). It draws the visual and, via audio.js,
+ *  it is also the radio carrier when no film frame is placed. */
+function visualiserSrc(url) {
+  const settings = $settings.get()
+  const params = ['overlay=1']
+  if (settings.reducedMotion) params.push('reduced-motion=1')
+  const separator = url.indexOf('?') === -1 ? '?' : '&'
+  return `${url}${separator}${params.join('&')}`
+}
+
+/** A film is actually on an Aura surface (not closed, not handed to the OS window). */
+function filmOpen() {
+  const settings = $settings.get()
+  if (settings.backdropMode !== 'video') return false
+  if (settings.videoClosed || !String(settings.videoUrl || '').trim()) return false
+  if (desktopOwned || desktopPending) return false
+  return true
+}
+
+/** Video mode with the radio on and no film frame: the visualiser page stays
+ *  mounted only to carry audio.js. It is not the picture. */
+function audioCarrierActive() {
+  const settings = $settings.get()
+  return settings.backdropMode === 'video' && !filmOpen() && Boolean(settings.audioUrl)
+}
+
+/** Right panel, Aura page, or watch window — somewhere the carrier can live. */
+function auraSurfaceOpen() {
+  const settings = $settings.get()
+  const live = $live.get()
+  const enabled = live.ok ? live.enabled === true : settings.enabled
+  if (!doc || !enabled) return false
+  if (settings.videoWindow === true && !desktopOwned && !desktopPending) return true
+  if (pageStageEl) return true
+  return panelVisible()
+}
+
 /** The URL for the surface Aura owns: the visualiser page in Visualizer mode,
- *  the player page when a film is open. Same address the old backdrop used
- *  (token, port, overlay, resume). Empty when there is nothing to draw. */
+ *  the player page when a film is open, or the visualiser page again as a
+ *  hidden carrier when the radio is on and no film frame is placed. Empty
+ *  when there is nothing to draw. */
 function surfaceSrc() {
   const settings = $settings.get()
   const url = liveUrl()
   if (!url) return ''
-  if (settings.backdropMode === 'video' && (settings.videoClosed || !settings.videoUrl)) return ''
-  return backdropSrc(url)
+  if (filmOpen()) return backdropSrc(url)
+  if (settings.backdropMode !== 'video') return visualiserSrc(url)
+  if (settings.audioUrl && auraSurfaceOpen()) return visualiserSrc(url)
+  return ''
 }
 
 /** Which of Aura's own surfaces holds the visualiser or the film: 'window',
@@ -750,13 +790,12 @@ function filmPlacement() {
   // Off is off: the pane, the page and the watch window go with Aura.
   const enabled = live.ok ? live.enabled === true : settings.enabled
   if (!enabled) return ''
-  if (desktopOwned || desktopPending) {
-    // The OS window owns the film. The visualiser still belongs in Aura's panel.
-    if (settings.backdropMode === 'video') return ''
+  if ((desktopOwned || desktopPending) && settings.backdropMode === 'video' && !settings.audioUrl) {
+    // The OS window owns the film, and there is no radio to keep in-app.
+    return ''
   }
-  if (videoWindowOn()) return 'window'
-  // Visualiser uses the same watch window when that window is open.
-  if (settings.backdropMode === 'aura' && settings.videoWindow === true) return 'window'
+  // The visualiser uses the same watch window as the film.
+  if (watchWindowOpen()) return 'window'
   if (pageVisible()) return 'page'
   if (filmInPanel()) return 'panel'
   return ''
@@ -996,10 +1035,22 @@ function effectiveVideoOpacity() {
   return autoVideoOpacity()
 }
 
-/** In-pane frames are windows, not washes: full strength. */
+/** In-pane frames are windows, not washes. A film stays at full strength.
+ *  "Only while active" fades the visualiser frame; Visual opacity is applied
+ *  inside that page (web/aura.js reads the server's opacity). The radio
+ *  carrier is kept invisible so it can play without covering the video UI. */
 function applyVideoOpacity() {
   const placement = $filmSurface.get().placement
-  if (placement && filmFrame && filmFrame.style) filmFrame.style.opacity = '1'
+  if (!placement || !filmFrame || !filmFrame.style) return
+  if (audioCarrierActive()) {
+    filmFrame.style.opacity = '0'
+    return
+  }
+  if ($settings.get().backdropMode === 'video' || $settings.get().showWhen !== 'active') {
+    filmFrame.style.opacity = '1'
+    return
+  }
+  filmFrame.style.opacity = String(clamp01(showOpacity))
 }
 
 /** Keep the in-pane surface (visualiser or film) in sync with mode and placement.
@@ -1013,9 +1064,85 @@ function removeBackdrop() {
   refreshFilmSurface()
 }
 
-/** The full-window fade left with the body backdrop. The stored Show choice
- *  stays so it can return with the SDK backdrop area (#155903). */
-function updateShow() {}
+/** "Show: Only while active" fades the in-pane visualiser the way it used to
+ *  fade the full-window backdrop. A film is never faded. The stored choice
+ *  still returns with the SDK backdrop area (#155903). */
+function updateShow() {
+  if (disposed) return
+  const settings = $settings.get()
+  const live = $live.get()
+  const enabled = live.ok ? live.enabled === true : settings.enabled
+  const fade = enabled && settings.backdropMode === 'aura' && settings.showWhen === 'active'
+  if (!fade) {
+    cancelShowTimers()
+    showVisible = true
+    showOpacity = 1
+    showTarget = 1
+    applyVideoOpacity()
+    return
+  }
+  if (visualIsMoving()) {
+    if (showIdleTimer) { clearShowTimer(showIdleTimer); showIdleTimer = null }
+    if (showVisible) {
+      if (showTarget !== 1) rampShow(1)
+      return
+    }
+    if (showDelayTimer) return
+    const epoch = showEpoch
+    showDelayTimer = setShowTimer(() => {
+      showDelayTimer = null
+      if (epoch !== showEpoch || disposed || !visualIsMoving()) return
+      showVisible = true
+      rampShow(1)
+    }, SHOW_FADE_IN_DELAY_MS)
+    return
+  }
+  if (showDelayTimer) { clearShowTimer(showDelayTimer); showDelayTimer = null }
+  if (!showVisible) {
+    showOpacity = 0
+    showTarget = 0
+    applyVideoOpacity()
+    return
+  }
+  if (showIdleTimer) return
+  const epoch = showEpoch
+  showIdleTimer = setShowTimer(() => {
+    showIdleTimer = null
+    if (epoch !== showEpoch || disposed || visualIsMoving()) return
+    rampShow(0)
+  }, SHOW_FADE_OUT_IDLE_MS)
+}
+
+/** Step the visualiser frame toward shown (1) or hidden (0). */
+function rampShow(target) {
+  const next = target ? 1 : 0
+  if (showRampTimer && showTarget === next) return
+  showTarget = next
+  if (Math.abs(showOpacity - next) < 0.02) {
+    showOpacity = next
+    if (next === 0) showVisible = false
+    if (showRampTimer) { clearShowTimer(showRampTimer); showRampTimer = null }
+    applyVideoOpacity()
+    return
+  }
+  const reduced = $settings.get().reducedMotion === true
+  const step = reduced ? SHOW_FADE_REDUCED_MS : SHOW_FADE_STEP_MS
+  const steps = Math.max(1, Math.round((reduced ? SHOW_FADE_REDUCED_MS : SHOW_FADE_MS) / step))
+  showRampDelta = (next - showOpacity) / steps
+  showRampLeft = steps
+  if (showRampTimer) { clearShowTimer(showRampTimer); showRampTimer = null }
+  const epoch = showEpoch
+  const tick = () => {
+    showRampTimer = null
+    if (epoch !== showEpoch || disposed) return
+    showRampLeft -= 1
+    showOpacity = showRampLeft <= 0 ? showTarget : clamp01(showOpacity + showRampDelta)
+    if (showOpacity === 0) showVisible = false
+    applyVideoOpacity()
+    if (showRampLeft > 0 && showOpacity !== showTarget) showRampTimer = setShowTimer(tick, step)
+  }
+  showRampTimer = setShowTimer(tick, step)
+}
 
 // ------------------------------------------------------------- server control
 
@@ -1152,7 +1279,8 @@ let handoffPlayback = null
 /** The page's pop-out control doubles as "bring it back" while the film is
  *  out — in the small in-app frame or in a real OS window. */
 function popoutBackLabel() {
-  return videoWindowOn() || desktopOwned || desktopPending ? 'Bring back' : 'Pop out'
+  const popped = $settings.get().videoWindow === true || desktopOwned || desktopPending
+  return popped ? 'Bring back' : 'Pop out'
 }
 
 /** Which surface a pop-out gets: the OS window when the host can give one and
@@ -1193,8 +1321,11 @@ async function setDesktopWindow(on) {
       if (popoutSurface(true, result.open === true) === 'desktop') {
         if (!desktopOwned) lastDesktopPlayer = previousPlayer
         desktopOwned = true
-        // The window owns the picture now; park the in-app one.
+        // The window owns the picture now; park the in-app watch window.
+        // Radio stays on whichever Aura surface is still open.
         if (videoWindowOn()) setVideoWindow(false)
+        else applyBackdropLayout()
+        syncVideoBar(true)
         return
       }
     }
@@ -1689,9 +1820,13 @@ async function setShowWhen(next) {
   const showWhen = SHOW_WHEN_OPTIONS.includes(next) ? next : 'always'
   writeSettings({ showWhen })
   resetShow()
-  removeBackdrop()
-  if (showWhen === 'always') syncBackdrop()
-  else updateShow()
+  if (showWhen === 'always') {
+    showVisible = true
+    showOpacity = 1
+    showTarget = 1
+  }
+  updateShow()
+  applyVideoOpacity()
   await pushControl({ show_when: showWhen })
 }
 
@@ -1839,7 +1974,7 @@ function setVideoVolume(value) {
   syncVideoBar(true)
 }
 
-/** Switch between the film behind the app and the film in its own frame. */
+/** Open or close the in-app watch window. */
 function setVideoWindow(on) {
   if (!ctxRef || disposed) return
   writeSettings({ videoWindow: Boolean(on) })
@@ -2658,14 +2793,15 @@ function attachVideoBar() {
   }
 }
 
-/** The floating pane's size: the strip alone, or the watch window's film over it. */
+/** The floating pane's size: the strip alone, or a 16:9 stage (film or visualiser). */
 function stripPaneSize() {
-  if (videoWindowOn()) {
-    // Film + strip + the host's header must fit the window below its title bar
-    // (34px) with the host's 12px margins, or a Huge window runs off a short screen.
+  if (watchWindowOpen() && !audioCarrierActive()) {
+    // Stage + (film strip, when there is one) + the host's header must fit the
+    // window below its title bar (34px) with the host's 12px margins.
     const view = doc && doc.defaultView
     const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
-    const chrome = VIDEO_BAR_HEIGHT + FLOATING_HEADER
+    const strip = videoWindowOn() ? VIDEO_BAR_HEIGHT : 0
+    const chrome = strip + FLOATING_HEADER
     const room = Math.max(120, vh - 34 - 24 - chrome)
     const width = Math.min(videoWindowWidth(), Math.floor(room * 16 / 9))
     return { width, height: Math.round(width * 9 / 16) + chrome }
@@ -2884,10 +3020,18 @@ function beginStripDrag(event) {
 // The watch window: the visualiser or the film in Aura's own floating pane,
 // one iframe, so there is one audio source.
 
-/** Is the film in the watch window (video mode only)? */
+/** The watch window is open for the visualiser or the film, and the OS window
+ *  has not taken the picture. */
+function watchWindowOpen() {
+  const settings = $settings.get()
+  return settings.videoWindow === true && !desktopOwned && !desktopPending
+}
+
+/** Is the film in the watch window (video mode only)? The visualiser uses
+ *  watchWindowOpen() so it gets the same stage without the film's transport. */
 function videoWindowOn() {
   const settings = $settings.get()
-  return settings.backdropMode === 'video' && settings.videoWindow === true
+  return settings.backdropMode === 'video' && watchWindowOpen()
 }
 
 function videoWindowWidth() {
@@ -2939,6 +3083,22 @@ function applyFilmFrameLayout() {
   if (!el || !el.style) return
   const placement = $filmSurface.get().placement
   const style = el.style
+  if (audioCarrierActive()) {
+    // Present enough to load audio.js and play, hidden behind the video UI.
+    style.position = 'absolute'
+    style.inset = 'auto'
+    style.left = '0'
+    style.top = '0'
+    style.width = '2px'
+    style.height = '2px'
+    style.opacity = '0'
+    style.visibility = 'visible'
+    style.pointerEvents = 'none'
+    style.zIndex = '0'
+    style.border = '0'
+    style.overflow = 'hidden'
+    return
+  }
   if (placement === 'page') {
     // Rendered inside the page's stage; fill it and let the stage clip corners.
     style.position = 'absolute'
@@ -3088,13 +3248,18 @@ function videoBarActive() {
   const live = $live.get()
   const enabled = live.ok ? live.enabled === true : settings.enabled
   if (!doc || !enabled || settings.backdropMode !== 'video' || !settings.videoUrl || settings.videoClosed) return false
+  // No film surface means every button would post to nothing.
+  const filmSurface = videoWindowOn() || desktopOwned || desktopPending || filmOpen()
+  if (!filmSurface) return false
   // The watch window always carries its own strip: without it there is no way
-  // to move it (a "controls off" switch left it stranded with no move bar).
+  // to move the film (a "controls off" switch left it stranded).
   if (videoWindowOn()) return true
-  // Otherwise the open docked panel owns the controls; the strip is for the
-  // tray-only life.
+  // The open page and the open panel each have their own transport.
+  if (pageVisible()) return false
   if (panelVisible() && settings.panelCollapsed !== true) return false
-  return true
+  // Collapsed panel, or the desktop window with the panel put away: the strip
+  // is the remote, and a film exists for it to drive.
+  return desktopOwned || desktopPending || (panelVisible() && settings.panelCollapsed === true)
 }
 
 /** The Right panel's left edge while it is open (else the viewport's right
@@ -3304,7 +3469,7 @@ function mountVideoBar() {
     setVideoVolume(current > 0 ? 0 : (VIDEO_VOLUME || 0.7))
   })
 
-  // Watch window: the film in its own frame instead of behind the app.
+  // Watch window: the film in its own floating frame.
   const windowBtn = videoBarButton('⧉', 'Watch window', 'noop')
   Object.assign(windowBtn.style, { width: 'auto', padding: '0 6px', fontSize: '12px' })
   windowBtn.addEventListener('click', () => { void toggleDesktopWindow() })
@@ -3380,7 +3545,7 @@ function mountVideoBar() {
     transportRow.appendChild(node)
   }
   // Where the film goes next, while it is in the watch window: back into the
-  // Right panel, behind the chat, or out of Hermes into its own OS window.
+  // Right panel, or out of Hermes into its own OS window.
   const sendRow = doc.createElement('div')
   Object.assign(sendRow.style, {
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px',
@@ -4138,14 +4303,14 @@ function mountPanelInto(hostNode) {
     pressPower()
   })
 
-  // Hide the panel, not Aura: the visual and a film behind the window keep
-  // running. The status-bar menu and Ctrl+Shift+H bring it back.
+  // Hide the panel. The film stays only where another Aura surface has it.
+  // The status-bar menu and Ctrl+Shift+H bring the panel back.
   const hidePanel = doc.createElement('button')
   hidePanel.type = 'button'
   hidePanel.className = 'ap-hide'
   hidePanel.textContent = '⇥'
   hidePanel.setAttribute('aria-label', 'Hide the Right panel')
-  hidePanel.title = 'Hide the Right panel (Aura keeps running). Bring it back from the Aura menu or with Ctrl+Shift+H.'
+  hidePanel.title = 'Hide the Right panel. Bring it back from the Aura menu or with Ctrl+Shift+H.'
   hidePanel.addEventListener('click', event => {
     if (event && event.preventDefault) event.preventDefault()
     setPanelEnabled(false)
@@ -4384,7 +4549,6 @@ function mountPanelInto(hostNode) {
   toolsRow.appendChild(jump)
   toolsRow.appendChild(closeFilm)
 
-  settingsBox.appendChild(watchInRow)
   settingsBox.appendChild(sourceRow)
   settingsBox.appendChild(linkRow)
   settingsBox.appendChild(toolsRow)
@@ -4399,6 +4563,9 @@ function mountPanelInto(hostNode) {
 
   panel.appendChild(head)
   panel.appendChild(stage)
+  // Watch in sits outside the film body so Visualizer mode can hide that body
+  // and still offer a way to bring the visualiser back from the watch window.
+  panel.appendChild(watchInRow)
   panel.appendChild(body)
   // Clicks on Aura's own panel return the caret to the chat; text fields are
   // excluded so the URL box can still be typed in.
@@ -4409,7 +4576,8 @@ function mountPanelInto(hostNode) {
   panelEl = panel
   panelParts = {
     panel, body, stage, hint, track, fill, time, play, list, vol,
-    power, modeButtons, watch, source,
+    power, modeButtons, watch, source, controls,
+    sourceRow, linkRow, toolsRow, watchInRow,
     watchInPills, closeFilm, manage, hideEpisode: hide
   }
   syncPanel(true)
@@ -4470,10 +4638,14 @@ function syncPanel(force) {
     const display = shown ? '' : 'none'
     if (node && node.style.display !== display) node.style.display = display
   }
+  // The film body (transport, sources, shelf) is video-only. Watch in stays
+  // outside it, in both modes, so a popped-out visualiser can come back.
   setDisplay(parts.body, videoMode)
-  // Visualiser and film share the stage.
+  setDisplay(parts.watchInRow, true)
+  // Visualiser and film share the stage. Visualizer mode sizes to that stage
+  // so the pane does not grow an empty box under it.
   setDisplay(parts.stage, videoMode || visual)
-  const panelHeight = videoMode || visual ? '' : 'auto'
+  const panelHeight = videoMode ? '' : 'auto'
   if (parts.panel && parts.panel.style.height !== panelHeight) parts.panel.style.height = panelHeight
   const place = currentFilmPlace()
   for (const [value, pill] of parts.watchInPills || []) {
@@ -4554,13 +4726,17 @@ function syncPanel(force) {
   if (!parts.track || parts.track.getAttribute('data-dragging') !== 'true') {
     parts.fill.style.width = `${(progress * 100).toFixed(2)}%`
   }
-  const baseHint = settings.videoClosed
-    ? 'Film closed — press Open video in the A menu'
-    : !settings.videoUrl
-      ? 'No source chosen yet'
-      : (state.blocked
-        ? 'This video (or the first one in the playlist) cannot be embedded. Remove it from the playlist, or paste a link to a different episode.'
-        : '')
+  const baseHint = !auraOn
+    ? 'Aura is off. Turn it on from the header.'
+    : !videoMode
+      ? (place === 'window' ? 'In the watch window. Choose Panel under Watch in to bring it back.' : '')
+      : settings.videoClosed
+        ? 'Film closed — press Open video in the A menu'
+        : !settings.videoUrl
+          ? 'No source chosen yet'
+          : (state.blocked
+            ? 'This video (or the first one in the playlist) cannot be embedded. Remove it from the playlist, or paste a link to a different episode.'
+            : '')
   if (!baseHint && paneNote && Date.now() < paneNoteUntil) {
     parts.hint.textContent = paneNote
     parts.hint.setAttribute('data-note', 'true')
@@ -4707,9 +4883,14 @@ function AuraPane() {
   const theatre = jsx('div', {
     key: 'theatre',
     ref: panelHostRef,
-    // Drawer closed: the theatre shrinks to fit so the "Aura settings" toggle
-    // stays on screen. Open: it keeps its full height and the column scrolls.
-    style: { minHeight: 0, flex: '1 1 auto', display: 'flex', flexDirection: 'column' }
+    // Video mode fills the pane so the shelf can scroll inside it. Visualizer
+    // mode sizes to the stage: a flex-grow theatre left a tall empty box
+    // between the stage and the visualiser controls.
+    style: {
+      minHeight: 0,
+      flex: settings.backdropMode === 'video' ? '1 1 auto' : '0 0 auto',
+      display: 'flex', flexDirection: 'column'
+    }
   })
   // The pane is the remote you use while watching. The full settings list lives
   // on the Settings page; the pane links there instead of embedding a second,
@@ -5453,7 +5634,7 @@ function visualControlRows(settings, ui) {
           jsx('option', { key: name, value: name, children: SHOW_WHEN_LABELS[name] })
         )
       }),
-      'When the visual appears: always, or only while there is activity.'
+          'Always, or only while there is activity. Idle fades this pane.'
     )
   ]
 }
@@ -5528,7 +5709,7 @@ function AuraQuickMenu() {
 
   const glyphColor = auraOn ? 'var(--ui-accent)' : 'var(--ui-text-tertiary)'
   // In the Right panel the film is always at full strength; strength only acts
-  // on a film behind the chat.
+  // on a film. The visualiser's own opacity is the Visual strength slider.
 
   return jsxs(Popover, {
     open,
@@ -5675,6 +5856,46 @@ function AuraQuickMenu() {
             }),
             'Show the Aura panel on the right: the film, its controls and your shelf.'
           ),
+          // Same places for the visualiser and the film, so a popped-out visual
+          // can be sent back to the panel from here.
+          row(
+            'Watch in',
+            jsxs('div', {
+              style: { display: 'flex', alignItems: 'center', gap: 2 },
+              children: FILM_PLACES.map(([place, label, aria]) =>
+                jsx(Button, {
+                  key: place,
+                  size: 'micro',
+                  variant: currentFilmPlace() === place ? 'default' : 'ghost',
+                  'aria-label': `${aria} (quick menu)`,
+                  style: presetStyle,
+                  onClick: () => moveFilmTo(place),
+                  children: label
+                })
+              )
+            }),
+            'Where it plays: the Right panel, a small watch window, or your desktop.'
+          ),
+          currentFilmPlace() === 'window'
+            ? row(
+              'Window size',
+              jsxs('div', {
+                style: { display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', justifyContent: 'flex-end' },
+                children: Object.keys(VIDEO_WINDOW_SIZES).map(size =>
+                  jsx(Button, {
+                    key: size,
+                    size: 'micro',
+                    variant: settings.videoWindowSize === size ? 'default' : 'ghost',
+                    'aria-label': `Watch window size: ${VIDEO_WINDOW_SIZE_LABELS[size]}`,
+                    style: presetStyle,
+                    onClick: () => setVideoWindowSize(size),
+                    children: VIDEO_WINDOW_SIZE_LABELS[size]
+                  })
+                )
+              }),
+              'How big the watch window is.'
+            )
+            : null,
           settings.backdropMode === 'video' ? null : section('visual', 'Visual'),
           settings.backdropMode === 'video'
             ? null
@@ -5770,47 +5991,6 @@ function AuraQuickMenu() {
                       children: 'Edit sources…'
                     })
                   })
-                  : null,
-                // Where the film plays: in the Right panel, or behind the chat
-                // with the panel (if open) as its remote.
-                row(
-                  'Watch in',
-                  jsxs('div', {
-                    style: { display: 'flex', alignItems: 'center', gap: 2 },
-                    children: FILM_PLACES.map(([place, label, aria]) =>
-                      jsx(Button, {
-                        key: place,
-                        size: 'micro',
-                        variant: currentFilmPlace() === place ? 'default' : 'ghost',
-                        'aria-label': `${aria} (quick menu)`,
-                        style: presetStyle,
-                        onClick: () => moveFilmTo(place),
-                        children: label
-                      })
-                    )
-                  }),
-                  'Where the film plays: the Right panel, behind the chat, a small watch window, or your desktop.'
-                ),
-                // Window = the small frame inside Hermes; its size lives here.
-                currentFilmPlace() === 'window'
-                  ? row(
-                    'Window size',
-                    jsxs('div', {
-                      style: { display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', justifyContent: 'flex-end' },
-                      children: Object.keys(VIDEO_WINDOW_SIZES).map(size =>
-                        jsx(Button, {
-                          key: size,
-                          size: 'micro',
-                          variant: settings.videoWindowSize === size ? 'default' : 'ghost',
-                          'aria-label': `Watch window size: ${VIDEO_WINDOW_SIZE_LABELS[size]}`,
-                          style: presetStyle,
-                          onClick: () => setVideoWindowSize(size),
-                          children: VIDEO_WINDOW_SIZE_LABELS[size]
-                        })
-                      )
-                    }),
-                    'How big the small watch window is.'
-                  )
                   : null,
                 row(
                   'Video URL',
@@ -6037,7 +6217,7 @@ let pageStageEl = null
 /** Is the Aura page on screen with a stage to put the film in? A popped-out
  *  film (the watch window) wins: Pop out on the page must pop it out now. */
 function pageVisible() {
-  return Boolean(doc && pageStageEl && !videoWindowOn())
+  return Boolean(doc && pageStageEl && !watchWindowOpen())
 }
 
 /** The rect the film should occupy on the page, or null. */
@@ -6566,15 +6746,17 @@ function AuraPage() {
   }, [])
   const duration = Number(state.duration) || 0
   const progress = duration ? clamp01((Number(state.position) || 0) / duration) : 0
-  const hint = settings.backdropMode === 'aura'
-    ? ''
-    : !auraOn
+  const hint = !auraOn
     ? 'Aura is off. Turn it on in the setup below to watch here.'
-    : settings.videoClosed
-      ? 'Film closed — press Open video below.'
-      : !settings.videoUrl
-        ? 'No film yet. Paste a link below, or pick one of the sources.'
-        : videoWindowOn()
+    : settings.backdropMode === 'aura'
+      ? (settings.videoWindow === true
+        ? 'The visualiser is in the watch window. Press Bring back to show it here.'
+        : '')
+      : settings.videoClosed
+        ? 'Film closed — press Open video below.'
+        : !settings.videoUrl
+          ? 'No film yet. Paste a link below, or pick one of the sources.'
+          : watchWindowOpen()
             ? 'Playing in the watch window (the small frame in Hermes). Press Bring back to watch it here.'
             : state.blocked
               ? 'This video cannot be embedded. Paste a different link, or pick another source.'
@@ -6755,7 +6937,7 @@ function AuraPage() {
         key: 'copy',
         style: { display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 },
         children: [
-          jsx('div', { key: 'eyebrow', className: 'aura-eyebrow', children: 'Aura · living backdrop' }),
+          jsx('div', { key: 'eyebrow', className: 'aura-eyebrow', children: 'Aura · pane, page, and watch window' }),
           jsx('h1', { key: 'title', className: 'aura-title', children: 'Everything Aura can be' }),
           jsx('p', {
             key: 'sub',
@@ -7269,6 +7451,26 @@ function AuraSettings(props) {
             )
           })
         )
+      }),
+      jsx('div', {
+        key: 'watch-in',
+        children: row(
+          'Watch in',
+          'The Right panel, the watch window, or a desktop window. The same control the film uses.',
+          jsxs('div', {
+            style: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' },
+            children: FILM_PLACES.map(([place, label, aria]) =>
+              jsx(Button, {
+                key: place,
+                size: 'sm',
+                variant: currentFilmPlace() === place ? 'default' : 'outline',
+                'aria-label': `${aria} (settings)`,
+                onClick: () => moveFilmTo(place),
+                children: label
+              })
+            )
+          })
+        )
       })
           ]
         }),
@@ -7655,6 +7857,7 @@ function teardown() {
   // [listen lane] Stop the audio channel before its document goes away, so a
   // disable or hot reload never leaves music playing with no Aura on screen.
   audioCommand({ cmd: 'stop' })
+  audioFrame = null
   removeBackdrop()
   filmFrame = null
   $filmSurface.set({ placement: '', src: '' })
@@ -7747,6 +7950,7 @@ export default {
     $pulse.set(0)
     $filmSurface.set({ placement: '', src: '' })
     filmFrame = null
+    audioFrame = null
     pulseIndex = 0
     resetShow()
     closeDevStats()
