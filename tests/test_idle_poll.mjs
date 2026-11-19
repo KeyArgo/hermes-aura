@@ -13,14 +13,21 @@
  *   b. hidden window and idle: 30 s makes at most 3 /status calls,
  *   c. Aura on (or a film playing): 2 s keeps the fast cadence (>= 6 /status),
  *   d. an idle Aura that the user switches on answers within 300 ms,
- *   e. pointer moves over the app (a document-wide listener) do not wake it.
+ *   e. pointer moves over the app (a document-wide listener) do not wake it,
+ *   f. a placed panel surface with Aura off is not busy (10 s -> <= 4 /status),
+ *   g. Aura on, surface placed, window hidden and nothing playing: 30 s -> <= 3,
+ *   h. Aura on, surface placed, window visible: 2 s -> >= 6 (stays fast),
+ *   i. radio playing with the window hidden: 2 s -> >= 6 (stays fast).
  *
- * (a), (b) and (d) fail on the commit before the fix — they are the CPU bill.
- * (c) is the anti-regression guard: the visualiser must not get slower.
+ * (a), (b), (d), (f) and (g) fail on the commit before the fix — they are the
+ * CPU bill. (c), (h) and (i) are the anti-regression guards: a live surface
+ * must not get slower.
  *
  * Same wiring as tests/test_desktop_plugin.mjs: a temp copy has its three
  * import specifiers rewritten to local stubs, and the copy exposes the few
- * modules-internal functions this test drives.
+ * modules-internal functions this test drives. Set AURA_PLUGIN=<path> to point
+ * the same test at another copy of the plugin (used to prove f/g fail on the
+ * old commit without touching this worktree).
  *
  * Run: node tests/test_idle_poll.mjs
  */
@@ -33,7 +40,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
-const PLUGIN = path.join(ROOT, 'desktop', 'plugin.js')
+const PLUGIN = process.env.AURA_PLUGIN || path.join(ROOT, 'desktop', 'plugin.js')
 
 const results = []
 let failed = 0
@@ -164,6 +171,8 @@ fs.writeFileSync(
   ' pollDueMs: typeof pollDueMs === "function" ? pollDueMs : null,' +
   ' auraBusy: typeof auraBusy === "function" ? auraBusy : null,' +
   ' onVideoBarMouseMove: typeof onVideoBarMouseMove === "function" ? onVideoBarMouseMove : null,' +
+  ' refreshFilmSurface: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null,' +
+  ' settings: $settings, live: $live, surface: $filmSurface, audio: $audio, video: $video,' +
   ' lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : null) };\n'
 )
 
@@ -229,6 +238,7 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 0))
 /** One registration bucket: its own ctx, request log and polling tick. */
 function mount(settings, serverEnabled) {
   const storage = new Map()
+  const contributions = []
   // `userChoseOff` keeps the "a new build switches Aura on" path out of these
   // numbers: the owner's own Off must be honoured, and it is a different test.
   if (settings) storage.set('settings', settings)
@@ -238,7 +248,10 @@ function mount(settings, serverEnabled) {
   const ctx = {
     source: 'plugin:aura',
     os: { openExternal: () => true },
-    register(contribution) { return () => { contribution.removed = true } },
+    register(contribution) {
+      contributions.push(contribution)
+      return () => { contribution.removed = true }
+    },
     registerSettingsPage(page) { return ctx.register(page) },
     onDispose() {},
     setInterval(fn, ms) {
@@ -273,6 +286,7 @@ function mount(settings, serverEnabled) {
     storage,
     requests,
     intervals,
+    contributions,
     status: () => requests.filter(route => route === '/status').length,
     /** The tick the host would fire, once. */
     tick() {
@@ -280,6 +294,39 @@ function mount(settings, serverEnabled) {
     }
   }
 }
+
+// --------------------------------------------------------- panel surface mount
+// tests/test_no_backdrop.mjs mounts the Right panel by rendering its
+// contribution and handing the theatre ref a host node. A placed surface needs
+// the same wiring here, so the panel really exists before the ticks run.
+
+function expand(node, acc) {
+  if (node == null || typeof node !== 'object') return
+  if (Array.isArray(node)) {
+    for (const child of node) expand(child, acc)
+    return
+  }
+  acc.push(node)
+  const kids = node.props && node.props.children
+  if (kids) expand(kids, acc)
+  if (typeof node.type === 'function') {
+    const rendered = node.type(node.props || {})
+    if (rendered) expand(rendered, acc)
+  }
+}
+
+/** Mount the panel's stage into a fake host, as test_no_backdrop does. */
+function mountPanel(bucket) {
+  const panel = bucket.contributions.find(item => item.id === 'panel' && item.removed !== true)
+  assert.ok(panel, 'the Right panel contribution was not registered')
+  const nodes = []
+  if (typeof panel.render === 'function') expand(panel.render(), nodes)
+  const theatre = nodes.find(node => node.props && typeof node.props.ref === 'function')
+  assert.equal(typeof (theatre && theatre.props.ref), 'function', 'the panel has no host ref')
+  theatre.props.ref(makeElement('div'))
+  return panel
+}
+
 
 /** Move time without a tick, so a "just used" hold from boot expires. */
 async function elapse(ms) {
@@ -410,6 +457,77 @@ await record('e. moving the mouse over the app does not wake an idle Aura', asyn
   const made = bucket.status() - before
   assert.equal(plugin.idleTest.auraBusy(), false, 'a pointer move over the app marked an unused Aura busy')
   assert.ok(made <= 4, `10 s of pointer moves made ${made} /status calls, expected at most 4`)
+  bucket.dispose()
+  await settle()
+})
+
+await record('f. Aura off with the visualiser placed in the panel: 10 s of ticks makes at most 4 /status calls', async () => {
+  // The owner's measured state: the app's own switch is off, the Right panel is
+  // still registered, and the backend still reports Aura enabled, so a surface
+  // is placed while nothing draws. That must not be worth a 4 Hz poll.
+  const bucket = mount({ enabled: false, backdropMode: 'aura', panelEnabled: true }, true)
+  await settle()
+  mountPanel(bucket)
+  await settle()
+  assert.ok(plugin.idleTest.surface.get().placement, 'precondition: no Aura surface is placed')
+  await warm(bucket)
+  const before = bucket.status()
+  await advance(bucket, 10000)
+  const made = bucket.status() - before
+  assert.ok(made <= 4, `10 s with a placed surface and Aura off made ${made} /status calls, expected at most 4`)
+  assert.equal(plugin.idleTest.auraBusy(), false, 'a placed surface alone marked Aura busy')
+  bucket.dispose()
+  await settle()
+})
+
+await record('g. Aura on, surface placed, window hidden and nothing playing: 30 s makes at most 3 /status calls', async () => {
+  globalThis.document.hidden = true
+  globalThis.document.visibilityState = 'hidden'
+  const bucket = mount({ enabled: true, backdropMode: 'aura', panelEnabled: true }, true)
+  await settle()
+  mountPanel(bucket)
+  await settle()
+  assert.ok(plugin.idleTest.surface.get().placement, 'precondition: no Aura surface is placed')
+  await warm(bucket)
+  const before = bucket.status()
+  await advance(bucket, 30000)
+  const made = bucket.status() - before
+  assert.ok(made <= 3, `30 s hidden with a placed surface made ${made} /status calls, expected at most 3`)
+  globalThis.document.hidden = false
+  globalThis.document.visibilityState = 'visible'
+  bucket.dispose()
+  await settle()
+})
+
+await record('h. Aura on, surface placed and visible: 2 s keeps the fast cadence (at least 6 /status calls)', async () => {
+  const bucket = mount({ enabled: true, backdropMode: 'aura', panelEnabled: true }, true)
+  await settle()
+  mountPanel(bucket)
+  await settle()
+  assert.ok(plugin.idleTest.surface.get().placement, 'precondition: no Aura surface is placed')
+  await warm(bucket)
+  const before = bucket.status()
+  await advance(bucket, 2000)
+  const made = bucket.status() - before
+  assert.ok(made >= 6, `2 s with a placed, visible visualiser made only ${made} /status calls: the visualiser got slower`)
+  bucket.dispose()
+  await settle()
+})
+
+await record('i. radio playing with the window hidden: 2 s keeps the fast cadence (at least 6 /status calls)', async () => {
+  globalThis.document.hidden = true
+  globalThis.document.visibilityState = 'hidden'
+  const bucket = mount({ enabled: false, backdropMode: 'aura', panelEnabled: true }, false)
+  await settle()
+  const audio = plugin.idleTest.audio.get()
+  plugin.idleTest.audio.set({ ...audio, url: 'https://ice.example/live.mp3', label: 'Live', playing: true, reportedAt: clock.now })
+  await warm(bucket)
+  const before = bucket.status()
+  await advance(bucket, 2000)
+  const made = bucket.status() - before
+  assert.ok(made >= 6, `2 s of hidden radio made only ${made} /status calls: the music lost its levels`)
+  globalThis.document.hidden = false
+  globalThis.document.visibilityState = 'visible'
   bucket.dispose()
   await settle()
 })

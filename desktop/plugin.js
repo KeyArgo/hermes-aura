@@ -1475,23 +1475,26 @@ function markBusy() {
   lastBusyAt = Date.now()
 }
 
-/** Is Aura doing anything a 4 Hz poll is worth paying for? Deliberately
- *  generous: a wrong "idle" leaves a live surface looking stuck, a wrong
- *  "busy" only costs a few requests while someone is using Aura anyway. */
+/** Is Aura doing anything a 4 Hz poll is worth paying for? A placed surface
+ *  is not enough on its own: the Right panel stays registered with Aura off,
+ *  and a surface nobody switched on would then poll at 4 Hz all day. Only
+ *  something actually playing, or a surface that is on screen with Aura
+ *  switched on, earns the fast cadence. */
 function auraBusy() {
   const settings = $settings.get()
-  const live = $live.get()
-  if (settings.enabled || (live.ok && live.enabled === true)) return true
   if ($video.get().playing === true) return true
-  // A film (or the visualiser) is placed in a panel, page or watch window:
-  // those read /state for levels, so they must keep up while they are open.
-  const surface = $filmSurface.get()
-  if (surface && (surface.placement || surface.src)) return true
-  if (videoWindowOn()) return true
   // Radio / music on the audio channel.
   if ($audio.get().playing === true) return true
   // A desktop window is ours to drive and to check for a close.
   if (desktopOwned || desktopPending || desktopClosing) return true
+  // The app's own switch, not the server's: a stale /status "enabled" must not
+  // keep the panel polling after the owner pressed Off.
+  if (settings.enabled && !(doc && doc.hidden === true)) {
+    // A film (or the visualiser) is placed in a panel, page or watch window:
+    // those read /state for levels, so they must keep up while they are open.
+    const surface = $filmSurface.get()
+    if (surface && (surface.placement || surface.src)) return true
+  }
   return Date.now() - lastBusyAt < POLL_BUSY_HOLD_MS
 }
 
