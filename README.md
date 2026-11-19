@@ -23,7 +23,7 @@
 
 <h3 align="center">A film beside your work, and an app that breathes with your audio.</h3>
 
-<p align="center"><i>Applies to v1.0.0 · revised 2026-11-11 · <a href="VERIFY.md">what was verified, and how</a></i></p>
+<p align="center"><i>Applies to v1.0.0 · revised 2026-11-19 · <a href="VERIFY.md">what was verified, and how</a></i></p>
 
 Aura turns Hermes Desktop into a room you can live in. Put any film, lecture or playlist in the
 right-hand pane and keep working; switch the film off and the same audio drives a MilkDrop-compatible
@@ -82,8 +82,15 @@ kept per film, keyed by URL, so nothing restarts.
   own profile — so YouTube's own page opens and adding, removing and reordering work with your own
   session. No API scope, no OAuth review, no second account.
 - **Free placement.** The floating watch window drags anywhere and remembers its spot; 320 / 480 / 640
-  wide. Its control strip is two rows — the film's title, scrubber, clock, volume and window buttons
-  above a centred transport row — stays inside the viewport, and dims when idle instead of vanishing.
+  / 880 / 1120 wide. Its control strip is two rows — the film's title, scrubber, clock, volume and window
+  buttons above a centred transport row — stays inside the viewport, and dims when idle instead of
+  vanishing. Below the transport it carries **Size** and **Send to** (Right panel, Desktop, and the
+  greyed "Behind chat" signpost).
+- **The same window for the visualiser.** In Visualizer mode the watch window shows the visualiser with
+  the film window's own **Size** presets and the same **Send to** row: **Panel** brings it back to the
+  Right panel, **Window** keeps it where it is, **Desktop** opens it in the desktop OS window, and
+  **Behind chat** stays a greyed coming-soon pill. The film's title, scrubber and transport rows are
+  not shown, because the visualiser has nothing to scrub.
 - **An Aura page in the sidebar — the whole product in one place.** One row opens a full page: the same
   film in a big 16:9 frame with the transport, volume and source picker, a **Library** of poster cards
   (add, rename, remove, hide starters, clear recents), the playlist how-to, and every setting Aura has

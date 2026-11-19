@@ -29,6 +29,9 @@
   Preset loads (including mood/agent changes) and the automatic quality ladder no longer re-open
   that window, so the stall cannot come back all evening. Nothing on screen changes.
 - Watch in and the watch window's Send to row show Behind chat, greyed out, as coming soon.
+- In Visualizer mode the watch window carries the film window's Size presets and its Send to row:
+  Panel returns the visualiser to the Right panel, Desktop opens it in the desktop OS window, and
+  Behind chat stays the greyed coming-soon pill. The film's own rows are unchanged.
 
 ## 1.0.0 — 2026-11-11
 

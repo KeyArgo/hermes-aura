@@ -130,6 +130,10 @@ const VIDEO_BAR_OPACITY = 0.72
 // paint is already bottom-centre instead of jumping there on the next tick.
 const VIDEO_BAR_WIDTH = 340
 const VIDEO_BAR_HEIGHT = 96
+// The visualiser watch window's strip: the same "Send to" and "Size" rows as
+// the film's, without the film's title/scrub/transport rows. Its pane reserves
+// this much height under the stage so the rows never squeeze the picture.
+const VISUALISER_BAR_HEIGHT = 60
 const VIDEO_BAR_STATUS_ROOM = 150
 // Backdrop opacity changes are debounced: music must hold >1.2 s to brighten
 // it and silence >4 s to dim it, or level flicker made the window pulse.
@@ -2992,7 +2996,9 @@ function stripPaneSize() {
     // window below its title bar (34px) with the host's 12px margins.
     const view = doc && doc.defaultView
     const vh = view && Number.isFinite(view.innerHeight) ? view.innerHeight : 900
-    const strip = videoWindowOn() ? VIDEO_BAR_HEIGHT : 0
+    // The visualiser's strip carries only Send to and Size; the film's carries
+    // its transport too, so it reserves the taller box.
+    const strip = videoWindowOn() ? VIDEO_BAR_HEIGHT : (visualiserWindowOn() ? VISUALISER_BAR_HEIGHT : 0)
     const chrome = strip + FLOATING_HEADER
     const room = Math.max(120, vh - 34 - 24 - chrome)
     const width = Math.min(videoWindowWidth(), Math.floor(room * 16 / 9))
@@ -3018,9 +3024,7 @@ function unregisterStripPane() {
  *  watch window (review 1: a placement:'floating' pane with anchor). The host
  *  draws the card, makes its header the drag handle and remembers its spot. */
 function syncStripPane() {
-  const settings = $settings.get()
-  const auraWindow = settings.backdropMode === 'aura' && settings.videoWindow === true &&
-    !desktopOwned && !desktopPending
+  const auraWindow = visualiserWindowOn()
   if (!ctxRef || disposed || (!videoBarActive() && !auraWindow)) {
     unregisterStripPane()
     return
@@ -3226,6 +3230,13 @@ function videoWindowOn() {
   return settings.backdropMode === 'video' && watchWindowOpen()
 }
 
+/** Is the visualiser in the watch window? Same stage and the same two control
+ *  rows (Send to, Size) as the film, but no film transport. */
+function visualiserWindowOn() {
+  const settings = $settings.get()
+  return settings.backdropMode !== 'video' && watchWindowOpen()
+}
+
 function videoWindowWidth() {
   const settings = $settings.get()
   const wanted = VIDEO_WINDOW_SIZES[settings.videoWindowSize] || VIDEO_WINDOW_SIZES[VIDEO_WINDOW_DEFAULT_SIZE]
@@ -3398,7 +3409,12 @@ function videoBarActive() {
   const settings = $settings.get()
   const live = $live.get()
   const enabled = live.ok ? live.enabled === true : settings.enabled
-  if (!doc || !enabled || settings.backdropMode !== 'video' || !settings.videoUrl || settings.videoClosed) return false
+  if (!doc || !enabled) return false
+  // Visualizer mode: the watch window carries the same strip, with the same
+  // Size presets and the same Send to places. The visualiser has no film, so
+  // the strip hides the film's own rows (see syncVideoBar).
+  if (settings.backdropMode !== 'video') return visualiserWindowOn()
+  if (!settings.videoUrl || settings.videoClosed) return false
   // No film surface means every button would post to nothing.
   const filmSurface = videoWindowOn() || desktopOwned || desktopPending || filmOpen()
   if (!filmSurface) return false
@@ -3433,6 +3449,14 @@ const FILM_PLACES = [
   ['window', 'Window', 'Watch the film in the watch window'],
   ['desktop', 'Desktop', 'Watch the film in a desktop window']
 ]
+
+/** The visualiser's own words for the same three places, used by its watch
+ *  window's Send to row. Keyed by FILM_PLACES so the order can never drift. */
+const VISUALISER_SEND_COPY = Object.freeze({
+  panel: ['Send the visualiser to the Right panel', 'Show the visualiser in the Right panel'],
+  window: ['Keep the visualiser in the watch window', 'The visualiser stays in this window'],
+  desktop: ['Pop the visualiser out to the desktop', 'Show the visualiser in its own window on your desktop']
+})
 
 /** A future place, shown but never usable. It is deliberately NOT in
  *  FILM_PLACES: it never becomes data-active and never calls moveFilmTo, so
@@ -3723,10 +3747,9 @@ function mountVideoBar() {
     background: 'transparent', color: 'inherit', font: 'inherit', fontSize: '10.5px',
     padding: '3px 8px', lineHeight: '1'
   }
-  for (const [text, aria, title, action] of [
-    ['Right panel', 'Send the film to the Right panel', 'Play the film in the Right panel', sendFilmToPanel],
-    ['Desktop', 'Pop the film out to the desktop', 'Play the film in its own window on your desktop', sendFilmToDesktop]
-  ]) {
+  // One pill builder for both Send to rows: the film's and the visualiser's
+  // send the same way, so they must not drift apart.
+  const sendPill = (text, aria, title, action) => {
     const button = doc.createElement('button')
     button.type = 'button'
     button.textContent = text
@@ -3739,10 +3762,34 @@ function mountVideoBar() {
       if (event && event.preventDefault) event.preventDefault()
       action()
     })
-    sendRow.appendChild(button)
+    return button
+  }
+  for (const [text, aria, title, action] of [
+    ['Right panel', 'Send the film to the Right panel', 'Play the film in the Right panel', sendFilmToPanel],
+    ['Desktop', 'Pop the film out to the desktop', 'Play the film in its own window on your desktop', sendFilmToDesktop]
+  ]) {
+    sendRow.appendChild(sendPill(text, aria, title, action))
   }
   // The coming-soon pill, last in the row. No action, and it never gets one.
   sendRow.appendChild(behindChatPill('ap-pill-soon', { ...sendPillStyle, opacity: '0.45', cursor: 'not-allowed' }))
+
+  // The visualiser's Send to row: the same places as its Watch in row, in the
+  // same order, so a popped-out visualiser can come back to the Right panel or
+  // go on to the desktop OS window from the window it is in.
+  const visualSendRow = doc.createElement('div')
+  Object.assign(visualSendRow.style, {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px',
+    paddingTop: '3px', borderTop: '1px solid rgba(255,255,255,0.08)'
+  })
+  const visualSendLabel = doc.createElement('span')
+  visualSendLabel.textContent = 'Send to'
+  Object.assign(visualSendLabel.style, { fontSize: '10.5px', color: 'rgba(255,255,255,0.6)', marginRight: '2px' })
+  visualSendRow.appendChild(visualSendLabel)
+  for (const [place, label] of FILM_PLACES) {
+    const [aria, title] = VISUALISER_SEND_COPY[place] || [`Send the visualiser to the ${label}`, label]
+    visualSendRow.appendChild(sendPill(label, aria, title, () => moveFilmTo(place)))
+  }
+  visualSendRow.appendChild(behindChatPill('ap-pill-soon', { ...sendPillStyle, opacity: '0.45', cursor: 'not-allowed' }))
 
   // How big the watch window is, while it is on screen. Sizes used to live
   // only in the status menu, so the window could not be resized from itself.
@@ -3786,6 +3833,7 @@ function mountVideoBar() {
   bar.appendChild(topRow)
   bar.appendChild(transportRow)
   bar.appendChild(sendRow)
+  bar.appendChild(visualSendRow)
   bar.appendChild(sizeRow)
   // Grabbing empty strip (not a button) drags it too: the film in the watch
   // window, or the strip itself when there is no watch window.
@@ -3819,7 +3867,8 @@ function mountVideoBar() {
   })
   if (grip && grip.style) grip.style.display = 'none'
   videoBarEl = bar
-  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill, title, grip, sendRow, sizeRow, sizeButtons }
+  videoBarParts = { prev, back, play, fwd, next, time, volume, windowBtn, scrub, fill, title, grip,
+    topRow, transportRow, sendRow, visualSendRow, sizeRow, sizeButtons }
   attachVideoBar()
 }
 
@@ -3856,7 +3905,7 @@ function showVideoBar() {
     // Under the watch window the strip is the player's own chrome: it stays.
     // The mouse over the film never reaches the app, so a faded strip never
     // came back and looked gone.
-    if (!videoBarEl || videoWindowOn()) return
+    if (!videoBarEl || videoWindowOn() || visualiserWindowOn()) return
     videoBarEl.style.opacity = '0.22'
     // A ghost that still takes clicks is what made the old panel feel like the
     // app had frozen: nothing typed, nothing to click.
@@ -5300,19 +5349,24 @@ function syncVideoBar(force) {
       parts.grip.title = label
     }
   }
-  // "Send to" belongs to the watch window; the tray-only strip has no window to move.
-  if (parts.sendRow) {
-    const display = videoWindowOn() ? 'flex' : 'none'
-    if (parts.sendRow.style.display !== display) parts.sendRow.style.display = display
-  }
-  const state = $video.get()
+  // "Send to" and "Size" belong to a watch window; the tray-only strip has no
+  // window to move or resize. The visualiser gets the same two rows from its
+  // own Send to row, and hides the film's rows, which it has nothing to drive.
+  const inFilmWindow = videoWindowOn()
+  const inVisualWindow = visualiserWindowOn()
   const settings = $settings.get()
-  // "Size" shares the watch window's visibility, and its active pill follows
-  // the setting so a resize from anywhere (menu, page) stays in step.
-  if (parts.sizeRow) {
-    const display = videoWindowOn() ? 'flex' : 'none'
-    if (parts.sizeRow.style.display !== display) parts.sizeRow.style.display = display
+  const inVideoMode = settings.backdropMode === 'video'
+  const setRow = (node, shown) => {
+    if (!node) return
+    const display = shown ? 'flex' : 'none'
+    if (node.style.display !== display) node.style.display = display
   }
+  setRow(parts.sendRow, inFilmWindow)
+  setRow(parts.visualSendRow, inVisualWindow)
+  setRow(parts.sizeRow, inFilmWindow || inVisualWindow)
+  setRow(parts.topRow, inVideoMode)
+  setRow(parts.transportRow, inVideoMode)
+  const state = $video.get()
   if (parts.sizeButtons) {
     for (const { size, button } of parts.sizeButtons) {
       const active = settings.videoWindowSize === size
