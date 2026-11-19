@@ -2866,7 +2866,8 @@ record('the page renders the player, the setup and the REVamp card', () => {
     'the film page still offers the host-page visual')
   assert.match(body, /Aura setup/, 'the page has no setup section')
   assert.match(body, /Big Buck Bunny/, 'the page does not offer the starter sources')
-  assert.match(body, /Winamp-style player for Hermes/, 'the REVamp card is missing')
+  assert.match(body, /listed in the Hermes plugin catalog/, 'the REVamp card does not name the plugin catalog')
+  assert.match(body, /Hermes Radio/, 'the REVamp card does not mention Hermes Radio')
   const link = pageAria(tree, 'REVamp marketplace page')
   assert.ok(link, 'the REVamp marketplace link is missing')
   assert.equal(link.type, 'a', 'the marketplace page must be a link')
@@ -2877,6 +2878,19 @@ record('the page renders the player, the setup and the REVamp card', () => {
   const line = pageAria(settingsTree, 'Find REVamp in Plugins (settings)')
   assert.ok(line, 'the settings REVamp line has no Find in Plugins action')
   assert.equal(pageAria(settingsTree, 'Open REVamp'), null, 'Open REVamp leads to a dead page when REVamp is not installed')
+})
+
+record('the REVamp card names the catalog and Hermes Radio, and finds REVamp in Plugins', () => {
+  const tree = pageTree()
+  const body = texts(tree)
+  assert.match(body, /listed in the Hermes plugin catalog/, 'the card does not say REVamp is in the plugin catalog')
+  assert.match(body, /Hermes Radio/, 'the card does not mention Hermes Radio')
+  const button = pageAria(tree, 'Find REVamp in Plugins')
+  assert.ok(button, 'no Find in Plugins button on the card')
+  const before = sdk.calls.navigations.length
+  button.props.onClick()
+  assert.equal(sdk.calls.navigations.at(-1), '/capabilities?tab=plugins&plugin=revamp')
+  assert.ok(sdk.calls.navigations.length > before, 'Find in Plugins did not call host.navigate')
 })
 
 record('REVAMP_URL is the marketplace root', () => {

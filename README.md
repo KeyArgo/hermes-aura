@@ -98,8 +98,9 @@ kept per film, keyed by URL, so nothing restarts.
   in the Right panel, the Aura page, or the watch window. The full-window visual behind the app
   returns when Hermes ships a backdrop area (#155903).
 - **REVamp, next door.** Aura has no music library of its own. [REVamp](https://github.com/KeyArgo/hermes-revamp)
-  is a Winamp-style player for Hermes, and Aura's visuals react to whatever it plays — one card on the page,
-  one line in Settings.
+  is a Winamp-style player for Hermes, listed in the Hermes plugin catalog — install it from Capabilities -> Plugins,
+  or with `hermes plugins install https://github.com/KeyArgo/hermes-revamp`. It includes Hermes Radio, a curated
+  station section, and Aura's visuals react to whatever it plays.
 
 ## Adding a YouTube playlist (plain instructions)
 
@@ -189,8 +190,10 @@ streams play on their own channel, beside the video and independent of it.
   so music from Aura's own channel (or any other app) drives the same visuals.
 
 **Aura is a media player, not a Winamp.** If you want a Winamp-style player with your local
-library, audiobooks, skins and a 90s attitude, install **REVamp** — it is the same author's
-other plugin, and Aura's visuals react to whatever it plays.
+library, audiobooks, skins and a 90s attitude, [REVamp](https://github.com/KeyArgo/hermes-revamp) is in the Hermes
+plugin catalog — install it from Capabilities -> Plugins or with
+`hermes plugins install https://github.com/KeyArgo/hermes-revamp`. It includes Hermes Radio, and Aura's visuals
+react to whatever it plays.
 
 ## The plugin surface
 
@@ -302,8 +305,8 @@ themselves when the machine is too loaded to sample reliably rather than reporti
 Pre-release. `SPIKES.md` records what was actually measured; `CONTRACT.md` is the wire contract between
 the capture server, the page, the desktop half and the agent hooks.
 
-_This README applies to plugin version 1.0.0; revised 2026-11-10 (listen lane: audio channel,
-radio, `aura_listen`, REVamp card)._
+_This README applies to plugin version 1.0.0; revised 2026-11-19
+(listen lane: audio channel, radio, `aura_listen`, REVamp card, catalog link + Hermes Radio)._
 
 ## Licences
 

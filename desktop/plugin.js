@@ -2464,6 +2464,11 @@ const AUDIO_STALE_MS = 60000
 const REVAMP_PITCH =
   'Want a Winamp-style player for Hermes with your local library, audiobooks, radio and skins? ' +
   'REVamp plays it — Aura’s visuals react to it, and both can run at once.'
+// The Aura page card says where REVamp lives now: the Hermes plugin catalog,
+// with Hermes Radio inside it. Aura adds no network calls of its own.
+const REVAMP_CARD_COPY =
+  'REVamp is a Winamp-style player for Hermes, listed in the Hermes plugin catalog. ' +
+  'It includes Hermes Radio, a curated station section. Aura’s visuals react to whatever it plays.'
 const REVAMP_URL = 'https://hermes-agent.nousresearch.com/marketplace'
 const REVAMP_INSTALL = 'hermes plugin install revamp'
 // Capabilities > Plugins, at REVamp's row once it is installed.
@@ -6553,7 +6558,7 @@ function RevampCard() {
           jsx('div', {
             key: 'pitch',
             style: { fontSize: 11, lineHeight: 1.4, color: 'var(--ui-text-tertiary)' },
-            children: REVAMP_PITCH
+            children: REVAMP_CARD_COPY
           }),
           jsxs('div', {
             key: 'chips',
