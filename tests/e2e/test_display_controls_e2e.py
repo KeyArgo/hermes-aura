@@ -79,6 +79,27 @@ def _apply(tab, cfg):
     return tab.ev("window.__aura.applyConfig(%s)" % json.dumps(cfg))
 
 
+def _settle_opacity(tab, target, timeout=10.0):
+    """Wait for the canvas opacity fade to finish before measuring it.
+
+    The page fades the canvas with a CSS transition of SILENCE_FADE_MS (600 ms),
+    and this test used to sleep exactly 0.6 s after each change. That lands on
+    the transition's own deadline, so a loaded machine -- or a software renderer,
+    which is what CI has -- measures it mid-flight and composites the wrong
+    alpha (0.66 instead of 0.2), which then fails the brightness assertion.
+    Poll the computed value instead of guessing a duration.
+    """
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = tab.ev(
+            "parseFloat(getComputedStyle(document.getElementById('aura-canvas')).opacity)")
+        if last is not None and abs(float(last) - target) < 0.005:
+            return float(last)
+        time.sleep(0.05)
+    raise AssertionError("canvas opacity never settled at %s; last=%r" % (target, last))
+
+
 def test_opacity_dims_canvas_keeps_scrim_and_chrome_legible(chrome, aura):
     tab = chrome.new_tab(page_url(aura.port))
     try:
@@ -89,13 +110,15 @@ def test_opacity_dims_canvas_keeps_scrim_and_chrome_legible(chrome, aura):
         wait_lit(tab, 0.08, timeout=15)
 
         tab.ev("window.__aura.setOpacityUI(1.0)")
-        time.sleep(0.6)
+        _settle_opacity(tab, 1.0)
+        time.sleep(0.2)  # a frame or two at the settled opacity
         full = tab.ev(MEASURE_OPACITY_JS)
         full_snap = snapshot(tab)
         scrim_full = float(full_snap["scrimOpacity"])
 
         tab.ev("window.__aura.setOpacityUI(0.2)")
-        time.sleep(0.6)
+        _settle_opacity(tab, 0.2)
+        time.sleep(0.2)  # a frame or two at the settled opacity
         low = tab.ev(MEASURE_OPACITY_JS)
         low_snap = snapshot(tab)
         scrim_low = float(low_snap["scrimOpacity"])
