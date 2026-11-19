@@ -469,6 +469,57 @@ await record('e. preset loads and automatic quality steps never re-open the dens
   assert.equal(page.stats.full, 0, 'captureCanvas() read the full buffer during normal playback')
 })
 
+await record('f. tab switches while Aura is off never open the dense probe window or drop samples', async () => {
+  const page = await makePage({ motion: 'designs' })
+  page.advance(11000) // past the start-up warm window
+  page.aura._syncTimes.length = 0
+  page.aura._syncTimes.push(4, 5, 6)
+  page.aura.setEnabledUI(false)
+  page.advance(500)
+  for (let i = 0; i < 10; i += 1) {
+    page.setHidden(true)
+    page.advance(100)
+    page.setHidden(false)
+    page.advance(100)
+  }
+  assert.equal(page.pendingRaf(), 0, 'a tab switch scheduled a frame while Aura is off')
+  assert.deepEqual(Array.from(page.aura._syncTimes), [4, 5, 6], 'tab switches while off dropped the GPU samples')
+  page.aura.setEnabledUI(true)
+  const framesBefore = page.frames()
+  const probesBefore = page.stats.probes
+  page.advance(1000)
+  assert.ok(page.frames() > framesBefore, 'enabling did not restart rendering')
+  // Enabling is a real loop start, so the warm window opens then — and only then.
+  assert.ok(page.stats.probes - probesBefore >= 2, 'enabling did not open the warm window')
+})
+
+await record('g. an automatic quality step keeps the GPU samples', async () => {
+  const page = await makePage({ motion: 'designs' })
+  page.advance(11000)
+  page.aura._syncTimes.length = 0
+  page.aura._syncTimes.push(30, 31, 32)
+  page.aura._frameTimes.length = 0
+  for (let j = 0; j < 120; j += 1) page.aura._frameTimes.push(300)
+  const before = page.aura._quality ? page.aura._quality.degradeLevel : null
+  page.aura.evaluateDegrade()
+  if (before !== null) assert.ok(page.aura._quality.degradeLevel > before, 'the ladder did not step down on slow frames')
+  assert.ok(page.aura._syncTimes.length >= 3, 'an automatic step dropped the GPU samples the ladder needs')
+})
+
+await record('h. a reduced-motion change re-measures: the dense probe window opens', async () => {
+  const page = await makePage({ motion: 'designs' })
+  page.advance(11000) // sparse probes from here on
+  const framesBefore = page.frames()
+  const probesBefore = page.stats.probes
+  page.aura.applyConfig({ reduced_motion: true })
+  page.advance(2000)
+  const frames = page.frames() - framesBefore
+  const probes = page.stats.probes - probesBefore
+  assert.ok(frames > 0, 'no frames after the reduced-motion change')
+  assert.ok(probes > Math.ceil(frames / 120) + 1,
+    `${probes} probes for ${frames} frames: the reduced-motion change did not re-open the warm window`)
+})
+
 // ------------------------------------------------------------------ report
 
 for (const line of results) console.log(line)

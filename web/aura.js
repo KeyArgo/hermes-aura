@@ -1357,12 +1357,11 @@
     quality.renderScale = ladder[quality.degradeLevel].scale;
     quality.fpsCap = ladder[quality.degradeLevel].fps;
     if (state.reducedMotion) quality.fpsCap = Math.min(quality.fpsCap, 30);
-    // Old samples describe the previous scale/fps: drop them so the ladder
-    // judges the new step (frameTimes adapts within its 120-frame window).
-    syncTimes.length = 0;
     // Only a quality change the user asked for re-opens the dense probe
-    // window. The automatic ladder steps quietly — a 10 s stall on every
-    // automatic step would undo the whole idle saving.
+    // window (which also drops the old samples). The automatic ladder steps
+    // quietly and keeps its GPU samples: with sparse probes, clearing them
+    // would leave the ladder judging on CPU time alone for hundreds of frames,
+    // and a sample from the heavier step only makes it slower to step back up.
     if (userRequested === true) openProbeWarmWindow();
   }
 
@@ -1495,9 +1494,13 @@
 
   function startLoop() {
     if (rafId) return;
-    // A restart opens a fresh warm window: old samples describe the previous
-    // session, and the ladder needs real frame costs before it can decide
-    // anything. This and a user-requested quality change are the only paths.
+    // Nothing to draw (off, faded out, blocked, hidden): stay parked, and keep
+    // the samples — a tab switch while Aura is off is not a new session.
+    if (!loopActive()) return;
+    // A real restart opens a fresh warm window: old samples describe the
+    // previous session, and the ladder needs real frame costs before it can
+    // decide anything. This and a user-requested quality change are the only
+    // paths.
     openProbeWarmWindow();
     rafId = requestAnimationFrame(loop);
   }
@@ -2354,6 +2357,9 @@
       quality.fpsCap = step.fps;
       if (next) { quality.renderScale *= 0.9; quality.fpsCap = Math.min(quality.fpsCap, 30); }
       resizeCanvas();
+      // A reduced-motion change is a quality change the user asked for: the
+      // old samples describe the other scale/fps, so measure afresh.
+      openProbeWarmWindow();
     }
     updateMoodVisuals();
     stopPulse();
