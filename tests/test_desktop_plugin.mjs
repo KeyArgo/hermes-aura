@@ -127,6 +127,22 @@ async function dueTick(bucket) {
   bucket.timers.find(t => t.ms === 250).fn()
 }
 
+/** dueTick, but it guarantees the tick really polled. An idle Aura only asks
+ *  /status every 2-3 s (see pollDueMs), so one 250 ms tick can leave the
+ *  previous answer — and the error it carried — in place. Tests that read what
+ *  a poll learned wait for lastPollAt to move instead of assuming one tick was
+ *  enough; without this the check failed whenever the suite ran slowly enough
+ *  for the busy hold to expire. */
+async function pollTick(bucket) {
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const before = pluginModule.wiringTest.lastPollAt()
+    await dueTick(bucket)
+    await sleep(30)
+    if (pluginModule.wiringTest.lastPollAt() !== before) return
+  }
+  throw new Error('the plugin never polled: the 250 ms tick stopped asking')
+}
+
 function walk(node, visit) {
   if (!node || typeof node !== 'object') return
   if (Array.isArray(node)) {
@@ -1112,15 +1128,13 @@ await recordAsync('status timeout is reported without leaking error details', as
   const oldRest = a.ctx.rest
   a.ctx.rest = async () => { throw new Error('Timed out connecting to Hermes backend after 3000ms token=secret') }
   try {
-    await dueTick(a)
-    await sleep(30)
+    await pollTick(a)
     const text = texts(renderContribution(a.contributions.find(c => c.area === 'settings.plugins')))
     assert.match(text, /timed out/i)
     assert.doesNotMatch(text, /secret|token/)
   } finally {
     a.ctx.rest = oldRest
-    await dueTick(a)
-    await sleep(30)
+    await pollTick(a)
   }
 })
 
@@ -1134,16 +1148,14 @@ await recordAsync('status failures are classified safely', async () => {
       ['unexpected token=secret', /could not complete/i]
     ]) {
       a.ctx.rest = async () => { throw new Error(detail) }
-      await dueTick(a)
-      await sleep(30)
+      await pollTick(a)
       const text = texts(renderContribution(a.contributions.find(c => c.area === 'settings.plugins')))
       assert.match(text, expected)
       assert.doesNotMatch(text, /secret|token/)
     }
   } finally {
     a.ctx.rest = oldRest
-    await dueTick(a)
-    await sleep(30)
+    await pollTick(a)
   }
 })
 

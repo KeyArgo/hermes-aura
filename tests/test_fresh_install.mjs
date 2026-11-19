@@ -1656,6 +1656,17 @@ for (const [name, extra] of [
 
 // Regression (pre-pin review 11-15): a /status already in flight when the user
 // pressed Off answered "on" afterwards and put the film back up.
+/** Fire 250 ms ticks until `done()` holds. An idle Aura only asks /status every
+ *  2-3 s (pollDueMs), so on a slow runner one tick can fall inside the idle wait
+ *  and ask nothing; the race below needs the poll that actually went out. */
+async function tickUntil(bucket, done) {
+  for (let attempt = 0; attempt < 16 && !done(); attempt += 1) {
+    await fireTick(bucket)
+    await sleep(20)
+    if (!done()) await sleep(230)
+  }
+}
+
 {
   const scenario = await watchWindowScenario({ videoWindow: false })
   const realRest = scenario.bucket.ctx.rest
@@ -1672,8 +1683,7 @@ for (const [name, extra] of [
     const live = () => hostIframes().filter(f => f.style.display !== 'none')
     assert.ok(live().length >= 1, 'no film in the Right panel to begin with')
     held = 'arm'
-    await fireTick(scenario.bucket)
-    await sleep(20)
+    await tickUntil(scenario.bucket, () => typeof held === 'function')
     assert.equal(typeof held, 'function', 'the stale /status was not held')
     const power = domFind(scenario.pane, node => node.className === 'ap-power')
     clickDom(power)
@@ -1710,8 +1720,7 @@ for (const [name, extra] of [
     const live = () => hostIframes().filter(f => f.style.display !== 'none')
     assert.ok(live().length >= 1, 'no film in the Right panel to begin with')
     held = 'arm'
-    await fireTick(scenario.bucket)
-    await sleep(20)
+    await tickUntil(scenario.bucket, () => typeof held === 'function')
     assert.equal(typeof held, 'function', 'the /state answer was not held')
     const power = domFind(scenario.pane, node => node.className === 'ap-power')
     clickDom(power)
