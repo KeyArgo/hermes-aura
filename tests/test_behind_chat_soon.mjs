@@ -5,14 +5,14 @@
  * yet. This file proves the whole of that promise:
  *
  *   1. the Right panel's Watch in row offers four pills, in reading order:
- *      Panel, Behind chat, Window, Desktop,
+ *      Panel, Window, Desktop, Behind chat,
  *   2. the Behind chat pill is disabled (attribute + aria-disabled), greyed by
  *      Aura's own .ap-pill-soon rule, titled "Coming soon" and labelled
  *      "Behind chat (coming soon)",
  *   3. it is never marked active, has no click handler, and clicking it moves
  *      the film nowhere and writes no settings (it is not in FILM_PLACES, so
  *      currentFilmPlace()/moveFilmTo() cannot see it),
- *   4. the watch window's "Send to" row carries the same disabled pill between
+ *   4. the watch window's "Send to" row carries the same disabled pill, last, after
  *      Right panel and Desktop, also inert,
  *   5. nothing about it touches the host page: plugin.js contains no
  *      'data-aura-backdrop' and no 'data-hermes-glass-on', and no filmBehind
@@ -543,10 +543,10 @@ record('Behind chat is not a real place: FILM_PLACES still holds only the three'
   const pills = pillsRow.children.slice()
   const soon = domByAria(pane, 'Behind chat (coming soon)')
 
-  record('1. Watch in offers four pills: Panel, Behind chat, Window, Desktop', () => {
+  record('1. Watch in offers four pills: Panel, Window, Desktop, Behind chat', () => {
     assert.equal(pills.length, 4, `Watch in has ${pills.length} pills: ${pills.map(pill => pill.textContent).join(', ')}`)
-    assert.deepEqual(pills.map(pill => pill.textContent), ['Panel', 'Behind chat', 'Window', 'Desktop'],
-      'the Behind chat pill is not between Panel and Window')
+    assert.deepEqual(pills.map(pill => pill.textContent), ['Panel', 'Window', 'Desktop', 'Behind chat'],
+      'the Behind chat pill is not last')
   })
 
   record('2. the Behind chat pill is disabled, greyed by Aura\'s own rule, and labelled as coming soon', () => {
@@ -597,7 +597,7 @@ record('Behind chat is not a real place: FILM_PLACES still holds only the three'
 }
 
 // ===================================================================
-// The watch window's "Send to" row: the same disabled pill, between the two
+// The watch window's "Send to" row: the same disabled pill, after the two
 // real places, and equally inert.
 // ===================================================================
 
@@ -621,7 +621,7 @@ record('Behind chat is not a real place: FILM_PLACES still holds only the three'
   const sendChildren = sendRow.children.slice()
   const soon = domByAria(bar, 'Behind chat (coming soon)')
 
-  record('5. the Send to row carries the disabled Behind chat pill between Right panel and Desktop', () => {
+  record('5. the Send to row ends with the disabled Behind chat pill', () => {
     assert.ok(soon, 'the strip has no Behind chat pill')
     assert.equal(soon.title, 'Coming soon')
     assert.equal(soon.disabled, true, 'the strip pill is not disabled')
@@ -632,9 +632,9 @@ record('Behind chat is not a real place: FILM_PLACES still holds only the three'
     assert.deepEqual(labels, [
       'Send to',
       'Send the film to the Right panel',
-      'Behind chat (coming soon)',
-      'Pop the film out to the desktop'
-    ], 'the strip order is not Right panel, Behind chat, Desktop')
+      'Pop the film out to the desktop',
+      'Behind chat (coming soon)'
+    ], 'the strip order is not Right panel, Desktop, Behind chat')
     assert.notEqual(soon.attributes['data-active'], 'true', 'the strip pill is marked active')
   })
 

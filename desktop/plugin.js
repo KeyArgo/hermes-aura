@@ -3664,7 +3664,7 @@ function mountVideoBar() {
   }
   // Where the film goes next, while it is in the watch window: back into the
   // Right panel, or out of Hermes into its own OS window. "Behind chat" is a
-  // greyed signpost for the future, between the two real places.
+  // greyed signpost for the future, after the two real places.
   const sendRow = doc.createElement('div')
   Object.assign(sendRow.style, {
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px',
@@ -3683,8 +3683,6 @@ function mountVideoBar() {
     ['Right panel', 'Send the film to the Right panel', 'Play the film in the Right panel', sendFilmToPanel],
     ['Desktop', 'Pop the film out to the desktop', 'Play the film in its own window on your desktop', sendFilmToDesktop]
   ]) {
-    // The coming-soon pill has no action and never gets one: it is a signpost.
-    if (text === 'Desktop') sendRow.appendChild(behindChatPill('ap-pill-soon', { ...sendPillStyle, opacity: '0.45', cursor: 'not-allowed' }))
     const button = doc.createElement('button')
     button.type = 'button'
     button.textContent = text
@@ -3699,6 +3697,8 @@ function mountVideoBar() {
     })
     sendRow.appendChild(button)
   }
+  // The coming-soon pill, last in the row. No action, and it never gets one.
+  sendRow.appendChild(behindChatPill('ap-pill-soon', { ...sendPillStyle, opacity: '0.45', cursor: 'not-allowed' }))
 
   // How big the watch window is, while it is on screen. Sizes used to live
   // only in the status menu, so the window could not be resized from itself.
@@ -4644,9 +4644,6 @@ function mountPanelInto(hostNode) {
   watchInButtons.className = 'ap-pills'
   const watchInPills = []
   for (const [place, label, aria] of FILM_PLACES) {
-    // The coming-soon pill sits between Panel and Window. It is not one of the
-    // real places.
-    if (place === 'window') watchInButtons.appendChild(behindChatPill('ap-pill ap-pill-soon'))
     const pill = doc.createElement('button')
     pill.type = 'button'
     pill.className = 'ap-pill'
@@ -4659,6 +4656,8 @@ function mountPanelInto(hostNode) {
     watchInPills.push([place, pill])
     watchInButtons.appendChild(pill)
   }
+  // The coming-soon pill, last. It is not one of the real places.
+  watchInButtons.appendChild(behindChatPill('ap-pill ap-pill-soon'))
   watchInRow.appendChild(watchInLabel)
   watchInRow.appendChild(watchInButtons)
 
