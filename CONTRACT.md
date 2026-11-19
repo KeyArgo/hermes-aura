@@ -220,30 +220,12 @@ with no extra plumbing.
 - At page load, if `/api/state` (or the first events) reports an active mood, the visual starts
   moving. Disabled Aura behaves as before.
 
-### 9.6 Dynamic intensity from active chats (additive, 2026-11-08)
+### 9.6 Active chats and intensity
 
-More open Hermes chats make Aura more intense, on top of the user's saved intensity. The saved
-`intensity` value is never overwritten; the boost is a separate multiplier on the rendered
-intensity.
-
-- Session count source: Hermes' existing cross-process active-chat registry
-  (`<HERMES_HOME>/runtime/active_sessions.json`). The server prefers Hermes'
-  `hermes_cli.active_sessions.active_session_registry_snapshot()` (which prunes dead leases) and
-  falls back to a tolerant stdlib reader that ignores entries whose owner pid is dead. No new
-  external API or network call is introduced.
-- Boost formula: `multiplier = 1 + 0.15 * min(N, 10)` where N is the number of live active chat
-  sessions. 0 sessions = 1.0x, 1 = 1.15x, 5 = 1.75x, 10+ = 2.5x. The rendered intensity is
-  `min(1.0, saved_intensity * multiplier)`, so it saturates at the contract ceiling; the active
-  behaviour profile's `intensity_ceiling` still applies after saturation.
-- The leader server polls the registry every 2 s. When the count or multiplier changes it
-  broadcasts the existing `config` event with two additive fields:
-  `{"type":"config", ..., "sessions": <int>, "session_boost": <1.0..2.5>}`. `/api/state` and
-  `/api/config` carry the same two fields. A `config` event is only sent on change, so an idle
-  desktop is not chattered at every poll.
-- The page stores the multiplier separately (`state.sessionBoost`) and applies it in
-  `effectiveIntensity()`; the intensity slider continues to show and edit the user's saved base.
-  `mood_reactive`/`enabled` behaviour is unchanged: disabled Aura renders at zero base, and mood
-  gains apply on top of the boosted base exactly as before.
+The active-chat count read was removed at review. Aura reads no session count, so
+additional chats do not change intensity. The `sessions` and `session_boost`
+fields remain in config events, `/api/state`, and `/api/config` for compatibility;
+they stay at `0` and `1.0`, respectively.
 
 ### 9.7 Idle motion (additive, 2026-11-10, plugin 1.0.0)
 
@@ -285,26 +267,35 @@ The page therefore treats audio as the thing being visualised, not as a garnish:
 Consequence for testing: a silence assertion is now a test of the gate, not of a lucky preset.
 `tools/silence_probe.py` measures the whole curated set (21/21 dark, mean 0, lit 0.000).
 
-## 11. Host safety (additive, 2026-11-08)
+## 11. Host safety (additive, 2026-11-08; Behind chat restored 2026-11-18)
 
-Aura owns no host document styles beyond one sanctioned, opt-in visual: while "Visual behind the
-app" (or the Aura Live theme) is on, Aura is enabled and a tokenised URL is live, the desktop half
-mounts exactly one fixed, click-through, negative-z backdrop iframe and one `#aura-glass`
-stylesheet that clears the app's big surfaces so the visual shows through. Switching the visual
-off, turning Aura off, **Restore my theme** and disposal remove both; while nothing is opted in no
-host node or style is added at all, and the host `html`/`body`/root styles are never written.
+The visualiser and the film render in Aura's own iframe, inside a surface Aura owns: the Right panel,
+the `/aura` page, or the floating watch window. The iframe is `position: absolute` with `inset: 0`
+inside that stage (the panel's `.ap-stage`, the page's `.aura-stage`, or the watch window's frame). It
+is not `position: fixed` over the host window, and the panel film has no z-index above the pane.
+Radio plays in that iframe in every mode.
 
-The accent pulse and the optional Aura Live theme are opt-in and off by default. **Restore my
-theme** turns the window visual, the accent pulse and the theme off, clears the accent override
-through `setAccentOverride(null)`, restores the previous theme, and removes every effect Aura
-applied. Disposal does the same and also removes all contributions, timers and listeners.
+The one surface on the host page is the opt-in **Behind chat** film (`filmBehind`), and it exists
+only while all of these hold: Backdrop is Video player, an open film has a source, Aura is on, the
+server answers, and no desktop window or watch window owns the picture. Then, and only then, Aura
+appends ONE click-through iframe (`position: fixed; inset: 0; z-index: -1; pointer-events: none;
+aria-hidden; sandbox="allow-scripts allow-same-origin"`) to the host body and injects ONE
+`#aura-glass` stylesheet whose every rule is scoped under `data-aura-backdrop` on `<html>`. Picking
+another place, closing the film, turning Aura off, a frame failure, or disposal removes the iframe,
+the stylesheet and the attribute together; the host gets its own appearance back exactly. Aura never
+reads or sets a host glass attribute, and never writes host `html`/`body`/root styles.
 
-The full-page stage (the `/aura` route, sidebar row, palette command and compact pane) was removed
-by owner decision: the backdrop and the Settings page are the product. The desktop half now
-contributes only the settings page, the theme, the backdrop, the accent pulse, the titlebar theme
-probe and polling. If "Visual behind the app" is switched on while Aura is off, the desktop half
-enables Aura through the same door as the "Aura enabled" switch (writeSettings + `POST /control
-{enabled:true}`), so the visual never silently draws nothing.
+The full-window visual of the Aura visualiser itself (the old `windowVisual` switch) is still not in
+this build; it returns when Hermes ships a backdrop area (#155903).
+
+The accent pulse is opt-in and off by default. **Restore my theme** turns the accent pulse off,
+clears the accent override through `setAccentOverride(null)`, restores the previous theme if Aura
+changed it, and removes every effect Aura applied. Disposal does the same and also removes all
+contributions, timers and listeners.
+
+The desktop half contributes the settings page, the Right panel, the Aura page, the watch window,
+the accent pulse, the titlebar theme probe and polling. Host `html`/`body`/root styles are never
+written.
 
 ## 12. Capture gate (additive, 2026-11-10, plugin 1.0.0)
 

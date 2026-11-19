@@ -153,6 +153,14 @@
   const frameTimes = [];
   const syncTimes = []; // render()+1px readPixels samples: real GPU-inclusive frame cost
   const syncProbe = new Uint8Array(4);
+  // The sync probe blocks until the GPU has actually drawn the frame, so it is
+  // only worth paying while evaluateDegrade() still needs samples: a warm
+  // window after the loop (re)starts or a quality change the user asked for,
+  // then one sparse keep-alive sample. Preset loads and the automatic ladder
+  // never re-open it — a stall every few frames all evening was idle cost.
+  const PROBE_WARM_MS = 10000;
+  const PROBE_SPARSE_FRAMES = 120;
+  let probeWarmUntil = 0;
 
   const dom = {};
   const audio = {
@@ -360,7 +368,12 @@
   }
 
   function unblock(reason) {
-    if (blockers.delete(reason)) renderStatus();
+    const cleared = blockers.delete(reason);
+    if (!cleared) return;
+    renderStatus();
+    // A hard blocker is what parks the loop; clearing it must resume drawing
+    // without waiting for a control change. startLoop() is idempotent.
+    if (HARD_BLOCKERS.indexOf(reason) !== -1) startLoop();
   }
 
   function hardBlocker() {
@@ -1338,12 +1351,18 @@
          { scale: 0.4, fps: 14 }, { scale: 0.3, fps: 10 }];
   }
 
-  function applyQualityStep(level) {
+  function applyQualityStep(level, userRequested) {
     const ladder = degradeLadder();
     quality.degradeLevel = clamp(level, 0, ladder.length - 1);
     quality.renderScale = ladder[quality.degradeLevel].scale;
     quality.fpsCap = ladder[quality.degradeLevel].fps;
     if (state.reducedMotion) quality.fpsCap = Math.min(quality.fpsCap, 30);
+    // Only a quality change the user asked for re-opens the dense probe
+    // window (which also drops the old samples). The automatic ladder steps
+    // quietly and keeps its GPU samples: with sparse probes, clearing them
+    // would leave the ladder judging on CPU time alone for hundreds of frames,
+    // and a sample from the heavier step only makes it slower to step back up.
+    if (userRequested === true) openProbeWarmWindow();
   }
 
   function evaluateDegrade() {
@@ -1403,11 +1422,21 @@
     }
   }
 
+  // Draw-nothing states park the loop instead of rescheduling at display rate:
+  // off, the silence gate, a hard blocker and a hidden tab all have no visible
+  // output, so a pending rAF is pure idle CPU/GPU. Every "back on" path
+  // (setEnabledUI(true), resumeVisual, a cleared blocker, becoming visible)
+  // calls startLoop(), which is idempotent.
+  function loopActive() {
+    if (!viz || !state.enabled) return false;
+    if (hardBlocker()) return false;
+    if (state.renderPaused) return false;
+    return !document.hidden;
+  }
+
   function loop(ts) {
+    if (!loopActive()) { rafId = null; return; }
     rafId = requestAnimationFrame(loop);
-    if (!viz || !state.enabled) return;
-    if (hardBlocker()) return;
-    if (state.renderPaused) return; // silence gate: nothing to draw
     const interval = 1000 / quality.fpsCap;
     if (ts - lastRenderAt < interval - 1.5) return;
     const t0 = now();
@@ -1441,7 +1470,15 @@
     }
     const dt = now() - t0;
     pushFrameTime(dt);
-    if (state.frames % 5 === 0 && dom.canvas) {
+    // Warm window: sample often enough for the ladder to see real GPU cost.
+    // Afterwards one sample per PROBE_SPARSE_FRAMES keeps the numbers from
+    // going stale without stalling the pipeline every few frames. Only a loop
+    // (re)start or a user-requested quality change opens the window — preset
+    // loads and the automatic ladder must not bring the stall back.
+    const probeDue = now() < probeWarmUntil
+      ? state.frames % 5 === 0
+      : state.frames % PROBE_SPARSE_FRAMES === 0;
+    if (probeDue && dom.canvas) {
       // Real cost, including the GPU work that render() only queues: a 1x1
       // readPixels blocks until SwiftShader has actually drawn the frame.
       let gl = null;
@@ -1457,12 +1494,34 @@
 
   function startLoop() {
     if (rafId) return;
+    // Nothing to draw (off, faded out, blocked, hidden): stay parked, and keep
+    // the samples — a tab switch while Aura is off is not a new session.
+    if (!loopActive()) return;
+    // A real restart opens a fresh warm window: old samples describe the
+    // previous session, and the ladder needs real frame costs before it can
+    // decide anything. This and a user-requested quality change are the only
+    // paths.
+    openProbeWarmWindow();
     rafId = requestAnimationFrame(loop);
+  }
+
+  // The degrade ladder only trusts recent samples; opening the window clears
+  // the ones that describe a different session or quality step.
+  function openProbeWarmWindow() {
+    probeWarmUntil = now() + PROBE_WARM_MS;
+    syncTimes.length = 0;
   }
 
   function stopLoop() {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
   }
+
+  // A hidden tab draws nothing and the browser throttles rAF anyway; parking the
+  // loop makes that explicit, and coming back must resume on the same tick.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopLoop();
+    else startLoop();
+  });
 
   // ---------------------------------------------------------------------------
   // silence gate
@@ -1547,6 +1606,8 @@
     }
     clearVisual();
     if (dom.root) dom.root.dataset.silence = '1';
+    // Nothing to draw while faded out: park the loop until audio returns.
+    stopLoop();
   }
 
   function resumeVisual() {
@@ -1556,6 +1617,9 @@
     if (dom.root) dom.root.dataset.silence = '0';
     lastRenderAt = 0;
     if (viz) { try { renderFrame(); } catch (_) {} }
+    // The loop was parked by pauseVisual(); resume it on this same tick so the
+    // visual comes back exactly as before.
+    startLoop();
   }
 
   // Called for every PCM frame and every feature event: silence=true means the
@@ -2293,6 +2357,9 @@
       quality.fpsCap = step.fps;
       if (next) { quality.renderScale *= 0.9; quality.fpsCap = Math.min(quality.fpsCap, 30); }
       resizeCanvas();
+      // A reduced-motion change is a quality change the user asked for: the
+      // old samples describe the other scale/fps, so measure afresh.
+      openProbeWarmWindow();
     }
     updateMoodVisuals();
     stopPulse();

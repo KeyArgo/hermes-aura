@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/hero.svg" alt="Aura — a film behind your work, and an app that breathes with your audio" width="100%">
+  <img src="assets/hero.svg" alt="Aura — a film in the pane, and an app that breathes with your audio" width="100%">
 </p>
 
 <p align="center">
@@ -21,14 +21,18 @@
   <img alt="capture: system loopback, never the microphone" src="https://img.shields.io/badge/capture-system%20loopback%2C%20not%20mic-e11d48?style=flat-square">
 </p>
 
-<h3 align="center">A film behind your work, and an app that breathes with your audio.</h3>
+<h3 align="center">A film beside your work, and an app that breathes with your audio.</h3>
 
 <p align="center"><i>Applies to v1.0.0 · revised 2026-11-11 · <a href="VERIFY.md">what was verified, and how</a></i></p>
 
 Aura turns Hermes Desktop into a room you can live in. Put any film, lecture or playlist in the
-right-hand pane and keep working; switch the film off and the same audio drives a MilkDrop-compatible
-visualiser behind the interface. It listens to what the machine is already playing — system loopback,
-never the microphone — and nothing leaves the computer: no account, no uploads, no recording.
+right-hand pane and keep working, or send it **behind the chat** with one click; switch the film off
+and the same audio drives a MilkDrop-compatible visualiser in that pane, on the Aura page, or in the
+watch window. The film behind the chat is a choice you make per film — nothing is painted on the
+app's page until you pick **Behind chat** in *Watch in*. A full-window visual of the Aura visualiser
+itself returns when Hermes ships a backdrop area (#155903). It listens to what the machine is
+already playing — system loopback, never the microphone — and nothing leaves the computer: no
+account, no uploads, no recording.
 
 > Aura is not a music-service integration. It needs no Spotify, no YouTube Music and no account of any
 > kind. If the speakers are making a sound, Aura can see it.
@@ -92,11 +96,12 @@ kept per film, keyed by URL, so nothing restarts.
 - **One library, two pickers.** The source dropdowns in the A menu and in Settings list everything —
   saved playlists, your films, the starter pack and recents — grouped under `Playlists`, `Your films`,
   `Starters` and `Recent`. A small **Edit sources…** link opens the Aura page, where editing lives.
-- **A film owns the screen.** While Backdrop is **Video player**, Style, Intensity, the Aura
-  transparency and Gentle motion are greyed out (they only describe the Aura visual), and Show is
-  forced to Always in effect: a playing film is never faded out by "Only while active". The video's own
-  transparency stays live. Your stored Show choice is not overwritten — switch back to the Aura visual
-  and it returns.
+- **A film is the picture.** While Backdrop is **Video player**, Style, Intensity, the Aura
+  transparency and Gentle motion are greyed out (they only describe the Aura visual). The film plays
+  in the Right panel, the Aura page, the watch window, or **behind the chat** — the fourth choice in
+  *Watch in*, last in the list because it is the one that paints the app's page. Pick **Panel** there
+  to bring it back. The full-window visual of the Aura visualiser itself returns when Hermes ships a
+  backdrop area (#155903).
 - **REVamp, next door.** Aura has no music library of its own. [REVamp](https://github.com/KeyArgo/hermes-revamp)
   is a Winamp-style player for Hermes, and Aura's visuals react to whatever it plays — one card on the page,
   one line in Settings.
@@ -163,7 +168,8 @@ also exposes the same search as `GET /api/plugins/aura/search?q=…&limit=…`.
 <p align="center"><img src="assets/audio-path.svg" alt="Audio path: system loopback, capture thread, /api/stream, Butterchurn, the screen" width="100%"></p>
 
 - A MilkDrop-compatible WebGL visualiser driven by system audio — level, bands, silence gating.
-- Backdrop opacity that follows the room: dim when quiet, brighter with music, with manual presets.
+  It lives in the Right panel, the Aura page, or the watch window. The full-window visual returns
+  when Hermes ships a backdrop area (#155903).
 - An optional accent that follows the audio, and agent moods: thinking, running tools, waiting for
   approval, erroring, streaming, finished — each restores itself, nothing latches.
 
@@ -204,14 +210,43 @@ other plugin, and Aura's visuals react to whatever it plays.
 
 ---
 
-## Install
+## Install and set up by OS
 
 ```bash
-hermes plugins install KeyArgo/hermes-aura
+hermes plugins install https://github.com/KeyArgo/hermes-aura --enable
 ```
 
-Turn it on in **Settings ▸ Plugins ▸ Aura**. The Aura pane appears on the right; closing it leaves only
-the status-bar menu. Nothing is captured until Aura is enabled.
+Restart Hermes Desktop after installation.
+
+- **Linux:** Aura automatically uses a PipeWire or PulseAudio monitor source.
+- **Windows:** Aura captures system audio through WASAPI loopback, not the microphone.
+  The plugin installs `soundcard` and `numpy` dependencies.
+- **macOS:** Install a virtual loopback device, for example BlackHole 2ch with
+  `brew install --cask blackhole-2ch`. In Audio MIDI Setup, create a Multi-Output
+  Device containing your speakers and BlackHole, then select it as your output.
+  Aura recognizes input device names containing BlackHole, Loopback, Soundflower,
+  or Existential Audio.
+
+Aura reacts to Hermes lifecycle events and does not depend on your AI model or
+provider. It needs no NVIDIA GPU or CUDA. The visualiser uses WebGL2; software
+WebGL runs at reduced resolution and frame rate. If WebGL2 or the visualiser
+cannot start, Aura shows an accent-only fallback.
+
+## Troubleshooting
+
+- **The visual is black?** Open Aura's Right panel or the Aura page and play some audio. The full-window visual returns when Hermes ships a backdrop area (#155903).
+- **Nothing reacts to sound?** Check the Linux monitor source, Windows WASAPI
+  loopback, or macOS virtual loopback routing above.
+- **YouTube is black or unavailable?** The uploader may block embedding. Try
+  **Watch in → Desktop**, which opens the film in its own window; some videos
+  are still unavailable.
+- **The panel is behind Sessions after choosing a layout?** Restart Hermes Desktop,
+  or use **Aura menu → Panel**.
+- **Radio stopped?** Try another station or start the stream again; the station
+  or its stream may be unavailable.
+- **How do I reset the look?** Choose **Restore my theme**, or turn Aura off and on.
+- **Where are the logs?** Check Hermes Desktop's logs for messages from `aura`,
+  `aura.server`, or `aura.capture`; Aura uses Python logging.
 
 ---
 
@@ -232,15 +267,21 @@ the status-bar menu. Nothing is captured until Aura is enabled.
 
 The only host DOM Aura touches is opt-in and bounded:
 
-- The pane is a `PANES_AREA` contribution — **Hermes lays it out**. No fixed positioning, no z-index, no
-  `body` padding. (An earlier floating column did all three, pushed the host sidebar off its own panel and
-  swallowed clicks; it is gone.)
-- The backdrop is one click-through iframe at negative z-index, plus a single `#aura-glass` stylesheet,
-  mounted only while a visual is showing and removed when it stops. With **Show: Only while active** both
-  exist only while the visual moves.
+- The pane is a `PANES_AREA` contribution — **Hermes lays it out**. The film is `position: absolute`
+  inside the panel stage (`inset: 0`), a descendant of that stage. It is not `position: fixed` over
+  the window, and it has no z-index above the pane. The Aura page and the watch window keep their
+  film inside the box Hermes gives them, the same way. No `body` padding.
+- The visualiser and the film share Aura's own iframe in the Right panel, the Aura page, or the
+  watch window. The one exception is the opt-in **Behind chat** film: a single click-through
+  `iframe` at `z-index: -1` on the host body, plus one `#aura-glass` stylesheet that clears the app's
+  big surfaces so the film shows through. Every glass rule is scoped by the `data-aura-backdrop`
+  attribute on `<html>`, both exist only while you have chosen that place for an open film and Aura
+  is on, and picking Panel, closing the film, turning Aura off or disposing the plugin removes them.
+  A full-window visual of the Aura visualiser itself returns when Hermes ships a backdrop area
+  (#155903).
 - Host `html`/`body`/root styles are never written. The accent override is the SDK's sanctioned mechanism.
-- Switching the visual off, turning Aura off, **Restore my theme** and plugin disposal all remove every
-  effect Aura applied and restore the theme that was there before.
+- Turning Aura off, **Restore my theme** and plugin disposal remove every effect Aura applied and
+  restore the theme that was there before.
 
 ---
 
@@ -251,7 +292,7 @@ plugin.yaml          manifest (hooks, tools, dashboard)
 __init__.py          Python plugin: hooks, aura_control tool
 aura_core/           capture, analysis, config, HTTP server, sessions, radio
 dashboard/           plugin_api.py — the desktop half's REST door (incl. /radio/*)
-desktop/plugin.js    Hermes Desktop half (status menu, pane, window, backdrop, audio)
+desktop/plugin.js    Hermes Desktop half (status menu, pane, page, watch window, audio)
 web/                 visualiser (aura.js), audio channel (audio.js), film stage (player.html), presets
 tests/               Python suite + the desktop DOM contract suite
 ```

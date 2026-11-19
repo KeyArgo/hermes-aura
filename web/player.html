@@ -96,6 +96,12 @@
     return false
   }
 
+  // A seek from the transport is the user's own decision: drop the pending
+  // resume point, or the 500 ms nudge below drags them back within a second.
+  function resumeAfterCommand(cmd, at) {
+    return cmd === 'seek' || cmd === 'seekTo' ? 0 : at
+  }
+
   function isHttpUrl(value) {
     return /^https?:\/\//i.test(value)
   }
@@ -287,6 +293,7 @@
 
     var cmd = data.cmd
     var value = data.value
+    resumeAt = resumeAfterCommand(cmd, resumeAt)
 
     if (kind === 'video' && video) {
       if (cmd === 'play') video.play().catch(function () {})
@@ -397,6 +404,7 @@
   }
 
   function desktopSeek(target) {
+    resumeAt = 0   // the window's own seek is the user's: stop chasing the bookmark
     var to = Math.max(0, Number(target) || 0)
     if (kind === 'video' && video) {
       video.currentTime = to

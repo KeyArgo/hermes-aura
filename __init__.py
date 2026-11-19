@@ -649,8 +649,10 @@ def _action_intensity(args: dict) -> dict:
 
 def _action_preset(args: dict) -> dict:
     raw = args.get("preset")
+    # Missing key, JSON null, and "" (after strip) all reset to the server default.
+    # The schema type is a plain string: strict validators reject ["string", "null"].
     if raw is not None and not isinstance(raw, str):
-        return _bad("preset must be a string or null")
+        return _bad("preset must be a string")
     preset = None if raw is None else str(raw).strip()
     if preset == "":
         preset = None
@@ -725,7 +727,7 @@ SCHEMA_AURA_CONTROL = {
         "intensity, a redacted URL, and what the film is doing (film.player: url, "
         "title, playing, position, duration; film.window: open). action=on/off "
         "toggles Aura; intensity sets the 0..1 cap; preset picks a visualizer "
-        "preset (null = server default); mood sets the agent mood (idle, thinking, "
+        "preset (empty string resets to the server default); mood sets the agent mood (idle, thinking, "
         "tool, approval, error, streaming, done). Transport of the active player "
         "(in-app or its own window): action=pause, resume, next, prev, or seek "
         "with position in seconds. A single-file film has no next/prev; the next "
@@ -752,8 +754,8 @@ SCHEMA_AURA_CONTROL = {
                 "description": "for intensity: cap 0..1",
             },
             "preset": {
-                "type": ["string", "null"],
-                "description": "for preset: preset name, or null for the default",
+                "type": "string",
+                "description": "for preset: preset name; empty string resets to the server default",
             },
             "mood": {
                 "type": "string",

@@ -25,8 +25,8 @@ hermes plugins validate .
 #   → exit 0 · "ok": true · 0 errors · 1 warning
 ```
 
-The warning names one private-core import (`aura_core/sessions.py`, used to count live chat
-sessions). It is inside a `try` with a file-based fallback, so Aura works without it.
+The validation output above is historical. Aura no longer imports the private
+active-session registry or reads its file.
 
 ## Idle cost
 
@@ -49,6 +49,28 @@ curl -s -H "Authorization: Bearer $(cat ~/.hermes/aura/token)" \
   "http://127.0.0.1:$(jq -r .port ~/.hermes/aura/lease.json)/healthz"
 # "capture" reads "none" once idle
 ```
+
+A full-window visual of the Aura visualiser itself is not in this build; it returns when Hermes ships
+a backdrop area (#155903). The film behind the chat is a separate, opt-in surface: `tests/test_no_backdrop.mjs`
+proves that nothing is drawn on the host page without it, `tests/test_behind_chat_soon.mjs` proves the
+one click-through iframe and the scoped `#aura-glass` stylesheet appear only while it is chosen, and
+both suites prove they are gone again after Panel, a close, an Off or dispose.
+
+### Polling
+
+The desktop half keeps its 4 Hz tick but only reaches the backend when Aura is doing something:
+switched on, a film or the visualiser on screen, radio or music playing, a desktop window open, or
+ten seconds after a click or an agent request. Idle it asks every 3 s, and every 15 s while the
+Hermes window is hidden. Counted by `tests/test_idle_poll.mjs` with a fake clock:
+
+| Window | `/status` calls before | after |
+|---|---|---|
+| Aura off, nothing playing, visible, 10 s | 40 | 3 |
+| Aura off, nothing playing, window hidden, 30 s | 120 | 2 |
+| Aura on, 2 s | 8 | 8 |
+
+While a film plays nothing changed: the surface owns the fast cadence, so the player, its
+position and its volume are reported as often as before.
 
 ## What is *not* verified here
 

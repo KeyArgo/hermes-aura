@@ -104,7 +104,13 @@ function makeElement(tagName) {
   if (String(tagName).toLowerCase() === 'iframe') {
     // Every iframe the plugin mounts talks back: that is how the audio and
     // video commands are observed from here.
-    node.contentWindow = { postMessage: message => { sent.push(message) } }
+    node.__sent = []
+    node.contentWindow = {
+      postMessage: message => {
+        node.__sent.push(message)
+        sent.push(message)
+      }
+    }
   }
   return node
 }
@@ -139,7 +145,12 @@ fs.writeFileSync(
   source
     .replace(/from\s+'@hermes\/plugin-sdk'/g, "from './sdk-stub.mjs'")
     .replace(/from\s+'react'/g, "from './react-stub.mjs'")
-    .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-stub.mjs'")
+    .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-stub.mjs'") +
+  // The audio resume decision is driven by module state (which frame is live),
+  // so the copy exposes a handle on it, like the desktop test's wiringTest.
+  '\nexport const audioResumeTest = { resume: typeof resumeAudioIn === "function" ? resumeAudioIn : null,' +
+  ' live: typeof liveFilmFrame === "function" ? liveFilmFrame : null, frame: () => filmFrame,' +
+  ' setFilm: node => { filmFrame = node }, surface: $filmSurface };\n'
 )
 
 fs.writeFileSync(path.join(tmp, 'sdk-stub.mjs'), `
@@ -239,12 +250,18 @@ function makeCtx(initialSettings) {
 // not the DOM.
 const sent = []
 
-// A fresh instance with a mounted backdrop — the audio channel only exists
-// while the backdrop document does.
-async function remount(settings = {}) {
-  const { ctx } = makeCtx({ enabled: true, windowVisual: true, backdropMode: 'aura', ...settings })
+// A fresh instance. The radio talks to an in-pane frame when one is open;
+// nothing is appended to the host body.
+async function remount(settings = {}, options = {}) {
+  const { ctx } = makeCtx({ enabled: true, windowVisual: true, backdropMode: 'aura', panelEnabled: true, ...settings })
   const dispose = plugin.default.register(ctx)
   await new Promise(resolve => setTimeout(resolve, 20))
+  if (options.frame !== false) {
+    const frame = makeElement('iframe')
+    frame.src = 'http://127.0.0.1:4321/?token=x&overlay=1'
+    plugin.audioResumeTest.surface.set({ placement: 'panel', src: frame.src })
+    plugin.audioResumeTest.setFilm(frame)
+  }
   return dispose
 }
 
@@ -349,21 +366,21 @@ await record('handleAudioRequests: every unseen request is applied in order', as
   dispose()
 })
 
-await record('audio-only still mounts the backdrop that hosts audio.js', async () => {
-  const before = new Set(bodyChildren)
+await record('audio-only does not append a backdrop iframe to the host body', async () => {
+  const before = bodyChildren.length
   const dispose = await remount({
     windowVisual: false,
     backdropMode: 'aura',
     audioUrl: 'https://ice.example/audio-only.mp3',
     audioLabel: 'Audio only'
-  })
-  const frame = bodyChildren.find(node => !before.has(node) && node.tagName === 'IFRAME' && node.src && node.src.includes('overlay=1'))
-  assert.ok(frame, 'no backdrop was mounted for an audio-only session')
+  }, { frame: false })
+  assert.equal(bodyChildren.length, before, 'audio-only appended a node to document.body')
+  assert.equal(bodyChildren.some(node => node.tagName === 'IFRAME'), false, 'a body iframe hosted the audio channel')
   dispose()
 })
 
-await record('a closed film does not tear down the audio-only backdrop', async () => {
-  const before = new Set(bodyChildren)
+await record('a closed film keeps radio in the panel and off the host body', async () => {
+  const before = bodyChildren.length
   const dispose = await remount({
     windowVisual: false,
     backdropMode: 'video',
@@ -371,9 +388,12 @@ await record('a closed film does not tear down the audio-only backdrop', async (
     videoUrl: '',
     audioUrl: 'https://ice.example/audio-only.mp3',
     audioLabel: 'Audio only'
-  })
-  const frame = bodyChildren.find(node => !before.has(node) && node.tagName === 'IFRAME' && node.src && node.src.includes('player.html'))
-  assert.ok(frame, 'the closed-film branch removed the audio channel page')
+  }, { frame: false })
+  assert.equal(bodyChildren.length, before, 'a closed film appended a node to document.body')
+  assert.equal(bodyChildren.some(node => node.tagName === 'IFRAME'), false, 'a body iframe hosted the closed film')
+  const surface = plugin.audioResumeTest.surface.get()
+  assert.equal(surface.placement, 'panel', 'closing the film dropped the radio')
+  assert.match(surface.src, /overlay=1/, 'the radio carrier is not the visualiser page')
   dispose()
 })
 
@@ -458,6 +478,141 @@ await record('REVAMP_PITCH names the pitch and revampCard wires both buttons', (
 await record('the video backdrop carries mute=1 when the film is muted', () => {
   // The player page reads ?mute=1; without it a muted film comes back loud.
   assert.match(source, /if \(settings\.videoMuted\) query\.append\('mute', '1'\)/)
+})
+
+// Regression F3: the radio lives inside the frame that holds it, so a surface
+// change (Visualizer <-> film, another "Watch in") mounts a fresh document and
+// the music stopped there while settings.audioUrl still said it was on. The new
+// document's load restarts the channel in it and stops the old one.
+await record('a frame that loads mid-session gets the radio back, the old one is stopped', async () => {
+  const RADIO = 'https://ice.example/resume.mp3'
+  const dispose = await remount({
+    windowVisual: false,
+    backdropMode: 'aura',
+    audioUrl: RADIO,
+    audioLabel: 'Resume Radio',
+    audioVolume: 0.6
+  })
+  await plugin.playAudioSource(RADIO, 'Resume Radio')
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const oldFrame = plugin.audioResumeTest.frame()
+  assert.ok(oldFrame, 'precondition: no backdrop hosts the audio channel')
+  assert.ok(
+    oldFrame.__sent.some(message => message.aura === 'audio' && message.cmd === 'play'),
+    'precondition: the radio never started in the backdrop'
+  )
+
+  // The film surface mounts its own frame, and its load makes it the live one.
+  const film = makeElement('iframe')
+  film.src = 'http://127.0.0.1:4321/player.html?url=https%3A%2F%2Fexample.test%2Ffilm.mp4'
+  plugin.audioResumeTest.surface.set({ placement: 'panel', src: film.src })
+  plugin.audioResumeTest.setFilm(film)
+  oldFrame.__sent.length = 0
+  plugin.audioResumeTest.resume(film)
+
+  const play = film.__sent.find(message => message.aura === 'audio' && message.cmd === 'play')
+  assert.ok(play, 'the frame that just loaded was never sent the radio')
+  assert.equal(play.url, RADIO, 'the resumed stream is not the one the user was listening to')
+  assert.equal(play.volume, 0.6, 'the resumed stream lost the user volume')
+  assert.ok(
+    oldFrame.__sent.some(message => message.aura === 'audio' && message.cmd === 'stop'),
+    'the old frame keeps a second stream playing'
+  )
+
+  // A load from a frame that is no longer live must change nothing.
+  oldFrame.__sent.length = 0
+  film.__sent.length = 0
+  plugin.audioResumeTest.resume(oldFrame)
+  assert.equal(oldFrame.__sent.length, 0, 'the stale frame was restarted')
+  assert.equal(film.__sent.length, 0, 'the live frame was restarted by a stale load')
+  dispose()
+})
+
+await record('a load with no radio selected sends nothing', async () => {
+  const dispose = await remount({ windowVisual: true, backdropMode: 'aura', audioUrl: '' })
+  const frame = plugin.audioResumeTest.frame()
+  assert.ok(frame, 'precondition: no backdrop mounted')
+  frame.__sent.length = 0
+  plugin.audioResumeTest.resume(frame)
+  assert.equal(frame.__sent.length, 0, 'a play was sent although no radio is on')
+  dispose()
+})
+
+await record('the in-pane frame and the Behind chat backdrop both resume the radio on load', () => {
+  assert.match(
+    source,
+    /onLoad: \(\) => resumeAudioIn\(filmFrame\)/,
+    'the in-pane film never resumes the radio'
+  )
+  assert.match(
+    source,
+    /addEventListener\('load', \(\) => resumeAudioIn\(backdropEl\)\)/,
+    'the Behind chat backdrop never resumes the radio'
+  )
+})
+
+await record('a stop during radio resolve does not start the station', async () => {
+  let release
+  const held = new Promise(resolve => { release = resolve })
+  const { ctx } = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, audioUrl: '' })
+  const original = ctx.rest.bind(ctx)
+  ctx.rest = (route, options) => {
+    if (String(route).startsWith('/radio/resolve')) return held
+    return original(route, options)
+  }
+  const dispose = plugin.default.register(ctx)
+  const frame = makeElement('iframe')
+  frame.src = 'http://127.0.0.1:4321/?token=x&overlay=1'
+  plugin.audioResumeTest.surface.set({ placement: 'panel', src: frame.src })
+  plugin.audioResumeTest.setFilm(frame)
+  const before = sent.length
+  const pending = plugin.playAudioSource('https://ice.example/station.m3u', 'Held')
+  plugin.stopAudio()
+  release({ ok: true, url: 'https://ice.example/resolved-held.mp3' })
+  await pending
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const plays = sent.slice(before).filter(message =>
+    message.aura === 'audio' && message.cmd === 'play')
+  assert.equal(plays.length, 0, 'a station resolved after Stop still started')
+  assert.equal(plugin.audioState().settings.audioUrl, '', 'Stop left the resolved station in audioUrl')
+  dispose()
+})
+
+await record('a newer station wins a radio resolve still in flight', async () => {
+  let releaseA
+  let releaseB
+  const heldA = new Promise(resolve => { releaseA = resolve })
+  const heldB = new Promise(resolve => { releaseB = resolve })
+  const { ctx } = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, audioUrl: '' })
+  const original = ctx.rest.bind(ctx)
+  ctx.rest = (route, options) => {
+    const path = String(route)
+    if (path.startsWith('/radio/resolve') && path.includes('station-a')) return heldA
+    if (path.startsWith('/radio/resolve') && path.includes('station-b')) return heldB
+    return original(route, options)
+  }
+  const dispose = plugin.default.register(ctx)
+  const frame = makeElement('iframe')
+  frame.src = 'http://127.0.0.1:4321/?token=x&overlay=1'
+  plugin.audioResumeTest.surface.set({ placement: 'panel', src: frame.src })
+  plugin.audioResumeTest.setFilm(frame)
+  const before = sent.length
+  const pendingA = plugin.playAudioSource('https://ice.example/station-a.m3u', 'A')
+  const pendingB = plugin.playAudioSource('https://ice.example/station-b.m3u', 'B')
+  releaseA({ ok: true, url: 'https://ice.example/resolved-a.mp3' })
+  await pendingA
+  const playsA = sent.slice(before).filter(message =>
+    message.aura === 'audio' && message.cmd === 'play' && message.url === 'https://ice.example/resolved-a.mp3')
+  assert.equal(playsA.length, 0, 'station A played after station B was chosen')
+  assert.notEqual(plugin.audioState().settings.audioUrl, 'https://ice.example/resolved-a.mp3')
+  releaseB({ ok: true, url: 'https://ice.example/resolved-b.mp3' })
+  await pendingB
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(plugin.audioState().settings.audioUrl, 'https://ice.example/resolved-b.mp3')
+  const playsB = sent.slice(before).filter(message =>
+    message.aura === 'audio' && message.cmd === 'play' && message.url === 'https://ice.example/resolved-b.mp3')
+  assert.ok(playsB.length > 0, 'station B never played')
+  dispose()
 })
 
 // --------------------------------------------------------------------- report
