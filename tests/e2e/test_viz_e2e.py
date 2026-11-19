@@ -584,6 +584,15 @@ class Chrome:
         self.profile = tempfile.mkdtemp(prefix="aura-e2e-")
         self.proc = subprocess.Popen([
             binary, "--headless=new", "--mute-audio",
+            # Chrome 129 dropped the automatic SwiftShader fallback for WebGL, so a
+            # headless browser with no GPU (every GitHub runner on Linux and
+            # Windows) gets no context at all: renderer 'none', and not one frame
+            # is drawn. The assertions below are written against a software
+            # renderer ("degraded-software"), so pin it here instead of depending
+            # on whatever the host happens to have. CI finally gets a real
+            # context, and a developer's GPU machine stops failing the two
+            # software-tier tests that only ever passed on a slow box.
+            "--enable-unsafe-swiftshader", "--use-angle=swiftshader",
             "--autoplay-policy=no-user-gesture-required",
             "--user-data-dir=" + self.profile,
             "--remote-debugging-port=0", "--remote-allow-origins=*",

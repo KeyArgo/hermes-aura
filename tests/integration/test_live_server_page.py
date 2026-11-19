@@ -94,7 +94,12 @@ def _cdp_session(url: str):
     prof = tempfile.mkdtemp()
     assert CHROME is not None
     proc = subprocess.Popen(
-        [CHROME, "--headless=new", "--mute-audio", "--autoplay-policy=no-user-gesture-required",
+        # Same software-renderer pin as tests/e2e/test_viz_e2e.py: Chrome 129
+        # dropped the automatic SwiftShader fallback, so a runner without a GPU
+        # has no WebGL context to draw into.
+        [CHROME, "--headless=new", "--mute-audio",
+         "--enable-unsafe-swiftshader", "--use-angle=swiftshader",
+         "--autoplay-policy=no-user-gesture-required",
          f"--user-data-dir={prof}", "--remote-debugging-port=0", "--remote-allow-origins=*",
          "--window-size=1280,860",
          # GitHub's Ubuntu runners forbid the namespaces Chrome's sandbox needs.
