@@ -429,6 +429,11 @@ let enabledTouched = false
 // Bumped by every on/off. A /status that started before the latest switch is
 // stale about `enabled`: the switch the user just pressed wins.
 let enabledEpoch = 0
+// A user on/off POST in flight: a /status that STARTS during it shares the new
+// enabledEpoch but still reads the old switch. Its `enabled` is not trusted
+// until the first poll that starts after the POST settles.
+let controlPushPending = 0
+let controlPushEpoch = 0
 let liveFrame = null // latest /state frame — hot path, deliberately not an atom
 let liveKey = ''
 // The in-pane iframe (visualiser or film) inside a surface Aura owns.
@@ -1540,6 +1545,7 @@ async function poll() {
   polling = true
   lastPollAt = Date.now()
   const epochAtStart = enabledEpoch
+  const controlEpochAtStart = controlPushEpoch
   try {
     let status = null
     let error = ''
@@ -1561,8 +1567,11 @@ async function poll() {
     }
 
     const ok = Boolean(status && status.ok === true)
-    // A late answer must not undo an Off (or On) pressed while it was in flight.
-    let enabled = ok && enabledEpoch === epochAtStart ? status.enabled === true : $settings.get().enabled
+    // A late answer must not undo an Off (or On) pressed while it was in flight —
+    // including a /status that STARTED during the on/off POST (it shares the new
+    // enabledEpoch but read the old switch). The user's choice wins until the
+    // first poll that starts after that POST settles.
+    let enabled = ok && enabledEpoch === epochAtStart && controlPushPending === 0 && controlPushEpoch === controlEpochAtStart ? status.enabled === true : $settings.get().enabled
     let frame = null
     if (ok) {
       try {
@@ -1585,8 +1594,9 @@ async function poll() {
     handleAudioRequests(frame)
     if (ok) await syncPlayerOwnership()
     // Checked again after the awaits above: an Off pressed while /state or the
-    // player sync was in flight wins too.
-    if (enabledEpoch !== epochAtStart) enabled = $settings.get().enabled
+    // player sync was in flight wins too, as does an on/off POST that was still
+    // in flight when this poll started (or settled while it ran).
+    if (enabledEpoch !== epochAtStart || controlPushPending !== 0 || controlPushEpoch !== controlEpochAtStart) enabled = $settings.get().enabled
     const key = [ok, port, capture, enabled, url, error, mood].join('|')
     if (key !== liveKey) {
       liveKey = key
@@ -1870,7 +1880,10 @@ async function setEnabled(next, fromNewBuild = false) {
       void closeDesktopWindow()
     }
   }
+  controlPushPending += 1
   const ok = await pushControl({ enabled })
+  controlPushPending -= 1
+  controlPushEpoch += 1
   if (ok) {
     setLive({ enabled, error: '' })
     refreshFilmSurface()

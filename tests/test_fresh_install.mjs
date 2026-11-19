@@ -341,7 +341,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { video: $video, frame: () => filmFrame, surface: () => $filmSurface.get(), lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : 0) };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { video: $video, live: () => $live.get(), frame: () => filmFrame, surface: () => $filmSurface.get(), lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : 0) };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -1733,6 +1733,60 @@ async function tickUntil(bucket, done) {
     assert.equal(live().length, 0, 'an answer that was in flight during Off put the film back')
   })
   safeDispose('the stale state scenario', scenario.dispose)
+}
+
+// Same race, one step earlier (review 11-18): a /status that STARTS while the
+// Off POST is still in flight shares the new enabledEpoch, so its stale "on"
+// used to land in $live and put the film back until the next tick.
+{
+  const scenario = await watchWindowScenario({ videoWindow: false })
+  const realRest = scenario.bucket.ctx.rest
+  let heldControl = null
+  let heldState = null
+  scenario.bucket.ctx.rest = async (route, options = {}) => {
+    if (route === '/control' && options.body && options.body.enabled === false && !heldControl) {
+      // Held before the fake server applies it: /status still says on.
+      return new Promise(resolve => { heldControl = () => resolve(realRest(route, options)) })
+    }
+    if (route === '/status' && heldControl) {
+      const stale = await realRest(route, options)
+      // Anything else that changed in the same answer makes the stale write count.
+      return { ...stale, enabled: true, capture: 'stale-backend-3' }
+    }
+    if (route === '/state' && heldControl && !heldState) {
+      const frame = await realRest(route, options)
+      return new Promise(resolve => { heldState = () => resolve(frame) })
+    }
+    return realRest(route, options)
+  }
+  await recordAsync('61c. a /status that starts during the Off POST cannot undo Off', async () => {
+    const live = () => hostIframes().filter(f => f.style.display !== 'none')
+    assert.ok(live().length >= 1, 'no film in the Right panel to begin with')
+    const power = domFind(scenario.pane, node => node.className === 'ap-power')
+    clickDom(power)
+    clickDom(power)
+    await sleep(30)
+    assert.equal(typeof heldControl, 'function', 'the Off /control POST was not held')
+    assert.equal(scenario.bucket.serverEnabled(), true, 'the server applied Off before its POST resolved')
+    // A tick while the POST is held: this poll starts AFTER the click (it shares
+    // the new epoch) and its /status still says on. Its /state answer is held so
+    // the poll is still in flight when the POST resolves.
+    await tickUntil(scenario.bucket, () => typeof heldState === 'function')
+    assert.equal(typeof heldState, 'function', 'no /status poll started while the Off POST was held')
+    // Release the POST first: setEnabled's follow-up poll() finds polling busy.
+    const releaseControl = heldControl
+    heldControl = null
+    releaseControl()
+    await sleep(40)
+    assert.ok(scenario.bucket.controls.some(c => c && c.enabled === false), 'the power button did not turn Aura off')
+    heldState()
+    heldState = null
+    await sleep(60)
+    rerenderFloating()
+    assert.equal(pluginModule.wiringTest.live().enabled, false, 'a /status that started during the Off POST put enabled back on')
+    assert.equal(live().length, 0, 'a /status that started during the Off POST put the film back')
+  })
+  safeDispose('the status-during-control scenario', scenario.dispose)
 }
 
 // Found in review (11-14): turning Aura off while the desktop window was still

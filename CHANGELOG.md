@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Off now stays off when a /status check starts during the on/off switch's own request and answers with the old switch.
 - Removed the full-window backdrop. It returns when Hermes ships an SDK backdrop area (#155903).
 - Removed the optional Aura Live theme.
 - Stop closes the film, and its desktop window, instead of leaving it on screen.
