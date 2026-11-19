@@ -24,7 +24,12 @@
   // ---------------------------------------------------------------------------
 
   const params = new URLSearchParams(location.search);
-  const TOKEN = params.get('token') || '';
+  // The desktop window bootstraps its token from a one-time ticket (index.html)
+  // and keeps it in sessionStorage — never in the page URL.
+  function desktopToken() {
+    try { return sessionStorage.getItem('auraDesktopToken') || ''; } catch (err) { return ''; }
+  }
+  const TOKEN = params.get('token') || desktopToken();
   const FORCE_NO_WEBGL = params.get('no-webgl') === '1';
   const FORCE_REDUCED = params.get('reduced-motion') === '1';
   const OVERLAY = params.get('overlay') === '1';

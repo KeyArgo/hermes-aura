@@ -337,9 +337,36 @@
 
 <script src="vendor/butterchurn.min.js"></script>
 <script src="vendor/butterchurnPresets.min.js"></script>
-<script src="aura.js"></script>
-<!-- [listen lane] Audio channel: radio / music plays here too, so the music
-     keeps going when the film pane is not the thing on screen. -->
-<script src="audio.js"></script>
+<script>
+(function () {
+  'use strict'
+  // Desktop window (?ticket=): trade the one-time ticket for the token before
+  // the page scripts load, and scrub the ticket from the address bar — the
+  // token itself never rides in a URL (the same handshake player.html uses).
+  // In-app surfaces arrive with a query token and load straight away.
+  var params = new URLSearchParams(window.location.search)
+  var ticket = params.get('ticket') || ''
+  function load() {
+    var sources = ['aura.js', 'audio.js']
+    for (var i = 0; i < sources.length; i++) {
+      var script = document.createElement('script')
+      script.src = sources[i]
+      script.async = false  // keep the shipped order: aura.js, then audio.js
+      document.body.appendChild(script)
+    }
+  }
+  if (!ticket) { load(); return }
+  params.delete('ticket')
+  history.replaceState(null, '', location.pathname + (params.toString() ? '?' + params.toString() : ''))
+  fetch('/api/window/bootstrap', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ticket: ticket }), cache: 'no-store'
+  }).then(function (response) { return response.ok ? response.json() : null }).then(function (payload) {
+    if (payload && payload.token) {
+      try { sessionStorage.setItem('auraDesktopToken', payload.token) } catch (err) { /* private mode */ }
+    }
+  }).catch(function () { /* the page says it needs its token */ }).then(load)
+})()
+</script>
 </body>
 </html>

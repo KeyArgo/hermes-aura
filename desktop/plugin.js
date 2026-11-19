@@ -1206,6 +1206,8 @@ let desktopOwned = false
 let desktopPending = false
 // A close of a desktop window that is still open while Aura is off is in flight.
 let desktopClosing = false
+// A page swap of the open desktop window (mode changed under it) is in flight.
+let desktopSwitching = false
 // Bumped by every setDesktopWindow call; a slow open checks it before claiming the film.
 let desktopGeneration = 0
 let playerCursor = null
@@ -1248,6 +1250,15 @@ async function syncPlayerOwnership() {
       if (player.desktop === true) {
         lastDesktopPlayer = player
         $video.set({ ...$video.get(), ...player, reportedAt: Date.now() })
+      }
+      // The window shows what the mode asks for. A mode change can land while
+      // a slow open is still in flight, so reconcile against the server's own
+      // report here too — the same poll, one extra check, no new cadence.
+      const expectedPage = $settings.get().backdropMode !== 'video' ? 'visualizer' : 'player'
+      const shownPage = snapshot.window && typeof snapshot.window.page === 'string' ? snapshot.window.page : ''
+      if (shownPage && shownPage !== expectedPage && !desktopSwitching && !desktopPending) {
+        desktopSwitching = true
+        void openDesktopWindow().finally(() => { desktopSwitching = false })
       }
       playerCursor = null
       return
@@ -1396,29 +1407,37 @@ async function toggleDesktopWindow() {
 // window is open the in-app film should be parked (desktopWindowOpen tells the
 // caller); closing the window brings it back.
 
-/** Pop the current film out into its own window, at the current position. */
+/** Pop the current picture out into its own window: the film in Video mode,
+ *  the visualiser page in Visualizer mode (no film needed there). */
 async function openDesktopWindow() {
   if (!ctxRef || disposed) return { open: false, error: 'Aura is not running.' }
   const settings = $settings.get()
+  const visual = settings.backdropMode !== 'video'
   const videoUrl = typeof settings.videoUrl === 'string' ? settings.videoUrl.trim() : ''
-  if (!videoUrl) return { open: false, error: 'Choose a film first.' }
+  if (!visual && !videoUrl) return { open: false, error: 'Choose a film first.' }
   const video = $video.get()
-  const body = {
-    url: videoUrl,
-    position: Number.isFinite(video.position) ? Math.max(0, video.position) : 0,
-    label: typeof video.title === 'string' ? video.title : '',
-    videoId: typeof video.videoId === 'string' ? video.videoId : '',
-    playing: video.playing === true
-  }
+  const body = visual
+    ? { page: 'visualizer', reducedMotion: settings.reducedMotion === true }
+    : {
+        page: 'player',
+        url: videoUrl,
+        position: Number.isFinite(video.position) ? Math.max(0, video.position) : 0,
+        label: typeof video.title === 'string' ? video.title : '',
+        videoId: typeof video.videoId === 'string' ? video.videoId : '',
+        playing: video.playing === true
+      }
   try {
     const result = await ctxRef.rest('/window/open', { method: 'POST', body, timeoutMs: 15000 })
     if (result && result.ok === true) {
       // Two players with sound is never right: park the in-app film the
       // moment the window owns it. Closing the window leaves it parked, ready
       // for the pane's own play control (the orchestrator brings it back).
-      postToFrame({ cmd: 'pause' })
-      if (!desktopOwned) $video.set({ ...$video.get(), playing: false, reportedAt: Date.now() })
-      return { open: true, already: result.already === true, url: result.url || videoUrl }
+      // The visualiser window has no film to park.
+      if (!visual) {
+        postToFrame({ cmd: 'pause' })
+        if (!desktopOwned) $video.set({ ...$video.get(), playing: false, reportedAt: Date.now() })
+      }
+      return { open: true, already: result.already === true, url: result.url || (visual ? '' : videoUrl) }
     }
     const reason = result && typeof result.error === 'string' && result.error
       ? result.error
@@ -1960,6 +1979,13 @@ async function setBackdropMode(next) {
   if ($settings.get().showWhen === 'always') syncBackdrop()
   else updateShow()
   await pushControl({ backdrop_mode: backdropMode })
+  // The OS window follows the mode: the server swaps its page (close+reopen).
+  // If the swap cannot happen (no film for Video mode, no browser), fall back
+  // to the in-app surface instead of leaving the wrong picture up.
+  if (desktopOwned && !disposed) {
+    const result = await openDesktopWindow()
+    if (!result.open && !disposed) await setDesktopWindow(false)
+  }
 }
 
 /** The video URL the player page should show. Trimmed and length-capped; the
