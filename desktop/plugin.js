@@ -3390,6 +3390,24 @@ const FILM_PLACES = [
   ['desktop', 'Desktop', 'Watch the film in a desktop window']
 ]
 
+/** A future place, shown but never usable. It is deliberately NOT in
+ *  FILM_PLACES: it never becomes data-active and never calls moveFilmTo, so
+ *  currentFilmPlace()/moveFilmTo() stay exactly as they were. Greyed by
+ *  Aura's own .ap-pill-soon rule. */
+function behindChatPill(className, style) {
+  const pill = doc.createElement('button')
+  pill.type = 'button'
+  pill.className = className
+  pill.textContent = 'Behind chat'
+  pill.disabled = true
+  pill.setAttribute('disabled', '')
+  pill.setAttribute('aria-disabled', 'true')
+  pill.setAttribute('aria-label', 'Behind chat (coming soon)')
+  pill.title = 'Coming soon'
+  if (style) Object.assign(pill.style, style)
+  return pill
+}
+
 /** Where the film is playing right now. */
 function currentFilmPlace() {
   if (desktopOwned || desktopPending) return 'desktop'
@@ -3645,7 +3663,8 @@ function mountVideoBar() {
     transportRow.appendChild(node)
   }
   // Where the film goes next, while it is in the watch window: back into the
-  // Right panel, or out of Hermes into its own OS window.
+  // Right panel, or out of Hermes into its own OS window. "Behind chat" is a
+  // greyed signpost for the future, between the two real places.
   const sendRow = doc.createElement('div')
   Object.assign(sendRow.style, {
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px',
@@ -3655,20 +3674,23 @@ function mountVideoBar() {
   sendLabel.textContent = 'Send to'
   Object.assign(sendLabel.style, { fontSize: '10.5px', color: 'rgba(255,255,255,0.6)', marginRight: '2px' })
   sendRow.appendChild(sendLabel)
+  const sendPillStyle = {
+    appearance: 'none', border: '1px solid rgba(255,255,255,0.18)', borderRadius: '999px',
+    background: 'transparent', color: 'inherit', font: 'inherit', fontSize: '10.5px',
+    padding: '3px 8px', lineHeight: '1'
+  }
   for (const [text, aria, title, action] of [
     ['Right panel', 'Send the film to the Right panel', 'Play the film in the Right panel', sendFilmToPanel],
     ['Desktop', 'Pop the film out to the desktop', 'Play the film in its own window on your desktop', sendFilmToDesktop]
   ]) {
+    // The coming-soon pill has no action and never gets one: it is a signpost.
+    if (text === 'Desktop') sendRow.appendChild(behindChatPill('ap-pill-soon', { ...sendPillStyle, opacity: '0.45', cursor: 'not-allowed' }))
     const button = doc.createElement('button')
     button.type = 'button'
     button.textContent = text
     button.setAttribute('aria-label', aria)
     button.title = title
-    Object.assign(button.style, {
-      appearance: 'none', border: '1px solid rgba(255,255,255,0.18)', borderRadius: '999px',
-      background: 'transparent', color: 'inherit', font: 'inherit', fontSize: '10.5px',
-      padding: '3px 8px', cursor: 'pointer', lineHeight: '1'
-    })
+    Object.assign(button.style, { ...sendPillStyle, cursor: 'pointer' })
     button.addEventListener('mouseenter', () => { button.style.background = 'rgba(255,255,255,0.14)' })
     button.addEventListener('mouseleave', () => { button.style.background = 'transparent' })
     button.addEventListener('click', event => {
@@ -4060,6 +4082,11 @@ function panelCss() {
     }
     .ap-pill[data-active="true"] {
       border-color: rgba(255,190,120,0.55); color: #ffd9a8; background: rgba(255,190,120,0.14);
+    }
+    /* A future place: shown so the roadmap is visible, greyed so nobody tries
+       it. It never gets data-active, so it can never look selected. */
+    .ap-pill-soon {
+      opacity: 0.45; cursor: not-allowed;
     }
 
     /* shelf --------------------------------------------------------------- */
@@ -4605,8 +4632,9 @@ function mountPanelInto(hostNode) {
   sourceRow.appendChild(sourceLabel)
   sourceRow.appendChild(source)
 
-  // Watch in: Panel, Window or Desktop. The film and the visualiser share
-  // Aura's own surfaces. There is no body backdrop.
+  // Watch in: Panel, Window or Desktop, plus a greyed "Behind chat" signpost
+  // for the future. The film and the visualiser share Aura's own surfaces.
+  // There is no body backdrop.
   const watchInRow = doc.createElement('div')
   watchInRow.className = 'ap-field'
   const watchInLabel = doc.createElement('span')
@@ -4616,6 +4644,9 @@ function mountPanelInto(hostNode) {
   watchInButtons.className = 'ap-pills'
   const watchInPills = []
   for (const [place, label, aria] of FILM_PLACES) {
+    // The coming-soon pill sits between Panel and Window. It is not one of the
+    // real places.
+    if (place === 'window') watchInButtons.appendChild(behindChatPill('ap-pill ap-pill-soon'))
     const pill = doc.createElement('button')
     pill.type = 'button'
     pill.className = 'ap-pill'

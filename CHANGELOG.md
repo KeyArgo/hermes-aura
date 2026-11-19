@@ -27,6 +27,7 @@
   ten seconds after a start or a quality change the user asked for, then once every 120 frames.
   Preset loads (including mood/agent changes) and the automatic quality ladder no longer re-open
   that window, so the stall cannot come back all evening. Nothing on screen changes.
+- Watch in and the watch window's Send to row show Behind chat, greyed out, as coming soon.
 
 ## 1.0.0 — 2026-11-11
 
