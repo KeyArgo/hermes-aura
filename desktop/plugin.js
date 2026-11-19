@@ -453,6 +453,12 @@ let enabledEpoch = 0
 // until the first poll that starts after the POST settles.
 let controlPushPending = 0
 let controlPushEpoch = 0
+// The epochs the stored $live.enabled was confirmed against, stamped on every
+// write. Anything that only reads $live (the backdrop, the glow) has no
+// `epochAtStart` of its own, so this is how it asks the same question poll()
+// asks: is this answer older than the last switch? -1 means "never confirmed".
+let liveEnabledEpoch = -1
+let liveEnabledControlEpoch = -1
 let liveFrame = null // latest /state frame — hot path, deliberately not an atom
 let liveKey = ''
 // The in-pane iframe (visualiser or film) inside a surface Aura owns.
@@ -755,6 +761,11 @@ function writeSettings(patch, quiet) {
 
 function setLive(patch) {
   const next = { ...$live.get(), ...patch }
+  // An answer about `enabled` is only as good as the switch it was read after.
+  if (Object.prototype.hasOwnProperty.call(patch, 'enabled')) {
+    liveEnabledEpoch = enabledEpoch
+    liveEnabledControlEpoch = controlPushEpoch
+  }
   $live.set(next)
   return next
 }
@@ -1122,6 +1133,21 @@ function behindChatChosen() {
   return settings.backdropMode === 'video' && settings.filmBehind === true
 }
 
+/** Is Aura on, as the user last set it? `$live.enabled` is the server's answer
+ *  to a /status that may have read the switch BEFORE the last one: while an
+ *  on/off POST is in flight, or after a switch the stored answer predates, the
+ *  user's own setting is the truth. The same rule poll() applies to the answer
+ *  it is holding, for every reader that only ever sees $live. */
+function auraEnabledNow(settings) {
+  const current = settings || $settings.get()
+  const live = $live.get()
+  if (!live.ok) return current.enabled === true
+  const fresh = controlPushPending === 0 &&
+    liveEnabledEpoch === enabledEpoch &&
+    liveEnabledControlEpoch === controlPushEpoch
+  return fresh ? live.enabled === true : current.enabled === true
+}
+
 /** Should the film be drawn on the host page right now? A real, open film, the
  *  chosen place, Aura on, a live server, and no other surface owning the
  *  picture. A pane film may play with Aura off; painting the host page may
@@ -1135,17 +1161,15 @@ function behindChatWanted(settings) {
   // while they are up: one film, one surface, and they are Aura's own.
   if (desktopOwned || desktopPending || desktopClosing || watchWindowOpen()) return false
   if (pageVisible()) return false
-  const live = $live.get()
-  const enabled = live.ok ? live.enabled === true : current.enabled
-  return Boolean(enabled && liveUrl())
+  return Boolean(auraEnabledNow(current) && liveUrl())
 }
 
-/** What the backdrop page should be showing, minus server port and token: a
- *  new source or a gentle-motion flip reloads it, a server refresh must not
- *  (the film would restart). */
+/** What the backdrop page should be showing. A new source, a gentle-motion
+ *  flip or a REPLACED server (new port or token) re-points the frame; the same
+ *  address never restarts the film. */
 function behindPageKey() {
   const settings = $settings.get()
-  return [settings.videoUrl, settings.reducedMotion ? 'reduced' : 'full'].join('|')
+  return [settings.videoUrl, settings.reducedMotion ? 'reduced' : 'full', liveUrl()].join('|')
 }
 
 /** Never leave a cleared chat over nothing: when the full-window frame or the
@@ -1199,9 +1223,10 @@ function mountBackdrop() {
     backdropEl.addEventListener('load', () => resumeAudioIn(backdropEl))
     const style = backdropEl.style
     style.position = 'fixed'
+    // inset:0 only. 100vw/100vh are the *visual* viewport: with a classic
+    // Windows scrollbar they are wider/taller than the layout viewport, so the
+    // box overflows and shows a sliver of film beside the app.
     style.inset = '0'
-    style.width = '100vw'
-    style.height = '100vh'
     style.border = '0'
     style.pointerEvents = 'none'
     style.zIndex = '-1'
@@ -1938,7 +1963,7 @@ async function poll() {
     const key = [ok, port, capture, enabled, url, error, mood].join('|')
     if (key !== liveKey) {
       liveKey = key
-      $live.set({
+      setLive({
         ok,
         port,
         url,
@@ -1959,6 +1984,9 @@ async function poll() {
     applyVideoOpacity()
     accentStep(Date.now())
     pulseStep()
+    // The glow spends no frames while Aura is off or nothing plays; this is the
+    // answer that tells it activity started (or stopped) again.
+    refreshAuraGlow()
   } finally {
     polling = false
   }
@@ -2159,6 +2187,9 @@ void main() {
 // Short on purpose: three drifting bands, a warm crest for an attention mood,
 // and a corner falloff. All the motion comes from uTime and the energy from
 // uniforms the poll already produces.
+//
+// The precision line is highp in the template; auraFragmentSource() swaps it
+// for mediump on a context that does not offer highp in fragment shaders.
 const AURA_FRAGMENT = `precision highp float;
 uniform vec2 uRes;
 uniform float uTime;    // seconds; a fixed value under reduced motion
@@ -2191,6 +2222,16 @@ void main() {
   gl_FragColor = vec4(min(color, vec3(1.0)), 1.0);
 }
 `
+
+/** The fragment shader at the best precision this context offers. WebGL 1 only
+ *  guarantees mediump in fragment shaders: highp needs
+ *  GL_FRAGMENT_PRECISION_HIGH, and a driver without it fails to compile the
+ *  shader, which would cost the whole glow its picture. */
+function auraFragmentSource(highp) {
+  return highp
+    ? AURA_FRAGMENT
+    : AURA_FRAGMENT.replace(/precision\s+highp\s+float\s*;/, 'precision mediump float;')
+}
 
 // Aura's own colours: the near-black field, the blue accent and the violet it
 // blends into. Fixed here rather than probed, so the glow works before the
@@ -2306,8 +2347,12 @@ function createAuraGlow() {
   let program = null
   let uniforms = {}
   let raf = 0
+  let running = false
   let last = 0
   let lost = false
+  // What the last still (idle) frame showed. A poll tick that changes nothing
+  // visible must not repaint, or "static" would still cost a draw per tick.
+  let stillKey = ''
   const start = auraNow()
 
   const compile = (type, text) => {
@@ -2318,9 +2363,22 @@ function createAuraGlow() {
     return gl.getShaderParameter(shader, gl.COMPILE_STATUS) ? shader : null
   }
 
+  /** Does this context offer highp in a fragment shader? WebGL 1 asks the
+   *  driver; a precision of 0 means highp is not supported there. */
+  const fragmentHighp = () => {
+    try {
+      const format = typeof gl.getShaderPrecisionFormat === 'function'
+        ? gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT)
+        : null
+      return Boolean(format && Number(format.precision) > 0)
+    } catch {
+      return false
+    }
+  }
+
   const build = () => {
     const vs = compile(gl.VERTEX_SHADER, AURA_VERTEX)
-    const fs = compile(gl.FRAGMENT_SHADER, AURA_FRAGMENT)
+    const fs = compile(gl.FRAGMENT_SHADER, auraFragmentSource(fragmentHighp()))
     if (!vs || !fs) return false
     program = gl.createProgram()
     if (!program) return false
@@ -2347,8 +2405,13 @@ function createAuraGlow() {
 
   const resize = () => {
     // 1 rendered pixel per 3 CSS px: a soft glow needs no more.
-    canvas.width = Math.max(1, Math.ceil((Number(win.innerWidth) || 1) / AURA_GLOW_CELL))
-    canvas.height = Math.max(1, Math.ceil((Number(win.innerHeight) || 1) / AURA_GLOW_CELL))
+    const width = Math.max(1, Math.ceil((Number(win.innerWidth) || 1) / AURA_GLOW_CELL))
+    const height = Math.max(1, Math.ceil((Number(win.innerHeight) || 1) / AURA_GLOW_CELL))
+    // Only when it actually changed: assigning canvas.width clears the drawing
+    // buffer, and a poll tick must not blank a still frame it does not redraw.
+    if (canvas.width === width && canvas.height === height) return
+    canvas.width = width
+    canvas.height = height
   }
 
   const draw = now => {
@@ -2373,27 +2436,78 @@ function createAuraGlow() {
   const stop = () => {
     cancel(raf)
     raf = 0
+    running = false
+  }
+
+  const hidden = () => Boolean(doc && doc.hidden === true)
+
+  /** Is there anything to animate? Aura off, or a calm frame (silence and an
+   *  idle mood: nothing playing) is a still picture, so one frame is enough. */
+  const lively = () => {
+    if (!auraEnabledNow()) return false
+    const energy = auraEnergy()
+    return energy.silence !== 1 || energy.mood > 0
+  }
+
+  /** What a still frame shows. The level is left out while silent: the shader
+   *  flattens it out then, so a stale level must not cost a repaint. */
+  const stillSignature = () => {
+    const energy = auraEnergy()
+    return [
+      auraDarkMode() ? 'dark' : 'light',
+      energy.silence,
+      energy.silence ? 0 : energy.level.toFixed(2),
+      energy.mood,
+      motion && motion.matches ? 'still' : 'moving',
+      canvas.width,
+      canvas.height
+    ].join('|')
+  }
+
+  /** One static frame, drawn only when something visible changed. */
+  const still = () => {
+    stop()
+    const key = stillSignature()
+    if (key === stillKey) return
+    stillKey = key
+    draw(auraNow())
   }
 
   const tick = now => {
+    // Activity ended while the loop was running: this last frame is the still
+    // one, and nothing else is scheduled. Off is off, idle is idle.
+    if (lost || hidden() || !lively()) {
+      if (lost || hidden()) stop()
+      else still()
+      return
+    }
     raf = frame(tick)
+    running = true
     if (now - last >= 1000 / AURA_GLOW_FPS - 2) {
       last = now
       draw(now)
     }
   }
 
-  const hidden = () => Boolean(doc && doc.hidden === true)
-
   const play = () => {
-    stop()
     // Hidden: nothing to show and nothing worth a frame. Reduced motion: one
     // still frame, no loop.
-    if (lost || hidden()) return
-    if (motion && motion.matches) {
-      draw(auraNow())
+    if (lost || hidden()) {
+      stop()
       return
     }
+    if (motion && motion.matches) {
+      still()
+      return
+    }
+    // Off, or nothing playing: a still picture. Draw it once and stop.
+    if (!lively()) {
+      still()
+      return
+    }
+    if (running) return
+    stillKey = ''
+    running = true
     raf = frame(tick)
   }
 
@@ -2408,15 +2522,21 @@ function createAuraGlow() {
     // colour rather than scheduling frames that draw nothing.
     lost = !build()
     resize()
+    stillKey = ''
     play()
   }
 
   const onResize = () => {
     resize()
+    // A resize clears the drawing buffer: repaint at once, looping or still.
+    stillKey = ''
     draw(auraNow())
   }
 
-  const onMotionChange = () => play()
+  const onMotionChange = () => {
+    stillKey = ''
+    play()
+  }
   const onVisibility = () => play()
 
   canvas.addEventListener('webglcontextlost', onLost)
@@ -2425,20 +2545,37 @@ function createAuraGlow() {
   if (motion && typeof motion.addEventListener === 'function') motion.addEventListener('change', onMotionChange)
   if (doc && typeof doc.addEventListener === 'function') doc.addEventListener('visibilitychange', onVisibility)
 
+  /** Release the context, so a mount that never lands does not hold a GPU
+   *  context for the life of the window. */
+  const releaseContext = () => {
+    try {
+      if (gl && typeof gl.getExtension === 'function') gl.getExtension('WEBGL_lose_context')?.loseContext()
+    } catch {
+      // the context is going away anyway
+    }
+  }
+
+  /** Undo everything the mount registered. Every failure path uses this, so no
+   *  path can leave a listener (or the context) behind. */
+  const detach = () => {
+    stop()
+    if (typeof win.removeEventListener === 'function') win.removeEventListener('resize', onResize)
+    if (motion && typeof motion.removeEventListener === 'function') motion.removeEventListener('change', onMotionChange)
+    if (doc && typeof doc.removeEventListener === 'function') doc.removeEventListener('visibilitychange', onVisibility)
+    canvas.removeEventListener('webglcontextlost', onLost)
+    canvas.removeEventListener('webglcontextrestored', onRestored)
+    releaseContext()
+  }
+
   if (!build()) {
     flat()
     lost = true   // nothing to draw; the flat colour is the whole effect
     if (!mount()) {
-      if (doc && typeof doc.removeEventListener === 'function') doc.removeEventListener('visibilitychange', onVisibility)
-      if (typeof win.removeEventListener === 'function') win.removeEventListener('resize', onResize)
+      detach()
       return none
     }
   } else if (!mount()) {
-    if (doc && typeof doc.removeEventListener === 'function') doc.removeEventListener('visibilitychange', onVisibility)
-    if (typeof win.removeEventListener === 'function') win.removeEventListener('resize', onResize)
-    if (motion && typeof motion.removeEventListener === 'function') motion.removeEventListener('change', onMotionChange)
-    canvas.removeEventListener('webglcontextlost', onLost)
-    canvas.removeEventListener('webglcontextrestored', onRestored)
+    detach()
     return none
   }
 
@@ -2447,23 +2584,18 @@ function createAuraGlow() {
 
   return {
     canvas,
-    // Mode or an accent retint changed: the colours and the size are stale.
+    // The poll's answer, a mode switch or an accent retint: activity may have
+    // started (resume the loop) or stopped (settle on one still frame).
     refresh() {
       resize()
-      draw(auraNow())
+      if (lost || hidden()) {
+        stop()
+        return
+      }
+      play()
     },
     destroy() {
-      stop()
-      if (typeof win.removeEventListener === 'function') win.removeEventListener('resize', onResize)
-      if (motion && typeof motion.removeEventListener === 'function') motion.removeEventListener('change', onMotionChange)
-      if (doc && typeof doc.removeEventListener === 'function') doc.removeEventListener('visibilitychange', onVisibility)
-      canvas.removeEventListener('webglcontextlost', onLost)
-      canvas.removeEventListener('webglcontextrestored', onRestored)
-      try {
-        if (gl && typeof gl.getExtension === 'function') gl.getExtension('WEBGL_lose_context')?.loseContext()
-      } catch {
-        // the context is going away anyway
-      }
+      detach()
       try { canvas.remove() } catch { /* already gone */ }
     }
   }
@@ -2483,6 +2615,18 @@ function syncAuraGlow(name) {
     auraGlow = null
   } else if (auraGlow) {
     auraGlow.refresh()
+  }
+}
+
+/** The poll's own answer, with no mount or unmount: activity starting resumes
+ *  the loop, activity ending settles it on one still frame. Cheap by design —
+ *  a steady state redraws nothing. */
+function refreshAuraGlow() {
+  if (!auraGlow) return
+  try {
+    auraGlow.refresh()
+  } catch {
+    // a broken frame must not break the poll
   }
 }
 

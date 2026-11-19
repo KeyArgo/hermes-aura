@@ -18,7 +18,9 @@
  *   f. switching to another theme removes the canvas, and dispose removes it too,
  *   g. the runtime never writes a style onto body / documentElement / #app,
  *   h. activating the theme and running frames adds no network request,
- *   i. the loop pauses while document.hidden and resumes when visible,
+ *   i. the loop runs only while Aura is on and something plays: a hidden window
+ *      pauses it and showing the window resumes it, while idle/off is one
+ *      still frame and no loop at all,
  *   j. prefers-reduced-motion draws one still frame and schedules no loop,
  *   k. level / silence / mood reach the shader as uniforms, and nothing
  *      playing reports silence (a calm glow),
@@ -338,7 +340,8 @@ function mount() {
     async rest(route) {
       requests.push(route)
       if (route === '/status') {
-        return { ok: true, port: 4321, url: 'http://127.0.0.1:4321/?token=x', capture: 'none', enabled: false }
+        // Aura on: the glow's loop is about activity, not about the switch.
+        return { ok: true, port: 4321, url: 'http://127.0.0.1:4321/?token=x', capture: 'none', enabled: true }
       }
       if (route === '/state') {
         return { level: 0, bands: [0, 0, 0, 0, 0, 0, 0, 0], silence: true, mood: 'idle' }
@@ -376,6 +379,18 @@ function resetPage() {
 
 const canvasInPage = () => html.children.filter(node => node.tagName === 'CANVAS')
 const glNow = () => glContexts.at(-1) || null
+
+// The glow only spends frames while Aura is on AND something plays. Every
+// check about the loop establishes both up front; idle is one still frame.
+function startActivity() {
+  plugin.auraTest.audio.set({ ...plugin.auraTest.audio.get(), playing: true })
+  plugin.auraTest.setLive({ level: 0.62, silence: false, mood: 'thinking' })
+}
+
+function stopActivity() {
+  plugin.auraTest.audio.set({ ...plugin.auraTest.audio.get(), playing: false })
+  plugin.auraTest.setLive({ level: 0, silence: true, mood: 'idle' })
+}
 
 // ------------------------------------------------------------------ the checks
 
@@ -466,6 +481,7 @@ await record('f. a theme switch removes the canvas, and so does dispose', async 
   resetPage()
   const bucket = themeContribution()
   await settle()
+  startActivity()
   plugin.auraTest.sync('aura')
   assert.equal(canvasInPage().length, 1)
   assert.equal(pendingFrames(), 1, 'a looping frame was not scheduled')
@@ -482,6 +498,7 @@ await record('f. a theme switch removes the canvas, and so does dispose', async 
   assert.equal(pendingFrames(), 0, 'dispose left a frame queued')
   assert.equal(documentListeners.visibilitychange ? documentListeners.visibilitychange.length : 0, 0,
     'dispose left the visibility listener registered')
+  stopActivity()
 })
 
 await record('g. the runtime writes no style onto body, #root or #app', async () => {
@@ -520,6 +537,7 @@ await record('i. the loop pauses while the window is hidden and resumes when vis
   resetPage()
   const bucket = themeContribution()
   await settle()
+  startActivity()
   plugin.auraTest.sync('aura')
   assert.equal(pendingFrames(), 1, 'no frame was scheduled while visible')
   flushFrame(40)
@@ -538,6 +556,7 @@ await record('i. the loop pauses while the window is hidden and resumes when vis
   assert.equal(pendingFrames(), 1, 'showing the window did not resume the loop')
   flushFrame(80)
   assert.ok(glNow().draws > drawsBefore, 'the resumed loop never drew')
+  stopActivity()
   bucket.dispose()
 })
 
@@ -591,6 +610,7 @@ await record('l. webglcontextlost stops the loop; restore brings it back', async
   resetPage()
   const bucket = themeContribution()
   await settle()
+  startActivity()
   plugin.auraTest.sync('aura')
   const canvas = canvasInPage()[0]
   let prevented = 0
@@ -599,6 +619,7 @@ await record('l. webglcontextlost stops the loop; restore brings it back', async
   assert.equal(pendingFrames(), 0, 'the loop kept running after the context was lost')
   canvas.fire('webglcontextrestored', {})
   assert.equal(pendingFrames(), 1, 'the restored event did not resume the loop')
+  stopActivity()
   bucket.dispose()
 })
 

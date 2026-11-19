@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Off stays off behind the chat too: while the on/off request is still in flight, leaving the Aura page
+  or changing Gentle motion no longer remounts the Behind chat film from the server's stale answer. The
+  user's own switch decides, the same rule the status poll applies.
+- Behind chat reconnects to a replaced server: a restart on a new port (or with a new token) re-points
+  the film iframe instead of leaving it on a dead address, and the same server never restarts the film.
+- The Behind chat film is sized with `inset: 0` alone. `100vw`/`100vh` are the visual viewport, so with a
+  classic Windows scrollbar the box was wider and taller than the layout viewport and overflowed the app.
+- The Aura theme's glow only spends frames while there is something to animate: with Aura off, or nothing
+  playing, it draws one static frame and stops, and the poll resumes it when activity starts again.
+- A glow mount that fails now leaves nothing behind: every listener (matchMedia, resize, visibility, the
+  two context events) is removed and the WebGL context is released, exactly like the other failure path.
+- The glow's fragment shader falls back to `mediump` where the context does not offer `highp` in fragment
+  shaders, instead of failing to compile and losing the picture.
 - Off now stays off when a /status check starts during the on/off switch's own request and answers with the old switch.
 - **Behind chat is back, as an opt-in.** "Watch in" and the watch window's "Send to" row end with a
   real Behind chat choice: the film plays in ONE click-through iframe at z-index -1 on the host body,
