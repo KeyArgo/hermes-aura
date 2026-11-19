@@ -1,22 +1,26 @@
 /**
- * "Behind chat" as a coming-soon signpost, with no behaviour.
+ * "Behind chat": the fourth place the film can play, and the only one Aura
+ * paints on the host page. This file proves the whole of that promise:
  *
- * The owner asked to see the next place the film could go without it existing
- * yet. This file proves the whole of that promise:
+ *   1. the Right panel's Watch in row offers four real pills, in reading
+ *      order: Panel, Window, Desktop, Behind chat (last), and the Send to row
+ *      ends with Behind chat too,
+ *   2. the Behind chat pill is a real control: not disabled, not greyed, no
+ *      "coming soon" label, and it is the one that is marked active while the
+ *      film is behind the chat,
+ *   3. clicking it writes filmBehind: true and mounts exactly ONE click-through
+ *      iframe at z-index -1 on document.body (the player page), plus the one
+ *      glass stylesheet scoped by data-aura-backdrop on <html>; the panel then
+ *      shows no second picture,
+ *   4. the default surface is still the Right panel: with filmBehind false
+ *      nothing at all is drawn on the host page (no iframe, no glass, no
+ *      attribute),
+ *   5. Panel takes the film back: filmBehind false, the iframe and the glass
+ *      gone with it, and the film in the panel again,
+ *   6. dispose leaves no backdrop iframe and no glass behind.
  *
- *   1. the Right panel's Watch in row offers four pills, in reading order:
- *      Panel, Window, Desktop, Behind chat,
- *   2. the Behind chat pill is disabled (attribute + aria-disabled), greyed by
- *      Aura's own .ap-pill-soon rule, titled "Coming soon" and labelled
- *      "Behind chat (coming soon)",
- *   3. it is never marked active, has no click handler, and clicking it moves
- *      the film nowhere and writes no settings (it is not in FILM_PLACES, so
- *      currentFilmPlace()/moveFilmTo() cannot see it),
- *   4. the watch window's "Send to" row carries the same disabled pill, last, after
- *      Right panel and Desktop, also inert,
- *   5. nothing about it touches the host page: plugin.js contains no
- *      'data-aura-backdrop' and no 'data-hermes-glass-on', and no filmBehind
- *      setting was added.
+ * The filename keeps its old name (the pill it once described was a greyed
+ * "coming soon" signpost); Behind chat ships now.
  *
  * The harness is the same fake host tests/test_desktop_plugin.mjs and
  * tests/test_fresh_install.mjs use: a temp copy of the plugin has its three
@@ -145,15 +149,13 @@ function domFind(root, predicate) {
   })
   return found
 }
-function domFindAll(root, predicate) {
-  const out = []
-  domWalk(root, node => {
-    if (predicate(node)) out.push(node)
-  })
-  return out
-}
 const domByAria = (root, label) => domFind(root, node => node.attributes && node.attributes['aria-label'] === label)
 const clickHandlers = node => (node.__handlers && node.__handlers.click) || []
+const clickDom = node => {
+  const handlers = clickHandlers(node)
+  assert.ok(handlers.length, 'this node has no click handler')
+  handlers.forEach(fn => fn({ preventDefault() {} }))
+}
 
 /** A host ctx. Only what these scenarios touch. */
 function makeCtx(settings) {
@@ -240,7 +242,7 @@ function makeCtx(settings) {
 
 // --------------------------------------------------------------- temp module
 
-const tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'aura-behind-soon-'))
+const tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'aura-behind-'))
 const pluginCopy = path.join(tmp, 'plugin.mjs')
 const sdkStub = path.join(tmp, 'sdk-stub.mjs')
 const reactStub = path.join(tmp, 'react-stub.mjs')
@@ -252,7 +254,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { video: $video, frame: () => filmFrame, surface: () => $filmSurface.get(), lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : 0) };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { video: $video, frame: () => filmFrame, surface: () => $filmSurface.get(), backdrop: () => backdropEl, lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : 0) };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -363,12 +365,26 @@ export const Fragment = Symbol.for('react.fragment')
 `
 )
 
-// Fake DOM: enough for the panel DOM, the floating strip and the stylesheet.
+// Fake DOM: enough for the panel DOM, the floating strip, the backdrop iframe,
+// the stylesheet, and the Aura theme's glow canvas on <html>.
 const bodyChildren = []
 const headChildren = []
+const rootChildren = []
 const documentElement = {
   style: {},
   attributes: {},
+  children: rootChildren,
+  appendChild(node) {
+    node.parentNode = this
+    rootChildren.push(node)
+    return node
+  },
+  removeChild(node) {
+    const index = rootChildren.indexOf(node)
+    if (index >= 0) rootChildren.splice(index, 1)
+    node.parentNode = null
+    return node
+  },
   setAttribute(name, value) { this.attributes[name] = String(value) },
   getAttribute(name) { return this.attributes[name] },
   removeAttribute(name) { delete this.attributes[name] },
@@ -510,22 +526,31 @@ async function tickPoll(bucket) {
 }
 
 const videoBar = () => [...bodyChildren, ...floatingNodes()].find(node => node.attributes && node.attributes.role === 'toolbar')
+const bodyIframes = () => bodyChildren.filter(node => node.tagName === 'IFRAME')
+const glassStyle = () => headChildren.find(node => node.attributes && node.attributes.id === 'aura-glass')
 
 // -------------------------------------------------------------- static rules
 
-record('plugin.js carries no backdrop hook for Behind chat', () => {
-  assert.ok(!source.includes('data-aura-backdrop'), 'plugin.js mentions data-aura-backdrop')
-  assert.ok(!source.includes('data-hermes-glass-on'), 'plugin.js mentions data-hermes-glass-on')
+record('plugin.js carries the opt-in gate, not a coming-soon signpost', () => {
+  assert.match(source, /function behindChatWanted/, 'the opt-in gate is gone')
+  assert.match(source, /data-aura-backdrop/, 'the glass is no longer scoped by one attribute')
+  assert.doesNotMatch(source, /ap-pill-soon/, 'the greyed coming-soon pill is still in the source')
+  assert.doesNotMatch(source, /Behind chat \(coming soon\)/, 'the coming-soon label is still in the source')
 })
-record('Behind chat is not a real place: FILM_PLACES still holds only the three', () => {
+record('Behind chat is a real place, last in FILM_PLACES', () => {
   const places = /const FILM_PLACES = \[([\s\S]*?)\n\]/.exec(source)
   assert.ok(places, 'FILM_PLACES is gone')
-  assert.equal((places[1].match(/\['/g) || []).length, 3, 'FILM_PLACES grew a fourth place')
-  assert.ok(!/behind/i.test(places[1]), 'Behind chat was added to FILM_PLACES')
+  const labels = [...places[1].matchAll(/\['([a-z]+)', '([^']+)'/g)].map(match => [match[1], match[2]])
+  assert.deepEqual(labels, [
+    ['panel', 'Panel'],
+    ['window', 'Window'],
+    ['desktop', 'Desktop'],
+    ['behind', 'Behind chat']
+  ], 'FILM_PLACES is not Panel, Window, Desktop, Behind chat')
 })
 
 // ===================================================================
-// The Right panel's Watch in row: four pills, the new one inert.
+// The Right panel's Watch in row: four real pills, Behind chat last.
 // ===================================================================
 
 {
@@ -541,64 +566,88 @@ record('Behind chat is not a real place: FILM_PLACES still holds only the three'
   const pillsRow = domFind(pane, node => node.className === 'ap-pills')
   assert.ok(pillsRow, 'the panel has no Watch in pills row')
   const pills = pillsRow.children.slice()
-  const soon = domByAria(pane, 'Behind chat (coming soon)')
+  const behindPill = domByAria(pane, 'Watch the film behind the chat')
 
-  record('1. Watch in offers four pills: Panel, Window, Desktop, Behind chat', () => {
+  record('1. Watch in offers four real pills: Panel, Window, Desktop, Behind chat', () => {
     assert.equal(pills.length, 4, `Watch in has ${pills.length} pills: ${pills.map(pill => pill.textContent).join(', ')}`)
     assert.deepEqual(pills.map(pill => pill.textContent), ['Panel', 'Window', 'Desktop', 'Behind chat'],
       'the Behind chat pill is not last')
   })
 
-  record('2. the Behind chat pill is disabled, greyed by Aura\'s own rule, and labelled as coming soon', () => {
-    assert.ok(soon, 'no Behind chat pill')
-    assert.equal(soon.attributes['aria-label'], 'Behind chat (coming soon)')
-    assert.equal(soon.title, 'Coming soon', `tooltip is "${soon.title}"`)
-    assert.equal(soon.disabled, true, 'the pill is not disabled')
-    assert.equal(Object.prototype.hasOwnProperty.call(soon.attributes, 'disabled'), true,
-      'the disabled attribute is missing')
-    assert.equal(soon.attributes['aria-disabled'], 'true', 'aria-disabled is not set')
-    assert.match(String(soon.className), /\bap-pill-soon\b/, 'the pill does not carry the greyed class')
-    const style = domFind(pane, node => node.tagName === 'STYLE' && node.attributes && node.attributes.id === 'aura-panel-style')
-    assert.ok(style, 'the panel stylesheet is missing')
-    const css = String(style.textContent || '')
-    const rule = /\.ap-pill-soon\s*\{([^}]*)\}/.exec(css)
-    assert.ok(rule, 'no .ap-pill-soon rule in Aura\'s stylesheet')
-    assert.match(rule[1], /opacity:\s*0\.45/, 'the pill is not greyed in the stylesheet')
-    assert.match(rule[1], /cursor:\s*not-allowed/, 'the pill does not show the not-allowed cursor')
+  record('2. the Behind chat pill is enabled and has no coming-soon dressing', () => {
+    assert.ok(behindPill, 'no Behind chat pill')
+    assert.equal(behindPill.attributes['aria-label'], 'Watch the film behind the chat')
+    assert.notEqual(behindPill.disabled, true, 'the pill is disabled')
+    assert.equal(Object.prototype.hasOwnProperty.call(behindPill.attributes, 'disabled'), false,
+      'the disabled attribute is still set')
+    assert.equal(behindPill.attributes['aria-disabled'], undefined, 'aria-disabled is still set')
+    assert.doesNotMatch(String(behindPill.className), /ap-pill-soon/, 'the pill still carries the greyed class')
+    assert.doesNotMatch(String(behindPill.title || ''), /coming soon/i, 'the tooltip still says coming soon')
+    assert.equal(clickHandlers(behindPill).length > 0, true, 'the pill has no click handler')
   })
 
-  record('3. the Behind chat pill is never marked active', () => {
-    assert.notEqual(soon.attributes['data-active'], 'true', 'Behind chat is marked as the current place')
+  record('3. with the film in the panel, nothing is drawn behind the chat (the default)', () => {
+    assert.equal(bodyIframes().length, 0, 'a backdrop iframe exists without Behind chat')
+    assert.equal(glassStyle(), undefined, 'the glass exists without Behind chat')
+    assert.equal(documentElement.getAttribute('data-aura-backdrop'), undefined,
+      'the scoping attribute exists without Behind chat')
+    assert.equal(behindPill.attributes['data-active'], 'false', 'Behind chat is marked active')
     assert.equal(domByAria(pane, 'Watch the film in the Right panel').attributes['data-active'], 'true',
       'the film is not marked in the Right panel')
   })
 
-  await recordAsync('4. clicking it moves nothing and writes no settings', async () => {
-    assert.equal(clickHandlers(soon).length, 0, 'the disabled pill has a click handler')
-    const settingsBefore = JSON.stringify(bucket.storage.get('settings'))
-    const controlsBefore = bucket.controls.length
-    const storageBefore = new Map(bucket.storage)
-    // Even if something did dispatch a click, the disabled pill must stay put.
-    for (const handler of clickHandlers(soon)) handler({ preventDefault() {} })
-    await sleep(60)
+  await recordAsync('4. clicking it sends the film behind the chat: one click-through iframe and the glass', async () => {
+    clickDom(behindPill)
+    await sleep(80)
     await tickPoll(bucket)
-    assert.equal(JSON.stringify(bucket.storage.get('settings')), settingsBefore, 'the film\'s settings changed')
-    assert.equal(bucket.controls.length, controlsBefore, 'clicking Behind chat sent a /control command')
-    assert.deepEqual([...bucket.storage.entries()], [...storageBefore.entries()], 'storage was written')
-    assert.equal(bucket.storage.get('settings').filmBehind, false, 'Behind chat wrote filmBehind')
-    assert.equal(bucket.storage.get('settings').videoWindow, false, 'the film moved to the watch window')
-    assert.equal(domByAria(pane, 'Watch the film in the Right panel').attributes['data-active'], 'true',
-      'the film left the Right panel')
-    assert.equal(domByAria(pane, 'Watch the film in the watch window').attributes['data-active'], 'false',
-      'the watch window is marked as the current place')
+    assert.equal(bucket.storage.get('settings').filmBehind, true, 'Behind chat wrote no filmBehind')
+    const frames = bodyIframes()
+    assert.equal(frames.length, 1, `Behind chat mounted ${frames.length} body iframes`)
+    const frame = frames[0]
+    assert.match(String(frame.src), /\/player\.html/, 'the backdrop is not the film player page')
+    assert.equal(frame.style.position, 'fixed')
+    assert.equal(frame.style.zIndex, '-1', 'the backdrop is not behind the app')
+    assert.equal(frame.style.pointerEvents, 'none', 'the backdrop takes clicks meant for the chat')
+    assert.equal(frame.attributes['aria-hidden'], 'true', 'the backdrop is exposed to assistive tech')
+    assert.equal(frame.attributes.sandbox, 'allow-scripts allow-same-origin', 'the backdrop sandbox is wrong')
+    assert.ok(glassStyle(), 'the app surfaces were not cleared for the film behind the chat')
+    assert.equal(documentElement.getAttribute('data-aura-backdrop'), '', 'the glass is not scoped to the backdrop')
+    // The panel is the remote: no second picture, and Behind chat is the
+    // marked place.
+    assert.equal(pluginModule.wiringTest.surface().placement, '', 'the film is drawn inside Hermes as well')
+    assert.equal(domByAria(pane, 'Watch the film behind the chat').attributes['data-active'], 'true',
+      'Behind chat is not marked as the current place')
+    const stage = domFind(pane, node => node.className === 'ap-stage')
+    assert.equal(stage.style.display, 'none', 'the panel still shows a second picture')
   })
 
-  dispose()
+  await recordAsync('5. Panel takes the film back and leaves nothing on the host page', async () => {
+    clickDom(domByAria(pane, 'Watch the film in the Right panel'))
+    await sleep(80)
+    await tickPoll(bucket)
+    assert.equal(bucket.storage.get('settings').filmBehind, false, 'Panel did not write filmBehind: false')
+    assert.equal(bodyIframes().length, 0, 'the backdrop iframe survived the move to the panel')
+    assert.equal(glassStyle(), undefined, 'the glass survived the move to the panel')
+    assert.equal(documentElement.getAttribute('data-aura-backdrop'), undefined,
+      'the scoping attribute survived the move to the panel')
+    assert.equal(pluginModule.wiringTest.surface().placement, 'panel', 'the film did not come back to the panel')
+  })
+
+  await recordAsync('6. dispose takes the backdrop and the glass with it', async () => {
+    clickDom(domByAria(pane, 'Watch the film behind the chat'))
+    await sleep(80)
+    assert.equal(bodyIframes().length, 1, 'precondition: no backdrop to dispose')
+    dispose()
+    assert.equal(bodyIframes().length, 0, 'dispose left the backdrop iframe on the host body')
+    assert.equal(glassStyle(), undefined, 'dispose left the glass stylesheet')
+    assert.equal(documentElement.getAttribute('data-aura-backdrop'), undefined,
+      'dispose left the scoping attribute on <html>')
+    assert.equal(pluginModule.wiringTest.backdrop(), null, 'dispose left the backdrop frame registered')
+  })
 }
 
 // ===================================================================
-// The watch window's "Send to" row: the same disabled pill, after the two
-// real places, and equally inert.
+// The watch window's "Send to" row: the same real pill, last, and it works.
 // ===================================================================
 
 {
@@ -619,39 +668,90 @@ record('Behind chat is not a real place: FILM_PLACES still holds only the three'
   assert.ok(right, 'the strip has no Right panel send')
   const sendRow = right.parentNode
   const sendChildren = sendRow.children.slice()
-  const soon = domByAria(bar, 'Behind chat (coming soon)')
+  const behind = domByAria(bar, 'Send the film behind the chat')
 
-  record('5. the Send to row ends with the disabled Behind chat pill', () => {
-    assert.ok(soon, 'the strip has no Behind chat pill')
-    assert.equal(soon.title, 'Coming soon')
-    assert.equal(soon.disabled, true, 'the strip pill is not disabled')
-    assert.equal(soon.attributes['aria-disabled'], 'true')
-    assert.equal(soon.attributes['disabled'], '')
-    assert.match(String(soon.className), /\bap-pill-soon\b/, 'the strip pill does not carry the greyed class')
+  record('7. the Send to row ends with a real Behind chat pill', () => {
+    assert.ok(behind, 'the strip has no Behind chat pill')
+    assert.notEqual(behind.disabled, true, 'the strip pill is disabled')
+    assert.equal(behind.attributes['aria-disabled'], undefined, 'aria-disabled is still set')
+    assert.equal(behind.attributes.disabled, undefined, 'the disabled attribute is still set')
+    assert.doesNotMatch(String(behind.className), /ap-pill-soon/, 'the strip pill still carries the greyed class')
     const labels = sendChildren.map(node => (node.attributes && node.attributes['aria-label']) || node.textContent)
     assert.deepEqual(labels, [
       'Send to',
       'Send the film to the Right panel',
       'Pop the film out to the desktop',
-      'Behind chat (coming soon)'
+      'Send the film behind the chat'
     ], 'the strip order is not Right panel, Desktop, Behind chat')
-    assert.notEqual(soon.attributes['data-active'], 'true', 'the strip pill is marked active')
   })
 
-  await recordAsync('6. clicking the strip pill sends the film nowhere and writes no settings', async () => {
-    assert.equal(clickHandlers(soon).length, 0, 'the strip pill has a click handler')
-    const settingsBefore = JSON.stringify(bucket.storage.get('settings'))
-    const controlsBefore = bucket.controls.length
-    for (const handler of clickHandlers(soon)) handler({ preventDefault() {} })
-    await sleep(60)
-    await tickPoll(bucket)
-    assert.equal(JSON.stringify(bucket.storage.get('settings')), settingsBefore, 'the strip pill changed settings')
-    assert.equal(bucket.controls.length, controlsBefore, 'clicking the strip pill sent a /control command')
-    assert.equal(bucket.storage.get('settings').filmBehind, false, 'the film was sent behind the chat')
-    assert.equal(bucket.storage.get('settings').videoWindow, true, 'the watch window closed')
+  await recordAsync('8. clicking the strip pill sends the film behind the chat and closes the watch window', async () => {
+    clickDom(behind)
+    await sleep(80)
+    const saved = bucket.storage.get('settings')
+    assert.equal(saved.filmBehind, true, 'the film was not sent behind the chat')
+    assert.equal(saved.videoWindow, false, 'the watch window stayed open over the backdrop')
+    assert.equal(bodyIframes().length, 1, 'Behind chat mounted no backdrop iframe on the host body')
+    assert.ok(glassStyle(), 'Behind chat mounted no glass')
+    assert.equal(pluginModule.wiringTest.surface().placement, '', 'the film is still drawn inside Hermes as well')
   })
 
   dispose()
+  record('9. disposing the second scenario leaves nothing on the host page', () => {
+    assert.equal(bodyIframes().length, 0, 'dispose left a backdrop iframe behind')
+    assert.equal(glassStyle(), undefined, 'dispose left the glass stylesheet')
+    assert.equal(documentElement.getAttribute('data-aura-backdrop'), undefined,
+      'dispose left the scoping attribute on <html>')
+  })
+}
+
+// ===================================================================
+// The Aura theme's glow and the film behind the chat are both the window's
+// background, and the glow canvas is opaque: only one of them paints.
+// ===================================================================
+
+{
+  const bucket = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: SINTEL_URL
+  })
+  const dispose = pluginModule.default.register(bucket.ctx)
+  await tickPoll(bucket)
+  // The permanent theme probe is what reports the active theme.
+  sdk.themeState.name = 'aura'
+  renderDeep(renderContribution(bucket.contributions.find(c => c.id === 'theme-probe')))
+  await tickPoll(bucket)
+  const glow = () => rootChildren.find(node => node.attributes && node.attributes['data-aura-glow'] !== undefined)
+  const menuChoice = label => {
+    const tree = renderContribution(bucket.contributions.find(c => c.id === 'quick-menu'))
+    let found = null
+    walk(tree, node => {
+      if (!found && node.props && node.props['aria-label'] === label) found = node
+    })
+    return found
+  }
+
+  record('10. the Aura theme glow mounts behind the app, and stands down while the film is behind the chat', () => {
+    assert.ok(glow(), 'the Aura theme mounted no glow canvas')
+  })
+
+  await recordAsync('11. Behind chat takes the glow down, and Panel brings it back', async () => {
+    menuChoice('Watch the film behind the chat (quick menu)').props.onClick()
+    await sleep(40)
+    await tickPoll(bucket)
+    assert.equal(bodyIframes().length, 1, 'precondition: no film behind the chat')
+    assert.equal(glow(), undefined, 'the glow canvas still paints over the film behind the chat')
+    menuChoice('Watch the film in the Right panel (quick menu)').props.onClick()
+    await sleep(40)
+    await tickPoll(bucket)
+    assert.equal(bodyIframes().length, 0, 'precondition: the film left the host page')
+    assert.ok(glow(), 'the glow canvas did not come back with the panel film')
+  })
+
+  dispose()
+  sdk.themeState.name = 'nous'
+  record('12. dispose takes the glow canvas with it', () => {
+    assert.equal(glow(), undefined, 'dispose left the glow canvas on <html>')
+  })
 }
 
 // --------------------------------------------------------------- reporting

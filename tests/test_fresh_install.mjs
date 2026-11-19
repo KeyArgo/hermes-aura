@@ -1011,11 +1011,17 @@ const stripButton = label => {
     assert.ok(domFind(videoBar(), node => node.attributes && node.attributes['aria-label'] === 'Drag to move the watch window'),
       'the strip has no drag grip')
   })
-  record('21. the strip offers where to send the film: Right panel or desktop', () => {
-    for (const label of ['Send the film to the Right panel', 'Pop the film out to the desktop']) {
+  record('21. the strip offers where to send the film: Right panel, desktop or behind the chat', () => {
+    for (const label of ['Send the film to the Right panel', 'Pop the film out to the desktop', 'Send the film behind the chat']) {
       assert.ok(stripButton(label), `the strip has no "${label}"`)
     }
-    assert.equal(stripButton('Send the film behind the chat'), null, 'Behind chat is still on the strip')
+    const sendRow = stripButton('Send the film to the Right panel').parentNode
+    const labels = sendRow.children.map(node => (node.attributes && node.attributes['aria-label']) || node.textContent)
+    assert.deepEqual(labels.slice(-3), [
+      'Send the film to the Right panel',
+      'Pop the film out to the desktop',
+      'Send the film behind the chat'
+    ], `Behind chat is not last in Send to (${labels.join(', ')})`)
   })
   await recordAsync('22. "Right panel" on the strip puts the film back in the panel', async () => {
     clickDom(stripButton('Send the film to the Right panel'))
@@ -1029,9 +1035,25 @@ const stripButton = label => {
 
 {
   const scenario = await watchWindowScenario({})
-  await recordAsync('23. the strip has no Behind chat send', async () => {
-    assert.equal(stripButton('Send the film behind the chat'), null, 'Behind chat is still on the strip')
-    assert.equal(scenario.bucket.storage.get('settings').filmBehind, false, 'the film was sent behind the chat')
+  await recordAsync('23. the strip sends the film behind the chat', async () => {
+    const bodyFramesNow = () => bodyChildren.filter(node => node.tagName === 'IFRAME')
+    const before = bodyFramesNow().length
+    clickDom(stripButton('Send the film behind the chat'))
+    await sleep(60)
+    const saved = scenario.bucket.storage.get('settings')
+    assert.equal(saved.filmBehind, true, 'the film was not sent behind the chat')
+    assert.equal(saved.videoWindow, false, 'the watch window stayed open over the backdrop')
+    const bodyFrames = bodyFramesNow()
+    assert.equal(bodyFrames.length, before + 1, 'Behind chat mounted no backdrop iframe on the host body')
+    assert.equal(bodyFrames[bodyFrames.length - 1].style.zIndex, '-1', 'the backdrop is not behind the app')
+    assert.equal(pluginModule.wiringTest.surface().placement, '', 'the film is still drawn inside Hermes as well')
+    // And the panel is the way back (the strip is gone: the panel is the remote).
+    const panelBack = domFind(scenario.pane, node => node.attributes && node.attributes['aria-label'] === 'Watch the film in the Right panel')
+    assert.ok(panelBack, 'the panel has no way back from Behind chat')
+    clickDom(panelBack)
+    await sleep(40)
+    assert.equal(scenario.bucket.storage.get('settings').filmBehind, false, 'Panel did not leave Behind chat')
+    assert.equal(bodyFramesNow().length, before, 'the backdrop iframe survived the move back to the panel')
   })
   safeDispose('the watch-window behind-chat scenario (J)', scenario.dispose)
 }
@@ -1103,10 +1125,11 @@ const stripButton = label => {
   record('27. with the film in the watch window, Watch in marks the window', () => {
     const panelPill = paneControl('Watch the film in the Right panel')
     const windowPill = paneControl('Watch the film in the watch window')
-    assert.ok(panelPill && windowPill, 'the Watch in pills are missing')
+    const behindPill = paneControl('Watch the film behind the chat')
+    assert.ok(panelPill && windowPill && behindPill, 'the Watch in pills are missing')
     assert.notEqual(panelPill.attributes['data-active'], 'true', 'Watch in shows Panel while the film is in the watch window')
     assert.equal(windowPill.attributes['data-active'], 'true', 'Watch in does not mark the watch window')
-    assert.equal(paneControl('Watch the film behind the chat'), null, 'Behind chat is still a Watch in choice')
+    assert.notEqual(behindPill.attributes['data-active'], 'true', 'Watch in marks Behind chat while the film is in the watch window')
   })
 
   record('28. the Aura page names the watch window, not a "pop-out window"', () => {
@@ -1167,12 +1190,14 @@ const stripButton = label => {
     assert.match(body[1], /min-height:\s*0/, 'the panel body cannot shrink to scroll')
   })
 
-  await recordAsync('33. Watch in offers Panel, Window and Desktop, and marks where the film is', async () => {
+  await recordAsync('33. Watch in offers Panel, Window, Desktop and Behind chat (last), and marks where the film is', async () => {
     for (const label of ['Watch the film in the Right panel',
-      'Watch the film in the watch window', 'Watch the film in a desktop window']) {
+      'Watch the film in the watch window', 'Watch the film in a desktop window', 'Watch the film behind the chat']) {
       assert.ok(control(label), `Watch in has no "${label}"`)
     }
-    assert.equal(control('Watch the film behind the chat'), null, 'Behind chat is still a Watch in choice')
+    const pillsRow = domFind(scenario.pane, node => node.className === 'ap-pills')
+    assert.deepEqual(pillsRow.children.map(pill => pill.textContent), ['Panel', 'Window', 'Desktop', 'Behind chat'],
+      'Watch in is not Panel, Window, Desktop, Behind chat')
     // ⧉ above put the film in the watch window: that is what Watch in must show.
     assert.equal(control('Watch the film in the watch window').attributes['data-active'], 'true',
       'Watch in does not mark the watch window as the current place')
@@ -1892,9 +1917,9 @@ async function tickUntil(bucket, done) {
 }
 
 // ===================================================================
-// Scenario I: "Watch in: Panel | Behind chat". With the Right panel open the
-// film can play behind the chat while the panel stays the remote, without a
-// second picture in the panel.
+// Scenario I: "Watch in: Panel | Behind chat". With Behind chat the film fills
+// the window behind the app while the panel stays the remote, without a second
+// picture in the panel; Panel is one click away and takes the backdrop with it.
 // ===================================================================
 
 async function watchInScenario(filmBehind) {
@@ -1917,18 +1942,27 @@ async function watchInScenario(filmBehind) {
 
 {
   const behind = await watchInScenario(true)
-  record('15. an old Behind chat setting keeps the film in the panel', () => {
-    assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 0,
-      'Behind chat appended an iframe to document.body')
-    assert.equal(pluginModule.wiringTest.surface().placement, 'panel', 'the film left the panel')
-    const frame = pluginModule.wiringTest.frame()
-    assert.ok(frame, 'no in-pane film')
-    assert.notEqual(String(frame.style.zIndex), '-1', 'the film was placed behind the app')
-    assert.equal(String(frame.style.opacity || '1'), '1', 'the panel film is not at full strength')
+  record('15. Behind chat draws the film on the host page, behind the app, at the chosen strength', () => {
+    const frames = bodyChildren.filter(node => node.tagName === 'IFRAME')
+    assert.equal(frames.length, 1, `Behind chat put ${frames.length} iframes on document.body`)
+    const frame = frames[0]
+    assert.match(String(frame.src), /\/player\.html/, 'the backdrop is not the film')
+    assert.equal(frame.style.zIndex, '-1', 'the film was not placed behind the app')
+    assert.equal(frame.style.position, 'fixed')
+    assert.equal(frame.style.pointerEvents, 'none', 'the backdrop takes clicks meant for the chat')
+    assert.equal(frame.style.opacity, '0.25', `the backdrop ignores the chosen strength (${frame.style.opacity})`)
+    const glass = headChildren.find(node => node.attributes && node.attributes.id === 'aura-glass')
+    assert.ok(glass, 'the app surfaces were not cleared for the film behind the chat')
+    assert.equal(documentElement.getAttribute('data-aura-backdrop'), '', 'the glass is not scoped to the backdrop')
+    assert.equal(pluginModule.wiringTest.surface().placement, '', 'the film is drawn inside Hermes as well')
+    assert.equal(pluginModule.wiringTest.frame(), null, 'a second, in-pane film exists')
   })
-  record('16. Behind chat no longer hides the panel stage', () => {
+  record('16. Behind chat hides the panel stage: the panel is the remote, not a second picture', () => {
     assert.ok(behind.stage, 'the panel has no stage')
-    assert.notEqual(behind.stage.style.display, 'none', 'the panel hid the stage')
+    assert.equal(behind.stage.style.display, 'none', 'the panel showed a second picture while the film is behind the chat')
+    const active = domFind(behind.pane, node => node.attributes && node.attributes['aria-label'] === 'Watch the film behind the chat')
+    assert.ok(active, 'Watch in does not offer Behind chat')
+    assert.equal(active.attributes['data-active'], 'true', 'Watch in does not mark Behind chat as the current place')
     assert.equal(behind.seeThroughRow, null, 'the see-through row is still in the panel')
   })
   safeDispose('the behind-chat scenario (I)', behind.dispose)
@@ -1936,7 +1970,7 @@ async function watchInScenario(filmBehind) {
 
 {
   const inPanel = await watchInScenario(false)
-  record('17. Panel: the film plays in the Right panel at full strength', () => {
+  record('17. Panel: the film plays in the Right panel at full strength, nothing on the host page', () => {
     assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 0,
       'the panel film was appended to document.body')
     const frame = pluginModule.wiringTest.frame()
@@ -1945,10 +1979,23 @@ async function watchInScenario(filmBehind) {
     assert.equal(String(frame.style.opacity || '1'), '1', 'the panel film is not at full strength')
     assert.equal(inPanel.seeThroughRow, null, 'the see-through row is still in the panel')
   })
-  await recordAsync('18. the panel has no Behind chat choice', async () => {
+  await recordAsync('18. Behind chat sits last in the panel and is one click, and Panel brings it back', async () => {
+    const pills = domFind(inPanel.pane, node => node.className === 'ap-pills')
+    assert.deepEqual(pills.children.map(pill => pill.textContent), ['Panel', 'Window', 'Desktop', 'Behind chat'],
+      'the panel does not offer Behind chat last')
     const button = domFind(inPanel.pane, node => node.attributes && node.attributes['aria-label'] === 'Watch the film behind the chat')
-    assert.equal(button, null, 'the panel still offers Behind chat')
-    assert.notEqual(inPanel.bucket.storage.get('settings').filmBehind, true, 'the film was sent behind the chat')
+    assert.ok(button, 'the panel has no Behind chat choice')
+    assert.notEqual(button.disabled, true, 'Behind chat is still disabled')
+    clickDom(button)
+    await sleep(60)
+    assert.equal(inPanel.bucket.storage.get('settings').filmBehind, true, 'the film was not sent behind the chat')
+    assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 1,
+      'Behind chat mounted no backdrop on the host body')
+    clickDom(domFind(inPanel.pane, node => node.attributes && node.attributes['aria-label'] === 'Watch the film in the Right panel'))
+    await sleep(60)
+    assert.equal(inPanel.bucket.storage.get('settings').filmBehind, false, 'Panel did not leave Behind chat')
+    assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 0,
+      'the backdrop survived the move back to the panel')
   })
   safeDispose('the in-panel scenario (I)', inPanel.dispose)
 }

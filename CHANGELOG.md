@@ -3,7 +3,12 @@
 ## Unreleased
 
 - Off now stays off when a /status check starts during the on/off switch's own request and answers with the old switch.
-- Removed the full-window backdrop. It returns when Hermes ships an SDK backdrop area (#155903).
+- **Behind chat is back, as an opt-in.** "Watch in" and the watch window's "Send to" row end with a
+  real Behind chat choice: the film plays in ONE click-through iframe at z-index -1 on the host body,
+  with a scoped `#aura-glass` stylesheet so the app's surfaces let it through. It exists only while
+  that place is chosen for an open film and Aura is on; Panel, a close, an Off or dispose take the
+  iframe, the stylesheet and the `data-aura-backdrop` attribute away again. The default surface is
+  still the Right panel, and nothing is drawn behind the chat unless you pick it.
 - Removed the optional Aura Live theme.
 - Stop closes the film, and its desktop window, instead of leaving it on screen.
 - Radio plays in the Right panel, the Aura page, and the watch window, in every mode.
@@ -28,7 +33,8 @@
   ten seconds after a start or a quality change the user asked for, then once every 120 frames.
   Preset loads (including mood/agent changes) and the automatic quality ladder no longer re-open
   that window, so the stall cannot come back all evening. Nothing on screen changes.
-- Watch in and the watch window's Send to row show Behind chat, greyed out, as coming soon.
+- Watch in and the watch window's Send to row end with a real Behind chat choice (it used to be a
+  greyed "coming soon" pill): the film plays behind the chat while that place is chosen.
 
 ## 1.0.0 — 2026-11-11
 

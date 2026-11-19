@@ -50,9 +50,11 @@ curl -s -H "Authorization: Bearer $(cat ~/.hermes/aura/token)" \
 # "capture" reads "none" once idle
 ```
 
-The full-window visual behind the app is not in this build. It returns when Hermes ships a backdrop
-area (#155903). These checks do not mount a backdrop iframe or an `#aura-glass` stylesheet on the
-host page.
+A full-window visual of the Aura visualiser itself is not in this build; it returns when Hermes ships
+a backdrop area (#155903). The film behind the chat is a separate, opt-in surface: `tests/test_no_backdrop.mjs`
+proves that nothing is drawn on the host page without it, `tests/test_behind_chat_soon.mjs` proves the
+one click-through iframe and the scoped `#aura-glass` stylesheet appear only while it is chosen, and
+both suites prove they are gone again after Panel, a close, an Off or dispose.
 
 ### Polling
 

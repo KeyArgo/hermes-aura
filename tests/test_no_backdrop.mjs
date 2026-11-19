@@ -1,7 +1,9 @@
 /**
- * The body backdrop is gone from this build. These checks fail on a plugin
- * that still paints the host page, and pass once the visualiser and the film
- * share Aura's own iframe.
+ * Nothing is painted on the host page unless the user picks "Behind chat".
+ * These checks fail on a plugin that paints the host page by default (a saved
+ * windowVisual, the visualiser, a panel film, an Off) and pass while the one
+ * opt-in backdrop — and the glass that goes with it — exists only for that
+ * place, and only while the film is actually behind the chat.
  *
  * Run: node tests/test_no_backdrop.mjs
  */
@@ -34,7 +36,10 @@ const bodyAppends = []
 const headAppends = []
 const glassReads = []
 const backdropAttrs = []
+// Every glass stylesheet ever created (a record of churn), and the one that is
+// actually mounted right now.
 const glassStyles = []
+const liveGlass = () => headChildren.some(node => node.attributes && node.attributes.id === 'aura-glass')
 
 function makeParent(children) {
   const classes = new Set()
@@ -146,7 +151,7 @@ fs.writeFileSync(
     .replace(/from\s+'@hermes\/plugin-sdk'/g, "from './sdk-stub.mjs'")
     .replace(/from\s+'react'/g, "from './react-stub.mjs'")
     .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-stub.mjs'") +
-  '\nexport const nobackdropTest = { setBackdropMode, setPanelEnabled, setVideoWindow, setShowWhen, setOpacity, playAudioSource, closeVideo, setDesktopWindow, updateShow, applyVideoOpacity, poll, settings: $settings, surface: $filmSurface, live: $live, audioFrame: () => audioFrame }\n'
+  '\nexport const nobackdropTest = { setBackdropMode, setFilmBehind, setPanelEnabled, setVideoWindow, setShowWhen, setOpacity, playAudioSource, closeVideo, setDesktopWindow, updateShow, applyVideoOpacity, poll, settings: $settings, surface: $filmSurface, live: $live, audioFrame: () => audioFrame }\n'
 )
 
 fs.writeFileSync(path.join(tmp, 'sdk-stub.mjs'), `
@@ -562,10 +567,10 @@ await record('Aura adds nothing to the app <head>; each surface carries its own 
   assert.equal(headAppends.length, before, `Aura appended ${headAppends.length - before} node(s) to the app <head>`)
 })
 
-await record('old saved settings with windowVisual:true boot and render nothing on document.body', async () => {
+await record('old saved settings with windowVisual:true and Behind chat off boot and render nothing on document.body', async () => {
   const before = bodyAppends.length
   const bucket = makeCtx({
-    enabled: true, windowVisual: true, backdropMode: 'aura', panelEnabled: true, frostLook: true, filmBehind: true
+    enabled: true, windowVisual: true, backdropMode: 'aura', panelEnabled: true, frostLook: true, filmBehind: false
   })
   const dispose = plugin.default.register(bucket.ctx)
   await sleep(30)
@@ -578,6 +583,91 @@ await record('old saved settings with windowVisual:true boot and render nothing 
   assert.equal(glassStyles.length, 0, 'windowVisual:true created #aura-glass')
   assert.equal(backdropAttrs.length, 0, 'windowVisual:true set data-aura-backdrop')
   dispose()
+})
+
+// "Behind chat" is the one opt-in: with it chosen for an open film, exactly one
+// click-through iframe and the scoped glass appear; Panel takes both away.
+await record('Behind chat is opt-in: one backdrop iframe and the scoped glass, and Panel removes them', async () => {
+  const before = bodyAppends.length
+  const bucket = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, filmBehind: true, videoUrl: FILM
+  })
+  const dispose = plugin.default.register(bucket.ctx)
+  await sleep(40)
+  assert.equal(bodyAppends.length, before + 1, 'Behind chat did not mount exactly one host node')
+  const frame = bodyAppends[bodyAppends.length - 1]
+  assert.equal(frame.tagName, 'IFRAME', 'the host node is not the film iframe')
+  assert.match(String(frame.src), /\/player\.html/, 'the host node is not the player page')
+  assert.equal(frame.style.position, 'fixed')
+  assert.equal(frame.style.zIndex, '-1', 'the film is not behind the app')
+  assert.equal(frame.style.pointerEvents, 'none', 'the backdrop takes clicks meant for the chat')
+  assert.equal(liveGlass(), true, 'Behind chat did not mount the glass stylesheet')
+  assert.equal(documentElement.getAttribute('data-aura-backdrop'), '', 'the glass is not scoped to the backdrop')
+  assert.equal(plugin.nobackdropTest.surface.get().placement, '', 'the film is drawn inside Hermes as well')
+  plugin.nobackdropTest.setVideoWindow(false)
+  await plugin.nobackdropTest.poll()
+  assert.equal(plugin.nobackdropTest.settings.get().filmBehind, true, 'precondition: the place is still Behind chat')
+  // Panel is the way back.
+  await plugin.nobackdropTest.setFilmBehind(false)
+  assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 0,
+    'the backdrop iframe survived the move back to the panel')
+  assert.equal(liveGlass(), false, 'the glass survived the move back to the panel')
+  assert.equal(documentElement.getAttribute('data-aura-backdrop'), undefined,
+    'the scoping attribute survived the move back to the panel')
+  dispose()
+})
+
+await record('Behind chat yields to the Aura page, and comes back when the page closes', async () => {
+  const bucket = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: false, filmBehind: true, videoUrl: FILM
+  })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(40)
+    assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 1,
+      'precondition: no backdrop with the panel closed')
+    // The page is Aura's own surface: it wins over the film behind the chat.
+    const page = bucket.contributions.find(item => item.id === 'aura-page')
+    const stageRef = nodesOf(page).find(item => item.props && item.props.className === 'aura-stage' && item.props.ref)
+    assert.ok(stageRef, 'the Aura page has no stage')
+    stageRef.props.ref(makeElement('div'))
+    await plugin.nobackdropTest.poll()
+    assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 0,
+      'the backdrop stayed up under the Aura page (two pictures)')
+    assert.equal(plugin.nobackdropTest.surface.get().placement, 'page', 'the film did not move onto the page')
+    assert.equal(plugin.nobackdropTest.settings.get().filmBehind, true, 'opening the page forgot the chosen place')
+    // Leaving the page returns the film to where the user put it.
+    stageRef.props.ref(null)
+    await plugin.nobackdropTest.poll()
+    assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 1,
+      'the backdrop did not come back after the page closed')
+  } finally {
+    dispose()
+  }
+})
+
+await record('a closed film behind the chat leaves the radio its carrier in the panel', async () => {
+  const bucket = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, filmBehind: true, videoUrl: FILM
+  })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(40)
+    assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 1,
+      'precondition: no backdrop to close')
+    await plugin.nobackdropTest.playAudioSource('https://ice.example/behind.mp3', 'Behind')
+    plugin.nobackdropTest.closeVideo()
+    await plugin.nobackdropTest.poll()
+    assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 0,
+      'a closed film left the backdrop on the host page')
+    assert.equal(liveGlass(), false, 'a closed film kept the glass')
+    const panel = bucket.contributions.find(item => item.id === 'panel')
+    const film = filmsIn(panel)
+    assert.equal(film.length, 1, 'the radio lost its carrier when the film was closed')
+    assert.match(iframeOf(film[0]).props.src, /overlay=1/, 'the carrier is not the visualiser page')
+  } finally {
+    dispose()
+  }
 })
 
 await record('F1. the visualiser watch window is a 16:9 stage and Watch in sends it back', async () => {
@@ -956,7 +1046,7 @@ await record('a React-created film iframe is never passed to appendChild or remo
   }
 })
 
-await record('F7. plugin.yaml and README do not describe a backdrop behind the work', async () => {
+await record('F7. the docs describe the film behind the chat as opt-in, never a visual behind the work', async () => {
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8')
   const manifest = fs.readFileSync(path.join(ROOT, 'plugin.yaml'), 'utf8')
   const source = fs.readFileSync(PLUGIN, 'utf8')
@@ -965,8 +1055,11 @@ await record('F7. plugin.yaml and README do not describe a backdrop behind the w
     assert.doesNotMatch(text, /behind the interface/)
   }
   assert.doesNotMatch(readme, /Backdrop opacity that follows the room/)
+  // The one host-page surface is documented, and as a choice the user makes.
+  assert.match(readme, /Behind chat/)
   assert.match(readme, /#155903/)
-  assert.doesNotMatch(source, /behind the chat/)
+  // In the code it exists only behind the opt-in gate.
+  assert.match(source, /function behindChatWanted/)
   assert.match(source, /#155903/)
 })
 

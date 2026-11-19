@@ -26,10 +26,13 @@
 <p align="center"><i>Applies to v1.0.0 · revised 2026-11-11 · <a href="VERIFY.md">what was verified, and how</a></i></p>
 
 Aura turns Hermes Desktop into a room you can live in. Put any film, lecture or playlist in the
-right-hand pane and keep working; switch the film off and the same audio drives a MilkDrop-compatible
-visualiser in that pane, on the Aura page, or in the watch window. The full-window visual returns
-when Hermes ships a backdrop area (#155903). It listens to what the machine is already playing —
-system loopback, never the microphone — and nothing leaves the computer: no account, no uploads, no recording.
+right-hand pane and keep working, or send it **behind the chat** with one click; switch the film off
+and the same audio drives a MilkDrop-compatible visualiser in that pane, on the Aura page, or in the
+watch window. The film behind the chat is a choice you make per film — nothing is painted on the
+app's page until you pick **Behind chat** in *Watch in*. A full-window visual of the Aura visualiser
+itself returns when Hermes ships a backdrop area (#155903). It listens to what the machine is
+already playing — system loopback, never the microphone — and nothing leaves the computer: no
+account, no uploads, no recording.
 
 > Aura is not a music-service integration. It needs no Spotify, no YouTube Music and no account of any
 > kind. If the speakers are making a sound, Aura can see it.
@@ -95,8 +98,10 @@ kept per film, keyed by URL, so nothing restarts.
   `Starters` and `Recent`. A small **Edit sources…** link opens the Aura page, where editing lives.
 - **A film is the picture.** While Backdrop is **Video player**, Style, Intensity, the Aura
   transparency and Gentle motion are greyed out (they only describe the Aura visual). The film plays
-  in the Right panel, the Aura page, or the watch window. The full-window visual behind the app
-  returns when Hermes ships a backdrop area (#155903).
+  in the Right panel, the Aura page, the watch window, or **behind the chat** — the fourth choice in
+  *Watch in*, last in the list because it is the one that paints the app's page. Pick **Panel** there
+  to bring it back. The full-window visual of the Aura visualiser itself returns when Hermes ships a
+  backdrop area (#155903).
 - **REVamp, next door.** Aura has no music library of its own. [REVamp](https://github.com/KeyArgo/hermes-revamp)
   is a Winamp-style player for Hermes, and Aura's visuals react to whatever it plays — one card on the page,
   one line in Settings.
@@ -266,9 +271,14 @@ The only host DOM Aura touches is opt-in and bounded:
   inside the panel stage (`inset: 0`), a descendant of that stage. It is not `position: fixed` over
   the window, and it has no z-index above the pane. The Aura page and the watch window keep their
   film inside the box Hermes gives them, the same way. No `body` padding.
-- The visualiser, the film, and radio share Aura's own iframe in the Right panel, the Aura page, or
-  the watch window. Nothing is appended to the host body, and Aura does not clear the app's backgrounds.
-  The full-window visual returns when Hermes ships a backdrop area (#155903).
+- The visualiser and the film share Aura's own iframe in the Right panel, the Aura page, or the
+  watch window. The one exception is the opt-in **Behind chat** film: a single click-through
+  `iframe` at `z-index: -1` on the host body, plus one `#aura-glass` stylesheet that clears the app's
+  big surfaces so the film shows through. Every glass rule is scoped by the `data-aura-backdrop`
+  attribute on `<html>`, both exist only while you have chosen that place for an open film and Aura
+  is on, and picking Panel, closing the film, turning Aura off or disposing the plugin removes them.
+  A full-window visual of the Aura visualiser itself returns when Hermes ships a backdrop area
+  (#155903).
 - Host `html`/`body`/root styles are never written. The accent override is the SDK's sanctioned mechanism.
 - Turning Aura off, **Restore my theme** and plugin disposal remove every effect Aura applied and
   restore the theme that was there before.

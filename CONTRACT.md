@@ -267,15 +267,26 @@ The page therefore treats audio as the thing being visualised, not as a garnish:
 Consequence for testing: a silence assertion is now a test of the gate, not of a lucky preset.
 `tools/silence_probe.py` measures the whole curated set (21/21 dark, mean 0, lit 0.000).
 
-## 11. Host safety (additive, 2026-11-08; backdrop removed 2026-11-18)
+## 11. Host safety (additive, 2026-11-08; Behind chat restored 2026-11-18)
 
-The visualiser, the film, and radio render in Aura's own iframe, inside a surface Aura owns: the
-Right panel, the `/aura` page, or the floating watch window. The iframe is `position: absolute`
-with `inset: 0` inside that stage (the panel's `.ap-stage`, the page's `.aura-stage`, or the watch
-window's frame). It is not `position: fixed` over the host window, and the panel film has no z-index
-above the pane. Radio plays in that iframe in every mode. This build does not append a backdrop
-iframe to the host body, does not inject `#aura-glass`, and does not read or set host glass
-attributes. The full-window visual returns when Hermes ships a backdrop area (#155903).
+The visualiser and the film render in Aura's own iframe, inside a surface Aura owns: the Right panel,
+the `/aura` page, or the floating watch window. The iframe is `position: absolute` with `inset: 0`
+inside that stage (the panel's `.ap-stage`, the page's `.aura-stage`, or the watch window's frame). It
+is not `position: fixed` over the host window, and the panel film has no z-index above the pane.
+Radio plays in that iframe in every mode.
+
+The one surface on the host page is the opt-in **Behind chat** film (`filmBehind`), and it exists
+only while all of these hold: Backdrop is Video player, an open film has a source, Aura is on, the
+server answers, and no desktop window or watch window owns the picture. Then, and only then, Aura
+appends ONE click-through iframe (`position: fixed; inset: 0; z-index: -1; pointer-events: none;
+aria-hidden; sandbox="allow-scripts allow-same-origin"`) to the host body and injects ONE
+`#aura-glass` stylesheet whose every rule is scoped under `data-aura-backdrop` on `<html>`. Picking
+another place, closing the film, turning Aura off, a frame failure, or disposal removes the iframe,
+the stylesheet and the attribute together; the host gets its own appearance back exactly. Aura never
+reads or sets a host glass attribute, and never writes host `html`/`body`/root styles.
+
+The full-window visual of the Aura visualiser itself (the old `windowVisual` switch) is still not in
+this build; it returns when Hermes ships a backdrop area (#155903).
 
 The accent pulse is opt-in and off by default. **Restore my theme** turns the accent pulse off,
 clears the accent override through `setAccentOverride(null)`, restores the previous theme if Aura

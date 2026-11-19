@@ -538,12 +538,16 @@ await record('a load with no radio selected sends nothing', async () => {
   dispose()
 })
 
-await record('the in-pane frame resumes the radio on load', () => {
-  assert.doesNotMatch(source, /backdropEl/, 'a body backdrop frame is still in the desktop half')
+await record('the in-pane frame and the Behind chat backdrop both resume the radio on load', () => {
   assert.match(
     source,
     /onLoad: \(\) => resumeAudioIn\(filmFrame\)/,
     'the in-pane film never resumes the radio'
+  )
+  assert.match(
+    source,
+    /addEventListener\('load', \(\) => resumeAudioIn\(backdropEl\)\)/,
+    'the Behind chat backdrop never resumes the radio'
   )
 })
 

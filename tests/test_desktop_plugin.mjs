@@ -18,10 +18,11 @@
  *      import, no imports outside the three allowed specifiers, no
  *      document.querySelector('[data-slot=...]'), no document.body observer,
  *      no console output,
- *   7. host safety: nothing Aura does is appended to the host body, and no
- *      #aura-glass style or data-aura-backdrop attribute is created. A saved
- *      windowVisual value is ignored. The full-window visual returns with the
- *      SDK backdrop area (#155903),
+ *   7. host safety: the only node Aura appends to the host body is the opt-in
+ *      "Behind chat" backdrop iframe, and the only stylesheet it injects is the
+ *      glass scoped by one attribute on <html> — both exist only while the user
+ *      has chosen that place for an open film. The default surface is still the
+ *      Right panel, and a saved windowVisual value is ignored,
  *   8. there is no "Visual behind the app" switch,
  *   9. the status-bar quick menu registers on STATUSBAR_AREAS.right, renders
  *      the owner's controls (on/off, "Reacts to", intensity, transparency,
@@ -1275,6 +1276,15 @@ await recordAsync('disposer removes every contribution, clears timers/listeners,
 // player needs and messages go to the frame's own origin.
 
 const rootHasBackdrop = () => documentElement.hasAttribute('data-aura-backdrop')
+/** A quick-menu control by aria-label (findByAria is declared further down). */
+const menuChoice = (scenario, label) => {
+  const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
+  let found = null
+  walk(tree, node => {
+    if (!found && node.props && node.props['aria-label'] === label) found = node
+  })
+  return found
+}
 const newestGlassCss = () => {
   const style = glassStyles()[glassStyles().length - 1]
   return style ? String(style.textContent || '') : ''
@@ -1301,7 +1311,8 @@ const newestGlassCss = () => {
     assert.equal(glassStyles().length, 0, 'windowVisual mounted #aura-glass')
     assert.equal(rootHasBackdrop(), false, 'windowVisual set data-aura-backdrop')
     assert.doesNotMatch(source, /data-hermes-glass-on/, 'Aura still reads the host glass attribute')
-    assert.doesNotMatch(source, /data-aura-backdrop/, 'Aura still sets a backdrop attribute')
+    // The attribute and the glass exist for one place only: the opt-in gate.
+    assert.match(source, /function behindChatWanted/, 'the opt-in Behind chat gate is gone')
   })
 
   await recordAsync('D3. the in-pane iframe sandbox stays scripts, same-origin and presentation', async () => {
@@ -1371,19 +1382,35 @@ const newestGlassCss = () => {
 }
 
 {
-  const failing = makeCtx({
+  const behind = makeCtx({
     enabled: true, backdropMode: 'video', panelEnabled: true, filmBehind: true,
-    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ', windowVisual: true
+    videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
   })
-  const dispose = pluginModule.default.register(failing.ctx)
-  await sleep(30)
-  record('D8. an old Behind chat setting stays in the panel and never mounts a body iframe', () => {
-    assert.equal(hostIframes().length, 0, 'filmBehind mounted a body iframe')
-    assert.equal(glassStyles().length, 0, 'filmBehind mounted the glass style')
-    assert.equal(rootHasBackdrop(), false, 'filmBehind set data-aura-backdrop')
-    const film = filmNodes(renderContribution(failing.contributions.find(c => c.id === 'panel')))
-    assert.equal(film.length, 1, 'the film did not stay in the Right panel')
-    assert.match(film[0].props.src, /\/player\.html/)
+  const dispose = pluginModule.default.register(behind.ctx)
+  await sleep(75)
+  record('D8. Behind chat draws the film on the host page in ONE click-through iframe and nothing in the panel', () => {
+    const frames = hostIframes()
+    assert.equal(frames.length, 1, `Behind chat mounted ${frames.length} body iframes`)
+    const frame = frames[0]
+    assert.match(String(frame.src), /\/player\.html/, 'the backdrop is not the player page')
+    assert.equal(frame.style.zIndex, '-1', 'the backdrop is not behind the app')
+    assert.equal(frame.style.position, 'fixed')
+    assert.equal(frame.style.pointerEvents, 'none', 'the backdrop takes clicks meant for the chat')
+    assert.equal(frame.attributes.sandbox, 'allow-scripts allow-same-origin', 'the backdrop sandbox is wrong')
+    assert.equal(frame.attributes['aria-hidden'], 'true', 'the backdrop is exposed to assistive tech')
+    assert.equal(rootHasBackdrop(), true, 'Behind chat did not scope the glass')
+    assert.equal(glassStyles().length, 1, 'Behind chat did not mount the glass')
+    // The panel is the remote: no second picture in it.
+    const film = filmNodes(renderContribution(behind.contributions.find(c => c.id === 'panel')))
+    assert.equal(film.length, 0, 'the panel drew a second picture while the film is behind the chat')
+  })
+  record('D9. choosing Panel takes the backdrop and the glass away again', () => {
+    menuChoice(behind, 'Watch the film in the Right panel (quick menu)').props.onClick()
+    assert.equal(hostIframes().length, 0, 'the backdrop survived the move to the panel')
+    assert.equal(glassStyles().length, 0, 'the glass survived the move to the panel')
+    assert.equal(rootHasBackdrop(), false, 'the scoping attribute survived the move to the panel')
+    const film = filmNodes(renderContribution(behind.contributions.find(c => c.id === 'panel')))
+    assert.equal(film.length, 1, 'the film did not come back to the panel')
   })
   dispose()
 }
@@ -1455,7 +1482,7 @@ await recordAsync('review 3a: Panel, Page and Window modes put no iframe on docu
   }
 })
 
-await recordAsync('review 3b: an old Behind chat setting keeps the film in the panel and off the host body', async () => {
+await recordAsync('review 3b: Behind chat is the one place that paints the host page, and Panel takes it back', async () => {
   const behind = makeCtx({
     enabled: true, backdropMode: 'video', panelEnabled: true, filmBehind: true,
     videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
@@ -1464,11 +1491,20 @@ await recordAsync('review 3b: an old Behind chat setting keeps the film in the p
   try {
     behind.timers.find(t => t.ms === 250).fn()
     await sleep(60)
-    assert.equal(hostIframes().length, 0, 'Behind chat appended an iframe to document.body')
+    const frames = hostIframes()
+    assert.equal(frames.length, 1, `Behind chat put ${frames.length} iframes on document.body`)
+    assert.match(String(frames[0].src), /\/player\.html/, 'the body iframe is not the film')
     const film = filmNodes(renderContribution(behind.contributions.find(c => c.id === 'panel')))
-    assert.equal(film.length, 1, 'the film left the Right panel')
-    assert.equal(film[0].props.placement, 'panel')
-    assert.match(film[0].props.src, /\/player\.html/)
+    assert.equal(film.length, 0, 'the film stayed in the Right panel too (two pictures)')
+    // Panel is one click away, and it takes both the iframe and the glass.
+    menuChoice(behind, 'Watch the film in the Right panel (quick menu)').props.onClick()
+    await sleep(30)
+    assert.equal(hostIframes().length, 0, 'the body iframe survived the move to the panel')
+    assert.equal(glassStyles().length, 0, 'the glass survived the move to the panel')
+    const back = filmNodes(renderContribution(behind.contributions.find(c => c.id === 'panel')))
+    assert.equal(back.length, 1, 'the film left the Right panel')
+    assert.equal(back[0].props.placement, 'panel')
+    assert.match(back[0].props.src, /\/player\.html/)
   } finally {
     dispose()
   }
@@ -2593,19 +2629,20 @@ await recordAsync('the Aura menu opens clear of the Right panel so both can be u
     'with the Right panel closed the menu still keeps a panel-wide gap')
 })
 
-await recordAsync('the quick menu offers Watch in, and no host-page strength control', async () => {
+await recordAsync('the quick menu offers all four places, Behind chat last, and no host-page strength control', async () => {
   const menuFor = async filmBehind => {
     const scenario = makeCtx({ enabled: true, backdropMode: 'video', panelEnabled: true, filmBehind,
       videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ' })
     const dispose = pluginModule.default.register(scenario.ctx)
     await sleep(20)
     const tree = renderContribution(scenario.contributions.find(c => c.id === 'quick-menu'))
-    return { tree, dispose }
+    return { tree, scenario, dispose }
   }
   const inPanel = await menuFor(false)
   try {
-    assert.equal(findByAria(inPanel.tree, 'Watch the film behind the chat (quick menu)'), null, 'Behind chat is still a choice')
-    assert.ok(findByAria(inPanel.tree, 'Watch the film in the Right panel (quick menu)'), 'the quick menu has no Panel choice')
+    assert.ok(findByAria(inPanel.tree, 'Watch the film behind the chat (quick menu)'), 'the quick menu has no Behind chat choice')
+    assert.equal(findByAria(inPanel.tree, 'Watch the film in the Right panel (quick menu)').props.variant, 'default',
+      'the default place is no longer the Right panel')
     assert.equal(findByAria(inPanel.tree, '50% video strength'), null, 'Film strength is still in the quick menu')
   } finally {
     inPanel.dispose()
@@ -2613,6 +2650,8 @@ await recordAsync('the quick menu offers Watch in, and no host-page strength con
   const behind = await menuFor(true)
   try {
     assert.equal(findByAria(behind.tree, '50% video strength'), null, 'Film strength came back for an old Behind chat setting')
+    assert.equal(findByAria(behind.tree, 'Watch the film behind the chat (quick menu)').props.variant, 'default',
+      'Behind chat is not marked as the current place')
     assert.ok(findByAria(behind.tree, 'Watch the film in the Right panel (quick menu)'), 'the panel choice disappeared')
   } finally {
     behind.dispose()
@@ -2921,13 +2960,14 @@ record('settings rows wrap their control instead of squeezing the text, and are 
 })
 
 // Regression (pre-pin review 11-15): Aura stays out of the host's markup. The only
-// document-level DOM work left is the disclosed full-window backdrop iframe.
-record('no document-wide DOM lookups, and only the backdrop is appended to body', () => {
+// document-level DOM work left is the disclosed opt-in Behind chat backdrop.
+record('no document-wide DOM lookups, and only the backdrop iframe is appended to body', () => {
   const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.doesNotMatch(code, /\b(doc|document)\.querySelector(All)?\(/, 'a document-wide querySelector came back')
   assert.doesNotMatch(code, /data-catalog-actions|main input/, 'Aura reaches into the host catalog markup again')
   const appends = code.match(/\b(doc|document)\.body\.(append|appendChild|prepend|insertBefore)\([^)]*\)/g) || []
-  assert.deepEqual(appends, [], `unexpected body appends: ${appends}`)
+  assert.deepEqual(appends, ['doc.body.appendChild(backdropEl)'],
+    `unexpected body appends: ${appends}`)
   assert.doesNotMatch(code, /createElement\('textarea'\)/, 'a hidden textarea copy came back')
 })
 
