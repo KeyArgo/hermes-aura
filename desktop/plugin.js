@@ -29,6 +29,12 @@
  *     added for it.
  *   - an invisible titlebar probe (`TITLEBAR_AREAS.center`) that reads the
  *     active theme (useTheme is a hook),
+ *   - a Desktop theme (prototype, `THEMES_AREA`): the "aura" theme, light and
+ *     dark palettes plus CSS scoped to that theme, and a low-power WebGL glow
+ *     behind the app (one canvas on <html>, 1 px per 3 CSS px, 24 fps, paused
+ *     when hidden) that mounts only while that theme is the active one. Its
+ *     energy comes from the state the poll already stores, so it adds no
+ *     request, no URL and no token,
  *   - an opt-in, audio-reactive accent pulse via the sanctioned
  *     `setAccentOverride`,
  *   - a hidden dev readout: Ctrl+Shift+A toggles a fixed bottom-right stats
@@ -73,6 +79,7 @@ import {
   SIDEBAR_NAV_AREA,
   STATUSBAR_AREAS,
   Switch,
+  THEMES_AREA,
   TITLEBAR_AREAS,
   useTheme,
   useValue
@@ -1771,6 +1778,530 @@ function onThemeName(name) {
     requestTheme(lastUserTheme && lastUserTheme !== THEME_NAME ? lastUserTheme : 'default')
   }
   updateShow()
+  // The glow behind the app belongs to the theme, so it follows the probe.
+  syncAuraGlow(name)
+}
+
+/* ── Aura theme (prototype) ─────────────────────────────────────────────────
+ * One DesktopTheme, registered through THEMES_AREA, and a quiet WebGL glow
+ * behind the app that exists only while that theme is the active one.
+ *
+ * Shape follows the Borealis theme plugin: a CSS block scoped on
+ * `data-hermes-theme`, and a canvas the script mounts and removes as the theme
+ * comes and goes. The glow draws at one pixel per 3 CSS px, at most 24 fps,
+ * pauses when the window is hidden, holds a static frame under
+ * prefers-reduced-motion, and takes its energy from the state the existing
+ * poll already stores (`liveFrame`: level / silence / mood). It adds no
+ * request of its own: no URL, no token, no network code.
+ *
+ * Host safety: the canvas is the only node this adds, it lives behind the
+ * window, and `body`, `#root` and `#app` are never touched — by the script or
+ * by the theme's CSS.
+ */
+
+const AURA_THEME_ID = 'aura'
+// One pixel per 3 CSS px and at most 24 fps: the glow is slow, so more pixels
+// or frames would only spend power nobody asked to spend.
+const AURA_GLOW_CELL = 3
+const AURA_GLOW_FPS = 24
+
+/** The `aura` theme, or one of its accent retints (`aura-accent-<hex>`). Not a
+ *  bare prefix: the retired `aura-live` skin and every other theme get none of
+ *  this. */
+const auraThemeIs = name =>
+  name === AURA_THEME_ID || name.startsWith(`${AURA_THEME_ID}-accent-`)
+
+// Scoped to the active theme, the way the theme contract expects. Same shape
+// as Borealis: a rename of the skin cannot leak these rules onto another one.
+const AURA_SCOPE =
+  `:root:is([data-hermes-theme="${AURA_THEME_ID}"], [data-hermes-theme^="${AURA_THEME_ID}-accent-"])`
+
+const AURA_VERTEX = `attribute vec2 aPos;
+void main() {
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+`
+
+// Short on purpose: three drifting bands, a warm crest for an attention mood,
+// and a corner falloff. All the motion comes from uTime and the energy from
+// uniforms the poll already produces.
+const AURA_FRAGMENT = `precision highp float;
+uniform vec2 uRes;
+uniform float uTime;    // seconds; a fixed value under reduced motion
+uniform float uLevel;   // 0..1, the level Aura already polls
+uniform float uSilence; // 1 while nothing plays: the glow stays calm
+uniform float uMood;    // 0 idle, 1 attention (approval / error)
+uniform float uNight;   // 1 dark mode, 0 light
+uniform vec3 uBase;
+uniform vec3 uGlowA;
+uniform vec3 uGlowB;
+
+void main() {
+  vec2 p = (gl_FragCoord.xy / uRes - 0.5) * vec2(uRes.x / uRes.y, 1.0);
+  float t = uTime * 0.15;
+  float energy = mix(0.30, 1.0, uLevel * (1.0 - uSilence)) * (1.0 - 0.45 * uSilence);
+  float glow = 0.0;
+  for (int i = 0; i < 3; i++) {
+    float k = float(i);
+    float y = 0.30 - k * 0.16 + 0.06 * sin(p.x * (1.1 + k * 0.7) + t * (0.8 + k * 0.5) + k * 2.3);
+    float d = p.y - y;
+    float band = exp(-d * d * (7.0 + k * 5.0));
+    float sway = 0.75 + 0.25 * sin(p.x * (0.9 - k * 0.2) + t * 2.0 + k * 1.7);
+    glow += band * sway * (0.55 - k * 0.1);
+  }
+  float crestD = (p.y - 0.22) * 2.6;
+  float crest = 0.35 * exp(-crestD * crestD) * uMood;
+  vec3 tint = mix(uGlowB, uGlowA, clamp(p.y + 0.4, 0.0, 1.0));
+  vec3 color = uBase + tint * (glow * energy * mix(0.70, 1.05, uNight) + crest);
+  color *= 1.0 - 0.25 * dot(p, p);
+  gl_FragColor = vec4(min(color, vec3(1.0)), 1.0);
+}
+`
+
+// Aura's own colours: the near-black field, the blue accent and the violet it
+// blends into. Fixed here rather than probed, so the glow works before the
+// theme's variables are painted.
+const AURA_GLOW_COLORS = {
+  dark: { base: [0.043, 0.051, 0.071], a: [0.431, 0.659, 1.0], b: [0.545, 0.486, 1.0] },
+  light: { base: [0.957, 0.969, 1.0], a: [0.184, 0.435, 0.816], b: [0.478, 0.404, 0.878] }
+}
+
+const auraDarkMode = () => {
+  const root = doc && doc.documentElement
+  return Boolean(root && root.classList && typeof root.classList.contains === 'function' && root.classList.contains('dark'))
+}
+
+const auraNow = () =>
+  (typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now())
+
+/** The shader's energy uniforms, read from what the poll already stored. No
+ *  request and no credential: `liveFrame` is /state's last answer, and nothing
+ *  playing (off, paused, no surface) means calm whatever the last level was. */
+function auraEnergy() {
+  const frame = liveFrame || {}
+  const level = Number.isFinite(frame.level) ? clamp01(frame.level) : 0
+  const silence = !somethingPlaying() || frame.silence === true ? 1 : 0
+  const moodName = typeof frame.mood === 'string' ? frame.mood : ''
+  const mood = !moodName || moodName === 'idle'
+    ? 0
+    : (moodName === 'approval' || moodName === 'error' ? 1 : 0.55)
+  return { level, silence, mood }
+}
+
+// The one canvas, while the theme is active.
+let auraGlow = null
+
+/** The theme the host reports on <html>, as the fallback for "already active
+ *  when the plugin loaded" (the probe reports every change after that). */
+function currentThemeName() {
+  const root = doc && doc.documentElement
+  if (!root || typeof root.getAttribute !== 'function') return ''
+  const value = root.getAttribute('data-hermes-theme')
+  return typeof value === 'string' ? value : ''
+}
+
+function createAuraGlow() {
+  const root = doc && doc.documentElement
+  const none = { canvas: null, refresh() {}, destroy() {} }
+  if (!root || typeof doc.createElement !== 'function') return none
+
+  const canvas = doc.createElement('canvas')
+  const stage = { canvas, refresh() {}, destroy() {} }
+  canvas.setAttribute('aria-hidden', 'true')
+  canvas.setAttribute('data-aura-glow', '')
+  // Fixed under everything: z-index -1 in the root stacking context paints
+  // above <html>'s own colour and below the app's content.
+  canvas.style.cssText =
+    'position:fixed;left:0;top:0;z-index:-1;pointer-events:none;width:100%;height:100%;'
+
+  let gl = null
+  try {
+    gl = typeof canvas.getContext === 'function'
+      ? canvas.getContext('webgl', {
+        alpha: false,
+        antialias: false,
+        depth: false,
+        stencil: false,
+        powerPreference: 'low-power',
+        preserveDrawingBuffer: false
+      })
+      : null
+  } catch {
+    gl = null   // a refused context is the same as no WebGL
+  }
+
+  const flat = () => {
+    // No WebGL, or a shader that would not build: the theme's own field is
+    // still a background, so the look degrades to a flat colour.
+    canvas.style.backgroundColor = auraDarkMode() ? '#0b0d12' : '#f4f7fb'
+  }
+
+  const mount = () => {
+    try {
+      if (typeof root.appendChild !== 'function') return false
+      root.appendChild(canvas)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  if (!gl) {
+    flat()
+    if (!mount()) return none
+    stage.destroy = () => {
+      try { canvas.remove() } catch { /* already gone */ }
+    }
+    return stage
+  }
+
+  const win = typeof window !== 'undefined' ? window : globalThis
+  const motion = typeof win.matchMedia === 'function'
+    ? win.matchMedia('(prefers-reduced-motion: reduce)')
+    : null
+
+  const frame = fn => (typeof win.requestAnimationFrame === 'function' ? win.requestAnimationFrame(fn) : 0)
+  const cancel = id => {
+    if (id && typeof win.cancelAnimationFrame === 'function') win.cancelAnimationFrame(id)
+  }
+
+  let program = null
+  let uniforms = {}
+  let raf = 0
+  let last = 0
+  let lost = false
+  const start = auraNow()
+
+  const compile = (type, text) => {
+    const shader = gl.createShader(type)
+    if (!shader) return null
+    gl.shaderSource(shader, text)
+    gl.compileShader(shader)
+    return gl.getShaderParameter(shader, gl.COMPILE_STATUS) ? shader : null
+  }
+
+  const build = () => {
+    const vs = compile(gl.VERTEX_SHADER, AURA_VERTEX)
+    const fs = compile(gl.FRAGMENT_SHADER, AURA_FRAGMENT)
+    if (!vs || !fs) return false
+    program = gl.createProgram()
+    if (!program) return false
+    gl.attachShader(program, vs)
+    gl.attachShader(program, fs)
+    gl.bindAttribLocation(program, 0, 'aPos')
+    gl.linkProgram(program)
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      program = null
+      return false
+    }
+    gl.useProgram(program)
+    // One triangle that covers the viewport.
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer())
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW)
+    gl.enableVertexAttribArray(0)
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0)
+    uniforms = {}
+    for (const name of ['uRes', 'uTime', 'uLevel', 'uSilence', 'uMood', 'uNight', 'uBase', 'uGlowA', 'uGlowB']) {
+      uniforms[name] = gl.getUniformLocation(program, name)
+    }
+    return true
+  }
+
+  const resize = () => {
+    // 1 rendered pixel per 3 CSS px: a soft glow needs no more.
+    canvas.width = Math.max(1, Math.ceil((Number(win.innerWidth) || 1) / AURA_GLOW_CELL))
+    canvas.height = Math.max(1, Math.ceil((Number(win.innerHeight) || 1) / AURA_GLOW_CELL))
+  }
+
+  const draw = now => {
+    if (!program || lost) return
+    const energy = auraEnergy()
+    const night = auraDarkMode()
+    const colors = AURA_GLOW_COLORS[night ? 'dark' : 'light']
+    gl.viewport(0, 0, canvas.width, canvas.height)
+    gl.uniform2f(uniforms.uRes, canvas.width, canvas.height)
+    // Reduced motion holds one still frame instead of breathing.
+    gl.uniform1f(uniforms.uTime, motion && motion.matches ? 12 : (now - start) / 1000)
+    gl.uniform1f(uniforms.uLevel, energy.level)
+    gl.uniform1f(uniforms.uSilence, energy.silence)
+    gl.uniform1f(uniforms.uMood, energy.mood)
+    gl.uniform1f(uniforms.uNight, night ? 1 : 0)
+    gl.uniform3fv(uniforms.uBase, colors.base)
+    gl.uniform3fv(uniforms.uGlowA, colors.a)
+    gl.uniform3fv(uniforms.uGlowB, colors.b)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+  }
+
+  const stop = () => {
+    cancel(raf)
+    raf = 0
+  }
+
+  const tick = now => {
+    raf = frame(tick)
+    if (now - last >= 1000 / AURA_GLOW_FPS - 2) {
+      last = now
+      draw(now)
+    }
+  }
+
+  const hidden = () => Boolean(doc && doc.hidden === true)
+
+  const play = () => {
+    stop()
+    // Hidden: nothing to show and nothing worth a frame. Reduced motion: one
+    // still frame, no loop.
+    if (lost || hidden()) return
+    if (motion && motion.matches) {
+      draw(auraNow())
+      return
+    }
+    raf = frame(tick)
+  }
+
+  const onLost = event => {
+    if (event && typeof event.preventDefault === 'function') event.preventDefault()
+    lost = true
+    stop()
+  }
+
+  const onRestored = () => {
+    // A context that comes back but will not build again stays on the flat
+    // colour rather than scheduling frames that draw nothing.
+    lost = !build()
+    resize()
+    play()
+  }
+
+  const onResize = () => {
+    resize()
+    draw(auraNow())
+  }
+
+  const onMotionChange = () => play()
+  const onVisibility = () => play()
+
+  canvas.addEventListener('webglcontextlost', onLost)
+  canvas.addEventListener('webglcontextrestored', onRestored)
+  if (typeof win.addEventListener === 'function') win.addEventListener('resize', onResize)
+  if (motion && typeof motion.addEventListener === 'function') motion.addEventListener('change', onMotionChange)
+  if (doc && typeof doc.addEventListener === 'function') doc.addEventListener('visibilitychange', onVisibility)
+
+  if (!build()) {
+    flat()
+    lost = true   // nothing to draw; the flat colour is the whole effect
+    if (!mount()) {
+      if (doc && typeof doc.removeEventListener === 'function') doc.removeEventListener('visibilitychange', onVisibility)
+      if (typeof win.removeEventListener === 'function') win.removeEventListener('resize', onResize)
+      return none
+    }
+  } else if (!mount()) {
+    if (doc && typeof doc.removeEventListener === 'function') doc.removeEventListener('visibilitychange', onVisibility)
+    if (typeof win.removeEventListener === 'function') win.removeEventListener('resize', onResize)
+    if (motion && typeof motion.removeEventListener === 'function') motion.removeEventListener('change', onMotionChange)
+    canvas.removeEventListener('webglcontextlost', onLost)
+    canvas.removeEventListener('webglcontextrestored', onRestored)
+    return none
+  }
+
+  resize()
+  play()
+
+  return {
+    canvas,
+    // Mode or an accent retint changed: the colours and the size are stale.
+    refresh() {
+      resize()
+      draw(auraNow())
+    },
+    destroy() {
+      stop()
+      if (typeof win.removeEventListener === 'function') win.removeEventListener('resize', onResize)
+      if (motion && typeof motion.removeEventListener === 'function') motion.removeEventListener('change', onMotionChange)
+      if (doc && typeof doc.removeEventListener === 'function') doc.removeEventListener('visibilitychange', onVisibility)
+      canvas.removeEventListener('webglcontextlost', onLost)
+      canvas.removeEventListener('webglcontextrestored', onRestored)
+      try {
+        if (gl && typeof gl.getExtension === 'function') gl.getExtension('WEBGL_lose_context')?.loseContext()
+      } catch {
+        // the context is going away anyway
+      }
+      try { canvas.remove() } catch { /* already gone */ }
+    }
+  }
+}
+
+/** Mount the glow while this theme is active, and only then. Named theme
+ *  changes arrive from the probe; the first call also reads <html>, so a host
+ *  that restores the theme at boot shows the glow without a switch. */
+function syncAuraGlow(name) {
+  const active = auraThemeIs(String(name || ''))
+  if (active && !auraGlow) {
+    auraGlow = createAuraGlow()
+  } else if (!active && auraGlow) {
+    auraGlow.destroy()
+    auraGlow = null
+  } else if (auraGlow) {
+    auraGlow.refresh()
+  }
+}
+
+function stopAuraGlow() {
+  if (!auraGlow) return
+  try {
+    auraGlow.destroy()
+  } catch {
+    // one broken teardown must not strand the node
+  }
+  auraGlow = null
+}
+
+/* The theme itself: light and dark palettes, Aura's field colours, and CSS
+ * that only exists while this theme is the active one. No rule here addresses
+ * the app's root containers; the glow is a canvas of its own. */
+const AURA_THEME_CSS = `
+${AURA_SCOPE} {
+  --aura-glow-a: color-mix(in oklch, var(--ui-accent) 78%, white);
+  --aura-glow-b: color-mix(in oklch, var(--ui-accent) 45%, #8b7cff);
+
+  /* One painter for the field: the glow canvas sits on the window's own
+     background and the app's field surfaces go clear, so the glow shows
+     through them. No background is set here on purpose: giving <html> a
+     colour of its own would stop the app's background from being painted
+     first, and the canvas would be hidden under the app's own field. */
+  --ui-chat-surface-background: transparent;
+  --ui-sidebar-surface-background: transparent;
+  --ui-editor-surface-background: transparent;
+  --ui-terminal-surface-background: var(--ui-bg-chrome);
+}
+
+/* The glow is a background, not a picture: quiet enough to read over. */
+${AURA_SCOPE} canvas[data-aura-glow] {
+  opacity: 0.55;
+  transition: opacity 700ms ease;
+}
+
+${AURA_SCOPE}:not(.dark) canvas[data-aura-glow] {
+  opacity: 0.35;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ${AURA_SCOPE} canvas[data-aura-glow] {
+    transition: none;
+  }
+}
+`
+
+const AURA_THEME = {
+  name: AURA_THEME_ID,
+  label: 'Aura',
+  description: 'A quiet aurora glow in Aura’s colours, listening to what plays',
+  colors: {
+    background: '#f4f7fb',
+    foreground: '#0b0d12',
+    card: '#ffffff',
+    cardForeground: '#0b0d12',
+    muted: '#e7ecf4',
+    mutedForeground: '#55607a',
+    popover: '#ffffff',
+    popoverForeground: '#0b0d12',
+    primary: '#2f6fd0',
+    primaryForeground: '#ffffff',
+    secondary: '#e7ecf4',
+    secondaryForeground: '#0b0d12',
+    accent: '#dbe6f8',
+    accentForeground: '#0b0d12',
+    border: '#d3dcea',
+    input: '#c9d4e6',
+    ring: '#2f6fd0',
+    midground: '#2f6fd0',
+    midgroundForeground: '#ffffff',
+    composerRing: '#2f6fd0',
+    destructive: '#c62b33',
+    destructiveForeground: '#ffffff',
+    sidebarBackground: '#eef2f9',
+    sidebarBorder: '#d8e0ee',
+    userBubble: '#e6edf9',
+    userBubbleBorder: '#d3dcea'
+  },
+  darkColors: {
+    background: '#0b0d12',
+    foreground: '#e8ecf5',
+    card: '#12151c',
+    cardForeground: '#e8ecf5',
+    muted: '#171b24',
+    mutedForeground: '#8d97ad',
+    popover: '#141821',
+    popoverForeground: '#e8ecf5',
+    primary: '#6ea8ff',
+    primaryForeground: '#06101f',
+    secondary: '#171b24',
+    secondaryForeground: '#e8ecf5',
+    accent: '#1c2330',
+    accentForeground: '#e8ecf5',
+    border: '#232a37',
+    input: '#2a3342',
+    ring: '#6ea8ff',
+    midground: '#6ea8ff',
+    midgroundForeground: '#06101f',
+    composerRing: '#6ea8ff',
+    destructive: '#e5484d',
+    destructiveForeground: '#14060a',
+    sidebarBackground: '#0b0d12',
+    sidebarBorder: '#1b212c',
+    userBubble: '#141821',
+    userBubbleBorder: '#262f3e'
+  },
+  terminal: {
+    foreground: '#0b0d12',
+    cursor: '#2f6fd0',
+    selectionBackground: '#2f6fd033',
+    black: '#0b0d12',
+    red: '#c62b33',
+    green: '#0a7b52',
+    yellow: '#a86a00',
+    blue: '#2f6fd0',
+    magenta: '#6b4bd6',
+    cyan: '#0b7285',
+    white: '#6b7488',
+    brightBlack: '#55607a',
+    brightRed: '#e5484d',
+    brightGreen: '#0f9668',
+    brightYellow: '#c98a00',
+    brightBlue: '#4a86e8',
+    brightMagenta: '#8b7cff',
+    brightCyan: '#1189a0',
+    brightWhite: '#0b0d12'
+  },
+  darkTerminal: {
+    foreground: '#e8ecf5',
+    cursor: '#6ea8ff',
+    selectionBackground: '#6ea8ff40',
+    black: '#0b0d12',
+    red: '#e5484d',
+    green: '#4fd57f',
+    yellow: '#e5b567',
+    blue: '#6ea8ff',
+    magenta: '#8b7cff',
+    cyan: '#5fd3e0',
+    white: '#c7cede',
+    brightBlack: '#6b7488',
+    brightRed: '#ff8382',
+    brightGreen: '#7fe6a3',
+    brightYellow: '#ffc07f',
+    brightBlue: '#a3c8ff',
+    brightMagenta: '#b9a9ff',
+    brightCyan: '#8fe6ef',
+    brightWhite: '#ffffff'
+  },
+  customCSS: AURA_THEME_CSS
+}
+
+/** Mount lifetime for register(): synced once now (the host may already be on
+ *  the theme), then on every probe report through onThemeName. */
+function startAuraGlow() {
+  syncAuraGlow(currentThemeName())
+  return stopAuraGlow
 }
 
 /** One control that returns the host to the user's own appearance: turns off
@@ -8167,6 +8698,8 @@ export default {
     pulseIndex = 0
     resetShow()
     closeDevStats()
+    // A hot reload must not inherit the previous instance's glow canvas.
+    stopAuraGlow()
     const settings = readSettings(ctx)
     $settings.set(settings)
     $live.set({ ...EMPTY_LIVE })
@@ -8188,6 +8721,19 @@ export default {
         render: () => jsx(ThemeProbe, {})
       })
     )
+
+    // The Aura theme (prototype): one DesktopTheme through THEMES_AREA, and
+    // the glow canvas that exists only while that theme is the active one.
+    // The theme's own CSS is scoped to the theme name; the canvas is ours and
+    // leaves with dispose.
+    track(
+      ctx.register({
+        id: AURA_THEME_ID,
+        area: THEMES_AREA,
+        data: AURA_THEME
+      })
+    )
+    track(startAuraGlow())
 
     // Settings ▸ Plugins. Older hosts without registerSettingsPage get the
     // same page as a plain SETTINGS_PLUGINS_AREA contribution.

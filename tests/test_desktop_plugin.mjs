@@ -919,9 +919,15 @@ record('occupies the status bar with exactly one quick-menu contribution', () =>
   assert.ok(Number.isFinite(menu.order), 'quick menu needs a stable order')
 })
 
-record('contributes no theme', () => {
-  const theme = a.contributions.find(c => c.area === 'themes')
-  assert.equal(theme, undefined, 'a themes contribution was registered')
+record('contributes exactly one theme: the Aura prototype', () => {
+  // Reversed on purpose: earlier builds contributed no theme at all. The
+  // prototype registers one, and only one, through THEMES_AREA.
+  const themes = a.contributions.filter(c => c.area === 'themes')
+  assert.equal(themes.length, 1, 'expected exactly one themes contribution')
+  assert.equal(themes[0].id, 'aura')
+  assert.equal(themes[0].data.name, 'aura')
+  assert.equal(typeof themes[0].data.customCSS, 'string')
+  assert.ok(themes[0].data.colors && themes[0].data.darkColors, 'a theme needs both palettes')
 })
 
 record('contributes the settings page under settings.plugins', () => {
