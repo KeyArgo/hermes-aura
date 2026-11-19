@@ -240,8 +240,20 @@ cannot start, Aura shows an accent-only fallback.
 - **Radio stopped?** Try another station or start the stream again; the station
   or its stream may be unavailable.
 - **How do I reset the look?** Choose **Restore my theme**, or turn Aura off and on.
-- **Where are the logs?** Check Hermes Desktop's logs for messages from `aura`,
-  `aura.server`, or `aura.capture`; Aura uses Python logging.
+- **Where are the logs?** Aura writes its own rotating log to
+  `<HERMES_HOME>/aura/aura.log` (1 MB per file, 3 backups — about 4 MB worst case),
+  alongside the messages in Hermes Desktop's own logs from `aura`, `aura.server`,
+  or `aura.capture`. It is INFO by default; set `AURA_LOG_DEBUG=1` before starting
+  Hermes for DEBUG. The token is never written to it.
+- **Something feels wrong — how do I capture it?** Every five minutes the server
+  logs one health line (memory RSS, thread count, connected pages, queue sizes)
+  and warns once if RSS grows more than 50% over the first sample — a cheap
+  memory-growth canary on Linux, Windows and macOS. The visualiser page and the
+  desktop half also keep the last 200 local events (errors, poll failures,
+  render-loop start/stop, quality steps, and a JS heap sample every five minutes
+  where the browser exposes one). Copy them with **Copy diagnostics** in the
+  page's controls bar, or in the desktop dev readout (Ctrl+Shift+A). Nothing is
+  uploaded; while Aura is Off only the five-minute sample keeps recording.
 
 ---
 
@@ -280,7 +292,7 @@ The only host DOM Aura touches is opt-in and bounded:
 ```
 plugin.yaml          manifest (hooks, tools, dashboard)
 __init__.py          Python plugin: hooks, aura_control tool
-aura_core/           capture, analysis, config, HTTP server, sessions, radio
+aura_core/           capture, analysis, config, HTTP server, sessions, radio, diagnostics
 dashboard/           plugin_api.py — the desktop half's REST door (incl. /radio/*)
 desktop/plugin.js    Hermes Desktop half (status menu, pane, page, watch window, audio)
 web/                 visualiser (aura.js), audio channel (audio.js), film stage (player.html), presets
@@ -302,8 +314,10 @@ themselves when the machine is too loaded to sample reliably rather than reporti
 Pre-release. `SPIKES.md` records what was actually measured; `CONTRACT.md` is the wire contract between
 the capture server, the page, the desktop half and the agent hooks.
 
-_This README applies to plugin version 1.0.0; revised 2026-11-10 (listen lane: audio channel,
-radio, `aura_listen`, REVamp card)._
+_This README applies to plugin version 1.0.0; revised 2026-11-19 (diagnostics lane:
+rotating server log, five-minute health samples, local event rings and Copy
+diagnostics). Previous revision 2026-11-10 (listen lane: audio channel, radio,
+`aura_listen`, REVamp card)._
 
 ## Licences
 

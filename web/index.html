@@ -255,7 +255,19 @@
     background: transparent;
     color: var(--aura-text);
   }
+  #aura-diag-copy {
+    appearance: none;
+    font: inherit;
+    font-size: 11px;
+    color: var(--aura-text);
+    background: color-mix(in srgb, var(--aura-bg) 70%, transparent);
+    border: 1px solid color-mix(in srgb, var(--aura-text) 26%, transparent);
+    border-radius: 6px;
+    padding: 3px 8px;
+    cursor: pointer;
+  }
   #aura-toggle:focus-visible,
+  #aura-diag-copy:focus-visible,
   #aura-intensity:focus-visible {
     outline: 2px solid var(--aura-accent);
     outline-offset: 2px;
@@ -332,6 +344,8 @@
       <option value="music">Music only</option>
     </select>
     <button id="aura-toggle" type="button" aria-pressed="true">On</button>
+    <button id="aura-diag-copy" type="button"
+            title="Copy a local diagnostics report to the clipboard — nothing is uploaded">Copy diagnostics</button>
   </div>
 </div>
 

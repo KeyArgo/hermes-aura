@@ -731,6 +731,94 @@ function setLive(patch) {
 
 function setError(message) {
   setLive({ error: typeof message === 'string' ? message : '' })
+  if (typeof message === 'string' && message) diagNote('error', message.slice(0, 200))
+}
+
+// ------------------------------------------------------------- diagnostics
+// A local ring buffer of the last DIAG_RING_MAX events: errors, poll failures,
+// the poll lifecycle and (where the host exposes it) a JS heap sample every
+// DIAG_SAMPLE_MS. It exists so the owner can catch problems — including memory
+// growth — without a network call: nothing here is uploaded, and the only new
+// timer is the five-minute heap sample. While Aura is Off nothing is recorded
+// except that sample. The dev readout (Ctrl+Shift+A) shows the event count and
+// a "Copy diagnostics" button; dispose stops the timer.
+const DIAG_RING_MAX = 200
+const DIAG_SAMPLE_MS = 5 * 60 * 1000
+const diagRing = []
+let diagTimer = null
+
+function diagNote(kind, detail) {
+  if (disposed) return
+  // Off is off: only the five-minute heap sample keeps running.
+  if (kind !== 'heap' && $settings.get().enabled !== true) return
+  diagRing.push({ t: Date.now(), kind, detail: detail === undefined ? null : detail })
+  if (diagRing.length > DIAG_RING_MAX) diagRing.splice(0, diagRing.length - DIAG_RING_MAX)
+}
+
+/** performance.memory is Chromium-only; everywhere else this is a no-op. */
+function diagSampleHeap() {
+  if (disposed) return
+  const mem = typeof performance !== 'undefined' && performance ? performance.memory : null
+  if (!mem || !Number.isFinite(mem.usedJSHeapSize)) return
+  diagNote('heap', {
+    usedJSHeapSize: mem.usedJSHeapSize,
+    totalJSHeapSize: Number.isFinite(mem.totalJSHeapSize) ? mem.totalJSHeapSize : null,
+    jsHeapSizeLimit: Number.isFinite(mem.jsHeapSizeLimit) ? mem.jsHeapSizeLimit : null
+  })
+}
+
+function startDiagSampler() {
+  if (disposed || diagTimer) return
+  diagSampleHeap() // baseline now; the timer only repeats every five minutes
+  if (ctxRef && typeof ctxRef.setInterval === 'function') {
+    try {
+      diagTimer = ctxRef.setInterval(diagSampleHeap, DIAG_SAMPLE_MS)
+    } catch {
+      diagTimer = null
+    }
+  }
+  if (!diagTimer && typeof setInterval === 'function') {
+    diagTimer = setInterval(diagSampleHeap, DIAG_SAMPLE_MS)
+  }
+}
+
+function stopDiagSampler() {
+  if (!diagTimer) return
+  const handle = diagTimer
+  diagTimer = null
+  try {
+    if (typeof handle === 'function') {
+      handle()
+      return
+    }
+    if (ctxRef && typeof ctxRef.clearInterval === 'function') {
+      ctxRef.clearInterval(handle)
+      return
+    }
+    if (typeof clearInterval === 'function') clearInterval(handle)
+  } catch {
+    // already cleared
+  }
+}
+
+/** The clipboard payload. Never the token: $live.url carries it, so only the
+ *  plain status fields are copied, plus the ring itself. */
+function diagSnapshot() {
+  const live = $live.get()
+  const settings = $settings.get()
+  return {
+    at: new Date().toISOString(),
+    source: 'aura-desktop',
+    enabled: settings.enabled === true,
+    serverOk: live.ok === true,
+    capture: typeof live.capture === 'string' ? live.capture : '',
+    error: typeof live.error === 'string' ? live.error : '',
+    events: diagRing.slice()
+  }
+}
+
+async function copyDiagnostics() {
+  return copyText(JSON.stringify(diagSnapshot(), null, 2))
 }
 
 // The visualiser page (web/index.html) and the film page. In Visualizer mode
@@ -1553,6 +1641,7 @@ async function poll() {
       status = await ctxRef.rest('/status', { timeoutMs: 10000 })
     } catch (cause) {
       const detail = String(cause && cause.message || '')
+      diagNote('poll-fail', { route: '/status', detail: detail.slice(0, 200) })
       if (/timed?\s*out/i.test(detail)) {
         error = 'The Aura status request timed out while connecting to Hermes.'
       } else if (/profile_scope_mismatch/i.test(detail)) {
@@ -1576,9 +1665,12 @@ async function poll() {
     if (ok) {
       try {
         frame = await ctxRef.rest('/state', { timeoutMs: 3000 })
-      } catch {
+      } catch (cause) {
+        diagNote('poll-fail', { route: '/state', detail: String(cause && cause.message || '').slice(0, 200) })
         frame = null
       }
+    } else {
+      diagNote('poll-fail', { route: '/status', detail: 'not ok' })
     }
 
     const capture = ok && typeof status.capture === 'string' ? status.capture : ''
@@ -5467,7 +5559,8 @@ const DEV_STATS_ROWS = Object.freeze([
   ['level', 'music level'],
   ['silence', 'silence'],
   ['fps', 'fps'],
-  ['preset', 'preset']
+  ['preset', 'preset'],
+  ['diag', 'diag events']
 ])
 
 let devStatsEl = null
@@ -5533,6 +5626,32 @@ function buildDevStatsPanel() {
   hint.style.marginTop = '4px'
   hint.style.fontSize = '10px'
   panel.appendChild(hint)
+
+  // The diagnostics ring's one interactive element. The panel itself is
+  // pointer-events: none; the button opts back in. The label reports the truth
+  // (copied only when the clipboard took it) and stays until the next click —
+  // no reset timer, so diagnostics add no timer faster than the 5-min sample.
+  const copyBtn = doc.createElement('button')
+  copyBtn.type = 'button'
+  copyBtn.textContent = 'Copy diagnostics'
+  copyBtn.setAttribute('aria-label', 'Copy Aura diagnostics to the clipboard')
+  copyBtn.style.pointerEvents = 'auto'
+  copyBtn.style.marginTop = '6px'
+  copyBtn.style.font = 'inherit'
+  copyBtn.style.fontSize = '10px'
+  copyBtn.style.padding = '2px 8px'
+  copyBtn.style.borderRadius = '6px'
+  copyBtn.style.border = '1px solid var(--ui-stroke-secondary, #2a2a33)'
+  copyBtn.style.background = 'var(--ui-bg, #14141a)'
+  copyBtn.style.color = 'var(--ui-text-primary, #e2e2ea)'
+  copyBtn.style.cursor = 'pointer'
+  copyBtn.addEventListener('click', () => {
+    copyBtn.textContent = 'Copy diagnostics'
+    void copyDiagnostics().then(ok => {
+      copyBtn.textContent = ok ? 'copied ✓' : 'copy failed'
+    })
+  })
+  panel.appendChild(copyBtn)
   return panel
 }
 
@@ -5586,7 +5705,7 @@ function devStatsTick() {
   const fps = devFps > 0 ? devFps.toFixed(1) : '0.0'
   const preset = typeof frame.preset === 'string' && frame.preset ? frame.preset : '—'
 
-  const values = { sessions, boost, intensity: `${Math.round(intensity * 100)}%`, mood, level, silence, fps, preset }
+  const values = { sessions, boost, intensity: `${Math.round(intensity * 100)}%`, mood, level, silence, fps, preset, diag: String(diagRing.length) }
   for (const [key] of DEV_STATS_ROWS) {
     const el = devStatsValueEls[key]
     const value = values[key]
@@ -8053,6 +8172,7 @@ let instanceSeq = 0
 function teardown() {
   unregisterStripPane()
   stripHostEl = null
+  stopDiagSampler()
   if (pollDisposer) {
     try {
       pollDisposer()
@@ -8136,6 +8256,7 @@ export default {
     const mine = ++instanceSeq
     const dispose = () => {
       if (disposed || mine !== instanceSeq) return
+      diagNote('poll-stop')
       disposed = true
       teardown()
     }
@@ -8167,6 +8288,9 @@ export default {
     pulseIndex = 0
     resetShow()
     closeDevStats()
+    // A hot reload starts with an empty ring and no sampler from the old instance.
+    stopDiagSampler()
+    diagRing.length = 0
     const settings = readSettings(ctx)
     $settings.set(settings)
     $live.set({ ...EMPTY_LIVE })
@@ -8277,6 +8401,12 @@ export default {
       if (pollDue()) void poll()
     }, POLL_MS)
 
+    // The diagnostics heap sample: the only new timer, and never faster than
+    // five minutes. Registered after the poll tick so that stays the first
+    // interval. While Aura is Off it is the only thing diagnostics does.
+    startDiagSampler()
+    diagNote('poll-start')
+
     if (doc) {
       track(
         ctx.addEventListener(doc, 'visibilitychange', () => {
@@ -8346,5 +8476,15 @@ export const __test = {
   popoutSurface,
   hiddenVideoIds,
   hideCurrentEpisode,
-  managePlaylist
+  managePlaylist,
+  // Diagnostics ring: driven headlessly by tests/test_diag_desktop.mjs.
+  diagNote,
+  diagSampleHeap,
+  diagSnapshot,
+  copyDiagnostics,
+  startDiagSampler,
+  stopDiagSampler,
+  diagRing,
+  DIAG_RING_MAX,
+  DIAG_SAMPLE_MS
 }

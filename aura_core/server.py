@@ -46,7 +46,7 @@ try:  # POSIX leader election; Windows keeps today's single-process behaviour.
 except ImportError:  # pragma: no cover - exercised only on Windows
     fcntl = None  # type: ignore[assignment]
 
-from . import analysis, behavior, config, proc, radio, redact
+from . import analysis, behavior, config, diag, proc, radio, redact
 from . import window as desktop_window
 from .capture import base as capture
 
@@ -247,6 +247,8 @@ class _State:
         self.session_count = 0
         self.session_boost = 1.0
         self.session_thread: threading.Thread | None = None
+        # The five-minute diagnostics sampler (aura_core.diag).
+        self.diag_thread: threading.Thread | None = None
         # The film: whichever player is active reports here, and Hermes (the
         # agent tool) writes commands that the desktop window polls for.
         self.player: dict = {}
@@ -491,6 +493,26 @@ class _Client:
 def _clients_snapshot() -> list:
     with _STATE.lock:
         return list(_STATE.clients)
+
+
+def _diag_collect() -> dict:
+    """The counts the five-minute diagnostics line reports (aura_core.diag).
+
+    Queue lengths are read without each client's condition lock: a deque's
+    len is atomic, and a diagnostic sample must never block the audio path.
+    """
+    with _STATE.lock:
+        clients = list(_STATE.clients)
+        commands = len(_STATE.commands)
+        audio = len(_STATE.audio_requests)
+    return {
+        "clients": len(clients),
+        "pcm_q": sum(len(c.pcm) for c in clients),
+        "event_q": sum(len(c.events) for c in clients),
+        "dropped": sum(c.dropped for c in clients),
+        "commands": commands,
+        "audio_q": audio,
+    }
 
 
 def _broadcast_pcm(payload: bytes) -> None:
@@ -1770,12 +1792,17 @@ def _start_server() -> None:
     # _try_become_leader calls this again the moment _server_running() goes false.
     with _STATE.lock:
         stale = _STATE.httpd
+        stale_stop = _STATE.stop_event
         _STATE.httpd = None
     if stale is not None:
         try:
             stale.server_close()
         except Exception:  # noqa: BLE001 - the old socket may already be gone
             pass
+        # The old capture/lease/diag loops wait on the old event; without this
+        # a restart would leave a second set of them running beside the new.
+        if stale_stop is not None:
+            stale_stop.set()
 
     token = secrets.token_urlsafe(32)
     try:
@@ -1822,6 +1849,17 @@ def _start_server() -> None:
     # would resolve the process-wide default and advertise into another profile.
     threading.Thread(target=contextvars.copy_context().run, args=(_lease_loop, stop_event),
                      name="aura-lease", daemon=True).start()
+    # Diagnostics: the rotating file log plus one health line every 5 minutes
+    # (RSS, threads, clients, queues). Same context trick as the lease loop:
+    # the log path resolves to the home this server was started in.
+    diag.setup_logging()
+    sampler = diag.DiagSampler(_diag_collect)
+    diag_thread = threading.Thread(target=contextvars.copy_context().run,
+                                   args=(sampler.run, stop_event),
+                                   name="aura-diag", daemon=True)
+    with _STATE.lock:
+        _STATE.diag_thread = diag_thread
+    diag_thread.start()
     # A window left behind by a previous server holds a dead token: close it,
     # before it plays audio nobody can control.
     try:
@@ -2315,6 +2353,7 @@ def _stop_server_locked() -> None:
             thread = _STATE.thread
             cap_thread = _STATE.capture_thread
             session_thread = _STATE.session_thread
+            diag_thread = _STATE.diag_thread
             stop_event = _STATE.stop_event
             clients = list(_STATE.clients)
             _STATE.httpd = None
@@ -2322,6 +2361,7 @@ def _stop_server_locked() -> None:
             _STATE.port = None
             _STATE.capture_thread = None
             _STATE.session_thread = None
+            _STATE.diag_thread = None
         if stop_event is not None:
             stop_event.set()
         for client in clients:
@@ -2341,6 +2381,8 @@ def _stop_server_locked() -> None:
             cap_thread.join(timeout=3.0)
         if session_thread is not None and session_thread.is_alive():
             session_thread.join(timeout=3.0)
+        if diag_thread is not None and diag_thread.is_alive():
+            diag_thread.join(timeout=3.0)
         with _STATE.lock:
             _STATE.clients.clear()
             _STATE.token = None

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Diagnostics: the server keeps a rotating log at `<HERMES_HOME>/aura/aura.log` (1 MB × 3,
+  INFO by default, DEBUG via `AURA_LOG_DEBUG=1`, token never written). Every five minutes it
+  logs one health line — process RSS, thread count, connected pages and queue sizes — and warns
+  once when RSS grows more than 50% over the first sample, on Linux, Windows and macOS. The
+  visualiser page and the desktop half keep the last 200 local events (errors, poll failures,
+  render-loop start/stop, quality steps, and a JS heap sample every five minutes where the
+  browser exposes one), copyable via a new **Copy diagnostics** button in the page's controls
+  bar and in the desktop dev readout (Ctrl+Shift+A). Nothing is uploaded, no new timer runs
+  faster than five minutes, and while Aura is Off only the five-minute sample keeps recording.
 - Off now stays off when a /status check starts during the on/off switch's own request and answers with the old switch.
 - Removed the full-window backdrop. It returns when Hermes ships an SDK backdrop area (#155903).
 - Removed the optional Aura Live theme.

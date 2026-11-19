@@ -237,10 +237,84 @@
   function num(v, fallback) { return typeof v === 'number' && isFinite(v) ? v : fallback; }
   function now() { return performance.now(); }
 
+  // ---------------------------------------------------------------------------
+  // diagnostics: a local ring buffer of the last DIAG_RING_MAX events (errors,
+  // poll failures, render-loop start/stop, quality steps) plus a JS heap sample
+  // every DIAG_SAMPLE_MS where performance.memory exists. Nothing is uploaded;
+  // the only new timer is the five-minute sample, and while Aura is Off that
+  // sample is the only thing recorded. The page's Copy diagnostics button and
+  // window.__aura.diagnostics() expose the ring; pagehide stops the timer.
+  // ---------------------------------------------------------------------------
+  const DIAG_RING_MAX = 200;
+  const DIAG_SAMPLE_MS = 5 * 60 * 1000;
+  const diagRing = [];
+  let diagTimer = null;
+
+  function diagNote(kind, detail) {
+    // Off is off: only the five-minute heap sample keeps recording.
+    if (!state.enabled && kind !== 'heap') return;
+    diagRing.push({ t: Date.now(), kind, detail: detail === undefined ? null : detail });
+    if (diagRing.length > DIAG_RING_MAX) diagRing.splice(0, diagRing.length - DIAG_RING_MAX);
+  }
+
+  function diagSampleHeap() {
+    const mem = typeof performance !== 'undefined' && performance ? performance.memory : null;
+    if (!mem || !Number.isFinite(mem.usedJSHeapSize)) return;
+    diagNote('heap', {
+      usedJSHeapSize: mem.usedJSHeapSize,
+      totalJSHeapSize: Number.isFinite(mem.totalJSHeapSize) ? mem.totalJSHeapSize : null,
+      jsHeapSizeLimit: Number.isFinite(mem.jsHeapSizeLimit) ? mem.jsHeapSizeLimit : null
+    });
+  }
+
+  function startDiagSampler() {
+    if (diagTimer !== null) return;
+    diagTimer = setInterval(diagSampleHeap, DIAG_SAMPLE_MS);
+  }
+
+  function stopDiagSampler() {
+    if (diagTimer !== null) { clearInterval(diagTimer); diagTimer = null; }
+  }
+
+  /** The clipboard payload. Never the token: location.search carries it, so
+   *  only the pathname and plain state are copied, plus the ring itself. */
+  function diagReport() {
+    return {
+      at: new Date().toISOString(),
+      source: 'aura-page',
+      page: location.pathname,
+      enabled: state.enabled,
+      capture: state.capture,
+      preset: state.presetName,
+      frames: state.frames,
+      quality: {
+        tier: quality.tier,
+        degradeLevel: quality.degradeLevel,
+        renderScale: quality.renderScale,
+        fpsCap: quality.fpsCap
+      },
+      errors: state.errors.slice(),
+      events: diagRing.slice()
+    };
+  }
+
+  async function copyDiagnostics() {
+    const text = JSON.stringify(diagReport(), null, 2);
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard
+          && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_) { /* reported as a failed copy */ }
+    return false;
+  }
+
   function recordError(err) {
     const text = String(err && err.message ? err.message : err);
     state.errors.push(text);
     if (state.errors.length > 50) state.errors.shift();
+    diagNote('error', text.slice(0, 200));
     try { console.warn('[aura]', text); } catch (_) {}
   }
 
@@ -271,8 +345,10 @@
       const res = await fetchWithTimeout(path, Object.assign({}, opts, { headers }));
       let body = null;
       try { body = await res.json(); } catch (_) { body = null; }
+      if (!res.ok) diagNote('poll-fail', { path, status: res.status });
       return { status: res.status, ok: res.ok, json: body };
     } catch (e) {
+      diagNote('poll-fail', { path, error: String(e).slice(0, 200) });
       return { status: 0, ok: false, json: null, error: String(e) };
     }
   }
@@ -1357,6 +1433,12 @@
     quality.renderScale = ladder[quality.degradeLevel].scale;
     quality.fpsCap = ladder[quality.degradeLevel].fps;
     if (state.reducedMotion) quality.fpsCap = Math.min(quality.fpsCap, 30);
+    diagNote('quality', {
+      level: quality.degradeLevel,
+      renderScale: quality.renderScale,
+      fpsCap: quality.fpsCap,
+      userRequested: userRequested === true
+    });
     // Only a quality change the user asked for re-opens the dense probe
     // window (which also drops the old samples). The automatic ladder steps
     // quietly and keeps its GPU samples: with sparse probes, clearing them
@@ -1503,6 +1585,7 @@
     // paths.
     openProbeWarmWindow();
     rafId = requestAnimationFrame(loop);
+    diagNote('loop-start', { frames: state.frames });
   }
 
   // The degrade ladder only trusts recent samples; opening the window clears
@@ -1513,7 +1596,11 @@
   }
 
   function stopLoop() {
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+      diagNote('loop-stop', { frames: state.frames });
+    }
   }
 
   // A hidden tab draws nothing and the browser throttles rAF anyway; parking the
@@ -2165,6 +2252,7 @@
       socket.ws = null;
       setMoodIdle();
       if (socket.suspended) { socket.state = 'boot'; renderStatus(); return; }
+      diagNote('poll-fail', { path: '/api/stream', code: event.code });
       if (event.code === 1008) {
         socket.state = 'refused';
         block('token', 'Aura refused this token (1008) — reopen it from the plugin.');
@@ -2198,12 +2286,13 @@
   // The browser never tells the server when a tab goes away, so the socket used
   // to die by timeout. Tear it down deliberately, and reconnect if the page is
   // restored from the back/forward cache.
-  window.addEventListener('pagehide', () => { socket.suspended = true; disconnect() })
+  window.addEventListener('pagehide', () => { socket.suspended = true; disconnect(); stopDiagSampler(); })
   window.addEventListener('pageshow', event => {
     if (!event.persisted) return;
     socket.suspended = false;
     socket.attempt = 0;
     connect();
+    startDiagSampler();
   })
   // Coming back from bfcache resets UI timers that the browser froze; an
   // explicit reconnect is the only reliable way to know the stream is live.
@@ -2467,6 +2556,17 @@
         postControl({ enabled: next });
       });
     }
+    if (dom.diagCopy) {
+      // Local clipboard only — nothing is uploaded. The label reports the
+      // truth and stays until the next click: no reset timer, so diagnostics
+      // add no timer faster than the five-minute heap sample.
+      dom.diagCopy.addEventListener('click', () => {
+        dom.diagCopy.textContent = 'Copy diagnostics';
+        copyDiagnostics().then((ok) => {
+          dom.diagCopy.textContent = ok ? 'copied ✓' : 'copy failed';
+        });
+      });
+    }
   }
 
   // A lost context is the one graphics failure that can recover on its own.
@@ -2511,6 +2611,7 @@
     dom.behavior = document.getElementById('aura-behavior');
     dom.motion = document.getElementById('aura-motion');
     dom.toggle = document.getElementById('aura-toggle');
+    dom.diagCopy = document.getElementById('aura-diag-copy');
     setupContextRecovery();
     if (dom.motion) dom.motion.value = state.motion;
     if (dom.slider) dom.slider.disabled = state.motion === 'designs';
@@ -2531,6 +2632,10 @@
     }
 
     bindControls();
+    // Diagnostics: one heap baseline now, then one sample every five minutes.
+    // This is the only new timer on the page, and it survives Aura being Off.
+    diagSampleHeap();
+    startDiagSampler();
     observeResize();
     resizeCanvas();
     applyVisualOpacity();
@@ -2717,6 +2822,18 @@
     degradeLadder,
     evaluateDegrade,
     noteRenderError,
+    // Diagnostics ring (local only): the last 200 events, and the clipboard
+    // report the Copy diagnostics button uses. No network, no token.
+    diagnostics() { return diagRing.slice(); },
+    copyDiagnostics,
+    _diag: {
+      ring: diagRing,
+      note: diagNote,
+      sampleHeap: diagSampleHeap,
+      report: diagReport,
+      intervalMs: DIAG_SAMPLE_MS,
+      max: DIAG_RING_MAX
+    },
     _viz: function () { return viz; }
   };
 
