@@ -1,0 +1,7 @@
+# Runtime dependencies for Aura.
+# Versions are the ones this release was tested against on Linux (PipeWire/PulseAudio).
+# Pillow and websocket-client are only used by the diagnostic scripts in tools/ and are
+# not needed to run the plugin.
+fastapi==0.133.1
+uvicorn==0.54.0
+sounddevice==0.5.5
