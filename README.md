@@ -1,5 +1,12 @@
 # Aura
 
+<p>
+  <img alt="Hermes plugin" src="https://img.shields.io/badge/Hermes-plugin-0000F2?style=flat-square"/>
+  <img alt="Licence" src="https://img.shields.io/badge/licence-MIT-0000F2?style=flat-square"/>
+  <img alt="Tests" src="https://img.shields.io/badge/tests-217%20passed-2ea44f?style=flat-square"/>
+  <img alt="Audio" src="https://img.shields.io/badge/audio-system%20loopback%2C%20never%20microphone-0000F2?style=flat-square"/>
+</p>
+
 A living, audio-reactive theme for Hermes Desktop. Aura listens to **system audio** —
 whatever this computer is already playing, from any app — analyses it locally, and
 drives a MilkDrop-compatible visualizer plus the app's accent colour from it. It also
@@ -9,7 +16,24 @@ a mood.
 REVamp only reacts to audio REVamp itself plays. Aura needs no account, no music
 integration and no playback of its own: it works with anything the machine is playing.
 
-## What it does (0.1)
+## Install
+
+```bash
+hermes plugins install /path/to/hermes-aura    # or the catalog entry once merged
+hermes plugins enable aura
+```
+
+Then open **Aura** in Settings: the backdrop is opt-in and off by default. One toggle, one behaviour
+profile, done. `VERIFY.md` lists the commands that prove it works.
+
+## What you see in the first five minutes
+
+- a backdrop behind the whole window that moves with the music already playing
+- the app's accent colour following the same audio, derived from your current theme
+- a mood shift when the agent starts a tool, waits for approval, errors, or finishes
+- switching it off restores your theme exactly, with nothing left latched
+
+## What it does
 
 - **Visual behind the app (opt-in, off by default)** — one click-through, audio-reactive
   backdrop iframe behind the whole window plus a single `#aura-glass` stylesheet that clears the

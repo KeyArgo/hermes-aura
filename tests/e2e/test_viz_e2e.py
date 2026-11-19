@@ -1255,7 +1255,15 @@ def test_music_beat_reaction_is_visible(chrome, aura):
         aura.beat_amp = 0.01  # -40 dBFS: the pre-fix path rounds this to silence
         aura.mode = "beat"
         time.sleep(0.6)
+        # The recorder samples frames from the live render loop, so the count depends on how much CPU
+        # the box has to spare. On a loaded machine an 8 s window yields 13 frames, which is a starved
+        # sample rather than a broken render path — so keep sampling until there are enough frames to
+        # compare kick against rest, and fail only if the window closes still short.
         rows = tab.ev(BEAT_RECORD_JS % 8000) or []
+        for _ in range(3):
+            if len(rows) >= 24:
+                break
+            rows += (tab.ev(BEAT_RECORD_JS % 6000) or [])
         print("beat rows=%d preset=%r amp=%g" % (
             len(rows), rows[-1].get("preset") if rows else None, aura.beat_amp), flush=True)
         assert len(rows) >= 15, "not enough frames sampled: %d" % len(rows)
