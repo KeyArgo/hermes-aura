@@ -117,6 +117,16 @@ function stripNonCode(text) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
+/** Fire one polling tick the way the host does: pollDue() is elapsed-time
+ *  based, so wait out whatever is left of the 250 ms busy cadence since the
+ *  last poll before firing. Tests that mean to tick INSIDE the cadence (the
+ *  overlap guard) keep firing raw ticks. */
+async function dueTick(bucket) {
+  const since = Date.now() - pluginModule.wiringTest.lastPollAt()
+  if (since < 250) await sleep(250 - since)
+  bucket.timers.find(t => t.ms === 250).fn()
+}
+
 function walk(node, visit) {
   if (!node || typeof node !== 'object') return
   if (Array.isArray(node)) {
@@ -444,7 +454,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, panelHost: typeof panelHostRef === "function" ? panelHostRef : null, video: $video, settings: $settings, remember: typeof rememberPosition === "function" ? rememberPosition : null, refreshFilm: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null, filmSurface: typeof $filmSurface === "object" ? $filmSurface : null, owned: () => desktopOwned, command: (cmd, value) => videoCommand(cmd, value) };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, panelHost: typeof panelHostRef === "function" ? panelHostRef : null, video: $video, settings: $settings, remember: typeof rememberPosition === "function" ? rememberPosition : null, refreshFilm: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null, filmSurface: typeof $filmSurface === "object" ? $filmSurface : null, owned: () => desktopOwned, command: (cmd, value) => videoCommand(cmd, value), lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : 0) };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -1065,7 +1075,7 @@ await recordAsync('a slow status response does not trigger overlapping requests'
   }
   try {
     const tick = a.timers.find(t => t.ms === 250)
-    tick.fn()
+    await dueTick(a)
     await sleep(10)
     tick.fn()
     tick.fn()
@@ -1102,14 +1112,14 @@ await recordAsync('status timeout is reported without leaking error details', as
   const oldRest = a.ctx.rest
   a.ctx.rest = async () => { throw new Error('Timed out connecting to Hermes backend after 3000ms token=secret') }
   try {
-    a.timers.find(t => t.ms === 250).fn()
+    await dueTick(a)
     await sleep(30)
     const text = texts(renderContribution(a.contributions.find(c => c.area === 'settings.plugins')))
     assert.match(text, /timed out/i)
     assert.doesNotMatch(text, /secret|token/)
   } finally {
     a.ctx.rest = oldRest
-    a.timers.find(t => t.ms === 250).fn()
+    await dueTick(a)
     await sleep(30)
   }
 })
@@ -1124,7 +1134,7 @@ await recordAsync('status failures are classified safely', async () => {
       ['unexpected token=secret', /could not complete/i]
     ]) {
       a.ctx.rest = async () => { throw new Error(detail) }
-      a.timers.find(t => t.ms === 250).fn()
+      await dueTick(a)
       await sleep(30)
       const text = texts(renderContribution(a.contributions.find(c => c.area === 'settings.plugins')))
       assert.match(text, expected)
@@ -1132,7 +1142,7 @@ await recordAsync('status failures are classified safely', async () => {
     }
   } finally {
     a.ctx.rest = oldRest
-    a.timers.find(t => t.ms === 250).fn()
+    await dueTick(a)
     await sleep(30)
   }
 })
@@ -1786,6 +1796,10 @@ const quickDot = tree => {
   return found
 }
 const fTick = async () => {
+  // A host tick is always >= 250 ms after the last poll; wait out the cadence
+  // so this manual tick stands in for one (pollDue is elapsed-time based).
+  const since = Date.now() - pluginModule.wiringTest.lastPollAt()
+  if (since < 250) await sleep(250 - since)
   f.timers.find(t => t.ms === 250).fn()
   await sleep(30)
 }

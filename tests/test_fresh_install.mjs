@@ -341,7 +341,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { video: $video, frame: () => filmFrame, surface: () => $filmSurface.get() };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { video: $video, frame: () => filmFrame, surface: () => $filmSurface.get(), lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : 0) };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -693,12 +693,21 @@ const clickDom = node => {
   handlers.forEach(fn => fn({ preventDefault: () => {} }))
 }
 
-/** Give the plugin one poll tick so /status answers and live.ok becomes true
- *  (backdrop mounting is gated on the server actually being reachable). */
-async function tickPoll(bucket) {
+/** Fire one host tick so /status answers and live.ok becomes true (backdrop
+ *  mounting is gated on the server actually being reachable). pollDue() is
+ *  elapsed-time based, so wait out whatever is left of the 250 ms busy cadence
+ *  since the last poll: a real host tick is always >= 250 ms after the previous
+ *  one, and a manual tick must stand in for that, not land inside the cadence. */
+async function fireTick(bucket) {
   const tick = bucket.timers.find(t => t.kind === 'interval' && !t.cleared)
   assert.ok(tick, 'no polling interval registered')
+  const since = Date.now() - pluginModule.wiringTest.lastPollAt()
+  if (since < 250) await sleep(250 - since)
   tick.fn()
+}
+
+async function tickPoll(bucket) {
+  await fireTick(bucket)
   await sleep(40)
   rerenderFloating()
 }
@@ -1663,8 +1672,7 @@ for (const [name, extra] of [
     const live = () => hostIframes().filter(f => f.style.display !== 'none')
     assert.ok(live().length >= 1, 'no film in the Right panel to begin with')
     held = 'arm'
-    const tick = scenario.bucket.timers.find(t => t.kind === 'interval' && !t.cleared)
-    tick.fn()
+    await fireTick(scenario.bucket)
     await sleep(20)
     assert.equal(typeof held, 'function', 'the stale /status was not held')
     const power = domFind(scenario.pane, node => node.className === 'ap-power')
@@ -1702,8 +1710,7 @@ for (const [name, extra] of [
     const live = () => hostIframes().filter(f => f.style.display !== 'none')
     assert.ok(live().length >= 1, 'no film in the Right panel to begin with')
     held = 'arm'
-    const tick = scenario.bucket.timers.find(t => t.kind === 'interval' && !t.cleared)
-    tick.fn()
+    await fireTick(scenario.bucket)
     await sleep(20)
     assert.equal(typeof held, 'function', 'the /state answer was not held')
     const power = domFind(scenario.pane, node => node.className === 'ap-power')
@@ -2034,12 +2041,15 @@ await recordAsync('9. fresh install: dispose leaves nothing behind - no contribu
 })
 
 // ===================================================================
-// Scenario G: installing a build turns Aura on. (Tests 13-14)
+// Scenario G: a new build respects the saved switch. (Tests 13-14)
 // The owner reinstalled Aura and saw nothing: a saved "off" from an older
-// build survived the reinstall, so Aura looked "not installed".
+// build survived the reinstall, so Aura looked "not installed". The review
+// settled the trade-off: a saved enabled:false ALWAYS survives a new build
+// (user, server or older build wrote it); only a first install with no saved
+// settings at all starts switched on (Scenario A covers that).
 // ===================================================================
 
-await recordAsync('13. a newly installed build turns Aura on, even when the saved settings and the server said off', async () => {
+await recordAsync('13. a newly installed build keeps a saved off; only a first install with no settings starts on', async () => {
   const storage = new Map([
     ['settings', { enabled: false }],
     ['seenBuild', 'olderbuild0000000']
@@ -2048,10 +2058,13 @@ await recordAsync('13. a newly installed build turns Aura on, even when the save
   const dispose = pluginModule.default.register(g.ctx)
   await sleep(60)
   await tickPoll(g)
-  assert.equal(g.storage.get('settings').enabled, true, 'the saved "off" from the older build survived the new install')
-  assert.ok(g.controls.some(body => body && body.enabled === true), 'the new build never told the server to switch Aura on')
-  assert.equal(g.serverEnabled(), true, 'the server is still off after the new build loaded')
-  assert.equal(g.storage.get('seenBuild'), 'newbuild11111111', 'the new build was not remembered, so it would switch Aura on at every start')
+  // Review fix: a saved enabled:false survives a new build even when no
+  // userChoseOff flag recorded who chose it (the server or an older build may
+  // have written it). Only a first install with NO saved settings starts on.
+  assert.equal(g.storage.get('settings').enabled, false, 'a new build switched a saved Off back on')
+  assert.ok(!g.controls.some(body => body && body.enabled === true), 'the new build told the server to switch Aura on over a saved Off')
+  assert.equal(g.serverEnabled(), false, 'the server was switched on over a saved Off')
+  assert.equal(g.storage.get('seenBuild'), 'newbuild11111111', 'the new build was not remembered, so it would retry the switch at every start')
   dispose()
 })
 

@@ -89,10 +89,16 @@ const POLL_MS = 250
 // The tick stays at 4 Hz, but an idle Aura (switched off, nothing playing, no
 // window) has nothing to learn 4 times a second: polling then was 12-16
 // requests a second all day for a UI that does not exist ("Aura is eating my
-// CPU and I'm not even using it"). Idle glances every 3 s, and every 15 s while
-// the window is hidden — nobody is looking at the numbers then.
-const POLL_IDLE_MS = 3000
-const POLL_HIDDEN_MS = 15000
+// CPU and I'm not even using it"). Idle glances every 2 s, and every 3 s while
+// the window is hidden: an agent "play this" lands on the server while Aura is
+// idle, and only a poll discovers it — the answer must arrive in ~2-3 s, not
+// one 15 s glance away.
+const POLL_IDLE_MS = 2000
+const POLL_HIDDEN_MS = 3000
+// Hidden while radio or a film plays: the levels are live but nobody is looking
+// at them, so a 1 s glance is enough — a command from the owner still lands
+// within a second. Visible + playing stays at POLL_MS.
+const POLL_HIDDEN_PLAYING_MS = 1000
 // A click, a play or an agent request keeps the fast cadence for this long, so
 // the answer to a button is never one idle glance away.
 const POLL_BUSY_HOLD_MS = 10000
@@ -430,6 +436,12 @@ let liveKey = ''
 // the host body. `audioFrame` is the frame that last got the radio, so a
 // surface swap can stop the previous document.
 let filmFrame = null
+// The last reported "ended" flag, so the end of a film marks busy once (an
+// edge), not on every repeat of the ended state report.
+let videoEnded = false
+// The last reported source url ($video does not carry one): a new source is
+// an edge worth the fast cadence, the same url at 4 Hz is not.
+let videoReportedUrl = ''
 let audioFrame = null
 let overrideActive = false
 let lastAccentHex = null
@@ -532,7 +544,7 @@ function rememberPosition(url, position, duration, finished, videoId, force) {
   const keepVideo = typeof videoId === 'string' && videoId ? videoId : (previous && previous.videoId) || ''
   if (finished) {
     delete map[key]
-    writeSettings({ videoPositions: map })
+    writeSettings({ videoPositions: map }, true)
     return
   }
   // A freshly loaded player reports 0 for a moment — before our seek lands.
@@ -549,7 +561,9 @@ function rememberPosition(url, position, duration, finished, videoId, force) {
     // Which episode of a playlist this is, so a list resumes at the right one.
     videoId: keepVideo
   }
-  writeSettings({ videoPositions: map })
+  // Quiet: this write is the persistence of a routine position report, not a
+  // person touching Aura. The action that caused it marks busy itself.
+  writeSettings({ videoPositions: map }, true)
 }
 
 /** Flush the current position right now — used whenever playback is about to
@@ -688,11 +702,12 @@ function readSettings(ctx) {
   return out
 }
 
-function writeSettings(patch) {
+function writeSettings(patch, quiet) {
   // A settings write is a person (or a button) touching Aura. Not while a poll
   // is syncing the server's own values, though: that would keep Aura "busy"
-  // forever and the idle back-off would never happen.
-  if (!polling) markBusy()
+  // forever and the idle back-off would never happen. `quiet` is for the same
+  // reason: persistence of a routine report (a position bookmark) is not use.
+  if (!polling && quiet !== true) markBusy()
   const next = { ...$settings.get(), ...patch }
   $settings.set(next)
   try {
@@ -1475,6 +1490,12 @@ function markBusy() {
   lastBusyAt = Date.now()
 }
 
+/** Radio or a film is playing: the only things whose levels are live. */
+function somethingPlaying() {
+  if ($video.get().playing === true) return true
+  return $audio.get().playing === true
+}
+
 /** Is Aura doing anything a 4 Hz poll is worth paying for? A placed surface
  *  is not enough on its own: the Right panel stays registered with Aura off,
  *  and a surface nobody switched on would then poll at 4 Hz all day. Only
@@ -1482,9 +1503,7 @@ function markBusy() {
  *  switched on, earns the fast cadence. */
 function auraBusy() {
   const settings = $settings.get()
-  if ($video.get().playing === true) return true
-  // Radio / music on the audio channel.
-  if ($audio.get().playing === true) return true
+  if (somethingPlaying()) return true
   // A desktop window is ours to drive and to check for a close.
   if (desktopOwned || desktopPending || desktopClosing) return true
   // The app's own switch, not the server's: a stale /status "enabled" must not
@@ -1500,16 +1519,19 @@ function auraBusy() {
 
 /** How often the backend is worth asking right now. */
 function pollDueMs() {
+  const hidden = doc && doc.hidden === true
+  // Hidden with something playing: the levels are live but unseen, so one
+  // glance a second is enough. A command still lands within a second.
+  if (hidden && somethingPlaying()) return POLL_HIDDEN_PLAYING_MS
   if (auraBusy()) return POLL_MS
-  return doc && doc.hidden === true ? POLL_HIDDEN_MS : POLL_IDLE_MS
+  return hidden ? POLL_HIDDEN_MS : POLL_IDLE_MS
 }
 
-/** Should this tick hit the network? While Aura is busy the tick itself is the
- *  cadence and never runs faster than POLL_MS, so every tick is due; the
- *  elapsed check only has to hold the idle cadence back. */
+/** Should this tick hit the network? Every cadence is held to pollDueMs() —
+ *  busy included. The 250 ms busy cadence equals the tick period, so every
+ *  tick is due while it lasts; the slower cadences wait out their interval. */
 function pollDue() {
   if (polling) return false
-  if (auraBusy()) return true
   return Date.now() - lastPollAt >= pollDueMs()
 }
 
@@ -1786,6 +1808,16 @@ function turnOnForNewBuild(ctx, info) {
     chosenOff = false
   }
   if (chosenOff) return
+  // A saved Off survives updates even when no flag recorded who chose it: the
+  // server (or an older build) may have written enabled:false. Only a first
+  // install with no saved settings at all starts switched on.
+  let saved = null
+  try {
+    saved = ctx.storage.get('settings', null)
+  } catch {
+    saved = null
+  }
+  if (saved && typeof saved === 'object' && saved.enabled === false) return
   turnOnPending = true
   applyPendingTurnOn()
 }
@@ -2802,12 +2834,17 @@ function onBackdropMessage(event) {
   // Only the in-pane frame (visualiser or film) may drive player and audio state.
   const live = [filmFrame].filter(Boolean)
   if (!live.some(frame => frame.contentWindow && event.source === frame.contentWindow)) return
-  // The page is talking (a play, a seek, a level report): Aura is in use.
-  markBusy()
   const data = event.data
   // [listen lane] The audio channel reports through the same bridge. Its own
   // mute/volume are never folded into the video's.
   if (data && typeof data === 'object' && data.aura === 'audio-state') {
+    const prev = $audio.get()
+    // Only a real change means a person or the agent acted: the channel
+    // starting to play, a new station or a new error. The routine state report
+    // arrives at <= 4 Hz and must not hold the fast cadence forever.
+    if ((data.playing === true && prev.playing !== true) ||
+        (typeof data.url === 'string' && data.url && data.url !== prev.url) ||
+        (typeof data.error === 'string' && data.error && data.error !== prev.error)) markBusy()
     $audio.set({
       url: typeof data.url === 'string' ? data.url : '',
       label: typeof data.label === 'string' ? data.label.slice(0, 120) : '',
@@ -2824,6 +2861,20 @@ function onBackdropMessage(event) {
   if (typeof data.url === 'string' && $settings.get().videoUrl && data.url !== $settings.get().videoUrl) return
   const position = Number.isFinite(data.position) ? Math.max(0, data.position) : 0
   const duration = Number.isFinite(data.duration) ? Math.max(0, data.duration) : 0
+  // Same rule as the audio channel: a transition is use, a periodic position
+  // report is not. Start of playback, a new source, a seek (a position jump
+  // far beyond one report interval), a blocked episode or the end of a film
+  // earn the fast cadence; the <= 4 Hz telemetry in between never does.
+  const prev = $video.get()
+  const seeked = prev.reportedAt > 0 && typeof data.url === 'string' && data.url === videoReportedUrl &&
+    Math.abs(position - prev.position) > 5
+  if ((data.playing === true && prev.playing !== true) ||
+      (typeof data.url === 'string' && data.url && data.url !== videoReportedUrl) ||
+      (data.ended === true && !videoEnded) ||
+      (data.blocked === true && prev.blocked !== true) ||
+      seeked) markBusy()
+  videoEnded = data.ended === true
+  videoReportedUrl = typeof data.url === 'string' ? data.url : ''
   if (handoffPlayback && data.url === handoffPlayback.url && position > 0) {
     handoffPlayback = { ...handoffPlayback, position, videoId: data.videoId || handoffPlayback.videoId, paused: data.playing !== true }
   }
@@ -7977,6 +8028,8 @@ function teardown() {
   audioFrame = null
   removeBackdrop()
   filmFrame = null
+  videoEnded = false
+  videoReportedUrl = ''
   $filmSurface.set({ placement: '', src: '' })
   pageStageEl = null
   removeVideoBar()

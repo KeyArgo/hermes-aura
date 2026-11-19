@@ -9,19 +9,32 @@
  *
  * This file proves, headlessly and with a fake clock:
  *
- *   a. Aura off, nothing playing: 10 s of ticks makes at most 4 /status calls,
- *   b. hidden window and idle: 30 s makes at most 3 /status calls,
+ *   a. Aura off, nothing playing: 10 s of ticks makes at most 6 /status calls,
+ *   b. hidden window and idle: 30 s makes at most 11 /status calls,
  *   c. Aura on (or a film playing): 2 s keeps the fast cadence (>= 6 /status),
  *   d. an idle Aura that the user switches on answers within 300 ms,
  *   e. pointer moves over the app (a document-wide listener) do not wake it,
- *   f. a placed panel surface with Aura off is not busy (10 s -> <= 4 /status),
- *   g. Aura on, surface placed, window hidden and nothing playing: 30 s -> <= 3,
+ *   f. a placed panel surface with Aura off is not busy (10 s -> <= 6 /status),
+ *   g. Aura on, surface placed, window hidden and nothing playing: 30 s -> <= 11,
  *   h. Aura on, surface placed, window visible: 2 s -> >= 6 (stays fast),
- *   i. radio playing with the window hidden: 2 s -> >= 6 (stays fast).
+ *   i. radio playing with the window hidden: 10 s -> 8..12 (a 1 s glance; the
+ *      levels are live but unseen, so 4 Hz was paid for nothing),
+ *   j. a film playing with the window hidden: 10 s -> 8..12 (same cadence),
+ *   k. radio playing with the window visible: 2 s -> >= 6 (still fast),
+ *   l. hidden and idle, an agent audio request appears on the server: it is
+ *      handled (play command) within 3.5 s — a 15 s glance is not an answer,
+ *   m. Aura off, a mounted frame posts telemetry every 250 ms for 10 s:
+ *      at most 6 /status calls — routine reports are not "using Aura",
+ *   n. a new build with saved enabled:false and no user-chosen flag leaves
+ *      Aura off and sends no /control {enabled:true},
+ *   o. a first install with no saved settings at all still starts switched on.
  *
  * (a), (b), (d), (f) and (g) fail on the commit before the fix — they are the
- * CPU bill. (c), (h) and (i) are the anti-regression guards: a live surface
- * must not get slower.
+ * CPU bill. (c), (h) and (k) are the anti-regression guards: a live surface
+ * must not get slower. (i) and (j) fail on the parent of the hidden-playing
+ * cadence: hidden and playing used to stay at 4 Hz. (l), (m) and (n) fail on
+ * the tree before the review fixes: the 15 s hidden-idle glance, telemetry
+ * that kept Aura busy forever, and a new build re-enabling a saved Off.
  *
  * Same wiring as tests/test_desktop_plugin.mjs: a temp copy has its three
  * import specifiers rewritten to local stubs, and the copy exposes the few
@@ -171,6 +184,8 @@ fs.writeFileSync(
   ' pollDueMs: typeof pollDueMs === "function" ? pollDueMs : null,' +
   ' auraBusy: typeof auraBusy === "function" ? auraBusy : null,' +
   ' onVideoBarMouseMove: typeof onVideoBarMouseMove === "function" ? onVideoBarMouseMove : null,' +
+  ' onBackdropMessage: typeof onBackdropMessage === "function" ? onBackdropMessage : null,' +
+  ' setFilm: node => { filmFrame = node },' +
   ' refreshFilmSurface: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null,' +
   ' settings: $settings, live: $live, surface: $filmSurface, audio: $audio, video: $video,' +
   ' lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : null) };\n'
@@ -244,6 +259,10 @@ function mount(settings, serverEnabled) {
   if (settings) storage.set('settings', settings)
   storage.set('userChoseOff', settings ? settings.enabled !== true : false)
   const requests = []
+  const controls = []
+  // The agent's requests "appear on the server" when a test pushes here; the
+  // next /state answer carries them, exactly like /api/state does.
+  const audioRequests = []
   const intervals = []
   const ctx = {
     source: 'plugin:aura',
@@ -272,11 +291,14 @@ function mount(settings, serverEnabled) {
         return { ok: true, port: 4321, url: 'http://127.0.0.1:4321/?token=x', capture: 'none', enabled: serverEnabled }
       }
       if (route === '/state') {
-        return { level: 0, bands: [0, 0, 0, 0, 0, 0, 0, 0], silence: true, mood: 'idle', audio_requests: [] }
+        return { level: 0, bands: [0, 0, 0, 0, 0, 0, 0, 0], silence: true, mood: 'idle', audio_requests: audioRequests }
       }
       if (route === '/version') return { version: '1.0.0', commit: 'idle-poll' }
       if (route === '/player') return { ok: true, window: { open: false }, player: {}, seq: 0 }
-      if (route === '/control') return { ok: true, ...(options.body || {}) }
+      if (route === '/control') {
+        controls.push(options.body || {})
+        return { ok: true, ...(options.body || {}) }
+      }
       return { ok: true }
     }
   }
@@ -285,6 +307,8 @@ function mount(settings, serverEnabled) {
     dispose,
     storage,
     requests,
+    controls,
+    audioRequests,
     intervals,
     contributions,
     status: () => requests.filter(route => route === '/status').length,
@@ -350,14 +374,15 @@ async function advance(bucket, ms, step = 250) {
   }
 }
 
-const IDLE_MS = 3000
-const HIDDEN_MS = 15000
+const IDLE_MS = 2000
+const HIDDEN_MS = 3000
 const BUSY_MS = 250
+const HIDDEN_PLAYING_MS = 1000
 const HOLD_MS = 10000
 
 // ------------------------------------------------------------------ the checks
 
-await record('the tick is still 250 ms and the idle cadences are 3 s / 15 s', async () => {
+await record('the tick is still 250 ms and the idle cadences are 2 s / 3 s', async () => {
   const bucket = mount({ enabled: false }, false)
   await settle()
   const tick = bucket.intervals.find(record => !record.cleared)
@@ -367,17 +392,17 @@ await record('the tick is still 250 ms and the idle cadences are 3 s / 15 s', as
   // Let the boot hold expire, then ask the cadence directly.
   await elapse(HOLD_MS + 1000)
   assert.equal(plugin.idleTest.auraBusy(), false, 'an off, idle Aura reports itself busy')
-  assert.equal(plugin.idleTest.pollDueMs(), IDLE_MS, 'the visible idle cadence is not 3 s')
+  assert.equal(plugin.idleTest.pollDueMs(), IDLE_MS, 'the visible idle cadence is not 2 s')
   globalThis.document.hidden = true
   globalThis.document.visibilityState = 'hidden'
-  assert.equal(plugin.idleTest.pollDueMs(), HIDDEN_MS, 'the hidden idle cadence is not 15 s')
+  assert.equal(plugin.idleTest.pollDueMs(), HIDDEN_MS, 'the hidden idle cadence is not 3 s')
   globalThis.document.hidden = false
   globalThis.document.visibilityState = 'visible'
   bucket.dispose()
   await settle()
 })
 
-await record('a. Aura off and nothing playing: 10 s of ticks makes at most 4 /status calls', async () => {
+await record('a. Aura off and nothing playing: 10 s of ticks makes at most 6 /status calls', async () => {
   const bucket = mount({ enabled: false, backdropMode: 'aura' }, false)
   await settle()
   // The owner had not touched Aura for a while: let the boot hold expire so the
@@ -386,13 +411,13 @@ await record('a. Aura off and nothing playing: 10 s of ticks makes at most 4 /st
   const before = bucket.status()
   await advance(bucket, 10000)
   const made = bucket.status() - before
-  assert.ok(made <= 4, `10 s idle made ${made} /status calls, expected at most 4 (was ~40)`)
+  assert.ok(made <= 6, `10 s idle made ${made} /status calls, expected at most 6 (was ~40)`)
   assert.ok(made >= 1, 'idle Aura never polls: a change made elsewhere would never show up')
   bucket.dispose()
   await settle()
 })
 
-await record('b. hidden window and idle: 30 s of ticks makes at most 3 /status calls', async () => {
+await record('b. hidden window and idle: 30 s of ticks makes at most 11 /status calls', async () => {
   globalThis.document.hidden = true
   globalThis.document.visibilityState = 'hidden'
   const bucket = mount({ enabled: false, backdropMode: 'aura' }, false)
@@ -401,7 +426,7 @@ await record('b. hidden window and idle: 30 s of ticks makes at most 3 /status c
   const before = bucket.status()
   await advance(bucket, 30000)
   const made = bucket.status() - before
-  assert.ok(made <= 3, `30 s hidden+idle made ${made} /status calls, expected at most 3 (was ~120)`)
+  assert.ok(made <= 11, `30 s hidden+idle made ${made} /status calls, expected at most 11 (was ~120)`)
   globalThis.document.hidden = false
   globalThis.document.visibilityState = 'visible'
   bucket.dispose()
@@ -425,8 +450,9 @@ await record('d. switching an idle Aura on answers within 300 ms', async () => {
   await settle()
   await warm(bucket)
   // Precondition: the tick really is idle, so the answer cannot come from it.
+  // 1.5 s is inside the 2 s idle glance, so no poll may happen here.
   const idleBefore = bucket.status()
-  await advance(bucket, 2500)
+  await advance(bucket, 1500)
   assert.equal(bucket.status() - idleBefore, 0,
     'an idle Aura polled on every tick: there is no idle cadence to wake from')
   assert.equal(typeof plugin.idleTest.setEnabled, 'function', 'setEnabled() is not exposed')
@@ -456,12 +482,12 @@ await record('e. moving the mouse over the app does not wake an idle Aura', asyn
   }
   const made = bucket.status() - before
   assert.equal(plugin.idleTest.auraBusy(), false, 'a pointer move over the app marked an unused Aura busy')
-  assert.ok(made <= 4, `10 s of pointer moves made ${made} /status calls, expected at most 4`)
+  assert.ok(made <= 6, `10 s of pointer moves made ${made} /status calls, expected at most 6`)
   bucket.dispose()
   await settle()
 })
 
-await record('f. Aura off with the visualiser placed in the panel: 10 s of ticks makes at most 4 /status calls', async () => {
+await record('f. Aura off with the visualiser placed in the panel: 10 s of ticks makes at most 6 /status calls', async () => {
   // The owner's measured state: the app's own switch is off, the Right panel is
   // still registered, and the backend still reports Aura enabled, so a surface
   // is placed while nothing draws. That must not be worth a 4 Hz poll.
@@ -474,13 +500,13 @@ await record('f. Aura off with the visualiser placed in the panel: 10 s of ticks
   const before = bucket.status()
   await advance(bucket, 10000)
   const made = bucket.status() - before
-  assert.ok(made <= 4, `10 s with a placed surface and Aura off made ${made} /status calls, expected at most 4`)
+  assert.ok(made <= 6, `10 s with a placed surface and Aura off made ${made} /status calls, expected at most 6`)
   assert.equal(plugin.idleTest.auraBusy(), false, 'a placed surface alone marked Aura busy')
   bucket.dispose()
   await settle()
 })
 
-await record('g. Aura on, surface placed, window hidden and nothing playing: 30 s makes at most 3 /status calls', async () => {
+await record('g. Aura on, surface placed, window hidden and nothing playing: 30 s makes at most 11 /status calls', async () => {
   globalThis.document.hidden = true
   globalThis.document.visibilityState = 'hidden'
   const bucket = mount({ enabled: true, backdropMode: 'aura', panelEnabled: true }, true)
@@ -492,7 +518,7 @@ await record('g. Aura on, surface placed, window hidden and nothing playing: 30 
   const before = bucket.status()
   await advance(bucket, 30000)
   const made = bucket.status() - before
-  assert.ok(made <= 3, `30 s hidden with a placed surface made ${made} /status calls, expected at most 3`)
+  assert.ok(made <= 11, `30 s hidden with a placed surface made ${made} /status calls, expected at most 11`)
   globalThis.document.hidden = false
   globalThis.document.visibilityState = 'visible'
   bucket.dispose()
@@ -514,7 +540,7 @@ await record('h. Aura on, surface placed and visible: 2 s keeps the fast cadence
   await settle()
 })
 
-await record('i. radio playing with the window hidden: 2 s keeps the fast cadence (at least 6 /status calls)', async () => {
+await record('i. radio playing with the window hidden: 10 s makes 8..12 /status calls (1 s cadence)', async () => {
   globalThis.document.hidden = true
   globalThis.document.visibilityState = 'hidden'
   const bucket = mount({ enabled: false, backdropMode: 'aura', panelEnabled: true }, false)
@@ -522,12 +548,150 @@ await record('i. radio playing with the window hidden: 2 s keeps the fast cadenc
   const audio = plugin.idleTest.audio.get()
   plugin.idleTest.audio.set({ ...audio, url: 'https://ice.example/live.mp3', label: 'Live', playing: true, reportedAt: clock.now })
   await warm(bucket)
+  assert.equal(plugin.idleTest.pollDueMs(), HIDDEN_PLAYING_MS,
+    'a hidden, playing radio does not use the 1 s cadence')
+  const before = bucket.status()
+  await advance(bucket, 10000)
+  const made = bucket.status() - before
+  assert.ok(made >= 8 && made <= 12,
+    `10 s of hidden radio made ${made} /status calls, expected 8..12 (was ~40 at 4 Hz)`)
+  globalThis.document.hidden = false
+  globalThis.document.visibilityState = 'visible'
+  bucket.dispose()
+  await settle()
+})
+
+await record('j. a film playing with the window hidden: 10 s makes 8..12 /status calls (1 s cadence)', async () => {
+  globalThis.document.hidden = true
+  globalThis.document.visibilityState = 'hidden'
+  const bucket = mount({ enabled: false, backdropMode: 'aura', panelEnabled: true }, false)
+  await settle()
+  const video = plugin.idleTest.video.get()
+  plugin.idleTest.video.set({ ...video, url: 'https://www.youtube.com/watch?v=demo', title: 'Demo', playing: true, reportedAt: clock.now })
+  await warm(bucket)
+  assert.equal(plugin.idleTest.pollDueMs(), HIDDEN_PLAYING_MS,
+    'a hidden, playing film does not use the 1 s cadence')
+  const before = bucket.status()
+  await advance(bucket, 10000)
+  const made = bucket.status() - before
+  assert.ok(made >= 8 && made <= 12,
+    `10 s of a hidden playing film made ${made} /status calls, expected 8..12`)
+  globalThis.document.hidden = false
+  globalThis.document.visibilityState = 'visible'
+  bucket.dispose()
+  await settle()
+})
+
+await record('k. radio playing with the window visible: 2 s keeps the fast cadence (at least 6 /status calls)', async () => {
+  const bucket = mount({ enabled: false, backdropMode: 'aura', panelEnabled: true }, false)
+  await settle()
+  const audio = plugin.idleTest.audio.get()
+  plugin.idleTest.audio.set({ ...audio, url: 'https://ice.example/live.mp3', label: 'Live', playing: true, reportedAt: clock.now })
+  await warm(bucket)
+  assert.equal(plugin.idleTest.pollDueMs(), BUSY_MS, 'a visible, playing radio lost the 4 Hz cadence')
   const before = bucket.status()
   await advance(bucket, 2000)
   const made = bucket.status() - before
-  assert.ok(made >= 6, `2 s of hidden radio made only ${made} /status calls: the music lost its levels`)
+  assert.ok(made >= 6, `2 s of visible radio made only ${made} /status calls: the music lost its levels`)
+  bucket.dispose()
+  await settle()
+})
+
+await record('l. hidden and idle: an agent audio request is handled within 3.5 s', async () => {
+  globalThis.document.hidden = true
+  globalThis.document.visibilityState = 'hidden'
+  const bucket = mount({ enabled: true, backdropMode: 'aura', panelEnabled: true }, true)
+  await settle()
+  mountPanel(bucket)
+  await settle()
+  const frame = makeElement('iframe')
+  frame.src = 'http://127.0.0.1:4321/player.html?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Ddemo'
+  plugin.idleTest.setFilm(frame)
+  await warm(bucket)
+  assert.equal(plugin.idleTest.auraBusy(), false,
+    'precondition: hidden with nothing playing must be idle, not busy')
+  // The agent's "play this" lands on the server now; only a poll discovers it.
+  const askedAt = clock.now
+  bucket.audioRequests.push({ seq: 1, action: 'play', url: 'https://ice.example/live.mp3', label: 'Live', at: askedAt })
+  let handledAfter = null
+  for (let t = 250; t <= 3500; t += 250) {
+    clock.now += 250
+    bucket.tick()
+    await settle()
+    if (plugin.idleTest.settings.get().audioRequestSeq >= 1) {
+      handledAfter = clock.now - askedAt
+      break
+    }
+  }
+  assert.ok(handledAfter !== null && handledAfter <= 3500,
+    `the agent's play request was ${handledAfter === null ? 'not handled within 3.5 s' : 'handled after ' + handledAfter + ' ms'}: the hidden idle glance is too slow`)
+  const command = plugin.audioState().lastCommand
+  assert.ok(command && command.cmd === 'play' && command.url === 'https://ice.example/live.mp3',
+    'the request was consumed but no play command reached the frame')
   globalThis.document.hidden = false
   globalThis.document.visibilityState = 'visible'
+  bucket.dispose()
+  await settle()
+})
+
+await record('m. Aura off: 10 s of frame telemetry every 250 ms makes at most 6 /status calls', async () => {
+  const bucket = mount({ enabled: false, backdropMode: 'aura' }, false)
+  await settle()
+  const frame = makeElement('iframe')
+  frame.src = 'http://127.0.0.1:4321/player.html?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Ddemo'
+  plugin.idleTest.setFilm(frame)
+  // The frame's first report after mounting (a new source — a real edge).
+  // What follows in the measured window is the routine position report
+  // player.html posts at <= 4 Hz, with nothing changing.
+  const report = position => ({
+    source: frame.contentWindow,
+    data: {
+      aura: 'video-state', url: 'https://www.youtube.com/watch?v=demo', kind: 'youtube',
+      playing: false, position, duration: 600, muted: false, title: 'Demo', controllable: true
+    }
+  })
+  plugin.idleTest.onBackdropMessage(report(60))
+  await warm(bucket)
+  const before = bucket.status()
+  let position = 60
+  for (let t = 0; t < 10000; t += 250) {
+    clock.now += 250
+    position += 0.25
+    plugin.idleTest.onBackdropMessage(report(position))
+    bucket.tick()
+    await settle()
+  }
+  const made = bucket.status() - before
+  assert.ok(made <= 6,
+    `10 s of routine telemetry made ${made} /status calls, expected at most 6: the reports kept Aura busy`)
+  assert.equal(plugin.idleTest.auraBusy(), false, 'a periodic position report marked Aura busy')
+  bucket.dispose()
+  await settle()
+})
+
+await record('n. a new build leaves a saved enabled:false off, even with no user-chosen flag', async () => {
+  const bucket = mount({ enabled: false, backdropMode: 'aura' }, false)
+  // The server (or an older build) wrote enabled:false without recording who
+  // chose it. The saved Off itself must survive the update, not just the flag.
+  bucket.storage.set('userChoseOff', false)
+  await settle()   // /version answers -> turnOnForNewBuild
+  await warm(bucket)
+  await advance(bucket, 3000)
+  assert.equal(plugin.idleTest.settings.get().enabled, false,
+    'a new build switched a saved Off back on')
+  assert.ok(!bucket.controls.some(body => body && body.enabled === true),
+    'a new build sent /control {enabled:true} over a saved Off')
+  bucket.dispose()
+  await settle()
+})
+
+await record('o. a first install with no saved settings still starts switched on', async () => {
+  const bucket = mount(null, false)
+  await settle()
+  await warm(bucket)
+  await advance(bucket, 3000)
+  assert.equal(plugin.idleTest.settings.get().enabled, true,
+    'a first install no longer starts switched on')
   bucket.dispose()
   await settle()
 })
