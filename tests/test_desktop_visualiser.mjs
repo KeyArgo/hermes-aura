@@ -128,7 +128,7 @@ fs.writeFileSync(
     .replace(/from\s+'@hermes\/plugin-sdk'/g, "from './sdk-stub.mjs'")
     .replace(/from\s+'react'/g, "from './react-stub.mjs'")
     .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-stub.mjs'") +
-  '\nexport const deskvizTest = { setDesktopWindow, setBackdropMode, openDesktopWindow, sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, poll, settings: $settings, live: $live, owned: () => desktopOwned }\n'
+  '\nexport const deskvizTest = { setDesktopWindow, setBackdropMode, openDesktopWindow, sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, poll, settings: $settings, live: $live, owned: () => desktopOwned, placement: filmPlacement }\n'
 )
 
 fs.writeFileSync(path.join(tmp, 'sdk-stub.mjs'), `
@@ -367,6 +367,32 @@ await record('Off still closes the visualiser Desktop window', async () => {
   } finally {
     dispose()
   }
+})
+
+await record('the in-app visualiser parks while the Desktop window shows it', async () => {
+  const bucket = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, videoUrl: '' })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(30)
+    await plugin.deskvizTest.setDesktopWindow(true)
+    assert.equal(plugin.deskvizTest.owned(), true)
+    assert.equal(plugin.deskvizTest.placement(), '',
+      'the panel kept a second visualiser running beside the Desktop window')
+  } finally {
+    dispose()
+  }
+})
+
+await record('unloading the plugin closes the Desktop window', async () => {
+  const bucket = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, videoUrl: '' })
+  const dispose = plugin.default.register(bucket.ctx)
+  await sleep(30)
+  await plugin.deskvizTest.setDesktopWindow(true)
+  assert.equal(plugin.deskvizTest.owned(), true)
+  dispose()
+  await sleep(10)
+  assert.ok(bucket.requests.some(r => r.route === '/window/close'),
+    'dispose left the OS window running')
 })
 
 // ------------------------------------------- the window page itself (static)

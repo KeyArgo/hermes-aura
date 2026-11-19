@@ -833,8 +833,9 @@ function filmPlacement() {
   // Off is off: the pane, the page and the watch window go with Aura.
   const enabled = live.ok ? live.enabled === true : settings.enabled
   if (!enabled) return ''
-  if ((desktopOwned || desktopPending) && settings.backdropMode === 'video' && !settings.audioUrl) {
-    // The OS window owns the film, and there is no radio to keep in-app.
+  if ((desktopOwned || desktopPending) && !settings.audioUrl) {
+    // The OS window owns the film or the visualiser, and there is no radio to
+    // keep in-app: one picture, one render loop.
     return ''
   }
   // The visualiser uses the same watch window as the film.
@@ -8221,6 +8222,8 @@ export default {
     const mine = ++instanceSeq
     const dispose = () => {
       if (disposed || mine !== instanceSeq) return
+      // Unload closes the OS window like Off does; ask while ctxRef is still set.
+      if (desktopOwned || desktopPending) void closeDesktopWindow()
       disposed = true
       teardown()
     }
