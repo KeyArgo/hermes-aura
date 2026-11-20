@@ -68,8 +68,17 @@ def redeem_ticket(ticket: str) -> Optional[str]:
         return None
     return item[0]
 
+def ticket_valid(ticket: str) -> bool:
+    """Peek without consuming: the page itself is ticket-gated too, and the
+    document load must not burn the one-time ticket the page's own bootstrap
+    still needs to redeem for the token."""
+    with _lock:
+        item = _tickets.get(ticket)
+    return bool(item and item[1] > time.monotonic())
+
 _film_url = ""  # the video URL (never the player URL: that one carries the token)
 _kind = ""  # "player" (the film) or "page" (a real site, e.g. a playlist to edit)
+_screen = "player"  # what a "player"-kind window shows: "player" or "visualizer"
 
 
 class WindowError(Exception):
@@ -143,6 +152,19 @@ def player_url(port: int, token: Optional[str], url: str, position: float = 0.0,
     if start > 0:
         query["t"] = str(int(start))
     return f"http://127.0.0.1:{int(port)}/player.html?{urllib.parse.urlencode(query)}"
+
+
+def visualizer_url(port: int, token: Optional[str], reduced_motion: bool = False) -> str:
+    """The visualiser page for the desktop window (Visualizer mode). Same
+    one-time-ticket auth as the film window: the token never rides in a URL.
+    No ``overlay=1`` here — a stand-alone window keeps the page's own status
+    chrome so a failed bootstrap is visible, never a silent black rectangle."""
+    query: Dict[str, str] = {"desktop": "1"}
+    if token:
+        query["ticket"] = str(token)
+    if reduced_motion:
+        query["reduced-motion"] = "1"
+    return f"http://127.0.0.1:{int(port)}/index.html?{urllib.parse.urlencode(query)}"
 
 
 def _feature_args() -> List[str]:
@@ -271,7 +293,7 @@ def reap_orphan() -> bool:
 
 def _watch(proc: subprocess.Popen) -> None:
     proc.wait()
-    global _proc, _film_url, _kind
+    global _proc, _film_url, _kind, _screen
     with _lock:
         current = _proc is proc
     if current:
@@ -279,6 +301,7 @@ def _watch(proc: subprocess.Popen) -> None:
             _proc = None
             _film_url = ""
             _kind = ""
+            _screen = "player"
         _clear_lease()
 
 
@@ -452,14 +475,26 @@ def open_page(url: str, title: str = "") -> Dict[str, Any]:
 
 def open_window(port: int, token: Optional[str], url: str,
                 position: float = 0.0, label: str = "", video_id: str = "",
-                paused: bool = False) -> Dict[str, Any]:
-    """Open the window (or report the one already open). Raises WindowError."""
-    global _proc, _film_url, _kind
+                paused: bool = False, page: str = "player",
+                reduced_motion: bool = False) -> Dict[str, Any]:
+    """Open the window (or report the one already open). Raises WindowError.
+
+    ``page`` picks what the window shows: "player" (the film, Video mode) or
+    "visualizer" (the visualiser page, Visualizer mode — no film needed). A
+    mode change while the window is open closes and reopens it on the new
+    page: the window is a plain Chromium app window with a fixed address.
+    """
+    global _proc, _film_url, _kind, _screen
+    if page not in ("player", "visualizer"):
+        raise ValueError("page must be 'player' or 'visualizer'")
     with _lock:
         live = _proc is not None and _proc.poll() is None
         showing_page = live and _kind == "page"
-    if showing_page:
-        close_window()  # a playlist page is up (☰): the film takes the window back
+        stale_screen = live and _kind == "player" and _screen != page
+    if showing_page or stale_screen:
+        # A playlist page is up (☰), or the mode changed under the window:
+        # the new picture takes the window back (close + reopen cleanly).
+        close_window()
     with _lock:
         if _proc is not None and _proc.poll() is None:
             already = {"open": True, "already": True, "url": _film_url or str(url or "")}
@@ -482,7 +517,8 @@ def open_window(port: int, token: Optional[str], url: str,
         except OSError as exc:
             raise WindowError(f"could not create the window profile: {exc}") from exc
         ticket = issue_ticket(token) if token else ""
-        target = player_url(port, ticket, url, position, video_id, paused)
+        target = (visualizer_url(port, ticket, reduced_motion) if page == "visualizer"
+                  else player_url(port, ticket, url, position, video_id, paused))
         args: List[str] = [
             browser, f"--app={target}", f"--user-data-dir={profile}",
             f"--window-size={WINDOW_SIZE[0]},{WINDOW_SIZE[1]}",
@@ -501,8 +537,9 @@ def open_window(port: int, token: Optional[str], url: str,
         except OSError as exc:
             raise WindowError(f"could not start {browser}: {exc}") from exc
         _proc = proc
-        _film_url = str(url or "")
+        _film_url = str(url or "") if page == "player" else ""
         _kind = "player"
+        _screen = page
     # A browser forwarding to an instance already using this profile exits at once.
     try:
         proc.wait(1.5)
@@ -511,6 +548,7 @@ def open_window(port: int, token: Optional[str], url: str,
                 _proc = None
                 _film_url = ""
                 _kind = ""
+                _screen = "player"
         _clear_lease()
         raise WindowError(
             f"{os.path.basename(browser)} exited immediately "
@@ -518,7 +556,7 @@ def open_window(port: int, token: Optional[str], url: str,
         )
     except subprocess.TimeoutExpired:
         pass
-    _write_lease(proc.pid, str(url or ""))
+    _write_lease(proc.pid, str(url or "") if page == "player" else "")
     threading.Thread(target=_watch, args=(proc,), name="aura-window", daemon=True).start()
     threading.Thread(target=_raise_when_shown, args=(proc,), name="aura-window-raise", daemon=True).start()
     return {"open": True, "already": False, "url": str(url or ""),
@@ -552,11 +590,13 @@ def status() -> Dict[str, Any]:
     with _lock:
         pid = _proc.pid if (_proc is not None and _proc.poll() is None) else None
         url = _film_url
+        page = _screen if pid is not None and _kind == "player" else ""
     browser = find_browser()
     return {
         "open": pid is not None,
         "available": browser is not None,
         "url": url,
+        "page": page,
         "pid": pid,
         "browser": os.path.basename(browser) if browser else "",
     }

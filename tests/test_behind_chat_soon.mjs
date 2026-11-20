@@ -534,8 +534,9 @@ const glassStyle = () => headChildren.find(node => node.attributes && node.attri
 record('plugin.js carries the opt-in gate, not a coming-soon signpost', () => {
   assert.match(source, /function behindChatWanted/, 'the opt-in gate is gone')
   assert.match(source, /data-aura-backdrop/, 'the glass is no longer scoped by one attribute')
-  assert.doesNotMatch(source, /ap-pill-soon/, 'the greyed coming-soon pill is still in the source')
-  assert.doesNotMatch(source, /Behind chat \(coming soon\)/, 'the coming-soon label is still in the source')
+  // The greyed signpost survives only as the no-backdrop-area fallback, for a
+  // host that renders no backdrop layer: nothing may append it to a row here.
+  assert.doesNotMatch(source, /appendChild\(behindChatPill/, 'the greyed coming-soon pill is still in a row')
 })
 record('Behind chat is a real place, last in FILM_PLACES', () => {
   const places = /const FILM_PLACES = \[([\s\S]*?)\n\]/.exec(source)

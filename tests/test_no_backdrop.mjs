@@ -682,8 +682,12 @@ await record('F1. the visualiser watch window is a 16:9 stage and Watch in sends
     const width = parseFloat(pane.data.width)
     const height = parseFloat(pane.data.height)
     assert.ok(width >= 480, `watch pane is a strip (${pane.data.width} wide), not a stage`)
-    assert.equal(height - 30, Math.round(width * 9 / 16),
-      `watch pane ${width}x${height} is not a 16:9 stage under the host header`)
+    // The visualiser's watch window now carries the film window's Send to and
+    // Size rows under the picture, so the pane is the 16:9 stage plus that
+    // two-row strip (plugin.js: VISUALISER_BAR_HEIGHT) under the host header.
+    const VISUALISER_STRIP = 60
+    assert.equal(height - 30 - VISUALISER_STRIP, Math.round(width * 9 / 16),
+      `watch pane ${width}x${height} is not a 16:9 stage above its strip under the host header`)
     const frame = filmsIn(pane)
     assert.equal(frame.length, 1, 'the watch pane has no visualiser frame')
     assert.match(iframeOf(frame[0]).props.src, /overlay=1/)

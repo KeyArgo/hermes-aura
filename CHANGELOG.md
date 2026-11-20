@@ -48,6 +48,9 @@
   that window, so the stall cannot come back all evening. Nothing on screen changes.
 - Watch in and the watch window's Send to row end with a real Behind chat choice (it used to be a
   greyed "coming soon" pill): the film plays behind the chat while that place is chosen.
+- In Visualizer mode the watch window carries the film window's Size presets and its Send to row:
+  Panel returns the visualiser to the Right panel, Desktop opens it in the desktop OS window, and
+  Behind chat goes behind the chat where the host has a backdrop layer.
 
 ## 1.0.0 — 2026-11-11
 

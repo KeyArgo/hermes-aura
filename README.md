@@ -23,7 +23,7 @@
 
 <h3 align="center">A film beside your work, and an app that breathes with your audio.</h3>
 
-<p align="center"><i>Applies to v1.0.0 · revised 2026-11-11 · <a href="VERIFY.md">what was verified, and how</a></i></p>
+<p align="center"><i>Applies to v1.0.0 · revised 2026-11-19 · <a href="VERIFY.md">what was verified, and how</a></i></p>
 
 Aura turns Hermes Desktop into a room you can live in. Put any film, lecture or playlist in the
 right-hand pane and keep working, or send it **behind the chat** with one click; switch the film off
@@ -85,8 +85,15 @@ kept per film, keyed by URL, so nothing restarts.
   own profile — so YouTube's own page opens and adding, removing and reordering work with your own
   session. No API scope, no OAuth review, no second account.
 - **Free placement.** The floating watch window drags anywhere and remembers its spot; 320 / 480 / 640
-  wide. Its control strip is two rows — the film's title, scrubber, clock, volume and window buttons
-  above a centred transport row — stays inside the viewport, and dims when idle instead of vanishing.
+  / 880 / 1120 wide. Its control strip is two rows — the film's title, scrubber, clock, volume and window
+  buttons above a centred transport row — stays inside the viewport, and dims when idle instead of
+  vanishing. Below the transport it carries **Size** and **Send to** (Right panel, Desktop, and the
+  greyed "Behind chat" signpost).
+- **The same window for the visualiser.** In Visualizer mode the watch window shows the visualiser with
+  the film window's own **Size** presets and the same **Send to** row: **Panel** brings it back to the
+  Right panel, **Window** keeps it where it is, **Desktop** opens it in the desktop OS window, and
+  **Behind chat** stays a greyed coming-soon pill. The film's title, scrubber and transport rows are
+  not shown, because the visualiser has nothing to scrub.
 - **An Aura page in the sidebar — the whole product in one place.** One row opens a full page: the same
   film in a big 16:9 frame with the transport, volume and source picker, a **Library** of poster cards
   (add, rename, remove, hide starters, clear recents), the playlist how-to, and every setting Aura has
@@ -103,8 +110,9 @@ kept per film, keyed by URL, so nothing restarts.
   to bring it back. The full-window visual of the Aura visualiser itself returns when Hermes ships a
   backdrop area (#155903).
 - **REVamp, next door.** Aura has no music library of its own. [REVamp](https://github.com/KeyArgo/hermes-revamp)
-  is a Winamp-style player for Hermes, and Aura's visuals react to whatever it plays — one card on the page,
-  one line in Settings.
+  is a Winamp-style player for Hermes, listed in the Hermes plugin catalog — install it from Capabilities -> Plugins,
+  or with `hermes plugins install https://github.com/KeyArgo/hermes-revamp`. It includes Hermes Radio, a curated
+  station section, and Aura's visuals react to whatever it plays.
 
 ## Adding a YouTube playlist (plain instructions)
 
@@ -194,8 +202,10 @@ streams play on their own channel, beside the video and independent of it.
   so music from Aura's own channel (or any other app) drives the same visuals.
 
 **Aura is a media player, not a Winamp.** If you want a Winamp-style player with your local
-library, audiobooks, skins and a 90s attitude, install **REVamp** — it is the same author's
-other plugin, and Aura's visuals react to whatever it plays.
+library, audiobooks, skins and a 90s attitude, [REVamp](https://github.com/KeyArgo/hermes-revamp) is in the Hermes
+plugin catalog — install it from Capabilities -> Plugins or with
+`hermes plugins install https://github.com/KeyArgo/hermes-revamp`. It includes Hermes Radio, and Aura's visuals
+react to whatever it plays.
 
 ## The plugin surface
 
@@ -312,8 +322,8 @@ themselves when the machine is too loaded to sample reliably rather than reporti
 Pre-release. `SPIKES.md` records what was actually measured; `CONTRACT.md` is the wire contract between
 the capture server, the page, the desktop half and the agent hooks.
 
-_This README applies to plugin version 1.0.0; revised 2026-11-10 (listen lane: audio channel,
-radio, `aura_listen`, REVamp card)._
+_This README applies to plugin version 1.0.0; revised 2026-11-19
+(listen lane: audio channel, radio, `aura_listen`, REVamp card, catalog link + Hermes Radio)._
 
 ## Licences
 

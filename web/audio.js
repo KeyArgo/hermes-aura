@@ -95,6 +95,8 @@
     var token = ''
     try {
       token = new URLSearchParams(window.location.search).get('token') || ''
+      // The desktop window's token comes from the ticket bootstrap, not the URL.
+      if (!token) token = sessionStorage.getItem('auraDesktopToken') || ''
     } catch (err) { /* old browser: fall back to no token */ }
     if (token) path += '&token=' + encodeURIComponent(token)
     return path

@@ -1250,10 +1250,11 @@ const stripButton = label => {
   // The owner's live settings when this broke: Behind chat, Visual behind the app on.
   const scenario = await watchWindowScenario({ videoWindow: false, filmBehind: true, windowVisual: true })
   const sent = []
+  const pages = []
   const realRest = scenario.bucket.ctx.rest
   scenario.bucket.ctx.rest = async (route, options = {}) => {
     if (route === '/window') return { ok: true, available: true, open: false }
-    if (route === '/window/open') return { ok: true, open: true, url: SINTEL_URL }
+    if (route === '/window/open') { pages.push((options.body || {}).page || ''); return { ok: true, open: true, url: SINTEL_URL } }
     if (route === '/player/command') { sent.push(options.body); return { ok: true, seq: sent.length } }
     if (route.startsWith('/player')) return { ok: true, player: {}, commands: [], seq: 0 }
     return realRest(route, options)
@@ -1284,15 +1285,15 @@ const stripButton = label => {
     assert.equal(glassOn(), false, 'the app surfaces were cleared while the film is out on the desktop')
   })
 
-  await recordAsync('38. switching to the visualiser while the film is on the desktop shows it in the panel', async () => {
+  await recordAsync('38. switching to the visualiser while the film is on the desktop moves the desktop window to the visualiser, once', async () => {
     const visualizer = domFind(scenario.pane, node => node.attributes && node.attributes['data-mode'] === 'aura')
     assert.ok(visualizer, 'no Visualizer mode button in the panel')
     clickDom(visualizer)
     await sleep(60)
     await tickPoll(scenario.bucket)
+    assert.equal(pages[pages.length - 1], 'visualizer', 'the desktop window was not switched to the visualiser')
     const surface = pluginModule.wiringTest.surface()
-    assert.equal(surface.placement, 'panel', 'the visualiser did not take the panel')
-    assert.match(surface.src || '', /overlay=1/, 'the panel surface is not the visualiser page')
+    assert.equal(surface.placement, '', 'a second visualiser kept running in the panel beside the desktop window')
     assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 0,
       'the visualiser was appended to document.body')
   })

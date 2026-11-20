@@ -921,8 +921,23 @@ def _check_film_url(url: str) -> None:
 
 
 def open_window(data: Any) -> dict:
-    """``POST /api/window/open`` — hand the film to its own OS window."""
+    """``POST /api/window/open`` — hand the film (or the visualiser) to its own
+    OS window. ``page`` picks the picture: "player" (default, the film) or
+    "visualizer" (Visualizer mode — no film needed)."""
     body = data if isinstance(data, dict) else {}
+    page = _player_text(body.get("page"), 20) or "player"
+    if page not in ("player", "visualizer"):
+        raise ValueError("page must be 'player' or 'visualizer'")
+    port = _STATE.port
+    if not port:
+        raise RuntimeError("server_not_running")
+    if page == "visualizer":
+        result = desktop_window.open_window(
+            int(port), _STATE.token, "", page="visualizer",
+            reduced_motion=body.get("reducedMotion") is True)
+        result["ok"] = True
+        result["window"] = desktop_window.status()
+        return result
     url = _player_text(body.get("url"))
     if not url:
         with _STATE.lock:
@@ -938,9 +953,6 @@ def open_window(data: Any) -> dict:
     video_id = _player_text(body.get("videoId"), 64)
     if not video_id and (not body.get("url") or url == reported.get("url")):
         video_id = _player_text(reported.get("videoId"), 64)
-    port = _STATE.port
-    if not port:
-        raise RuntimeError("server_not_running")
     options = {"position": float(position or 0.0), "label": _player_text(body.get("label"), 200)}
     if video_id:
         options["video_id"] = video_id
@@ -1040,6 +1052,16 @@ class _Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             return False
 
+    def _ticket_ok(self) -> bool:
+        """The visualiser window loads index.html with a one-time ticket, not
+        the token. Peek only: the page's own bootstrap redeems it afterwards."""
+        try:
+            query = parse_qs(urlsplit(self.path).query)
+            ticket = (query.get("ticket") or [""])[0]
+        except ValueError:
+            return False
+        return bool(ticket) and desktop_window.ticket_valid(ticket)
+
     def _send_json(self, obj: dict, code: int = 200) -> None:
         try:
             payload = json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -1086,7 +1108,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._handle_ws()
                 return
             if path == "/" or path == "/index.html":
-                if not (self._query_ok() or self._bearer_ok()):
+                if not (self._query_ok() or self._bearer_ok() or self._ticket_ok()):
                     self._send_json({"ok": False, "error": "unauthorized"}, 401)
                     return
                 self._serve_index()
