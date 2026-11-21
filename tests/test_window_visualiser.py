@@ -16,6 +16,7 @@ from __future__ import annotations
 import http.client
 import json
 import subprocess
+import sys
 
 import pytest
 
@@ -212,7 +213,7 @@ def _process_table(monkeypatch, cmdlines):
         signalled.append((pid, sig))
         alive.discard(pid)
 
-    monkeypatch.setattr(window.os, "killpg", record)
+    monkeypatch.setattr(window.os, "killpg", record, raising=False)  # absent on Windows
     monkeypatch.setattr(window.os, "kill", record)
     monkeypatch.setattr(window, "_alive", lambda pid: int(pid) in alive)
     return signalled
@@ -253,6 +254,7 @@ def test_the_relaunch_carries_a_fresh_ticket(monkeypatch):
     assert window.ticket_valid(ticket) is True
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows keeps no SingletonLock link")
 def test_the_profile_lock_finds_an_orphan_with_no_lease(monkeypatch):
     # The lease is one witness; Chromium's own profile lock is the other, and
     # it is the one that knows about a window whose lease was never written.
