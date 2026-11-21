@@ -174,6 +174,124 @@ def test_reduced_motion_reaches_the_window(popen):
     assert "reduced-motion=1" in _app(popen[0][0])
 
 
+# ------------------------------- the profile a restarted server left held (owner bug)
+#
+# The owner's Desktop click 503'd twice after a backend restart: a window the
+# previous server opened survives it (start_new_session), still holds
+# ~/.hermes/aura/desktop-browser, and the new launch only forwards to it and
+# exits. The launch must free that one pid — and only one that really runs on
+# our profile — and try once more.
+
+
+def _launcher(monkeypatch, exit_first=True):
+    """Popen stand-in: the first launch exits at once (a hand-off, not a
+    window), later ones stay up."""
+    launches = []
+
+    def fake_popen(args, **kwargs):
+        proc = FakeProc(pid=5000 + len(launches), exit_immediately=exit_first and not launches)
+        proc.args = args
+        launches.append(proc)
+        return proc
+
+    monkeypatch.setattr(window.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(window.threading, "Thread", FakeThread)
+    monkeypatch.setattr(window, "find_browser", lambda: "/usr/bin/google-chrome")
+    monkeypatch.setattr(window, "_raise_native", lambda pid: False)
+    return launches
+
+
+def _process_table(monkeypatch, cmdlines):
+    """Exactly ``cmdlines``' pids are alive, with those command lines; any
+    signal ends them (a window that honours SIGTERM): no real process is used."""
+    monkeypatch.setattr(window, "_command_line", lambda pid: cmdlines.get(int(pid), ""))
+    alive = set(cmdlines)
+    signalled = []
+
+    def record(pid, sig):
+        signalled.append((pid, sig))
+        alive.discard(pid)
+
+    monkeypatch.setattr(window.os, "killpg", record)
+    monkeypatch.setattr(window.os, "kill", record)
+    monkeypatch.setattr(window, "_alive", lambda pid: int(pid) in alive)
+    return signalled
+
+
+def test_orphaned_window_holding_the_profile_is_terminated_and_relaunched(monkeypatch):
+    launches = _launcher(monkeypatch)
+    profile = window._profile()
+    profile.mkdir(parents=True, exist_ok=True)
+    window._write_lease(4711, "")  # the previous server's window, still running
+    signalled = _process_table(monkeypatch, {
+        4711: f"google-chrome\0--app=http://127.0.0.1:4567/index.html\0"
+              f"--user-data-dir={profile}\0",
+    })
+    result = window.open_window(4567, "tok", "", page="visualizer")
+    assert result["open"] is True
+    assert result["pid"] == 5001, "the window was not relaunched once the profile was free"
+    assert len(launches) == 2, "the launch was not retried exactly once"
+    assert [pid for pid, _sig in signalled] == [4711], "the orphan was not terminated"
+    assert signalled[0][1] == window.signal.SIGTERM
+    assert window.status()["open"] is True
+
+
+def test_the_relaunch_carries_a_fresh_ticket(monkeypatch):
+    # The hand-off may have shown the first address in the orphan, spending its
+    # one-time ticket; the relaunch must not repeat a ticket that is already used.
+    launches = _launcher(monkeypatch)
+    profile = window._profile()
+    profile.mkdir(parents=True, exist_ok=True)
+    window._write_lease(4711, "")
+    _process_table(monkeypatch, {
+        4711: f"google-chrome\0--user-data-dir={profile}\0",
+    })
+    window.open_window(4567, "tok", "", page="visualizer")
+    first, second = (_app(proc.args) for proc in launches)
+    assert first != second, "the relaunch reused the first launch's ticket"
+    ticket = second.split("ticket=", 1)[1].split("&", 1)[0]
+    assert window.ticket_valid(ticket) is True
+
+
+def test_the_profile_lock_finds_an_orphan_with_no_lease(monkeypatch):
+    # The lease is one witness; Chromium's own profile lock is the other, and
+    # it is the one that knows about a window whose lease was never written.
+    launches = _launcher(monkeypatch)
+    profile = window._profile()
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "SingletonLock").symlink_to("aura-host-4712")
+    signalled = _process_table(monkeypatch, {
+        4712: f"google-chrome\0--app=http://127.0.0.1:4567/index.html\0"
+              f"--user-data-dir={profile}\0",
+    })
+    result = window.open_window(4567, "tok", "", page="visualizer")
+    assert result["open"] is True
+    assert [pid for pid, _sig in signalled] == [4712]
+    assert len(launches) == 2
+
+
+def test_a_pid_that_is_not_ours_is_never_touched(monkeypatch):
+    # PIDs get reused: the lease can name a live process that has nothing to do
+    # with Aura. Its command line is the proof required before any signal.
+    launches = _launcher(monkeypatch)
+    window._profile().mkdir(parents=True, exist_ok=True)
+    window._write_lease(4711, "")
+    signalled = _process_table(monkeypatch, {
+        4711: "firefox\0--user-data-dir=/home/dev/.mozilla/firefox\0https://example.test",
+    })
+    with pytest.raises(window.WindowError) as raised:
+        window.open_window(4567, "tok", "", page="visualizer")
+    assert "exited immediately" in str(raised.value)
+    assert signalled == [], "an unrelated process was signalled"
+    assert len(launches) == 1, "relaunching could only fail the same way"
+    assert window.status()["open"] is False
+
+
+def test_the_profile_lock_is_not_consulted_on_windows(monkeypatch):
+    monkeypatch.setattr(window, "_on_windows", lambda: True)
+    assert window._singleton_pid() == 0
+
+
 def test_ticket_valid_peeks_without_consuming():
     ticket = window.issue_ticket("tok")
     assert window.ticket_valid(ticket) is True

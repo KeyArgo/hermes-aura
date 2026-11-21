@@ -1550,7 +1550,7 @@ const stripButton = label => {
     const page = pageAria(tree, 'REVamp marketplace page')
     assert.ok(page && page.props.href === 'https://hermes-agent.nousresearch.com/marketplace', 'no marketplace link')
     let command = false
-    walk(tree, node => { if (node.props && node.props.children === 'hermes plugin install revamp') command = true })
+    walk(tree, node => { if (node.props && node.props.children === 'hermes plugins install https://github.com/KeyArgo/hermes-revamp') command = true })
     assert.ok(command, 'the install command is not shown')
   })
   safeDispose('the stop scenario (T)', scenario.dispose)

@@ -805,6 +805,22 @@ function setError(message) {
   setLive({ error: typeof message === 'string' ? message : '' })
 }
 
+/** The server's own refusal sentence from a failed REST call, '' when the
+ *  failure was not an answer from it. `ctx.rest` rejects with "<status>: {json}"
+ *  and that body's `error` is the one sentence that says what to do — a blanket
+ *  "not answering" would hide, e.g., why the browser exited. */
+function serverRefusal(error) {
+  const message = String((error && error.message) || error || '')
+  const start = message.indexOf('{')
+  if (start < 0) return ''
+  try {
+    const body = JSON.parse(message.slice(start))
+    return body && typeof body.error === 'string' ? body.error : ''
+  } catch {
+    return ''
+  }
+}
+
 // The visualiser page (web/index.html) and the film page. In Visualizer mode
 // the iframe points at the live server URL (index.html, with `overlay=1` /
 // `reduced-motion=1`). In video mode it points at web/player.html on the same
@@ -1557,7 +1573,7 @@ async function syncPlayerOwnership() {
         videoCommand('pause')
         desktopOwned = true
         // The desktop window is the picture: no in-app watch window as well.
-        if (videoWindowOn()) setVideoWindow(false)
+        if ($settings.get().videoWindow === true) setVideoWindow(false)
         else applyBackdropLayout()
       }
       // Keep the parked in-app film quiet; never the desktop window itself.
@@ -1671,6 +1687,7 @@ async function setDesktopWindow(on) {
     desktopPending = true
     applyBackdropLayout()
     let available = true
+    let failure = ''
     try {
       const status = await ctxRef.rest('/window', { timeoutMs: 4000 })
       if (status && status.ok === true && status.available === false) available = false
@@ -1689,15 +1706,20 @@ async function setDesktopWindow(on) {
         desktopOwned = true
         // The window owns the picture now; park the in-app watch window.
         // Radio stays on whichever Aura surface is still open.
-        if (videoWindowOn()) setVideoWindow(false)
+        if ($settings.get().videoWindow === true) setVideoWindow(false)
         else applyBackdropLayout()
         syncVideoBar(true)
         return
       }
+      failure = typeof result.error === 'string' ? result.error : ''
     }
     desktopPending = false
     setVideoWindow(true)
-    note('Using the in-app watch window', 5000)
+    // The pane's own line is where the user clicked, so it carries the reason
+    // ("the browser exited immediately") rather than only the fall-back news.
+    note(failure && failure !== 'server_unreachable'
+      ? `Using the in-app watch window — ${failure}`
+      : 'Using the in-app watch window', 5000)
   } else if (desktopOwned) {
     const result = await closeDesktopWindow()
     if (!result.error) await syncPlayerOwnership()
@@ -1757,15 +1779,28 @@ async function openDesktopWindow() {
     const reason = result && typeof result.error === 'string' && result.error
       ? result.error
       : 'the window could not be opened'
-    setError(`Aura could not open the film window — ${reason}.`)
+    setError(`Aura could not open the ${desktopWindowName()} — ${reason}.`)
     return { open: false, error: reason }
-  } catch {
-    setError('Aura could not open the film window — the local server is not answering.')
+  } catch (error) {
+    // A refusal (503 "the browser exited immediately") arrives as a rejection
+    // whose message carries the server's JSON body. Show that sentence: it is
+    // the only thing that tells the user why the Desktop click fell back.
+    const reason = serverRefusal(error)
+    if (reason) {
+      setError(`Aura could not open the ${desktopWindowName()} — ${reason}`)
+      return { open: false, error: reason }
+    }
+    setError(`Aura could not open the ${desktopWindowName()} — the local server is not answering.`)
     return { open: false, error: 'server_unreachable' }
   }
 }
 
 /** Close the popped-out window (the in-app film may resume where it stopped). */
+/** What the OS window shows in the current mode, for messages. */
+function desktopWindowName() {
+  return $settings.get().backdropMode !== 'video' ? 'visualiser window' : 'film window'
+}
+
 async function closeDesktopWindow() {
   if (!ctxRef || disposed) return { open: false }
   try {
@@ -2863,7 +2898,8 @@ async function setEnabled(next, fromNewBuild = false) {
     if (desktopOwned || desktopPending) {
       desktopOwned = false
       desktopPending = false
-      void closeDesktopWindow()
+      desktopClosing = true
+      void closeDesktopWindow().finally(() => { desktopClosing = false })
     }
   }
   controlPushPending += 1
@@ -2949,9 +2985,14 @@ async function setBackdropMode(next) {
   // The OS window follows the mode: the server swaps its page (close+reopen).
   // If the swap cannot happen (no film for Video mode, no browser), fall back
   // to the in-app surface instead of leaving the wrong picture up.
-  if (desktopOwned && !disposed) {
-    const result = await openDesktopWindow()
-    if (!result.open && !disposed) await setDesktopWindow(false)
+  if (desktopOwned && !disposed && !desktopSwitching) {
+    desktopSwitching = true
+    try {
+      const result = await openDesktopWindow()
+      if (!result.open && !disposed) await setDesktopWindow(false)
+    } finally {
+      desktopSwitching = false
+    }
   }
 }
 
@@ -3440,7 +3481,7 @@ const REVAMP_CARD_COPY =
   'REVamp is a Winamp-style player for Hermes, listed in the Hermes plugin catalog. ' +
   'It includes Hermes Radio, a curated station section. Aura’s visuals react to whatever it plays.'
 const REVAMP_URL = 'https://hermes-agent.nousresearch.com/marketplace'
-const REVAMP_INSTALL = 'hermes plugin install revamp'
+const REVAMP_INSTALL = 'hermes plugins install https://github.com/KeyArgo/hermes-revamp'
 // Capabilities > Plugins, at REVamp's row once it is installed.
 const REVAMP_PLUGINS_ROUTE = '/capabilities?tab=plugins&plugin=revamp'
 const REVAMP_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDI0IDEwMjQiIHJvbGU9ImltZyIgYXJpYS1sYWJlbD0iUkVWYW1wIj4KICA8ZGVmcz4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iYiIgeDE9IjAiIHkxPSIwIiB4Mj0iMSIgeTI9IjEiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzBmMjAzMCIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzA4MGIxNiIvPjwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InJldyIgeDE9IjAiIHkxPSIwIiB4Mj0iMSIgeTI9IjEiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzVmZjJjNiIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iI2Q4ZmY1YyIvPjwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InBsYXkiIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIxIj48c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiNmZjRmZDgiLz48c3RvcCBvZmZzZXQ9Ii41IiBzdG9wLWNvbG9yPSIjZmZmZmZmIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjNWZmMmM2Ii8+PC9saW5lYXJHcmFkaWVudD4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iY2hyb21lIiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjM2I0YTVlIi8+PHN0b3Agb2Zmc2V0PSIuNSIgc3RvcC1jb2xvcj0iIzIzMmQzYyIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzE1MWIyNiIvPjwvbGluZWFyR3JhZGllbnQ+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9InRpdGxlIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMCI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjNWZmMmM2Ii8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjZmY0ZmQ4Ii8+PC9saW5lYXJHcmFkaWVudD4KICAgIDxwYXR0ZXJuIGlkPSJzY2FuIiB3aWR0aD0iOCIgaGVpZ2h0PSIxMCIgcGF0dGVyblVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+PHJlY3Qgd2lkdGg9IjgiIGhlaWdodD0iNCIgZmlsbD0iIzVmZjJjNiIgZmlsbC1vcGFjaXR5PSIuMDciLz48L3BhdHRlcm4+CiAgICA8cmFkaWFsR3JhZGllbnQgaWQ9ImciIGN4PSIuNSIgY3k9Ii41IiByPSIuNSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjNWZmMmM2IiBzdG9wLW9wYWNpdHk9Ii4zIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjNWZmMmM2IiBzdG9wLW9wYWNpdHk9IjAiLz48L3JhZGlhbEdyYWRpZW50PgogIDwvZGVmcz4KICA8cmVjdCB4PSI2NCIgeT0iNjQiIHdpZHRoPSI4OTYiIGhlaWdodD0iODk2IiByeD0iMjA4IiBmaWxsPSJ1cmwoI2IpIi8+CiAgPGNpcmNsZSBjeD0iNTEyIiBjeT0iNTEyIiByPSI0MjAiIGZpbGw9InVybCgjZykiLz4KICA8IS0tIGEgY2xhc3NpYyBwbGF5ZXIgd2luZG93IC0tPgogIDxyZWN0IHg9IjE1MCIgeT0iMjE0IiB3aWR0aD0iNzI0IiBoZWlnaHQ9IjU5NiIgcng9IjQwIiBmaWxsPSJ1cmwoI2Nocm9tZSkiIHN0cm9rZT0iIzVmZjJjNiIgc3Ryb2tlLW9wYWNpdHk9Ii41IiBzdHJva2Utd2lkdGg9IjYiLz4KICA8cmVjdCB4PSIxNTAiIHk9IjIxNCIgd2lkdGg9IjcyNCIgaGVpZ2h0PSI1OCIgcng9IjI4IiBmaWxsPSJ1cmwoI3RpdGxlKSIgb3BhY2l0eT0iLjg1Ii8+CiAgPGcgZmlsbD0iIzBiMTAxOCIgZmlsbC1vcGFjaXR5PSIuNyI+PHJlY3QgeD0iNzYwIiB5PSIyMzIiIHdpZHRoPSIyMiIgaGVpZ2h0PSIyMiIgcng9IjQiLz48cmVjdCB4PSI3OTYiIHk9IjIzMiIgd2lkdGg9IjIyIiBoZWlnaHQ9IjIyIiByeD0iNCIvPjxyZWN0IHg9IjgzMiIgeT0iMjMyIiB3aWR0aD0iMjIiIGhlaWdodD0iMjIiIHJ4PSI0Ii8+PC9nPgogIDwhLS0gTENEIC0tPgogIDxyZWN0IHg9IjE5MCIgeT0iMzA0IiB3aWR0aD0iNjQ0IiBoZWlnaHQ9IjQxMiIgcng9IjIyIiBmaWxsPSIjMDYwYTBmIi8+CiAgPHJlY3QgeD0iMTkwIiB5PSIzMDQiIHdpZHRoPSI2NDQiIGhlaWdodD0iNDEyIiByeD0iMjIiIGZpbGw9InVybCgjc2NhbikiLz4KICA8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgyMjIgMzQ0KSBzY2FsZSgyLjkpIj4KICAgIDxwb2x5Z29uIHBvaW50cz0iMzIsMCAwLDI0IDMyLDQ4IiBmaWxsPSJ1cmwoI3JldykiLz4KICAgIDxwb2x5Z29uIHBvaW50cz0iMzIsNTIgMCw3NiAzMiwxMDAiIGZpbGw9InVybCgjcmV3KSIvPgogICAgPHBhdGggZD0iTTM2IDAgMTAwIDI0IDM2IDQ4WiBNNDQuMyAxMiA3Ni4zIDI0IDQ0LjMgMzZaIiBmaWxsPSJ1cmwoI3BsYXkpIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiLz4KICAgIDxwb2x5Z29uIHBvaW50cz0iMzYsNTIgNjQsNTIgMTAwLDEwMCA3MiwxMDAiIGZpbGw9IiNkOGZmNWMiLz4KICA8L2c+CiAgPCEtLSBzcGVjdHJ1bSBhbmFseXNlciB3aXRoIHBlYWsgY2FwcyAtLT4KICA8Zz4KICAgIDxyZWN0IHg9IjU2MCIgeT0iNTYwIiB3aWR0aD0iMzAiIGhlaWdodD0iMTIwIiByeD0iNCIgZmlsbD0iIzVmZjJjNiIvPjxyZWN0IHg9IjYwMCIgeT0iNTAwIiB3aWR0aD0iMzAiIGhlaWdodD0iMTgwIiByeD0iNCIgZmlsbD0iIzhhZjNhYiIvPgogICAgPHJlY3QgeD0iNjQwIiB5PSI0NDAiIHdpZHRoPSIzMCIgaGVpZ2h0PSIyNDAiIHJ4PSI0IiBmaWxsPSIjYjZmNzhhIi8+PHJlY3QgeD0iNjgwIiB5PSI1MjAiIHdpZHRoPSIzMCIgaGVpZ2h0PSIxNjAiIHJ4PSI0IiBmaWxsPSIjZDhmZjVjIi8+CiAgICA8cmVjdCB4PSI3MjAiIHk9IjQ3MCIgd2lkdGg9IjMwIiBoZWlnaHQ9IjIxMCIgcng9IjQiIGZpbGw9IiNmZjhhZTYiLz48cmVjdCB4PSI3NjAiIHk9IjU4MCIgd2lkdGg9IjMwIiBoZWlnaHQ9IjEwMCIgcng9IjQiIGZpbGw9IiNmZjRmZDgiLz4KICAgIDxnIGZpbGw9IiNmZmZmZmYiPjxyZWN0IHg9IjYwMCIgeT0iNDgwIiB3aWR0aD0iMzAiIGhlaWdodD0iOCIgcng9IjIiLz48cmVjdCB4PSI2NDAiIHk9IjQyMCIgd2lkdGg9IjMwIiBoZWlnaHQ9IjgiIHJ4PSIyIi8+PHJlY3QgeD0iNzIwIiB5PSI0NTAiIHdpZHRoPSIzMCIgaGVpZ2h0PSI4IiByeD0iMiIvPjwvZz4KICA8L2c+CiAgPCEtLSBzZWVrIGJhciAtLT4KICA8cmVjdCB4PSIxOTAiIHk9Ijc0OCIgd2lkdGg9IjY0NCIgaGVpZ2h0PSIyMCIgcng9IjEwIiBmaWxsPSIjMGIxMDE4Ii8+CiAgPHJlY3QgeD0iMTkwIiB5PSI3NDgiIHdpZHRoPSI0MDAiIGhlaWdodD0iMjAiIHJ4PSIxMCIgZmlsbD0idXJsKCNyZXcpIi8+CiAgPGNpcmNsZSBjeD0iNTkwIiBjeT0iNzU4IiByPSIyMiIgZmlsbD0iI2ZmZmZmZiIvPgogIDxyZWN0IHg9IjY4IiB5PSI2OCIgd2lkdGg9Ijg4OCIgaGVpZ2h0PSI4ODgiIHJ4PSIyMDQiIGZpbGw9Im5vbmUiIHN0cm9rZT0idXJsKCNyZXcpIiBzdHJva2Utd2lkdGg9IjgiIG9wYWNpdHk9Ii4zNSIvPgogIDxwYXRoIGQ9Ik04NDIgMTc2Yy00MCA2LTc4IDI2LTEwNCA1OCAzMC02IDU4LTQgODIgNi0yNCA0LTQ2IDE0LTYyIDMwIDI4LTIgNTIgNCA3MCAxNi0xNC0zNC04LTgwIDE0LTExMFoiIGZpbGw9IiNmMmY0ZmYiIG9wYWNpdHk9Ii45Ii8+Cjwvc3ZnPgo='
