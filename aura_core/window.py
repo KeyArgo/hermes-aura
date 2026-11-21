@@ -29,7 +29,7 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import config
 
@@ -254,31 +254,155 @@ def _command_line(pid: int) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def _alive(pid: int) -> bool:
+    """True while ``pid`` still runs.
+
+    ``os.kill(pid, 0)`` is the cheap probe, but on Windows os.kill *terminates*
+    the process, so Windows reads the command line it already knows how to fetch.
+    """
+    if pid <= 0:
+        return False
+    if _on_windows():
+        return bool(_command_line(pid))
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _lease_pid() -> int:
+    """The pid the lease records, 0 when there is no readable lease."""
+    try:
+        return int(json.loads(_lease_path().read_text(encoding="utf-8"))["pid"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+
+
+def _singleton_pid() -> int:
+    """The pid Chromium's profile lock names (``SingletonLock`` → ``host-pid``).
+
+    A window holds this link beside the profile for as long as it runs, so it
+    finds an owner even when the lease was never written (or was cleared).
+    Windows keeps no such link; the lease pid covers it there.
+    """
+    if _on_windows():
+        return 0
+    try:
+        target = os.readlink(_profile() / "SingletonLock")
+    except OSError:
+        return 0
+    try:
+        return int(str(target).rsplit("-", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def _runs_on_profile(pid: int) -> bool:
+    """True when ``pid`` is alive and started on this home's own window profile.
+
+    PIDs get reused, so a lease or a lock alone is not proof: the command line
+    must carry our ``--user-data-dir``. Windows quotes an argument with spaces
+    ("--user-data-dir=C:\\...") and its paths are case-insensitive.
+    """
+    cmd = _command_line(pid)
+    if not cmd:
+        return False
+    profile = str(_profile())
+    profiles = {profile, os.path.realpath(profile)}
+    flags = re.IGNORECASE if _on_windows() else 0
+    return any(re.search(r'(?:^|[\0\s"])--user-data-dir="?' + re.escape(candidate) +
+                         r'"?([\0\s"]|$)', cmd, flags) for candidate in profiles)
+
+
+def _release_orphan() -> bool:
+    """Free the profile from a window a previous server left holding it.
+
+    The window survives an Aura restart (it runs in its own session), so a new
+    launch only forwards to it and exits: the user sees 503 "exited
+    immediately" although nothing is wrong with the browser. Terminate it —
+    only ever a process whose command line carries OUR profile, since a reused
+    pid would otherwise close an unrelated window — and let the caller retry.
+    """
+    pids: List[int] = []
+    for pid in (_lease_pid(), _singleton_pid()):
+        if pid and pid not in pids:
+            pids.append(pid)
+    released = False
+    for pid in pids:
+        if not _runs_on_profile(pid):
+            continue
+        try:
+            os.killpg(pid, signal.SIGTERM)  # started with start_new_session: own group
+        except (OSError, AttributeError):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                continue
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and _alive(pid):
+            time.sleep(0.1)
+        if _alive(pid):
+            try:
+                os.killpg(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+            except (OSError, AttributeError):
+                try:
+                    os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+                except OSError:
+                    pass
+        released = True
+    if released:
+        _clear_lease()
+    return released
+
+
+def _launch(build_args: Callable[[], List[str]], browser: str) -> subprocess.Popen:
+    """Start the browser and prove it stayed up: a window, not a hand-off.
+
+    A browser that finds this profile already in use forwards to that instance
+    and exits at once. Ours may be a window a previous server left behind (it
+    survives the restart in its own session), so free the profile once and
+    launch again before calling it a failure. Each launch builds its own
+    arguments: the forwarded address may already have spent its one-time ticket.
+    """
+    attempt = 0
+    while True:
+        attempt += 1
+        args = build_args()
+        try:
+            proc = subprocess.Popen(
+                args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+        except OSError as exc:
+            raise WindowError(f"could not start {browser}: {exc}") from exc
+        try:
+            proc.wait(1.5)
+        except subprocess.TimeoutExpired:
+            return proc
+        if attempt == 1 and _release_orphan():
+            continue
+        raise WindowError(
+            f"{os.path.basename(browser)} exited immediately "
+            "(is another Aura window already open?)"
+        )
+
+
 def reap_orphan() -> bool:
     """At server start: close a window left behind by a previous server.
 
     Its token died with the old process, so it would only sit there showing an
     unauthorised page — and, worse, would still be playing audio.
     """
-    try:
-        lease = json.loads(_lease_path().read_text(encoding="utf-8"))
-        pid = int(lease["pid"])
-    except (OSError, ValueError, KeyError, TypeError):
+    pid = _lease_pid()
+    if not pid:
         return False
-    profile = str(_profile())
-    cmd = _command_line(pid)
-    if not cmd:
+    if not _command_line(pid):
         # The window is already gone, so the lease is dead too. Leaving it made
         # every start run the probe again (PowerShell on Windows) for nothing.
         _clear_lease()
         return False
-    # Ours only if it runs on this home's own browser profile (PIDs get reused).
-    # Windows quotes an argument with spaces ("--user-data-dir=C:\...") and its
-    # paths are case-insensitive.
-    profiles = {profile, os.path.realpath(profile)}
-    flags = re.IGNORECASE if _on_windows() else 0
-    if not any(re.search(r'(?:^|[\0\s"])--user-data-dir="?' + re.escape(candidate) +
-                         r'"?(?=[\0\s"]|$)', cmd, flags) for candidate in profiles):
+    if not _runs_on_profile(pid):
         return False
     try:
         os.killpg(pid, signal.SIGTERM)  # started with start_new_session: own group
@@ -516,6 +640,8 @@ def open_window(port: int, token: Optional[str], url: str,
             profile.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise WindowError(f"could not create the window profile: {exc}") from exc
+
+    def build_args() -> List[str]:
         ticket = issue_ticket(token) if token else ""
         target = (visualizer_url(port, ticket, reduced_motion) if page == "visualizer"
                   else player_url(port, ticket, url, position, video_id, paused))
@@ -529,33 +655,14 @@ def open_window(port: int, token: Optional[str], url: str,
             args.append("--class=Aura")
         args.extend(_feature_args())
         args.extend(_gpu_args())
-        try:
-            proc = subprocess.Popen(
-                args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, start_new_session=True,
-            )
-        except OSError as exc:
-            raise WindowError(f"could not start {browser}: {exc}") from exc
+        return args
+
+    proc = _launch(build_args, browser)
+    with _lock:
         _proc = proc
         _film_url = str(url or "") if page == "player" else ""
         _kind = "player"
         _screen = page
-    # A browser forwarding to an instance already using this profile exits at once.
-    try:
-        proc.wait(1.5)
-        with _lock:
-            if _proc is proc:
-                _proc = None
-                _film_url = ""
-                _kind = ""
-                _screen = "player"
-        _clear_lease()
-        raise WindowError(
-            f"{os.path.basename(browser)} exited immediately "
-            "(is another Aura window already open?)"
-        )
-    except subprocess.TimeoutExpired:
-        pass
     _write_lease(proc.pid, str(url or "") if page == "player" else "")
     threading.Thread(target=_watch, args=(proc,), name="aura-window", daemon=True).start()
     threading.Thread(target=_raise_when_shown, args=(proc,), name="aura-window-raise", daemon=True).start()

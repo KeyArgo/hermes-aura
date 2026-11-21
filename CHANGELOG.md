@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Desktop: the visualiser's watch window switches off when the Desktop window takes the picture; a mode
+  switch and the ownership poll no longer open two windows; Off sends one close; errors in Visualizer
+  mode say "visualiser window"; a relaunch after freeing the profile uses a fresh one-time ticket.
+- The REVamp card's Copy button gives `hermes plugins install …` (the old `hermes plugin` is not a command).
+- Desktop: a window left open by the previous Aura server no longer blocks the next one. The launch
+  finds it (the lease, or the profile's own lock), closes it only when the process really runs on
+  Aura's profile, and retries once; when the browser still will not start, the plugin shows the
+  server's sentence in the pane instead of falling back to the in-app window without a word.
 - Off now stays off when a /status check starts during the on/off switch's own request and answers with the old switch.
 - Removed the full-window backdrop. It returns when Hermes ships an SDK backdrop area (#155903).
 - Removed the optional Aura Live theme.

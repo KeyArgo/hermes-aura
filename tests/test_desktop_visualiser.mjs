@@ -128,7 +128,7 @@ fs.writeFileSync(
     .replace(/from\s+'@hermes\/plugin-sdk'/g, "from './sdk-stub.mjs'")
     .replace(/from\s+'react'/g, "from './react-stub.mjs'")
     .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-stub.mjs'") +
-  '\nexport const deskvizTest = { setDesktopWindow, setBackdropMode, openDesktopWindow, sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, poll, settings: $settings, live: $live, owned: () => desktopOwned, placement: filmPlacement }\n'
+  '\nexport const deskvizTest = { setDesktopWindow, setBackdropMode, openDesktopWindow, setEnabled, sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, poll, settings: $settings, live: $live, owned: () => desktopOwned, placement: filmPlacement, hint: panelHintState }\n'
 )
 
 fs.writeFileSync(path.join(tmp, 'sdk-stub.mjs'), `
@@ -190,7 +190,7 @@ const plugin = await import(pathToFileURL(pluginCopy).href)
 
 // ------------------------------------------------------------- ctx harness
 
-function makeCtx(settings, windowState) {
+function makeCtx(settings, windowState, openFailure = '') {
   const contributions = []
   const storage = new Map()
   const requests = []
@@ -233,6 +233,11 @@ function makeCtx(settings, windowState) {
       if (route === '/window') return { ok: true, available: true, open: win.open, page: win.page }
       if (route === '/window/open') {
         const body = options.body || {}
+        if (openFailure) {
+          // The host rejects a refusal with "<status>: {body}" — the shape the
+          // plugin has to read the server's sentence out of.
+          throw new Error(`503: ${JSON.stringify({ ok: false, error: openFailure, window: { open: false, page: '' } })}`)
+        }
         win.open = true
         win.page = body.page === 'visualizer' ? 'visualizer' : 'player'
         return { ok: true, open: true, url: body.url || '' }
@@ -395,6 +400,91 @@ await record('unloading the plugin closes the Desktop window', async () => {
     'dispose left the OS window running')
 })
 
+await record('a refused Desktop open says why, then falls back to the in-app window', async () => {
+  // The owner's bug: after a backend restart the window from the old server
+  // still held the profile, so Desktop 503'd and the plugin fell back without a
+  // word. The server's own sentence has to reach the user, not a blanket
+  // "the local server is not answering".
+  const reason = 'google-chrome exited immediately (is another Aura window already open?)'
+  const bucket = makeCtx({ enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: FILM, videoClosed: false },
+    null, reason)
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(30)
+    await plugin.deskvizTest.setDesktopWindow(true)
+    assert.equal(opensIn(bucket).length, 1, 'the Desktop click never asked the server for a window')
+    assert.equal(plugin.deskvizTest.owned(), false, 'a refused window was still claimed as open')
+    assert.match(plugin.deskvizTest.live.get().error, /exited immediately/,
+      'the fall-back threw the server\'s reason away')
+    assert.match(plugin.deskvizTest.hint().text, /exited immediately/,
+      'the pane never showed why the Desktop window did not open')
+  } finally {
+    dispose()
+  }
+})
+
+await record('the visualiser watch window closes when the Desktop window takes the picture', async () => {
+  const bucket = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, videoUrl: '', videoWindow: true })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(30)
+    await plugin.deskvizTest.setDesktopWindow(true)
+    assert.equal(plugin.deskvizTest.owned(), true)
+    assert.equal(plugin.deskvizTest.settings.get().videoWindow, false,
+      'the watch window stayed switched on behind the Desktop visualiser')
+  } finally {
+    dispose()
+  }
+})
+
+await record('a mode switch with a poll in flight swaps the Desktop window once', async () => {
+  const bucket = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, videoUrl: FILM, videoClosed: false })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(30)
+    await plugin.deskvizTest.setDesktopWindow(true)
+    assert.equal(opensIn(bucket).length, 1)
+    const switching = plugin.deskvizTest.setBackdropMode('video')
+    await Promise.all([plugin.deskvizTest.sync(), plugin.deskvizTest.sync(), switching])
+    assert.equal(opensIn(bucket).length, 2, 'the poll launched a second window during the mode switch')
+    assert.equal(bucket.win.page, 'player')
+  } finally {
+    dispose()
+  }
+})
+
+await record('Off sends one close, even with a poll in flight', async () => {
+  const bucket = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, videoUrl: '' })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(30)
+    await plugin.deskvizTest.setDesktopWindow(true)
+    // The poll reads the window as open, then Off lands before it acts.
+    const poll = plugin.deskvizTest.sync()
+    const off = plugin.deskvizTest.setEnabled(false)
+    plugin.deskvizTest.live.set({ ...plugin.deskvizTest.live.get(), ok: true, enabled: false })
+    await Promise.all([poll, off])
+    const closes = bucket.requests.filter(r => r.route === '/window/close')
+    assert.equal(closes.length, 1, `Off sent ${closes.length} closes`)
+  } finally {
+    dispose()
+  }
+})
+
+await record('a refused Desktop open in Visualizer mode names the visualiser window', async () => {
+  const bucket = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, videoUrl: '' },
+    null, 'no Chrome or Chromium found')
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(30)
+    await plugin.deskvizTest.setDesktopWindow(true)
+    assert.match(plugin.deskvizTest.live.get().error, /visualiser window/,
+      'the Visualizer-mode error talks about a film window')
+  } finally {
+    dispose()
+  }
+})
+
 // ------------------------------------------- the window page itself (static)
 
 const indexHtml = fs.readFileSync(path.join(ROOT, 'web', 'index.html'), 'utf8')
@@ -414,6 +504,14 @@ await record('aura.js and audio.js accept the bootstrapped desktop token', () =>
     'aura.js only reads ?token=, so the ticket-bootstrapped window has no token')
   assert.match(audioJs, /sessionStorage\.getItem\('auraDesktopToken'\)/,
     'audio.js only reads ?token= for the radio stream')
+})
+
+await record('the REVamp card copies a command Hermes actually has', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'desktop', 'plugin.js'), 'utf8')
+  const install = source.match(/const REVAMP_INSTALL = '([^']+)'/)
+  assert.ok(install, 'REVAMP_INSTALL is gone')
+  assert.match(install[1], /^hermes plugins install \S+$/,
+    '"hermes plugin" is not a Hermes command; the copied line fails when pasted')
 })
 
 // ------------------------------------------------------------------ report
