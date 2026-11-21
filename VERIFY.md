@@ -50,11 +50,13 @@ curl -s -H "Authorization: Bearer $(cat ~/.hermes/aura/token)" \
 # "capture" reads "none" once idle
 ```
 
-A full-window visual of the Aura visualiser itself is not in this build; it returns when Hermes ships
-a backdrop area (#155903). The film behind the chat is a separate, opt-in surface: `tests/test_no_backdrop.mjs`
-proves that nothing is drawn on the host page without it, `tests/test_behind_chat_soon.mjs` proves the
-one click-through iframe and the scoped `#aura-glass` stylesheet appear only while it is chosen, and
-both suites prove they are gone again after Panel, a close, an Off or dispose.
+Behind chat is the one surface that is not Aura's own, and it lives in the desktop's backdrop layer
+(`BACKDROP_AREA`): `tests/test_behind_chat_soon.mjs` proves that with the area exported, picking the
+place registers exactly ONE contribution with a render and clamped `{ opacity, dimApp }`, that Panel,
+an Off and dispose call its disposer, and that Aura writes nothing into `document.body`, `<head>` or
+`<html>`; and that without the area the pill is disabled and nothing is registered.
+`tests/test_backdrop_lifecycle.mjs` covers the Off-in-flight, replaced-server and strength checks, and
+`tests/test_no_backdrop.mjs` proves nothing at all is painted for any other surface.
 
 ### Polling
 

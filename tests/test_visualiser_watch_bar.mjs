@@ -317,6 +317,7 @@ export const PopoverTrigger = () => null
 export const PopoverContent = () => null
 
 export const PALETTE_AREA = 'palette'
+export const BACKDROP_AREA = 'backdrop'
 export const PANES_AREA = 'panes'
 export const ROUTES_AREA = 'routes'
 export const SIDEBAR_NAV_AREA = 'sidebar.nav'

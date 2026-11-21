@@ -7,8 +7,14 @@
   user's own switch decides, the same rule the status poll applies.
 - Behind chat reconnects to a replaced server: a restart on a new port (or with a new token) re-points
   the film iframe instead of leaving it on a dead address, and the same server never restarts the film.
-- The Behind chat film is sized with `inset: 0` alone. `100vw`/`100vh` are the visual viewport, so with a
-  classic Windows scrollbar the box was wider and taller than the layout viewport and overflowed the app.
+- **Behind chat now lives in the host's backdrop layer.** Where the desktop SDK exposes the backdrop
+  area, "Watch in" and both "Send to" rows end with a real Behind chat choice, and Aura registers ONE
+  contribution there: its own iframe (the film, or the visualiser page), with `opacity` and `dimApp`
+  clamped to the host's 0-1 range. Hermes owns the layer — Settings ▸ Appearance turns it on (off by
+  default), it paints in the main window only, and reduced motion or transparency unmounts it. Aura
+  writes nothing into the host page: no iframe on `document.body`, no stylesheet, no attribute on
+  `<html>`. Picking another place, a close, an Off or unloading the plugin disposes the contribution.
+  On a desktop build without the backdrop area, Behind chat stays the greyed "coming soon" pill.
 - The Aura theme's glow only spends frames while there is something to animate: with Aura off, or nothing
   playing, it draws one static frame and stops, and the poll resumes it when activity starts again.
 - A glow mount that fails now leaves nothing behind: every listener (matchMedia, resize, visibility, the
@@ -17,11 +23,10 @@
   shaders, instead of failing to compile and losing the picture.
 - Off now stays off when a /status check starts during the on/off switch's own request and answers with the old switch.
 - **Behind chat is back, as an opt-in.** "Watch in" and the watch window's "Send to" row end with a
-  real Behind chat choice: the film plays in ONE click-through iframe at z-index -1 on the host body,
-  with a scoped `#aura-glass` stylesheet so the app's surfaces let it through. It exists only while
-  that place is chosen for an open film and Aura is on; Panel, a close, an Off or dispose take the
-  iframe, the stylesheet and the `data-aura-backdrop` attribute away again. The default surface is
-  still the Right panel, and nothing is drawn behind the chat unless you pick it.
+  real Behind chat choice on a host that renders the backdrop layer; the film (or the visualiser)
+  plays in one contribution inside that layer, and Panel, a close, an Off or dispose hand it back.
+  The default surface is still the Right panel, and nothing is drawn behind the chat unless you pick
+  it.
 - Removed the optional Aura Live theme.
 - Stop closes the film, and its desktop window, instead of leaving it on screen.
 - Radio plays in the Right panel, the Aura page, and the watch window, in every mode.

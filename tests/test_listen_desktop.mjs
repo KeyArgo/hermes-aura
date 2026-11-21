@@ -546,7 +546,7 @@ await record('the in-pane frame and the Behind chat backdrop both resume the rad
   )
   assert.match(
     source,
-    /addEventListener\('load', \(\) => resumeAudioIn\(backdropEl\)\)/,
+    /onLoad: event => resumeAudioIn\(\(event && event\.currentTarget\) \|\| backdropEl\)/,
     'the Behind chat backdrop never resumes the radio'
   )
 })

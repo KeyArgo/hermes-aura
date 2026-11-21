@@ -142,7 +142,7 @@ fs.writeFileSync(
     .replace(/from\s+'@hermes\/plugin-sdk'/g, "from './sdk-stub.mjs'")
     .replace(/from\s+'react'/g, "from './react-stub.mjs'")
     .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-stub.mjs'") +
-  '\nexport const backdropLifeTest = { setEnabled, setReducedMotion, setFilmBehind, poll, syncBackdrop, settings: $settings, live: $live }\n'
+  '\nexport const backdropLifeTest = { setEnabled, setReducedMotion, setFilmBehind, poll, syncBackdrop, settings: $settings, live: $live, surface: () => $backdropSurface.get() }\n'
 )
 
 fs.writeFileSync(path.join(tmp, 'sdk-stub.mjs'), `
@@ -175,6 +175,7 @@ export const Popover = () => null
 export const PopoverTrigger = () => null
 export const PopoverContent = () => null
 export const PALETTE_AREA = 'palette'
+export const BACKDROP_AREA = 'backdrop'
 export const PANES_AREA = 'panes'
 export const ROUTES_AREA = 'routes'
 export const SIDEBAR_NAV_AREA = 'sidebar.nav'
@@ -204,11 +205,20 @@ const plugin = await import(pathToFileURL(pluginCopy).href)
 const api = plugin.backdropLifeTest
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-const frames = () => bodyChildren.filter(node => node.tagName === 'IFRAME')
-const oneFrame = () => {
-  const list = frames()
-  assert.equal(list.length, 1, `expected exactly one backdrop iframe, got ${list.length}`)
+// The contribution Aura registers in the host's backdrop layer. Nothing about
+// Behind chat touches the page any more: these checks read the registration and
+// the element its render produces.
+const backdropContribs = bucket => bucket.contributions.filter(item => item.area === 'backdrop')
+const oneContribution = bucket => {
+  const list = backdropContribs(bucket)
+  assert.equal(list.length, 1, `expected exactly one backdrop contribution, got ${list.length}`)
   return list[0]
+}
+const oneFrame = bucket => {
+  const entry = oneContribution(bucket)
+  const element = entry.render()
+  assert.ok(element && element.props, 'the backdrop contribution rendered nothing')
+  return element
 }
 
 function makeCtx(settings) {
@@ -272,18 +282,6 @@ const BEHIND = {
   enabled: true, backdropMode: 'video', panelEnabled: true, filmBehind: true, videoUrl: FILM
 }
 
-/** Count writes to the iframe's src, so "did this restart the film?" is exact. */
-function watchSrc(frame) {
-  let value = frame.src
-  const seen = { writes: 0, value: () => value }
-  Object.defineProperty(frame, 'src', {
-    configurable: true,
-    get: () => value,
-    set: next => { seen.writes += 1; value = next }
-  })
-  return seen
-}
-
 // ------------------------------------------------------------------ checks
 
 await record('B1. off never remounts Behind chat while the switch POST is in flight', async () => {
@@ -294,7 +292,7 @@ await record('B1. off never remounts Behind chat while the switch POST is in fli
   const dispose = plugin.default.register(bucket.ctx)
   try {
     await sleep(40)
-    oneFrame()   // precondition: the film is behind the chat while Aura is on
+    oneFrame(bucket)   // precondition: the film is behind the chat while Aura is on
 
     // The user presses Off. The POST is held open: controlPushPending is 1 and
     // $live still says the server has Aura on.
@@ -303,27 +301,27 @@ await record('B1. off never remounts Behind chat while the switch POST is in fli
     const off = api.setEnabled(false)
     await sleep(20)
     assert.equal(api.settings.get().enabled, false, 'precondition: the Off was not recorded')
-    assert.equal(frames().length, 0, 'the Off itself left the backdrop up')
+    assert.equal(backdropContribs(bucket).length, 0, 'the Off itself left the backdrop registered')
     assert.equal(api.live.get().enabled, true,
       'precondition: the stale /status answer is what the live state still reports')
 
     // Leaving the page, or flipping Gentle motion, calls syncBackdrop().
     void api.setReducedMotion(true)
     await sleep(20)
-    assert.equal(frames().length, 0,
-      'Gentle motion remounted Behind chat while the Off POST was still in flight')
+    assert.equal(backdropContribs(bucket).length, 0,
+      'Gentle motion re-registered Behind chat while the Off POST was still in flight')
     assert.equal(documentElement.hasAttribute('data-aura-backdrop'), false,
-      'the glass came back while the Off POST was still in flight')
+      'the host root was written to while the Off POST was still in flight')
 
     // A /status that shares the Off's epoch but read the old switch must not
     // bring it back either.
     await api.poll()
-    assert.equal(frames().length, 0, 'a stale /status remounted Behind chat after the Off')
+    assert.equal(backdropContribs(bucket).length, 0, 'a stale /status re-registered Behind chat after the Off')
 
     release()
     await off
     await api.poll()
-    assert.equal(frames().length, 0, 'Behind chat came back once the Off settled')
+    assert.equal(backdropContribs(bucket).length, 0, 'Behind chat came back once the Off settled')
     assert.equal(api.settings.get().enabled, false, 'the Off was undone')
   } finally {
     dispose()
@@ -338,31 +336,35 @@ await record('B2. a replaced server re-points the backdrop; the same server does
   const dispose = plugin.default.register(bucket.ctx)
   try {
     await sleep(40)
-    const frame = oneFrame()
-    assert.match(String(frame.src), /127\.0\.0\.1:4321/, `backdrop src is ${frame.src}`)
-    assert.match(String(frame.src), /token=first-token/, `backdrop src is ${frame.src}`)
-    const seen = watchSrc(frame)
+    const entry = oneContribution(bucket)
+    const frame = oneFrame(bucket)
+    assert.match(String(frame.props.src), /127\.0\.0\.1:4321/, `backdrop src is ${frame.props.src}`)
+    assert.match(String(frame.props.src), /token=first-token/, `backdrop src is ${frame.props.src}`)
+    // What the layer paints, as one atom: a poll that changes nothing must not
+    // write it, or React re-points the frame and the film restarts.
+    const before = api.surface()
 
     // The same server, same film: a poll must not reload the page.
     await api.poll()
-    assert.equal(seen.writes, 0, 'a plain poll restarted the film')
+    assert.equal(api.surface(), before, 'a plain poll re-pointed the film')
+    assert.equal(oneContribution(bucket), entry, 'a plain poll re-registered the contribution')
 
     // The server restarts on a new port with a new token; the film is unchanged.
     server.port = 5555
     server.url = 'http://127.0.0.1:5555/?token=second-token'
     await api.poll()
-    const after = oneFrame()
-    assert.equal(after, frame, 'the backdrop iframe was replaced instead of re-pointed')
-    assert.match(String(frame.src), /127\.0\.0\.1:5555/,
-      `the backdrop kept the dead server: ${frame.src}`)
-    assert.match(String(frame.src), /token=second-token/,
-      `the backdrop kept the old token: ${frame.src}`)
+    const after = oneFrame(bucket)
+    assert.equal(oneContribution(bucket), entry, 'the backdrop contribution was replaced instead of re-pointed')
+    assert.match(String(after.props.src), /127\.0\.0\.1:5555/,
+      `the backdrop kept the dead server: ${after.props.src}`)
+    assert.match(String(after.props.src), /token=second-token/,
+      `the backdrop kept the old token: ${after.props.src}`)
   } finally {
     dispose()
   }
 })
 
-await record('B3. the backdrop box is the layout viewport: inset 0 and no vw/vh', async () => {
+await record('B3. the backdrop fills the host layer and never positions itself', async () => {
   server.port = 4321
   server.url = 'http://127.0.0.1:4321/?token=first-token'
   server.enabled = true
@@ -370,16 +372,24 @@ await record('B3. the backdrop box is the layout viewport: inset 0 and no vw/vh'
   const dispose = plugin.default.register(bucket.ctx)
   try {
     await sleep(40)
-    const frame = oneFrame()
-    assert.equal(frame.style.position, 'fixed')
-    assert.equal(frame.style.inset, '0', `the backdrop is not pinned with inset:0 (inset ${frame.style.inset})`)
-    const style = frame.style
-    for (const key of ['width', 'height', 'minWidth', 'minHeight', 'maxWidth', 'maxHeight']) {
+    const frame = oneFrame(bucket)
+    const style = frame.props.style || {}
+    // The host's layer is already fixed, full-window and click-through; the
+    // iframe paints inside that box and nothing else.
+    assert.equal(style.width, '100%', `the backdrop does not fill the layer (width ${style.width})`)
+    assert.equal(style.height, '100%', `the backdrop does not fill the layer (height ${style.height})`)
+    assert.equal(style.position, undefined, 'the backdrop positions itself inside the layer')
+    assert.equal(style.inset, undefined, 'the backdrop pins itself inside the layer')
+    for (const key of ['position', 'inset', 'width', 'height', 'minWidth', 'minHeight', 'maxWidth', 'maxHeight']) {
       const value = String(style[key] == null ? '' : style[key])
       assert.doesNotMatch(value, /v(w|h)\b/, `the backdrop sets ${key}: ${value}`)
     }
     const css = Object.keys(style).map(key => `${key}:${style[key]}`).join(';')
     assert.doesNotMatch(css, /\d+v(w|h)\b/, `the backdrop uses viewport units: ${css}`)
+    // Nothing was written to the host page for it.
+    assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 0,
+      'the backdrop put an iframe on the host body')
+    assert.equal(headChildren.length, 0, 'the backdrop put a stylesheet in <head>')
   } finally {
     dispose()
   }

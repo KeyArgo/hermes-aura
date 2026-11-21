@@ -425,6 +425,7 @@ export const PopoverContent = () => null
 
 export const PALETTE_AREA = 'palette'
 export const PANES_AREA = 'panes'
+export const BACKDROP_AREA = 'backdrop'
 export const ROUTES_AREA = 'routes'
 export const SIDEBAR_NAV_AREA = 'sidebar.nav'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' }
@@ -1036,16 +1037,17 @@ const stripButton = label => {
 {
   const scenario = await watchWindowScenario({})
   await recordAsync('23. the strip sends the film behind the chat', async () => {
-    const bodyFramesNow = () => bodyChildren.filter(node => node.tagName === 'IFRAME')
-    const before = bodyFramesNow().length
+    const backdropsNow = () => scenario.bucket.contributions.filter(item => item.area === 'backdrop')
     clickDom(stripButton('Send the film behind the chat'))
     await sleep(60)
     const saved = scenario.bucket.storage.get('settings')
     assert.equal(saved.filmBehind, true, 'the film was not sent behind the chat')
     assert.equal(saved.videoWindow, false, 'the watch window stayed open over the backdrop')
-    const bodyFrames = bodyFramesNow()
-    assert.equal(bodyFrames.length, before + 1, 'Behind chat mounted no backdrop iframe on the host body')
-    assert.equal(bodyFrames[bodyFrames.length - 1].style.zIndex, '-1', 'the backdrop is not behind the app')
+    assert.equal(backdropsNow().length, 1, 'Behind chat registered no backdrop')
+    const entry = backdropsNow()[0]
+    assert.equal(entry.id, 'behind-chat', 'the contribution is not Aura\'s Behind chat')
+    assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 0,
+      'Behind chat put an iframe on the host body')
     assert.equal(pluginModule.wiringTest.surface().placement, '', 'the film is still drawn inside Hermes as well')
     // And the panel is the way back (the strip is gone: the panel is the remote).
     const panelBack = domFind(scenario.pane, node => node.attributes && node.attributes['aria-label'] === 'Watch the film in the Right panel')
@@ -1053,7 +1055,7 @@ const stripButton = label => {
     clickDom(panelBack)
     await sleep(40)
     assert.equal(scenario.bucket.storage.get('settings').filmBehind, false, 'Panel did not leave Behind chat')
-    assert.equal(bodyFramesNow().length, before, 'the backdrop iframe survived the move back to the panel')
+    assert.equal(backdropsNow().length, 0, 'the backdrop contribution survived the move back to the panel')
   })
   safeDispose('the watch-window behind-chat scenario (J)', scenario.dispose)
 }
@@ -1943,18 +1945,24 @@ async function watchInScenario(filmBehind) {
 
 {
   const behind = await watchInScenario(true)
-  record('15. Behind chat draws the film on the host page, behind the app, at the chosen strength', () => {
-    const frames = bodyChildren.filter(node => node.tagName === 'IFRAME')
-    assert.equal(frames.length, 1, `Behind chat put ${frames.length} iframes on document.body`)
-    const frame = frames[0]
-    assert.match(String(frame.src), /\/player\.html/, 'the backdrop is not the film')
-    assert.equal(frame.style.zIndex, '-1', 'the film was not placed behind the app')
-    assert.equal(frame.style.position, 'fixed')
-    assert.equal(frame.style.pointerEvents, 'none', 'the backdrop takes clicks meant for the chat')
-    assert.equal(frame.style.opacity, '0.25', `the backdrop ignores the chosen strength (${frame.style.opacity})`)
+  record('15. Behind chat draws the film in the host backdrop layer, behind the app, at the chosen strength', () => {
+    const list = behind.bucket.contributions.filter(item => item.area === 'backdrop')
+    assert.equal(list.length, 1, `Behind chat registered ${list.length} backdrops, not one`)
+    const entry = list[0]
+    assert.equal(entry.id, 'behind-chat', 'the contribution is not Aura\'s Behind chat')
+    const frame = entry.render()
+    assert.ok(frame && frame.props, 'the backdrop contribution rendered nothing')
+    assert.match(String(frame.props.src), /\/player\.html/, 'the backdrop is not the film')
+    assert.equal(frame.props.style.width, '100%', 'the backdrop does not fill the layer')
+    assert.equal(frame.props.style.pointerEvents, 'none', 'the backdrop takes clicks meant for the chat')
+    assert.equal(frame.props.style.opacity, '0.25', `the backdrop ignores the chosen strength (${frame.props.style.opacity})`)
+    // The host owns the layer's position and stacking; Aura paints inside it and
+    // never writes the page.
+    assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 0,
+      'Behind chat put an iframe on document.body')
     const glass = headChildren.find(node => node.attributes && node.attributes.id === 'aura-glass')
-    assert.ok(glass, 'the app surfaces were not cleared for the film behind the chat')
-    assert.equal(documentElement.getAttribute('data-aura-backdrop'), '', 'the glass is not scoped to the backdrop')
+    assert.equal(glass, undefined, 'Behind chat mounted a glass stylesheet')
+    assert.equal(documentElement.getAttribute('data-aura-backdrop'), undefined, 'Behind chat wrote the host root')
     assert.equal(pluginModule.wiringTest.surface().placement, '', 'the film is drawn inside Hermes as well')
     assert.equal(pluginModule.wiringTest.frame(), null, 'a second, in-pane film exists')
   })
@@ -1990,13 +1998,13 @@ async function watchInScenario(filmBehind) {
     clickDom(button)
     await sleep(60)
     assert.equal(inPanel.bucket.storage.get('settings').filmBehind, true, 'the film was not sent behind the chat')
-    assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 1,
-      'Behind chat mounted no backdrop on the host body')
+    assert.equal(inPanel.bucket.contributions.filter(item => item.area === 'backdrop').length, 1,
+      'Behind chat registered no backdrop contribution')
     clickDom(domFind(inPanel.pane, node => node.attributes && node.attributes['aria-label'] === 'Watch the film in the Right panel'))
     await sleep(60)
     assert.equal(inPanel.bucket.storage.get('settings').filmBehind, false, 'Panel did not leave Behind chat')
-    assert.equal(bodyChildren.filter(node => node.tagName === 'IFRAME').length, 0,
-      'the backdrop survived the move back to the panel')
+    assert.equal(inPanel.bucket.contributions.filter(item => item.area === 'backdrop').length, 0,
+      'the backdrop contribution survived the move back to the panel')
   })
   safeDispose('the in-panel scenario (I)', inPanel.dispose)
 }

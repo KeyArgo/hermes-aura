@@ -16,15 +16,15 @@
  *     Aura's own iframe, in the Right panel, the /aura page or the floating
  *     watch window. Placement, sizing and cleanup are shared (`$filmSurface`,
  *     filmPlacement, AuraFilm),
- *   - "Behind chat" (opt-in, `filmBehind`): the film in ONE click-through
- *     backdrop iframe at z-index -1 on the host body, plus a single
- *     `#aura-glass` stylesheet that clears the app's own big surfaces so the
- *     film shows through. It exists only while the user has picked that place
- *     for an open film and Aura is on; every glass rule is scoped under one
- *     `data-aura-backdrop` attribute, so removing the attribute with the style
- *     gives the host its own appearance back exactly. The default surface is
- *     still the Right panel: nothing is painted on the host page unless the
- *     user picks Behind chat.
+ *   - "Behind chat" (opt-in, `filmBehind`), on a host that exposes the SDK
+ *     backdrop area: ONE contribution in `BACKDROP_AREA` whose render is an
+ *     iframe on Aura's own server (the visualiser page, or the player page
+ *     when a film is open). The host owns the layer — where it sits, the
+ *     Appearance setting that turns it on, the main-window-only rule, reduced
+ *     motion/transparency — and Aura writes nothing into the host page: no
+ *     iframe on document.body, no stylesheet, no attribute. On a host without
+ *     the area, Behind chat stays the greyed "coming soon" pill. The default
+ *     surface is still the Right panel.
  *   - a status-bar quick menu (`STATUSBAR_AREAS.right`): a small "A" glyph
  *     button (dim when Aura is off, accent when on, with a tiny dot that
  *     breathes only while the visual is actually moving) opens a host
@@ -50,18 +50,15 @@
  *     from liveFrame and the state atoms; its shortcut is bound to Aura's own controls and the timer dies
  *     with dispose.
  *
- * The Aura page, the Right panel and the watch window are the product, and the
- * film can also play behind the chat when the user asks for it. That one
- * surface is the only raw iframe Aura puts on the host body.
- *
  * Host safety: the visualiser and the film are Aura's own iframe, rendered
- * inside a surface Aura owns (Right panel, Aura page, watch window). The one
- * exception is the opt-in "Behind chat" backdrop: a click-through iframe and
- * the scoped `#aura-glass` style, both mounted only while that surface is
- * actually showing, both removed with dispose, an Off, a close or a move to
- * another surface. Aura never reads or sets a host glass attribute. The
- * floating video strip and the Ctrl+Shift+A dev readout are Aura's own nodes
- * and go away with dispose. All other appearance effects go through the SDK
+ * inside a surface Aura owns (Right panel, Aura page, watch window) or inside
+ * a host-provided backdrop layer ("Behind chat"). Aura writes nothing into
+ * the host page: no node on document.body, no stylesheet in the host's head,
+ * no attribute on <html>, no portal. The backdrop contribution is registered
+ * only while that surface is actually showing and disposed with a move to
+ * another place, an Off, a close or the plugin unloading. The floating video
+ * strip and the Ctrl+Shift+A dev readout are Aura's own nodes and go away with
+ * dispose. All other appearance effects go through the SDK
  * (`setAccentOverride`, `requestTheme`). Accent pulse is opt-in and off by
  * default.
  *
@@ -95,6 +92,30 @@ import {
 } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
+// Namespace import for the ONE thing Aura feature-detects: a host with the
+// backdrop layer also exports the area constant, and a named import of a
+// missing export is a link error that would take the whole plugin down on an
+// older host. Everything else is a named import above.
+import * as pluginSdk from '@hermes/plugin-sdk'
+
+/** The host's full-window backdrop area (`BACKDROP_AREA`), or '' on a host
+ *  that has no such layer. "Behind chat" is the only thing that needs it, and
+ *  it stays a greyed "coming soon" pill where it is missing. */
+const BACKDROP_AREA = typeof pluginSdk.BACKDROP_AREA === 'string' ? pluginSdk.BACKDROP_AREA : ''
+/** Aura's backdrop contribution id (scoped by the host to `aura:behind-chat`). */
+const BACKDROP_ID = 'behind-chat'
+/** How much of the app's own surface stays solid over the backdrop. The host
+ *  clamps this to a 70% floor so chat text stays readable: 0.7 is that floor,
+ *  which is also the most film Aura can ever show through the app. */
+const BACKDROP_DIM_APP = 0.7
+/** The layer itself is fully opaque: the film's own strength is applied to the
+ *  iframe inside it, so the adaptive level never needs a re-registration. */
+const BACKDROP_LAYER_OPACITY = 1
+
+/** Does this host render a backdrop layer at all? */
+function backdropAreaAvailable() {
+  return BACKDROP_AREA !== ''
+}
 
 const ID = 'aura'
 const THEME_NAME = 'aura-live'
@@ -187,8 +208,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   moodReactive: true,
   accentPulse: false,
   autoPreset: true,
-  // Old key, ignored on read so a saved true never paints the host page.
-  // The full-window visual returns with the SDK backdrop area (#155903).
+  // Old key, ignored on read so a saved true never paints anything extra.
+  // The full-window visual is the backdrop area's Behind chat (#155903).
   windowVisual: false,
   // Old key, ignored. Frosted glass left with the body backdrop (#155903).
   // Not `frost`: a970229..019a25c saved `frost: true` as a default nobody chose.
@@ -470,17 +491,18 @@ let liveKey = ''
 // frame that last got the radio, so a surface swap can stop the previous
 // document.
 let filmFrame = null
-// "Behind chat" is the ONE raw iframe Aura puts on the host body, and it
-// exists only while that surface is actually showing. `backdropUrl` is the
-// address it was pointed at; `backdropKey` is what it should SHOW (mode,
-// source, gentle motion) independent of the server's port and token, so a
-// server refresh does not restart the film.
+// "Behind chat" is ONE contribution in the host's backdrop layer
+// (`BACKDROP_AREA`) and nothing else: no iframe on the host body, no
+// stylesheet, no attribute on <html>. `backdropRegistration` is its disposer
+// and `backdropEl` the element the host mounted for it (adopted so the
+// postMessage transport keeps working). `backdropUrl` is the address the layer
+// is pointed at; `backdropKey` is what it should SHOW (mode, source, gentle
+// motion) independent of the server's port and token, so a server refresh does
+// not restart the film.
+let backdropRegistration = null
 let backdropEl = null
 let backdropUrl = ''
 let backdropKey = ''
-// The single stylesheet that clears the app's big surfaces while Behind chat
-// shows. Its rules are all scoped under one attribute on <html>.
-let glassStyleEl = null
 // The last reported "ended" flag, so the end of a film marks busy once (an
 // edge), not on every repeat of the ended state report.
 let videoEnded = false
@@ -499,7 +521,7 @@ let knownTheme = ''
 let themeMigrated = false
 const disposers = []
 
-// "Only while active" fade state. showVisible means the backdrop/glass are
+// "Only while active" fade state. showVisible means the in-pane surface is
 // allowed to exist; showOpacity is the local fade factor applied to the
 // iframe. Timers are host-owned and every one is cancelled on reset/dispose.
 let showVisible = false
@@ -527,6 +549,11 @@ const $pulse = atom(0)
 // surface (panel/page/window) and `src` is the player URL. Recomputed from the
 // same gates the old body iframe used, so exactly one film surface exists.
 const $filmSurface = atom({ placement: '', src: '' })
+// What the host's backdrop layer paints while "Behind chat" owns the picture:
+// the address (visualiser page, or the film player when a film is open) and
+// the strength of the iframe inside the layer. One atom, so the contribution's
+// render and the poll agree on one truth and nothing re-registers to fade.
+const $backdropSurface = atom({ src: '', opacity: 0 })
 // The running build, read once from the backend's /version. An atom (not a constant)
 // because a number typed into this file would drift from the manifest and never say so.
 const $build = atom(null)
@@ -742,7 +769,7 @@ function readSettings(ctx) {
     // [listen lane] Audio channel settings, validated on their own.
     Object.assign(out, readAudioSettings(raw))
     // Legacy `glass` / `overlayOpacity` / `windowVisual` keys are ignored.
-    // The full-window visual returns with the SDK backdrop area (#155903).
+    // The full-window visual is the backdrop area's Behind chat (#155903).
   }
   return out
 }
@@ -984,158 +1011,23 @@ function AuraFilm({ placement, src }) {
 }
 
 /* ── Behind chat ───────────────────────────────────────────────────────────
- * The one surface Aura draws on the host page, and only when the user picks
- * it ("Watch in: Behind chat"). One click-through iframe at z-index -1 plus
- * one stylesheet that clears the app's big surfaces so the film shows
- * through. Every glass rule is scoped under the single `data-aura-backdrop`
- * attribute Aura sets on <html> while that backdrop is up, so taking the
- * attribute away (with the style) hands the host its own appearance back
- * exactly: nothing can leak.
+ * The one surface Aura draws behind the app, and only when the user picks it
+ * ("Watch in: Behind chat"). It is a single contribution in the host's
+ * backdrop layer (`BACKDROP_AREA`): the host owns the layer's position, the
+ * Appearance setting that turns it on, the main-window-only rule and the
+ * reduced motion/transparency rules, and it removes the layer when the last
+ * registration goes. Aura paints one iframe inside it and writes NOTHING into
+ * the host page — no node on document.body, no stylesheet in <head>, no
+ * attribute on <html>. On a host without the area the pill stays the greyed
+ * "coming soon" signpost.
  */
 
-// Background-only tokens (never ink: `--ui-base` is the text colour). Big
-// areas get the full glass; floating surfaces stay mostly solid so menus,
-// cards and bubbles remain readable over the film.
-const GLASS_AREAS = [
-  '--background',
-  '--sidebar',
-  '--ui-bg-chrome',
-  '--ui-bg-sidebar',
-  '--ui-bg-editor',
-  '--ui-bg-tertiary',
-  '--ui-chat-surface-background',
-  '--ui-sidebar-surface-background',
-  '--ui-editor-surface-background',
-  '--ui-terminal-surface-background',
-  '--ui-surface-background'
-]
-const GLASS_FLOATING = [
-  '--muted',
-  '--card',
-  '--popover',
-  '--ui-bg-card',
-  '--ui-bg-elevated',
-  '--ui-widget-surface-background',
-  '--ui-chat-bubble-background'
-]
-
-/** The browser-resolved colour of a token (handles var(), color-mix(), oklch()).
- *  Read from the root's own computed custom properties: no probe element is
- *  ever appended to the host document, so nothing has to be cleaned up and no
- *  Hermes markup is touched. */
-function resolvedColor(name) {
-  if (!doc || !doc.documentElement || typeof getComputedStyle !== 'function') return ''
-  try {
-    const value = String(getComputedStyle(doc.documentElement).getPropertyValue(name) || '').trim()
-    return value && value !== 'rgba(0, 0, 0, 0)' && value !== 'transparent' ? value : ''
-  } catch {
-    return ''
-  }
-}
-
-// Panels stack (window bg under chrome under the chat surface), so translucency
-// per layer compounds to near-solid. Instead the big areas go fully clear and
-// visibility is set in ONE place: the film's opacity over the theme's own
-// solid background, painted on <html>. Floating surfaces stay mostly solid.
-function glassCss() {
-  const base = resolvedColor('--background')
-  let declarations = ''
-  for (const name of GLASS_AREAS) declarations += `${name}: transparent !important;`
-  for (const name of GLASS_FLOATING) {
-    const color = resolvedColor(name)
-    // !important: the theme writes these inline on <html>; a plain rule loses.
-    if (color) declarations += `${name}: color-mix(in srgb, ${color} 90%, transparent) !important;`
-  }
-  // Hermes's own `:root[data-hermes-glass] { background-color: transparent
-  // !important }` outranks a plain `html` rule and would let the window's
-  // backing through; this selector outranks it, and the dark fallback keeps
-  // the base solid even when the theme colour is translucent.
-  const solid = base ? `linear-gradient(${base}, ${base}) #0d0c10` : '#0d0c10'
-  return [
-    `html:root[data-aura-backdrop] { background: ${solid} !important; }`,
-    ':root[data-aura-backdrop] body, :root[data-aura-backdrop] #root, :root[data-aura-backdrop] #app { background: transparent !important; }',
-    `:root[data-aura-backdrop] { ${declarations} }`
-  ].join('\n')
-}
-
-/** The host root, when it can carry the backdrop attribute. A host that does
- *  not expose a normal <html> element cannot be scoped, so Aura refuses to
- *  paint glass there (and falls back to the panel). */
-function glassRoot() {
-  const root = doc && doc.documentElement
-  if (!root || typeof root.setAttribute !== 'function' || typeof root.removeAttribute !== 'function') return null
-  return root
-}
-
-/** Mount the glass stylesheet AND the attribute that scopes every rule in it.
- *  Returns false when it could not (missing root / stylesheet support): the
- *  caller must then fall back rather than leave the chat transparent. */
-function applyGlassStyle() {
-  if (!doc || !doc.head || typeof doc.head.appendChild !== 'function') return false
-  const root = glassRoot()
-  if (!root) {
-    removeGlassStyle()
-    return false
-  }
-  // Measure the theme's own colours, not the previous glass.
-  if (glassStyleEl) removeGlassStyle()
-  const style = doc.createElement('style')
-  style.setAttribute('id', 'aura-glass')
-  let css = ''
-  try {
-    css = glassCss()
-  } catch {
-    return false
-  }
-  style.textContent = css
-  try {
-    doc.head.appendChild(style)
-    root.setAttribute('data-aura-backdrop', '')
-  } catch {
-    try {
-      style.remove()
-    } catch {
-      // detached already
-    }
-    try {
-      root.removeAttribute('data-aura-backdrop')
-    } catch {
-      // the root went away mid-mount
-    }
-    return false
-  }
-  glassStyleEl = style
-  return true
-}
-
-function removeGlassStyle() {
-  const root = glassRoot()
-  // Only touch the host root when the attribute is actually there: a host that
-  // never had the glass must see no write at all.
-  if (root && typeof root.hasAttribute === 'function' && root.hasAttribute('data-aura-backdrop')) {
-    try {
-      root.removeAttribute('data-aura-backdrop')
-    } catch {
-      // the root went away with the window
-    }
-  }
-  if (!glassStyleEl) return
-  try {
-    glassStyleEl.remove()
-  } catch {
-    try {
-      if (glassStyleEl.parentNode) glassStyleEl.parentNode.removeChild(glassStyleEl)
-    } catch {
-      // detached already
-    }
-  }
-  glassStyleEl = null
-}
-
-/** Is "Behind chat" the chosen place, whatever the film is doing? */
+/** Is "Behind chat" the chosen place, whatever is on screen? On a host with no
+ *  backdrop layer there is nowhere to paint it, so a stale choice from another
+ *  host reads as "not chosen" and the picture stays in Aura's own surfaces. */
 function behindChatChosen() {
   const settings = $settings.get()
-  return settings.backdropMode === 'video' && settings.filmBehind === true
+  return backdropAreaAvailable() && settings.filmBehind === true
 }
 
 /** Is Aura on, as the user last set it? `$live.enabled` is the server's answer
@@ -1153,40 +1045,41 @@ function auraEnabledNow(settings) {
   return fresh ? live.enabled === true : current.enabled === true
 }
 
-/** Should the film be drawn on the host page right now? A real, open film, the
- *  chosen place, Aura on, a live server, and no other surface owning the
- *  picture. A pane film may play with Aura off; painting the host page may
- *  not ("off is off"). */
+/** Should Aura paint in the host's backdrop layer right now? The chosen place,
+ *  Aura on, a live server, no Aura surface owning the picture, a host that
+ *  actually renders the layer, and — in Video mode — a real, open film. A pane
+ *  visual may play with Aura off; the backdrop may not ("off is off"). */
 function behindChatWanted(settings) {
-  if (!doc || !doc.body) return false
+  if (!backdropAreaAvailable()) return false
   const current = settings || $settings.get()
-  if (current.backdropMode !== 'video' || current.filmBehind !== true) return false
-  if (current.videoClosed || !String(current.videoUrl || '').trim()) return false
+  if (current.filmBehind !== true) return false
+  if (!auraEnabledNow(current) || !liveUrl()) return false
+  if (current.backdropMode === 'video' &&
+    (current.videoClosed || !String(current.videoUrl || '').trim())) return false
   // The OS window, the in-app watch window and the Aura page own the picture
-  // while they are up: one film, one surface, and they are Aura's own.
+  // while they are up: one picture, one surface, and they are Aura's own.
   if (desktopOwned || desktopPending || desktopClosing || watchWindowOpen()) return false
   if (pageVisible()) return false
-  return Boolean(auraEnabledNow(current) && liveUrl())
+  return true
 }
 
-/** What the backdrop page should be showing. A new source, a gentle-motion
- *  flip or a REPLACED server (new port or token) re-points the frame; the same
- *  address never restarts the film. */
+/** What the backdrop page should be showing. A new source, a mode flip, a
+ *  gentle-motion flip or a REPLACED server (new port or token) re-points the
+ *  frame; the same address never restarts the picture. */
 function behindPageKey() {
   const settings = $settings.get()
-  return [settings.videoUrl, settings.reducedMotion ? 'reduced' : 'full', liveUrl()].join('|')
+  return [settings.backdropMode, settings.videoUrl, settings.reducedMotion ? 'reduced' : 'full', liveUrl()].join('|')
 }
 
-/** Never leave a cleared chat over nothing: when the full-window frame or the
- *  host root is unusable, take the glass away first, then hand the film to the
- *  Right panel (Aura's own surface) instead. */
+/** A film that will not load inside the layer must not leave the chat with
+ *  nothing behind it: take the backdrop down and hand the film to the Right
+ *  panel (Aura's own surface) instead. */
 function handleBackdropFailure() {
   if (disposed) return
   const settings = $settings.get()
   const film = settings.backdropMode === 'video' && Boolean(settings.videoUrl) && !settings.videoClosed
-  removeGlassStyle()
   if (!film) {
-    removeBackdrop()
+    syncBackdrop()
     return
   }
   if (settings.filmBehind !== false) writeSettings({ filmBehind: false })
@@ -1194,74 +1087,139 @@ function handleBackdropFailure() {
   syncPanel(true)
 }
 
-/** Mount or re-point the one backdrop iframe, and the glass with it. */
-function mountBackdrop() {
-  const settings = $settings.get()
-  if (!behindChatWanted(settings)) {
-    removeBackdrop()
-    return
+/** Register the one backdrop contribution, once. The host owns the layer:
+ *  where it sits, whether it paints (Settings ▸ Appearance, main window only,
+ *  reduced motion/transparency) and the layer's own removal. A host without
+ *  the area never gets this far (see backdropAreaAvailable). */
+function ensureBackdropContribution() {
+  if (!ctxRef || disposed || backdropRegistration || !backdropAreaAvailable()) return
+  try {
+    const off = ctxRef.register({
+      id: BACKDROP_ID,
+      area: BACKDROP_AREA,
+      data: { opacity: BACKDROP_LAYER_OPACITY, dimApp: BACKDROP_DIM_APP },
+      render: AuraBackdrop
+    })
+    backdropRegistration = typeof off === 'function' ? off : null
+  } catch {
+    // A host that does not know the area stays on the greyed pill.
+    backdropRegistration = null
   }
+}
+
+/** Take the contribution out: the host unmounts the layer's content and, with
+ *  no registration left, the layer itself. State goes first, so a late render
+ *  cannot repoint a frame that is being removed. */
+function unregisterBackdropContribution() {
+  const off = backdropRegistration
+  backdropRegistration = null
+  backdropEl = null
+  backdropUrl = ''
+  backdropKey = ''
+  if ($backdropSurface.get().src) $backdropSurface.set({ src: '', opacity: 0 })
+  if (typeof off === 'function') {
+    try {
+      off()
+    } catch {
+      // one broken disposer must not strand the rest
+    }
+  }
+}
+
+/** What the layer paints: Aura's own surface from the same builders the in-pane
+ *  surfaces use — the film's player page when a film is open in Video mode, the
+ *  visualiser page otherwise. Empty when there is nothing to draw. */
+function backdropSurfaceSrc() {
   const url = liveUrl()
-  const src = url ? backdropSrc(url) : ''
-  if (!src || !doc || !doc.body || typeof doc.body.appendChild !== 'function') {
-    removeBackdrop()
+  if (!url) return ''
+  if ($settings.get().backdropMode === 'video') return filmOpen() ? backdropSrc(url) : ''
+  return visualiserSrc(url)
+}
+
+/** How strong the picture is inside the layer. A film is a wash, so it follows
+ *  the adaptive film strength; the visualiser page carries its own opacity (the
+ *  server's Visual opacity), so its frame stays fully opaque. */
+function backdropStrength() {
+  if ($settings.get().backdropMode === 'video') return clamp01(effectiveVideoOpacity())
+  return 1
+}
+
+/** Keep the layer's one picture in step with the settings. `behindPageKey`
+ *  decides when the address must change (a new source, a gentle-motion flip, a
+ *  replaced server); a bare strength change only moves the opacity, so the
+ *  picture never restarts mid-scene. */
+function syncBackdropSurface() {
+  const current = $backdropSurface.get()
+  const clear = () => { if (current.src || current.opacity) $backdropSurface.set({ src: '', opacity: 0 }) }
+  if (!behindChatWanted()) {
+    clear()
     return
   }
-  if (!backdropEl) {
-    if (typeof doc.createElement !== 'function') return
-    backdropEl = doc.createElement('iframe')
-    backdropEl.setAttribute('aria-hidden', 'true')
-    backdropEl.setAttribute('tabindex', '-1')
-    backdropEl.setAttribute('title', 'Aura backdrop')
+  const src = backdropSurfaceSrc()
+  if (!src) {
+    clear()
+    return
+  }
+  const key = behindPageKey()
+  if (!current.src || key !== backdropKey) {
+    backdropKey = key
+    backdropUrl = src
+    $backdropSurface.set({ src, opacity: backdropStrength() })
+    return
+  }
+  const opacity = backdropStrength()
+  if (current.opacity !== opacity) $backdropSurface.set({ src: current.src, opacity })
+}
+
+/** The layer's content: Aura's own iframe, sized to the box the host gives us.
+ *  The host's layer is already fixed, full-window, click-through, inert and
+ *  aria-hidden, so this only paints — it never positions anything and never
+ *  portals (a portal would escape the layer and paint over the app). The node
+ *  is adopted into `backdropEl` so the transport bridge and the audio channel
+ *  keep talking to the document that is actually showing. */
+function AuraBackdrop() {
+  const surface = useValue($backdropSurface)
+  const own = useRef(null)
+  const attach = node => {
+    if (node) {
+      own.current = node
+      backdropEl = node
+      return
+    }
+    // A late unmount of an OLD frame must not clear the NEW one.
+    if (own.current && backdropEl === own.current) backdropEl = null
+    own.current = null
+  }
+  if (!surface.src) return null
+  return jsx('iframe', {
+    src: surface.src,
+    title: 'Aura backdrop',
+    'aria-hidden': 'true',
+    tabIndex: -1,
     // Sandboxed, click-through decoration: same-origin is required because the
     // page talks to its own 127.0.0.1 origin and the server sends no CORS
     // headers; pointer-events stay off so nothing can be clicked through it.
     // A player needs scripts, its own origin and media playback — never forms
     // or downloads.
-    backdropEl.setAttribute('sandbox', 'allow-scripts allow-same-origin')
-    backdropEl.setAttribute('referrerpolicy', 'no-referrer')
-    backdropEl.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture')
-    backdropEl.setAttribute('allowfullscreen', '')
-    // A film that will not load must not leave a cleared chat: fall back.
-    backdropEl.addEventListener('error', handleBackdropFailure)
-    // A fresh document starts silent: put the radio back if it was on.
-    backdropEl.addEventListener('load', () => resumeAudioIn(backdropEl))
-    const style = backdropEl.style
-    style.position = 'fixed'
-    // inset:0 only. 100vw/100vh are the *visual* viewport: with a classic
-    // Windows scrollbar they are wider/taller than the layout viewport, so the
-    // box overflows and shows a sliver of film beside the app.
-    style.inset = '0'
-    style.border = '0'
-    style.pointerEvents = 'none'
-    style.zIndex = '-1'
-    style.background = 'transparent'
-    // YouTube's player calls window.focus() when it starts. The backdrop is
-    // decoration and must never keep the keyboard.
-    backdropEl.addEventListener('focus', () => {
-      try {
-        backdropEl.blur()
-      } catch {
-        // a detached frame cannot be blurred; the SDK call below still helps
-      }
-      returnFocusToComposer()
-    })
-    backdropUrl = src
-    backdropKey = behindPageKey()
-    backdropEl.src = src
-  } else if (backdropKey !== behindPageKey()) {
-    // Only re-point the frame when what it should SHOW changed. A refresh that
-    // swaps the server port or token leaves the page identity alone, so it
-    // must not restart the film.
-    backdropUrl = src
-    backdropKey = behindPageKey()
-    backdropEl.src = src
-  }
-  backdropEl.style.opacity = String(clamp01(effectiveVideoOpacity()))
-  if (backdropEl.parentNode !== doc.body) doc.body.appendChild(backdropEl)
-  // The glass is what lets the film through: if it cannot be mounted, fall back
-  // to the panel instead of leaving a transparent chat over nothing.
-  if (!glassStyleEl && !applyGlassStyle()) handleBackdropFailure()
+    sandbox: 'allow-scripts allow-same-origin',
+    referrerPolicy: 'no-referrer',
+    allow: 'autoplay; fullscreen; encrypted-media; picture-in-picture',
+    allowFullScreen: true,
+    // A fresh document starts silent: put the radio back when it is ready.
+    onLoad: event => resumeAudioIn((event && event.currentTarget) || backdropEl),
+    // A film that will not load must not leave the chat over nothing.
+    onError: handleBackdropFailure,
+    // Fill the host's box. Never position or size the box itself.
+    style: {
+      width: '100%',
+      height: '100%',
+      border: 0,
+      background: 'transparent',
+      pointerEvents: 'none',
+      opacity: String(clamp01(surface.opacity))
+    },
+    ref: attach
+  })
 }
 
 /** The in-pane frame's own origin (the Aura server). postMessage must
@@ -1408,9 +1366,16 @@ function effectiveVideoOpacity() {
  *  carrier is kept invisible so it can play without covering the video UI.
  *  The one frame that IS a wash is the film behind the chat. */
 function applyVideoOpacity() {
-  // Behind chat follows the adaptive level: 20% working, 30% with music, or the
-  // level the user pinned.
-  if (backdropEl && backdropEl.style) backdropEl.style.opacity = String(clamp01(effectiveVideoOpacity()))
+  // Behind chat follows the adaptive level in Video mode: 20% working, 30% with
+  // music, or the level the user pinned. The visualiser page carries its own
+  // opacity, so its frame stays at full strength. The strength lives on the
+  // iframe inside the host's layer, so a fade never re-registers the
+  // contribution.
+  const layer = $backdropSurface.get()
+  if (layer.src) {
+    const opacity = backdropStrength()
+    if (layer.opacity !== opacity) $backdropSurface.set({ src: layer.src, opacity })
+  }
   const placement = $filmSurface.get().placement
   if (!placement || !filmFrame || !filmFrame.style) return
   if (audioCarrierActive()) {
@@ -1425,48 +1390,30 @@ function applyVideoOpacity() {
 }
 
 /** Keep exactly one surface in sync with the mode, the live status and the
- *  user's "Watch in" choice. The in-pane frame is React's; the film behind the
- *  chat is the one iframe Aura mounts on the host body. */
+ *  user's "Watch in" choice. The in-pane film is React's; the film behind the
+ *  chat lives in the host's backdrop layer, which exists only while one
+ *  contribution is registered. */
 function syncBackdrop() {
   refreshFilmSurface()
-  if (!behindChatWanted()) {
-    if (backdropEl || glassStyleEl) removeBackdrop()
-  } else {
-    mountBackdrop()
-  }
+  const painting = behindChatWanted()
+  // Point the layer's picture first: a registration then always renders the
+  // address it should show, never a blank frame.
+  syncBackdropSurface()
+  if (painting) ensureBackdropContribution()
+  else if (backdropRegistration) unregisterBackdropContribution()
   // The Aura theme's glow and the film behind the chat are both the window's
   // background, and the canvas is opaque: only one of them can paint. Re-sync
   // the glow when that answer changed (a poll must not redraw it every tick).
-  let painting = false
-  try {
-    painting = behindChatWanted()
-  } catch {
-    painting = false
-  }
   if (painting !== glowPausedForBackdrop) {
     glowPausedForBackdrop = painting
     syncAuraGlow(knownTheme || currentThemeName())
   }
 }
 
-/** Take the film off the host page: the iframe first, then the glass that is
- *  scoped by its attribute. Then refresh the in-pane surface. */
+/** Take the backdrop contribution out and refresh the in-pane surface, so the
+ *  film lands where the settings now say it lives. */
 function removeBackdrop() {
-  if (backdropEl) {
-    try {
-      backdropEl.remove()
-    } catch {
-      try {
-        if (backdropEl.parentNode) backdropEl.parentNode.removeChild(backdropEl)
-      } catch {
-        // detached already
-      }
-    }
-  }
-  backdropEl = null
-  backdropUrl = ''
-  backdropKey = ''
-  removeGlassStyle()
+  unregisterBackdropContribution()
   refreshFilmSurface()
 }
 
@@ -1905,6 +1852,9 @@ function auraBusy() {
     // those read /state for levels, so they must keep up while they are open.
     const surface = $filmSurface.get()
     if (surface && (surface.placement || surface.src)) return true
+    // The host's backdrop layer is a surface too: the visualiser behind the
+    // chat reads /state for its levels, exactly like the panel's copy.
+    if ($backdropSurface.get().src) return true
   }
   return Date.now() - lastBusyAt < POLL_BUSY_HOLD_MS
 }
@@ -2161,9 +2111,6 @@ function onThemeName(name) {
     requestTheme(lastUserTheme && lastUserTheme !== THEME_NAME ? lastUserTheme : 'default')
   }
   updateShow()
-  // A new theme paints new surface colours: re-measure the glass if a film is
-  // behind the chat (it is derived from the theme's own tokens).
-  if (!first && glassStyleEl) applyGlassStyle()
   // The glow behind the app belongs to the theme, so it follows the probe.
   syncAuraGlow(name)
 }
@@ -4484,10 +4431,18 @@ const VISUALISER_SEND_COPY = Object.freeze({
   behind: ['Send the visualiser behind the chat', 'Show the visualiser behind the chat']
 })
 
-/** Here "Behind chat" has nowhere to paint, so it is shown but never usable.
- *  It is deliberately NOT in FILM_PLACES: it never becomes data-active and
- *  never calls moveFilmTo. Greyed by Aura's own .ap-pill-soon rule. */
-function behindChatPill(className, style) {
+/** The rows a "Watch in" / "Send to" list offers: FILM_PLACES with Behind chat
+ *  marked `soon` on a host that renders no backdrop layer. One list, so every
+ *  row shows the same order and the same answer about that one place. */
+function filmPlaceRows() {
+  const usable = backdropAreaAvailable()
+  return FILM_PLACES.map(([place, label, aria]) => ({ place, label, aria, soon: place === 'behind' && !usable }))
+}
+
+/** Here "Behind chat" has nowhere to paint, so it is shown but never usable:
+ *  disabled, no click handler, greyed by Aura's own .ap-pill-soon rule. Only
+ *  built on a host without the backdrop area (see filmPlaceRows). */
+function behindChatPill(className, style, aria) {
   const pill = doc.createElement('button')
   pill.type = 'button'
   pill.className = className
@@ -4495,7 +4450,7 @@ function behindChatPill(className, style) {
   pill.disabled = true
   pill.setAttribute('disabled', '')
   pill.setAttribute('aria-disabled', 'true')
-  pill.setAttribute('aria-label', 'Behind chat (coming soon)')
+  pill.setAttribute('aria-label', aria ? `${aria} (coming soon)` : 'Behind chat (coming soon)')
   pill.title = 'Coming soon'
   if (style) Object.assign(pill.style, style)
   return pill
@@ -4547,10 +4502,12 @@ function sendFilmToPanel() {
   syncPanel(true)
 }
 
-/** Send the film behind the chat: the backdrop iframe on the host page, with
- *  the Right panel (when open) as its remote. Painting the host page needs
- *  Aura on, so picking this place while Aura is off turns it on through the
- *  same door the "Aura enabled" switch uses — never a pill that draws nothing. */
+/** Send the film behind the chat: ONE contribution in the host's backdrop
+ *  layer, with the Right panel (when open) as its remote. Painting the backdrop
+ *  needs Aura on, so picking this place while Aura is off turns it on through
+ *  the same door the "Aura enabled" switch uses — never a pill that draws
+ *  nothing. On a host with no backdrop layer the pill is disabled and this is
+ *  never reached. */
 function sendFilmBehindChat() {
   if (!ctxRef || disposed) return
   writeSettings({ filmBehind: true })
@@ -4809,12 +4766,14 @@ function mountVideoBar() {
   }
   for (const [text, aria, title, action] of [
     ['Right panel', 'Send the film to the Right panel', 'Play the film in the Right panel', sendFilmToPanel],
-    ['Desktop', 'Pop the film out to the desktop', 'Play the film in its own window on your desktop', sendFilmToDesktop],
-    // Last, as in Watch in: the one place that paints the host page.
-    ['Behind chat', 'Send the film behind the chat', 'Play the film behind the chat', sendFilmBehindChat]
+    ['Desktop', 'Pop the film out to the desktop', 'Play the film in its own window on your desktop', sendFilmToDesktop]
   ]) {
     sendRow.appendChild(sendPill(text, aria, title, action))
   }
+  // Last, as in Watch in; greyed where the host renders no backdrop layer.
+  sendRow.appendChild(backdropAreaAvailable()
+    ? sendPill('Behind chat', 'Send the film behind the chat', 'Play the film behind the chat', sendFilmBehindChat)
+    : behindChatPill('ap-pill-soon', { ...sendPillStyle, opacity: '0.45', cursor: 'not-allowed' }, 'Send the film behind the chat'))
 
   // The visualiser's Send to row: the same places as its Watch in row, in the
   // same order, so a popped-out visualiser can come back to the Right panel or
@@ -4828,9 +4787,11 @@ function mountVideoBar() {
   visualSendLabel.textContent = 'Send to'
   Object.assign(visualSendLabel.style, { fontSize: '10.5px', color: 'rgba(255,255,255,0.6)', marginRight: '2px' })
   visualSendRow.appendChild(visualSendLabel)
-  for (const [place, label] of FILM_PLACES) {
+  for (const { place, label, soon } of filmPlaceRows()) {
     const [aria, title] = VISUALISER_SEND_COPY[place] || [`Send the visualiser to the ${label}`, label]
-    visualSendRow.appendChild(sendPill(label, aria, title, () => moveFilmTo(place)))
+    visualSendRow.appendChild(soon
+      ? behindChatPill('ap-pill-soon', { ...sendPillStyle, opacity: '0.45', cursor: 'not-allowed' }, aria)
+      : sendPill(label, aria, title, () => moveFilmTo(place)))
   }
 
   // How big the watch window is, while it is on screen. Sizes used to live
@@ -5768,8 +5729,8 @@ function mountPanelInto(hostNode) {
   sourceRow.appendChild(source)
 
   // Watch in: Panel, Window, Desktop or Behind chat (last). The film and the
-  // visualiser share Aura's own surfaces; Behind chat is the one place that
-  // paints the host page, and only while it is chosen.
+  // visualiser share Aura's own surfaces; Behind chat needs the host's backdrop
+  // layer, and stays a greyed signpost where the host has none.
   const watchInRow = doc.createElement('div')
   watchInRow.className = 'ap-field'
   const watchInLabel = doc.createElement('span')
@@ -5778,7 +5739,13 @@ function mountPanelInto(hostNode) {
   const watchInButtons = doc.createElement('div')
   watchInButtons.className = 'ap-pills'
   const watchInPills = []
-  for (const [place, label, aria] of FILM_PLACES) {
+  for (const { place, label, aria, soon } of filmPlaceRows()) {
+    if (soon) {
+      const pill = behindChatPill('ap-pill ap-pill-soon', { opacity: '0.45', cursor: 'not-allowed' }, aria)
+      watchInPills.push([place, pill])
+      watchInButtons.appendChild(pill)
+      continue
+    }
     const pill = doc.createElement('button')
     pill.type = 'button'
     pill.className = 'ap-pill'
@@ -7219,19 +7186,22 @@ function AuraQuickMenu() {
             'Show the Aura panel on the right: the film, its controls and your shelf.'
           ),
           // Same places for the visualiser and the film, so a popped-out visual
-          // can be sent back to the panel from here.
+          // can be sent back to the panel from here. Behind chat is greyed out
+          // on a host that renders no backdrop layer.
           row(
             'Watch in',
             jsxs('div', {
               style: { display: 'flex', alignItems: 'center', gap: 2 },
-              children: FILM_PLACES.map(([place, label, aria]) =>
+              children: filmPlaceRows().map(({ place, label, aria, soon }) =>
                 jsx(Button, {
                   key: place,
                   size: 'micro',
                   variant: currentFilmPlace() === place ? 'default' : 'ghost',
-                  'aria-label': `${aria} (quick menu)`,
+                  disabled: soon,
+                  title: soon ? 'Coming soon' : undefined,
+                  'aria-label': soon ? `${aria} (quick menu, coming soon)` : `${aria} (quick menu)`,
                   style: presetStyle,
-                  onClick: () => moveFilmTo(place),
+                  onClick: soon ? undefined : () => moveFilmTo(place),
                   children: label
                 })
               )
@@ -8799,13 +8769,15 @@ function AuraSettings(props) {
           'The Right panel, the watch window, or a desktop window. The same control the film uses.',
           jsxs('div', {
             style: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' },
-            children: FILM_PLACES.map(([place, label, aria]) =>
+            children: filmPlaceRows().map(({ place, label, aria, soon }) =>
               jsx(Button, {
                 key: place,
                 size: 'sm',
                 variant: currentFilmPlace() === place ? 'default' : 'outline',
-                'aria-label': `${aria} (settings)`,
-                onClick: () => moveFilmTo(place),
+                disabled: soon,
+                title: soon ? 'Coming soon' : undefined,
+                'aria-label': soon ? `${aria} (settings, coming soon)` : `${aria} (settings)`,
+                onClick: soon ? undefined : () => moveFilmTo(place),
                 children: label
               })
             )
@@ -9293,9 +9265,9 @@ export default {
     $themeApplied.set(false)
     $menuOpen.set(false)
     $pulse.set(0)
-    // A previous instance (hot reload) may still own the body iframe and the
-    // glass attribute: take them down before the surface atoms are reset.
-    if (backdropEl || glassStyleEl) removeBackdrop()
+    // A previous instance (hot reload) may still own a backdrop contribution:
+    // take it down before the surface atoms are reset.
+    if (backdropRegistration || backdropEl) removeBackdrop()
     $filmSurface.set({ placement: '', src: '' })
     filmFrame = null
     audioFrame = null

@@ -570,6 +570,7 @@ export const PopoverTrigger = () => null
 export const PopoverContent = () => null
 
 export const PALETTE_AREA = 'palette'
+export const BACKDROP_AREA = 'backdrop'
 export const PANES_AREA = 'panes'
 export const ROUTES_AREA = 'routes'
 export const SIDEBAR_NAV_AREA = 'sidebar.nav'
@@ -754,6 +755,15 @@ globalThis.getComputedStyle = el => ({
 })
 
 const hostIframes = () => bodyChildren.filter(node => node.tagName === 'IFRAME')
+// "Behind chat" lives in the host's backdrop layer: one contribution, whose
+// render is Aura's own frame. Nothing is appended to the host page for it.
+const backdropContribs = scenario => scenario.contributions.filter(item => item.area === 'backdrop')
+const backdropFrame = scenario => {
+  const list = backdropContribs(scenario)
+  if (!list.length) return null
+  const element = list[list.length - 1].render()
+  return element && element.props ? element : null
+}
 // The docked panel's own stylesheet is a product surface, on by default; the
 // "effect" styles this contract guards are the glass and theme injections.
 const panelStyles = () => headChildren.filter(node => node.attributes && node.attributes.id === 'aura-panel-style')
@@ -1388,27 +1398,37 @@ const newestGlassCss = () => {
   })
   const dispose = pluginModule.default.register(behind.ctx)
   await sleep(75)
-  record('D8. Behind chat draws the film on the host page in ONE click-through iframe and nothing in the panel', () => {
-    const frames = hostIframes()
-    assert.equal(frames.length, 1, `Behind chat mounted ${frames.length} body iframes`)
-    const frame = frames[0]
-    assert.match(String(frame.src), /\/player\.html/, 'the backdrop is not the player page')
-    assert.equal(frame.style.zIndex, '-1', 'the backdrop is not behind the app')
-    assert.equal(frame.style.position, 'fixed')
-    assert.equal(frame.style.pointerEvents, 'none', 'the backdrop takes clicks meant for the chat')
-    assert.equal(frame.attributes.sandbox, 'allow-scripts allow-same-origin', 'the backdrop sandbox is wrong')
-    assert.equal(frame.attributes['aria-hidden'], 'true', 'the backdrop is exposed to assistive tech')
-    assert.equal(rootHasBackdrop(), true, 'Behind chat did not scope the glass')
-    assert.equal(glassStyles().length, 1, 'Behind chat did not mount the glass')
+  record('D8. Behind chat registers ONE backdrop in the host layer and leaves the panel empty', () => {
+    const list = backdropContribs(behind)
+    assert.equal(list.length, 1, `Behind chat registered ${list.length} backdrops, not one`)
+    const entry = list[0]
+    assert.equal(entry.id, 'behind-chat')
+    assert.equal(typeof entry.render, 'function', 'the backdrop contribution has no render')
+    for (const key of ['opacity', 'dimApp']) {
+      const value = entry.data && entry.data[key]
+      assert.equal(Number.isFinite(value), true, `backdrop data.${key} is not a finite number`)
+      assert.ok(value >= 0 && value <= 1, `backdrop data.${key} is not clamped: ${value}`)
+    }
+    const frame = backdropFrame(behind)
+    assert.ok(frame, 'the backdrop contribution rendered nothing')
+    assert.match(String(frame.props.src), /\/player\.html/, 'the backdrop is not the player page')
+    assert.equal(frame.props.style.pointerEvents, 'none', 'the backdrop takes clicks meant for the chat')
+    assert.equal(frame.props.sandbox, 'allow-scripts allow-same-origin', 'the backdrop sandbox is wrong')
+    assert.equal(frame.props['aria-hidden'], 'true', 'the backdrop is exposed to assistive tech')
+    // Nothing on the host page, and no glass.
+    assert.equal(hostIframes().length, 0, 'Behind chat mounted a body iframe')
+    assert.equal(rootHasBackdrop(), false, 'Behind chat wrote the host root')
+    assert.equal(glassStyles().length, 0, 'Behind chat mounted a stylesheet')
     // The panel is the remote: no second picture in it.
     const film = filmNodes(renderContribution(behind.contributions.find(c => c.id === 'panel')))
     assert.equal(film.length, 0, 'the panel drew a second picture while the film is behind the chat')
   })
-  record('D9. choosing Panel takes the backdrop and the glass away again', () => {
+  record('D9. choosing Panel takes the backdrop away again', () => {
     menuChoice(behind, 'Watch the film in the Right panel (quick menu)').props.onClick()
-    assert.equal(hostIframes().length, 0, 'the backdrop survived the move to the panel')
-    assert.equal(glassStyles().length, 0, 'the glass survived the move to the panel')
-    assert.equal(rootHasBackdrop(), false, 'the scoping attribute survived the move to the panel')
+    assert.equal(backdropContribs(behind).length, 0, 'the backdrop contribution survived the move to the panel')
+    assert.equal(hostIframes().length, 0, 'a body iframe appeared')
+    assert.equal(glassStyles().length, 0, 'a stylesheet appeared')
+    assert.equal(rootHasBackdrop(), false, 'the scoping attribute appeared')
     const film = filmNodes(renderContribution(behind.contributions.find(c => c.id === 'panel')))
     assert.equal(film.length, 1, 'the film did not come back to the panel')
   })
@@ -1482,7 +1502,7 @@ await recordAsync('review 3a: Panel, Page and Window modes put no iframe on docu
   }
 })
 
-await recordAsync('review 3b: Behind chat is the one place that paints the host page, and Panel takes it back', async () => {
+await recordAsync('review 3b: Behind chat is a backdrop contribution, and Panel takes it back', async () => {
   const behind = makeCtx({
     enabled: true, backdropMode: 'video', panelEnabled: true, filmBehind: true,
     videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
@@ -1491,16 +1511,19 @@ await recordAsync('review 3b: Behind chat is the one place that paints the host 
   try {
     behind.timers.find(t => t.ms === 250).fn()
     await sleep(60)
-    const frames = hostIframes()
-    assert.equal(frames.length, 1, `Behind chat put ${frames.length} iframes on document.body`)
-    assert.match(String(frames[0].src), /\/player\.html/, 'the body iframe is not the film')
+    const list = backdropContribs(behind)
+    assert.equal(list.length, 1, `Behind chat registered ${list.length} backdrops, not one`)
+    const frame = backdropFrame(behind)
+    assert.match(String(frame.props.src), /\/player\.html/, 'the backdrop is not the film')
+    assert.equal(hostIframes().length, 0, 'Behind chat put an iframe on document.body')
     const film = filmNodes(renderContribution(behind.contributions.find(c => c.id === 'panel')))
     assert.equal(film.length, 0, 'the film stayed in the Right panel too (two pictures)')
-    // Panel is one click away, and it takes both the iframe and the glass.
+    // Panel is one click away, and it takes the registration with it.
     menuChoice(behind, 'Watch the film in the Right panel (quick menu)').props.onClick()
     await sleep(30)
-    assert.equal(hostIframes().length, 0, 'the body iframe survived the move to the panel')
-    assert.equal(glassStyles().length, 0, 'the glass survived the move to the panel')
+    assert.equal(backdropContribs(behind).length, 0, 'the backdrop survived the move to the panel')
+    assert.equal(hostIframes().length, 0, 'a body iframe appeared')
+    assert.equal(glassStyles().length, 0, 'a stylesheet appeared')
     const back = filmNodes(renderContribution(behind.contributions.find(c => c.id === 'panel')))
     assert.equal(back.length, 1, 'the film left the Right panel')
     assert.equal(back[0].props.placement, 'panel')
@@ -2973,16 +2996,17 @@ record('settings rows wrap their control instead of squeezing the text, and are 
   for (const group of ['General', 'Window']) assert.ok(text.includes(group), `no ${group} heading in the settings`)
 })
 
-// Regression (pre-pin review 11-15): Aura stays out of the host's markup. The only
-// document-level DOM work left is the disclosed opt-in Behind chat backdrop.
-record('no document-wide DOM lookups, and only the backdrop iframe is appended to body', () => {
+// Regression (pre-pin review 11-15): Aura stays out of the host's markup. Even
+// the opt-in Behind chat surface is a backdrop-area contribution now, not a node
+// on the host page.
+record('no document-wide DOM lookups, and no node appended to the host body', () => {
   const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.doesNotMatch(code, /\b(doc|document)\.querySelector(All)?\(/, 'a document-wide querySelector came back')
   assert.doesNotMatch(code, /data-catalog-actions|main input/, 'Aura reaches into the host catalog markup again')
   const appends = code.match(/\b(doc|document)\.body\.(append|appendChild|prepend|insertBefore)\([^)]*\)/g) || []
-  assert.deepEqual(appends, ['doc.body.appendChild(backdropEl)'],
-    `unexpected body appends: ${appends}`)
+  assert.deepEqual(appends, [], `unexpected body appends: ${appends}`)
   assert.doesNotMatch(code, /createElement\('textarea'\)/, 'a hidden textarea copy came back')
+  assert.doesNotMatch(code, /data-hermes-glass-on/, 'Aura reads the host glass attribute again')
 })
 
 record('REVAMP_ICON is an inline SVG data URL', () => {

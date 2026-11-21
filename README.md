@@ -23,14 +23,14 @@
 
 <h3 align="center">A film beside your work, and an app that breathes with your audio.</h3>
 
-<p align="center"><i>Applies to v1.0.0 · revised 2026-11-19 · <a href="VERIFY.md">what was verified, and how</a></i></p>
+<p align="center"><i>Applies to v1.0.0 · revised 2026-11-20 · <a href="VERIFY.md">what was verified, and how</a></i></p>
 
 Aura turns Hermes Desktop into a room you can live in. Put any film, lecture or playlist in the
 right-hand pane and keep working, or send it **behind the chat** with one click; switch the film off
 and the same audio drives a MilkDrop-compatible visualiser in that pane, on the Aura page, or in the
-watch window. The film behind the chat is a choice you make per film — nothing is painted on the
-app's page until you pick **Behind chat** in *Watch in*. A full-window visual of the Aura visualiser
-itself returns when Hermes ships a backdrop area (#155903). It listens to what the machine is
+watch window. The film behind the chat is a choice you make per film, and on a desktop build with the
+SDK backdrop area it paints inside the layer Hermes provides — nothing is written into the app's page.
+A build without that layer keeps the greyed "Behind chat" pill. It listens to what the machine is
 already playing — system loopback, never the microphone — and nothing leaves the computer: no
 account, no uploads, no recording.
 
@@ -87,13 +87,13 @@ kept per film, keyed by URL, so nothing restarts.
 - **Free placement.** The floating watch window drags anywhere and remembers its spot; 320 / 480 / 640
   / 880 / 1120 wide. Its control strip is two rows — the film's title, scrubber, clock, volume and window
   buttons above a centred transport row — stays inside the viewport, and dims when idle instead of
-  vanishing. Below the transport it carries **Size** and **Send to** (Right panel, Desktop, and the
-  greyed "Behind chat" signpost).
+  vanishing. Below the transport it carries **Size** and **Send to** (Right panel, Desktop, and
+  Behind chat).
 - **The same window for the visualiser.** In Visualizer mode the watch window shows the visualiser with
   the film window's own **Size** presets and the same **Send to** row: **Panel** brings it back to the
   Right panel, **Window** keeps it where it is, **Desktop** opens it in the desktop OS window, and
-  **Behind chat** stays a greyed coming-soon pill. The film's title, scrubber and transport rows are
-  not shown, because the visualiser has nothing to scrub.
+  **Behind chat** sends it behind the chat where the host renders the backdrop layer. The film's
+  title, scrubber and transport rows are not shown, because the visualiser has nothing to scrub.
 - **An Aura page in the sidebar — the whole product in one place.** One row opens a full page: the same
   film in a big 16:9 frame with the transport, volume and source picker, a **Library** of poster cards
   (add, rename, remove, hide starters, clear recents), the playlist how-to, and every setting Aura has
@@ -106,9 +106,8 @@ kept per film, keyed by URL, so nothing restarts.
 - **A film is the picture.** While Backdrop is **Video player**, Style, Intensity, the Aura
   transparency and Gentle motion are greyed out (they only describe the Aura visual). The film plays
   in the Right panel, the Aura page, the watch window, or **behind the chat** — the fourth choice in
-  *Watch in*, last in the list because it is the one that paints the app's page. Pick **Panel** there
-  to bring it back. The full-window visual of the Aura visualiser itself returns when Hermes ships a
-  backdrop area (#155903).
+  *Watch in*, last in the list because it is the one that paints behind the app. Pick **Panel** there
+  to bring it back.
 - **REVamp, next door.** Aura has no music library of its own. [REVamp](https://github.com/KeyArgo/hermes-revamp)
   is a Winamp-style player for Hermes, listed in the Hermes plugin catalog — install it from Capabilities -> Plugins,
   or with `hermes plugins install https://github.com/KeyArgo/hermes-revamp`. It includes Hermes Radio, a curated
@@ -176,8 +175,8 @@ also exposes the same search as `GET /api/plugins/aura/search?q=…&limit=…`.
 <p align="center"><img src="assets/audio-path.svg" alt="Audio path: system loopback, capture thread, /api/stream, Butterchurn, the screen" width="100%"></p>
 
 - A MilkDrop-compatible WebGL visualiser driven by system audio — level, bands, silence gating.
-  It lives in the Right panel, the Aura page, or the watch window. The full-window visual returns
-  when Hermes ships a backdrop area (#155903).
+  It lives in the Right panel, the Aura page, or the watch window, and it can also play behind the
+  chat where the host renders the backdrop layer.
 - An optional accent that follows the audio, and agent moods: thinking, running tools, waiting for
   approval, erroring, streaming, finished — each restores itself, nothing latches.
 
@@ -244,7 +243,8 @@ cannot start, Aura shows an accent-only fallback.
 
 ## Troubleshooting
 
-- **The visual is black?** Open Aura's Right panel or the Aura page and play some audio. The full-window visual returns when Hermes ships a backdrop area (#155903).
+- **The visual is black?** Open Aura's Right panel or the Aura page and play some audio. Behind chat
+  needs the desktop build with the backdrop area, and Settings ▸ Appearance ▸ plugin backdrops on.
 - **Nothing reacts to sound?** Check the Linux monitor source, Windows WASAPI
   loopback, or macOS virtual loopback routing above.
 - **YouTube is black or unavailable?** The uploader may block embedding. Try
@@ -273,6 +273,26 @@ cannot start, Aura shows an accent-only fallback.
 
 ---
 
+## Behind chat on hosts with the backdrop area
+
+Hermes Desktop's plugin SDK exposes one full-window layer behind the app, `BACKDROP_AREA`. Aura
+feature-detects it (a host without it simply does not export the constant) and uses it for the one
+surface that is not Aura's own:
+
+- Picking **Behind chat** in *Watch in*, or in either **Send to** row, registers **one** contribution
+  in that area: `{ id: 'behind-chat', area: BACKDROP_AREA, data: { opacity: 1, dimApp: 0.7 }, render }`.
+  `dimApp` is the host's 70% floor, so chat text stays readable over the picture; the film's own
+  adaptive strength lives on the iframe inside the layer.
+- `render` is Aura's iframe, filled to the box the host gives it: the player page when a film is open,
+  the visualiser page otherwise. The host's layer is already fixed, full-window, click-through and
+  `inert`, so Aura never positions anything and never portals.
+- The host owns the rest: Settings ▸ Appearance ▸ plugin backdrops (off by default), main window only,
+  and reduced motion or reduced transparency unmount the layer.
+- Picking another place, closing the film, turning Aura off or unloading the plugin disposes the
+  contribution, so the host removes the layer.
+- On a desktop build **without** the backdrop area, Behind chat stays the disabled, greyed "coming
+  soon" pill, and a saved Behind chat choice from another build leaves the film in the Right panel.
+
 ## Host safety
 
 The only host DOM Aura touches is opt-in and bounded:
@@ -282,13 +302,11 @@ The only host DOM Aura touches is opt-in and bounded:
   the window, and it has no z-index above the pane. The Aura page and the watch window keep their
   film inside the box Hermes gives them, the same way. No `body` padding.
 - The visualiser and the film share Aura's own iframe in the Right panel, the Aura page, or the
-  watch window. The one exception is the opt-in **Behind chat** film: a single click-through
-  `iframe` at `z-index: -1` on the host body, plus one `#aura-glass` stylesheet that clears the app's
-  big surfaces so the film shows through. Every glass rule is scoped by the `data-aura-backdrop`
-  attribute on `<html>`, both exist only while you have chosen that place for an open film and Aura
-  is on, and picking Panel, closing the film, turning Aura off or disposing the plugin removes them.
-  A full-window visual of the Aura visualiser itself returns when Hermes ships a backdrop area
-  (#155903).
+  watch window. The opt-in **Behind chat** film is a single `BACKDROP_AREA` contribution: Aura paints
+  its iframe inside the layer Hermes provides and writes nothing into the host page — no iframe on
+  `document.body`, no stylesheet in `<head>`, no attribute on `<html>`. The registration exists only
+  while you have chosen that place for an open film and Aura is on, and picking Panel, closing the
+  film, turning Aura off or disposing the plugin disposes it.
 - Host `html`/`body`/root styles are never written. The accent override is the SDK's sanctioned mechanism.
 - Turning Aura off, **Restore my theme** and plugin disposal remove every effect Aura applied and
   restore the theme that was there before.
