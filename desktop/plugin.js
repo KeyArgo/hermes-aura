@@ -1246,18 +1246,27 @@ async function syncPlayerOwnership() {
     // Off is off: a desktop window still open while Aura is off (a slow or failed
     // close) is closed again on every poll, never adopted back.
     const liveNow = $live.get()
-    const auraOn = liveNow.ok ? liveNow.enabled === true : $settings.get().enabled
+    // While Off's own /control is in flight $live still reports the previous
+    // switch, so the saved setting — the user's latest word — decides.
+    const auraOn = controlPushPending > 0
+      ? $settings.get().enabled
+      : (liveNow.ok ? liveNow.enabled === true : $settings.get().enabled)
     if (!auraOn) {
       desktopOwned = false
       desktopPending = false
       lastDesktopPlayer = null
       if (open && !desktopClosing) {
         desktopClosing = true
-        void closeDesktopWindow().finally(() => { desktopClosing = false })
+        const generation = desktopGeneration
+        void closeDesktopWindow().finally(() => {
+          // A close from a torn-down instance must not clear a newer flag.
+          if (generation === desktopGeneration) desktopClosing = false
+        })
       }
       return
     }
-    if (open) {
+    // Off already decided: a close still in flight is never adopted back.
+    if (open && !desktopClosing) {
       if (!desktopOwned) {
         lastDesktopPlayer = { ...$video.get(), url: $settings.get().videoUrl || '' }
         videoCommand('pause')
@@ -1279,7 +1288,11 @@ async function syncPlayerOwnership() {
       const shownPage = snapshot.window && typeof snapshot.window.page === 'string' ? snapshot.window.page : ''
       if (shownPage && shownPage !== expectedPage && !desktopSwitching && !desktopPending) {
         desktopSwitching = true
-        void openDesktopWindow().finally(() => { desktopSwitching = false })
+        const generation = desktopGeneration
+        void openDesktopWindow().finally(() => {
+          // A swap from a torn-down instance must not clear a newer flag.
+          if (generation === desktopGeneration) desktopSwitching = false
+        })
       }
       playerCursor = null
       return
@@ -1363,6 +1376,11 @@ async function setDesktopWindow(on) {
   // A pop-out (or its close) is the user moving the film: keep the fast cadence
   // until the window settles, then desktopOwned holds it.
   markBusy()
+  // A person moving the film takes over from any window operation in flight.
+  // Those cannot tell they were superseded (their generation moved), so their
+  // own guards are dropped here or they would block every later move.
+  desktopSwitching = false
+  desktopClosing = false
   // Any later move away from the desktop bumps this, so a slow open cannot claim
   // the film after the user already picked somewhere else.
   const generation = ++desktopGeneration
@@ -1497,7 +1515,7 @@ async function closeDesktopWindow() {
     const result = await ctxRef.rest('/window/close', { method: 'POST', body: {}, timeoutMs: 15000 })
     return { open: Boolean(result && result.window && result.window.open), closed: Boolean(result && result.closed) }
   } catch {
-    setError('Aura could not close the film window — the local server is not answering.')
+    setError(`Aura could not close the ${desktopWindowName()} — the local server is not answering.`)
     return { open: true, error: 'server_unreachable' }
   }
 }
@@ -1933,11 +1951,18 @@ async function setEnabled(next, fromNewBuild = false) {
     // The desktop film window is Aura too: off closes it, and a pop-out still
     // opening must not claim the film when it lands.
     desktopGeneration += 1
+    // Off abandons any page swap in flight: its guard must not outlive it, or
+    // every later mode change would skip its window.
+    desktopSwitching = false
     if (desktopOwned || desktopPending) {
       desktopOwned = false
       desktopPending = false
       desktopClosing = true
-      void closeDesktopWindow().finally(() => { desktopClosing = false })
+      const generation = desktopGeneration
+      void closeDesktopWindow().finally(() => {
+        // A close from a torn-down instance must not clear a newer flag.
+        if (generation === desktopGeneration) desktopClosing = false
+      })
     }
   }
   controlPushPending += 1
@@ -2014,24 +2039,30 @@ async function setBackdropMode(next) {
   if (!ctxRef || disposed) return
   const backdropMode = BACKDROP_MODES.includes(next) ? next : 'aura'
   if ($settings.get().backdropMode === backdropMode) return
-  writeSettings({ backdropMode })
-  resetShow()
-  removeBackdrop()
-  if ($settings.get().showWhen === 'always') syncBackdrop()
-  else updateShow()
-  await pushControl({ backdrop_mode: backdropMode })
-  // The OS window follows the mode: the server swaps its page (close+reopen).
+  // The open window swaps its page with the mode, so the switch is claimed
+  // before the first await: otherwise the 4 Hz poll still sees the old page
+  // under the new mode and opens a second window while /control is in flight.
+  const switching = desktopOwned
+  const generation = desktopGeneration
+  if (switching) desktopSwitching = true
+  let swapFailed = false
+  try {
+    writeSettings({ backdropMode })
+    resetShow()
+    removeBackdrop()
+    if ($settings.get().showWhen === 'always') syncBackdrop()
+    else updateShow()
+    await pushControl({ backdrop_mode: backdropMode })
+    // The OS window follows the mode: the server swaps its page (close+reopen).
+    if (switching && !disposed) swapFailed = (await openDesktopWindow()).open !== true
+  } finally {
+    // Only this switch releases its own claim: a promise left over from an
+    // instance that has been torn down must not clear the live one's flag.
+    if (switching && generation === desktopGeneration) desktopSwitching = false
+  }
   // If the swap cannot happen (no film for Video mode, no browser), fall back
   // to the in-app surface instead of leaving the wrong picture up.
-  if (desktopOwned && !disposed && !desktopSwitching) {
-    desktopSwitching = true
-    try {
-      const result = await openDesktopWindow()
-      if (!result.open && !disposed) await setDesktopWindow(false)
-    } finally {
-      desktopSwitching = false
-    }
-  }
+  if (swapFailed && !disposed) await setDesktopWindow(false)
 }
 
 /** The video URL the player page should show. Trimmed and length-capped; the
@@ -4951,18 +4982,27 @@ function panelHintState() {
   const auraOn = liveNow.ok ? liveNow.enabled === true : settings.enabled
   const videoMode = settings.backdropMode === 'video'
   const place = currentFilmPlace()
+  // The watch-window line only says where the picture is; a note the pane has
+  // just written (why a Desktop open fell back) is the news worth the space.
+  const watchWindowOnly = !videoMode && place === 'window'
   const baseHint = !auraOn
     ? 'Aura is off. Turn it on from the header.'
-    : !videoMode
-      ? (place === 'window' ? 'In the watch window. Choose Panel under Watch in to bring it back.' : '')
-      : settings.videoClosed
-        ? 'Film closed — press Open video in the A menu'
-        : !settings.videoUrl
-          ? 'No source chosen yet'
-          : (state.blocked
-            ? 'This video (or the first one in the playlist) cannot be embedded. Remove it from the playlist, or paste a link to a different episode.'
-            : '')
-  if (!baseHint && paneNote && Date.now() < paneNoteUntil) return { text: paneNote, note: true }
+    : watchWindowOnly
+      ? 'In the watch window. Choose Panel under Watch in to bring it back.'
+      : !videoMode
+        ? ''
+        : settings.videoClosed
+          ? 'Film closed — press Open video in the A menu'
+          : !settings.videoUrl
+            ? 'No source chosen yet'
+            : (state.blocked
+              ? 'This video (or the first one in the playlist) cannot be embedded. Remove it from the playlist, or paste a link to a different episode.'
+              : '')
+  const noteActive = Boolean(paneNote) && Date.now() < paneNoteUntil
+  // Aura on, the note is the newest word even under the informational line —
+  // in Visualizer mode that line is what used to hide a refused Desktop open.
+  if (noteActive && auraOn && watchWindowOnly) return { text: paneNote, note: true }
+  if (!baseHint && noteActive) return { text: paneNote, note: true }
   return { text: baseHint, note: false }
 }
 
@@ -8224,6 +8264,7 @@ function teardown() {
   // A pop-out still in flight from this instance must not claim the next one.
   desktopPending = false
   desktopClosing = false
+  desktopSwitching = false
   desktopGeneration += 1
   $powerArmed.set(0)
   playerCursor = null

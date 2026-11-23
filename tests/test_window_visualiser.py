@@ -17,6 +17,8 @@ import http.client
 import json
 import subprocess
 import sys
+import threading
+import time
 
 import pytest
 
@@ -32,11 +34,15 @@ class FakeProc:
         self.args = None
         self.terminated = 0
         self.killed = 0
+        # Seconds to stay in the "did it stay up?" wait (a real window start).
+        self.hold = 0.0
 
     def poll(self):
         return 0 if self.exit_immediately else None
 
     def wait(self, timeout=None):
+        if self.hold:
+            time.sleep(self.hold)
         if self.exit_immediately:
             self.returncode = 0
             return 0
@@ -290,8 +296,119 @@ def test_a_pid_that_is_not_ours_is_never_touched(monkeypatch):
 
 
 def test_the_profile_lock_is_not_consulted_on_windows(monkeypatch):
+    # Chromium keeps no SingletonLock on Windows, so the branch must not read
+    # one at all — the read itself is what the guard prevents.
     monkeypatch.setattr(window, "_on_windows", lambda: True)
+
+    def refuse(_path):
+        raise AssertionError("the SingletonLock is read on Windows")
+
+    monkeypatch.setattr(window.os, "readlink", refuse)
     assert window._singleton_pid() == 0
+
+
+# ------------------------------------------- two clicks at once (review bug)
+#
+# ThreadingHTTPServer runs each request in its own thread, so two Desktop
+# clicks arrive together. Both used to see no window and launch on the same
+# profile; the second hand-off exited, freed the profile by killing the window
+# the first had just opened, and launched a third one.
+
+
+def test_two_concurrent_opens_launch_one_window(monkeypatch):
+    launches = []
+    first_is_up = threading.Event()
+    real_thread = threading.Thread  # the window code's Thread is faked below
+    profile = window._profile()
+
+    def fake_popen(args, **kwargs):
+        proc = FakeProc(pid=5000 + len(launches))
+        proc.args = args
+        launches.append(proc)
+        if len(launches) == 1:
+            # A real window holds the profile lock as it starts; stay in the
+            # "did it stay up?" wait long enough for the other request to
+            # reach the same check.
+            profile.mkdir(parents=True, exist_ok=True)
+            (profile / "SingletonLock").symlink_to("aura-host-5000")
+            proc.hold = 0.3
+            first_is_up.set()
+        else:
+            proc.exit_immediately = True  # a hand-off: forwarded, then exited
+        return proc
+
+    monkeypatch.setattr(window.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(window.threading, "Thread", FakeThread)
+    monkeypatch.setattr(window, "find_browser", lambda: "/usr/bin/google-chrome")
+    monkeypatch.setattr(window, "_raise_native", lambda pid: False)
+    signalled = _process_table(monkeypatch, {
+        5000: f"google-chrome\0--user-data-dir={profile}\0",
+    })
+    results = []
+    errors = []
+
+    def click():
+        try:
+            results.append(window.open_window(4567, "tok", "", page="visualizer"))
+        except Exception as exc:  # noqa: BLE001 - reported by the assertion below
+            errors.append(exc)
+
+    first = real_thread(target=click)
+    first.start()
+    assert first_is_up.wait(2), "the first launch never started"
+    second = real_thread(target=click)
+    second.start()
+    first.join(5)
+    second.join(5)
+
+    assert len(launches) == 1, f"two clicks launched {len(launches)} browsers"
+    assert signalled == [], "the second request killed the window the first had opened"
+    assert errors == [], f"a concurrent open failed instead of reporting the window: {errors}"
+    assert sorted(r["already"] for r in results) == [False, True]
+    assert all(r["open"] is True for r in results)
+    assert window.status()["pid"] == 5000
+
+
+class FakeClock:
+    """Monotonic time that sleep() advances, so the wait loops cost nothing."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def test_a_reused_pid_is_never_escalated(monkeypatch):
+    # The window exits on SIGTERM and the pid is reused at once (Windows
+    # terminates on the first signal, so there is not even a grace period):
+    # only our own profile's command line may be escalated on.
+    launches = _launcher(monkeypatch)
+    profile = window._profile()
+    profile.mkdir(parents=True, exist_ok=True)
+    window._write_lease(4711, "")
+    cmdlines = {4711: f"google-chrome\0--user-data-dir={profile}\0"}
+    signalled = []
+    clock = FakeClock()
+
+    def signal_pid(pid, sig):
+        signalled.append((pid, sig))
+        cmdlines[int(pid)] = "notepad.exe"  # the pid is reused as the window dies
+
+    monkeypatch.setattr(window, "_command_line", lambda pid: cmdlines.get(int(pid), ""))
+    monkeypatch.setattr(window, "_alive", lambda pid: int(pid) in cmdlines)
+    monkeypatch.setattr(window.os, "killpg", signal_pid, raising=False)  # absent on Windows
+    monkeypatch.setattr(window.os, "kill", signal_pid)
+    monkeypatch.setattr(window.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(window.time, "sleep", clock.sleep)
+
+    result = window.open_window(4567, "tok", "", page="visualizer")
+    assert result["open"] is True
+    assert len(launches) == 2, "the profile was freed but the launch was not retried"
+    assert signalled == [(4711, window.signal.SIGTERM)], "a reused pid was escalated on"
 
 
 def test_ticket_valid_peeks_without_consuming():

@@ -190,11 +190,12 @@ const plugin = await import(pathToFileURL(pluginCopy).href)
 
 // ------------------------------------------------------------- ctx harness
 
-function makeCtx(settings, windowState, openFailure = '') {
+function makeCtx(settings, windowState, openFailure = '', slow = {}) {
   const contributions = []
   const storage = new Map()
   const requests = []
   const win = windowState || { open: false, page: '' }
+  let opensSeen = 0
   if (settings) storage.set('settings', settings)
   const serverFrame = {
     level: 0, bands: [0, 0, 0, 0, 0, 0, 0, 0], silence: true, mood: 'idle', enabled: true
@@ -229,7 +230,11 @@ function makeCtx(settings, windowState, openFailure = '') {
       }
       if (route === '/state') return { ...serverFrame, bands: [...serverFrame.bands] }
       if (route === '/version') return { version: '1.2.3' }
-      if (route === '/control') return { ok: true }
+      if (route === '/control') {
+        // A slow /control is what the 4 Hz poll actually runs into mid-switch.
+        if (slow.controlDelay) await sleep(slow.controlDelay)
+        return { ok: true }
+      }
       if (route === '/window') return { ok: true, available: true, open: win.open, page: win.page }
       if (route === '/window/open') {
         const body = options.body || {}
@@ -238,11 +243,15 @@ function makeCtx(settings, windowState, openFailure = '') {
           // plugin has to read the server's sentence out of.
           throw new Error(`503: ${JSON.stringify({ ok: false, error: openFailure, window: { open: false, page: '' } })}`)
         }
+        opensSeen += 1
+        // Answers that never come: a swap the host drops on unload.
+        if (slow.hangOpensFrom && opensSeen >= slow.hangOpensFrom) return new Promise(() => {})
         win.open = true
         win.page = body.page === 'visualizer' ? 'visualizer' : 'player'
         return { ok: true, open: true, url: body.url || '' }
       }
       if (route === '/window/close') {
+        if (slow.closeFailure) throw new Error('503: {"ok":false,"error":"the window could not be closed"}')
         win.open = false
         win.page = ''
         return { ok: true, closed: true, window: { open: false } }
@@ -438,14 +447,20 @@ await record('the visualiser watch window closes when the Desktop window takes t
 })
 
 await record('a mode switch with a poll in flight swaps the Desktop window once', async () => {
-  const bucket = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, videoUrl: FILM, videoClosed: false })
+  // /control answers slowly, so the poll really lands mid-switch. An immediate
+  // answer let the old code pass for the wrong reason (the poll finished its
+  // own swap before setBackdropMode ever reached its guard).
+  const bucket = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, videoUrl: FILM, videoClosed: false },
+    null, '', { controlDelay: 30 })
   const dispose = plugin.default.register(bucket.ctx)
   try {
     await sleep(30)
     await plugin.deskvizTest.setDesktopWindow(true)
     assert.equal(opensIn(bucket).length, 1)
     const switching = plugin.deskvizTest.setBackdropMode('video')
-    await Promise.all([plugin.deskvizTest.sync(), plugin.deskvizTest.sync(), switching])
+    await sleep(5)
+    await Promise.all([plugin.deskvizTest.sync(), plugin.deskvizTest.sync()])
+    await switching
     assert.equal(opensIn(bucket).length, 2, 'the poll launched a second window during the mode switch')
     assert.equal(bucket.win.page, 'player')
   } finally {
@@ -453,19 +468,47 @@ await record('a mode switch with a poll in flight swaps the Desktop window once'
   }
 })
 
-await record('Off sends one close, even with a poll in flight', async () => {
+await record('a mode switch left in flight does not stick to the reloaded plugin', async () => {
+  // Hot reload while a swap is still out: the host drops its promise without
+  // settling it, so a guard left true would block every later swap.
+  const first = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, videoUrl: FILM, videoClosed: false },
+    null, '', { hangOpensFrom: 2 })
+  const dispose = plugin.default.register(first.ctx)
+  await sleep(30)
+  await plugin.deskvizTest.setDesktopWindow(true)
+  assert.equal(plugin.deskvizTest.owned(), true)
+  void plugin.deskvizTest.setBackdropMode('video') // its /window/open never answers
+  await sleep(20)
+  dispose()
+  const second = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, videoUrl: FILM, videoClosed: false })
+  const dispose2 = plugin.default.register(second.ctx)
+  try {
+    await sleep(30)
+    await plugin.deskvizTest.setDesktopWindow(true)
+    await plugin.deskvizTest.setBackdropMode('video')
+    assert.equal(opensIn(second).length, 2, 'the stuck switch guard blocked the mode swap')
+    assert.equal(second.win.page, 'player', 'the reloaded plugin left the window on the visualiser page')
+  } finally {
+    dispose2()
+  }
+})
+
+await record('Off sends one close and never re-adopts, even with a poll in flight', async () => {
   const bucket = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, videoUrl: '' })
   const dispose = plugin.default.register(bucket.ctx)
   try {
     await sleep(30)
     await plugin.deskvizTest.setDesktopWindow(true)
-    // The poll reads the window as open, then Off lands before it acts.
+    assert.equal(plugin.deskvizTest.owned(), true)
+    // The server says on: the poll below reads that, and Off lands before it acts.
+    await plugin.deskvizTest.poll()
+    assert.equal(plugin.deskvizTest.live.get().ok, true, 'the poll never reached the server')
     const poll = plugin.deskvizTest.sync()
     const off = plugin.deskvizTest.setEnabled(false)
-    plugin.deskvizTest.live.set({ ...plugin.deskvizTest.live.get(), ok: true, enabled: false })
     await Promise.all([poll, off])
     const closes = bucket.requests.filter(r => r.route === '/window/close')
     assert.equal(closes.length, 1, `Off sent ${closes.length} closes`)
+    assert.equal(plugin.deskvizTest.owned(), false, 'the in-flight poll adopted the window Off was closing')
   } finally {
     dispose()
   }
@@ -480,6 +523,22 @@ await record('a refused Desktop open in Visualizer mode names the visualiser win
     await plugin.deskvizTest.setDesktopWindow(true)
     assert.match(plugin.deskvizTest.live.get().error, /visualiser window/,
       'the Visualizer-mode error talks about a film window')
+    assert.match(plugin.deskvizTest.hint().text, /no Chrome or Chromium found/,
+      'the pane never showed why the Desktop window did not open')
+  } finally {
+    dispose()
+  }
+})
+
+await record('a refused close in Visualizer mode names the visualiser window', async () => {
+  const bucket = makeCtx({ enabled: true, backdropMode: 'aura', panelEnabled: true, videoUrl: '' },
+    null, '', { closeFailure: true })
+  const dispose = plugin.default.register(bucket.ctx)
+  try {
+    await sleep(30)
+    await plugin.default.closeDesktopWindow()
+    assert.match(plugin.deskvizTest.live.get().error, /visualiser window/,
+      'the close error talks about a film window while the visualiser window is up')
   } finally {
     dispose()
   }
