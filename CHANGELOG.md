@@ -21,6 +21,9 @@
   two context events) is removed and the WebGL context is released, exactly like the other failure path.
 - The glow's fragment shader falls back to `mediump` where the context does not offer `highp` in fragment
   shaders, instead of failing to compile and losing the picture.
+- Desktop window and mode-switch races: two clicks at once open one window (one shared operation lock, the
+  lease written with the pid), a reused pid is never signalled for holding the profile, a stalled page swap no
+  longer hides a server refusal or survives a hot reload, and Off cannot re-adopt the window it is closing.
 - Desktop: the visualiser's watch window switches off when the Desktop window takes the picture; a mode
   switch and the ownership poll no longer open two windows; Off sends one close; errors in Visualizer
   mode say "visualiser window"; a relaunch after freeing the profile uses a fresh one-time ticket.

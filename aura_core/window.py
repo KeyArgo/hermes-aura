@@ -46,6 +46,10 @@ LEASE = "desktop-window.json"
 PROFILE_DIR = "desktop-browser"
 
 _lock = threading.RLock()
+# Window operations (check, close, launch, assign) run one at a time. Kept
+# apart from _lock, which guards the tickets and the status read: a browser
+# start takes seconds and must never stall a status request.
+_op_lock = threading.RLock()
 _proc: Optional[subprocess.Popen] = None
 _closing: Optional[subprocess.Popen] = None  # closed by us; no handoff needed
 _tickets: Dict[str, tuple[str, float]] = {}
@@ -340,9 +344,11 @@ def _release_orphan() -> bool:
             except OSError:
                 continue
         deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and _alive(pid):
+        # The pid can be reused the moment the window exits, and _alive alone
+        # cannot tell a dying window from the stranger that took its number.
+        while time.monotonic() < deadline and _alive(pid) and _runs_on_profile(pid):
             time.sleep(0.1)
-        if _alive(pid):
+        if _alive(pid) and _runs_on_profile(pid):
             try:
                 os.killpg(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
             except (OSError, AttributeError):
@@ -350,6 +356,11 @@ def _release_orphan() -> bool:
                     os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
                 except OSError:
                     pass
+            # A killed window still holds the profile for a moment; relaunching
+            # into it at once would only hand off and exit again.
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and _alive(pid):
+                time.sleep(0.1)
         released = True
     if released:
         _clear_lease()
@@ -535,16 +546,16 @@ def open_page(url: str, title: str = "") -> Dict[str, Any]:
     target = str(url or "").strip()
     if not (target.startswith("https://") or target.startswith("http://")):
         raise WindowError("only http(s) pages can be opened")
-    with _lock:
-        if _proc is not None and _proc.poll() is None:
-            already = {"open": True, "already": True, "url": _film_url or target}
-            pid = _proc.pid
-        else:
-            already = None
-    if already:
-        _raise_native(pid)
-        return already
-    with _lock:
+    with _op_lock:
+        with _lock:
+            if _proc is not None and _proc.poll() is None:
+                already = {"open": True, "already": True, "url": _film_url or target}
+                pid = _proc.pid
+            else:
+                already = None
+        if already:
+            _raise_native(pid)
+            return already
         browser = find_browser()
         if not browser:
             raise WindowError(
@@ -572,9 +583,10 @@ def open_page(url: str, title: str = "") -> Dict[str, Any]:
             )
         except OSError as exc:
             raise WindowError(f"could not start the browser: {exc}") from exc
-        _proc = proc
-        _film_url = target
-        _kind = "page"
+        with _lock:
+            _proc = proc
+            _film_url = target
+            _kind = "page"
         # A browser forwarding to an instance already using this profile exits
         # at once; report that instead of pretending a window opened.
         try:
@@ -611,24 +623,27 @@ def open_window(port: int, token: Optional[str], url: str,
     global _proc, _film_url, _kind, _screen
     if page not in ("player", "visualizer"):
         raise ValueError("page must be 'player' or 'visualizer'")
-    with _lock:
-        live = _proc is not None and _proc.poll() is None
-        showing_page = live and _kind == "page"
-        stale_screen = live and _kind == "player" and _screen != page
-    if showing_page or stale_screen:
-        # A playlist page is up (☰), or the mode changed under the window:
-        # the new picture takes the window back (close + reopen cleanly).
-        close_window()
-    with _lock:
-        if _proc is not None and _proc.poll() is None:
-            already = {"open": True, "already": True, "url": _film_url or str(url or "")}
-            pid = _proc.pid
-        else:
-            already = None
-    if already:
-        _raise_native(pid)
-        return already
-    with _lock:
+    # One window operation at a time: two requests arriving together both saw
+    # no window, launched on the same profile, and the second hand-off exited —
+    # freeing the profile by killing the window the first one had just opened.
+    with _op_lock:
+        with _lock:
+            live = _proc is not None and _proc.poll() is None
+            showing_page = live and _kind == "page"
+            stale_screen = live and _kind == "player" and _screen != page
+        if showing_page or stale_screen:
+            # A playlist page is up (☰), or the mode changed under the window:
+            # the new picture takes the window back (close + reopen cleanly).
+            close_window()
+        with _lock:
+            if _proc is not None and _proc.poll() is None:
+                already = {"open": True, "already": True, "url": _film_url or str(url or "")}
+                pid = _proc.pid
+            else:
+                already = None
+        if already:
+            _raise_native(pid)
+            return already
         browser = find_browser()
         if not browser:
             raise WindowError(
@@ -641,29 +656,31 @@ def open_window(port: int, token: Optional[str], url: str,
         except OSError as exc:
             raise WindowError(f"could not create the window profile: {exc}") from exc
 
-    def build_args() -> List[str]:
-        ticket = issue_ticket(token) if token else ""
-        target = (visualizer_url(port, ticket, reduced_motion) if page == "visualizer"
-                  else player_url(port, ticket, url, position, video_id, paused))
-        args: List[str] = [
-            browser, f"--app={target}", f"--user-data-dir={profile}",
-            f"--window-size={WINDOW_SIZE[0]},{WINDOW_SIZE[1]}",
-            "--no-first-run", "--no-default-browser-check",
-            "--autoplay-policy=no-user-gesture-required",
-        ]
-        if sys.platform.startswith("linux"):
-            args.append("--class=Aura")
-        args.extend(_feature_args())
-        args.extend(_gpu_args())
-        return args
+        def build_args() -> List[str]:
+            ticket = issue_ticket(token) if token else ""
+            target = (visualizer_url(port, ticket, reduced_motion) if page == "visualizer"
+                      else player_url(port, ticket, url, position, video_id, paused))
+            args: List[str] = [
+                browser, f"--app={target}", f"--user-data-dir={profile}",
+                f"--window-size={WINDOW_SIZE[0]},{WINDOW_SIZE[1]}",
+                "--no-first-run", "--no-default-browser-check",
+                "--autoplay-policy=no-user-gesture-required",
+            ]
+            if sys.platform.startswith("linux"):
+                args.append("--class=Aura")
+            args.extend(_feature_args())
+            args.extend(_gpu_args())
+            return args
 
-    proc = _launch(build_args, browser)
-    with _lock:
-        _proc = proc
-        _film_url = str(url or "") if page == "player" else ""
-        _kind = "player"
-        _screen = page
-    _write_lease(proc.pid, str(url or "") if page == "player" else "")
+        proc = _launch(build_args, browser)
+        with _lock:
+            _proc = proc
+            _film_url = str(url or "") if page == "player" else ""
+            _kind = "player"
+            _screen = page
+            # The lease is written with the pid it names: a concurrent close
+            # must never find a window on record without its lease.
+            _write_lease(proc.pid, _film_url)
     threading.Thread(target=_watch, args=(proc,), name="aura-window", daemon=True).start()
     threading.Thread(target=_raise_when_shown, args=(proc,), name="aura-window-raise", daemon=True).start()
     return {"open": True, "already": False, "url": str(url or ""),
@@ -672,24 +689,27 @@ def open_window(port: int, token: Optional[str], url: str,
 
 def close_window() -> bool:
     """Close the window we opened. False when there was none."""
-    global _closing
-    with _lock:
-        proc = _proc
-        if proc is None or proc.poll() is not None:
-            return False
-        _closing = proc
-    try:
-        proc.terminate()  # it may have exited on its own just now
-        proc.wait(5)
-    except subprocess.TimeoutExpired:
+    # Same one-at-a-time rule as opening: a close landing mid-launch used to
+    # see no window and report False while the launch went on to open one.
+    with _op_lock:
+        global _closing
+        with _lock:
+            proc = _proc
+            if proc is None or proc.poll() is not None:
+                return False
+            _closing = proc
         try:
-            proc.kill()
+            proc.terminate()  # it may have exited on its own just now
+            proc.wait(5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
         except OSError:
             pass
-    except OSError:
-        pass
-    _clear_lease()
-    return True
+        _clear_lease()
+        return True
 
 
 def status() -> Dict[str, Any]:
