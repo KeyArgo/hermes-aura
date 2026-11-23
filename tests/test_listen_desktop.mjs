@@ -472,7 +472,7 @@ await record('REVAMP_PITCH names the pitch and revampCard wires both buttons', (
   assert.equal(open, undefined, 'Open REVamp leads to a dead page when REVamp is not installed')
   assert.ok(get, 'revampCard() is missing Get REVamp')
   get.__handlers.click[0]()
-  assert.deepEqual(sdkStub.calls.external.slice(-1), ['https://hermes-agent.nousresearch.com/marketplace'])
+  assert.deepEqual(sdkStub.calls.external.slice(-1), ['https://hermes-agent.nousresearch.com/marketplace/revamp'])
 })
 
 await record('the video backdrop carries mute=1 when the film is muted', () => {

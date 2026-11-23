@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The REVamp card points at REVamp itself: Marketplace opens its own page (with Install in Hermes), the
+  terminal line is the catalog install `hermes plugins install revamp`, and Find in Plugins says where to
+  install it when it is not installed yet.
 - The greyed "Behind chat — coming soon" pill is gone from Watch in and both Send to rows: the backdrop is
   removed outright, with nothing in the UI pointing at it.
 - Desktop window and mode-switch races: two clicks at once open one window (one shared operation lock, the

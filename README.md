@@ -104,7 +104,7 @@ kept per film, keyed by URL, so nothing restarts.
   returns when Hermes ships a backdrop area (#155903).
 - **REVamp, next door.** Aura has no music library of its own. [REVamp](https://github.com/KeyArgo/hermes-revamp)
   is a Winamp-style player for Hermes, listed in the Hermes plugin catalog — install it from Capabilities -> Plugins,
-  or with `hermes plugins install https://github.com/KeyArgo/hermes-revamp`. It includes Hermes Radio, a curated
+  or with `hermes plugins install revamp`. It includes Hermes Radio, a curated
   station section, and Aura's visuals react to whatever it plays.
 
 ## Adding a YouTube playlist (plain instructions)
@@ -197,7 +197,7 @@ streams play on their own channel, beside the video and independent of it.
 **Aura is a media player, not a Winamp.** If you want a Winamp-style player with your local
 library, audiobooks, skins and a 90s attitude, [REVamp](https://github.com/KeyArgo/hermes-revamp) is in the Hermes
 plugin catalog — install it from Capabilities -> Plugins or with
-`hermes plugins install https://github.com/KeyArgo/hermes-revamp`. It includes Hermes Radio, and Aura's visuals
+`hermes plugins install revamp`. It includes Hermes Radio, and Aura's visuals
 react to whatever it plays.
 
 ## The plugin surface

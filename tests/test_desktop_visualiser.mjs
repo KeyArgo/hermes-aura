@@ -569,8 +569,10 @@ await record('the REVamp card copies a command Hermes actually has', () => {
   const source = fs.readFileSync(path.join(ROOT, 'desktop', 'plugin.js'), 'utf8')
   const install = source.match(/const REVAMP_INSTALL = '([^']+)'/)
   assert.ok(install, 'REVAMP_INSTALL is gone')
-  assert.match(install[1], /^hermes plugins install \S+$/,
-    '"hermes plugin" is not a Hermes command; the copied line fails when pasted')
+  assert.equal(install[1], 'hermes plugins install revamp',
+    'the copied line must be the catalog install (plural "plugins", the catalog name, not the repo URL)')
+  assert.match(source, /const REVAMP_URL = 'https:\/\/hermes-agent\.nousresearch\.com\/marketplace\/revamp'/,
+    'the Marketplace link opens the catalog front page, not REVamp\'s own page')
 })
 
 // ------------------------------------------------------------------ report

@@ -2871,7 +2871,7 @@ record('the page renders the player, the setup and the REVamp card', () => {
   const link = pageAria(tree, 'REVamp marketplace page')
   assert.ok(link, 'the REVamp marketplace link is missing')
   assert.equal(link.type, 'a', 'the marketplace page must be a link')
-  assert.equal(link.props.href, 'https://hermes-agent.nousresearch.com/marketplace')
+  assert.equal(link.props.href, 'https://hermes-agent.nousresearch.com/marketplace/revamp')
   // The settings page carries the one-line version too.
   const settingsTree = renderDeep(renderContribution(p.contributions.find(c => c.area === 'settings.plugins')))
   assert.match(texts(settingsTree), /Winamp-style player for Hermes/, 'AuraSettings has no REVamp line')
@@ -2894,10 +2894,10 @@ record('the REVamp card names the catalog and Hermes Radio, and finds REVamp in 
 })
 
 record('REVAMP_URL is the marketplace root', () => {
-  assert.match(source, /const REVAMP_URL = 'https:\/\/hermes-agent\.nousresearch\.com\/marketplace'/)
+  assert.match(source, /const REVAMP_URL = 'https:\/\/hermes-agent\.nousresearch\.com\/marketplace\/revamp'/)
   const link = pageAria(pageTree(), 'REVamp marketplace page')
   assert.ok(link, 'the REVamp marketplace link is missing')
-  assert.equal(link.props.href, 'https://hermes-agent.nousresearch.com/marketplace')
+  assert.equal(link.props.href, 'https://hermes-agent.nousresearch.com/marketplace/revamp')
 })
 
 record('Find in Plugins opens Plugins via findRevampInPlugins', () => {
