@@ -84,12 +84,10 @@ kept per film, keyed by URL, so nothing restarts.
 - **Free placement.** The floating watch window drags anywhere and remembers its spot; 320 / 480 / 640
   / 880 / 1120 wide. Its control strip is two rows — the film's title, scrubber, clock, volume and window
   buttons above a centred transport row — stays inside the viewport, and dims when idle instead of
-  vanishing. Below the transport it carries **Size** and **Send to** (Right panel, Desktop, and the
-  greyed "Behind chat" signpost).
+  vanishing. Below the transport it carries **Size** and **Send to** (Right panel, Desktop).
 - **The same window for the visualiser.** In Visualizer mode the watch window shows the visualiser with
   the film window's own **Size** presets and the same **Send to** row: **Panel** brings it back to the
-  Right panel, **Window** keeps it where it is, **Desktop** opens it in the desktop OS window, and
-  **Behind chat** stays a greyed coming-soon pill. The film's title, scrubber and transport rows are
+  Right panel, **Window** keeps it where it is, and **Desktop** opens it in the desktop OS window. The film's title, scrubber and transport rows are
   not shown, because the visualiser has nothing to scrub.
 - **An Aura page in the sidebar — the whole product in one place.** One row opens a full page: the same
   film in a big 16:9 frame with the transport, volume and source picker, a **Library** of poster cards

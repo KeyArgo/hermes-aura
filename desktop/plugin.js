@@ -3531,24 +3531,6 @@ const VISUALISER_SEND_COPY = Object.freeze({
   desktop: ['Pop the visualiser out to the desktop', 'Show the visualiser in its own window on your desktop']
 })
 
-/** A future place, shown but never usable. It is deliberately NOT in
- *  FILM_PLACES: it never becomes data-active and never calls moveFilmTo, so
- *  currentFilmPlace()/moveFilmTo() stay exactly as they were. Greyed by
- *  Aura's own .ap-pill-soon rule. */
-function behindChatPill(className, style) {
-  const pill = doc.createElement('button')
-  pill.type = 'button'
-  pill.className = className
-  pill.textContent = 'Behind chat'
-  pill.disabled = true
-  pill.setAttribute('disabled', '')
-  pill.setAttribute('aria-disabled', 'true')
-  pill.setAttribute('aria-label', 'Behind chat (coming soon)')
-  pill.title = 'Coming soon'
-  if (style) Object.assign(pill.style, style)
-  return pill
-}
-
 /** Where the film is playing right now. */
 function currentFilmPlace() {
   if (desktopOwned || desktopPending) return 'desktop'
@@ -3843,8 +3825,6 @@ function mountVideoBar() {
   ]) {
     sendRow.appendChild(sendPill(text, aria, title, action))
   }
-  // The coming-soon pill, last in the row. No action, and it never gets one.
-  sendRow.appendChild(behindChatPill('ap-pill-soon', { ...sendPillStyle, opacity: '0.45', cursor: 'not-allowed' }))
 
   // The visualiser's Send to row: the same places as its Watch in row, in the
   // same order, so a popped-out visualiser can come back to the Right panel or
@@ -3862,7 +3842,6 @@ function mountVideoBar() {
     const [aria, title] = VISUALISER_SEND_COPY[place] || [`Send the visualiser to the ${label}`, label]
     visualSendRow.appendChild(sendPill(label, aria, title, () => moveFilmTo(place)))
   }
-  visualSendRow.appendChild(behindChatPill('ap-pill-soon', { ...sendPillStyle, opacity: '0.45', cursor: 'not-allowed' }))
 
   // How big the watch window is, while it is on screen. Sizes used to live
   // only in the status menu, so the window could not be resized from itself.
@@ -4249,12 +4228,6 @@ function panelCss() {
     .ap-pill[data-active="true"] {
       border-color: rgba(255,190,120,0.55); color: #ffd9a8; background: rgba(255,190,120,0.14);
     }
-    /* A future place: shown so the roadmap is visible, greyed so nobody tries
-       it. It never gets data-active, so it can never look selected. */
-    .ap-pill-soon {
-      opacity: 0.45; cursor: not-allowed;
-    }
-
     /* shelf --------------------------------------------------------------- */
     /* The body under the picture scrolls as one: transport, film settings and
        the shelf. It had no rule at all, so it never limited its height and
@@ -4822,8 +4795,6 @@ function mountPanelInto(hostNode) {
     watchInPills.push([place, pill])
     watchInButtons.appendChild(pill)
   }
-  // The coming-soon pill, last. It is not one of the real places.
-  watchInButtons.appendChild(behindChatPill('ap-pill ap-pill-soon'))
   watchInRow.appendChild(watchInLabel)
   watchInRow.appendChild(watchInButtons)
 

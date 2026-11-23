@@ -1,22 +1,14 @@
 /**
- * "Behind chat" as a coming-soon signpost, with no behaviour.
+ * No "Behind chat" anywhere on the pinned build.
  *
- * The owner asked to see the next place the film could go without it existing
- * yet. This file proves the whole of that promise:
+ * Review 2 asked for the backdrop to be removed, not just off by default. The
+ * drawing went first; the greyed "Behind chat — coming soon" signpost is gone
+ * too, so nothing in the UI points at a place that does not exist:
  *
- *   1. the Right panel's Watch in row offers four pills, in reading order:
- *      Panel, Window, Desktop, Behind chat,
- *   2. the Behind chat pill is disabled (attribute + aria-disabled), greyed by
- *      Aura's own .ap-pill-soon rule, titled "Coming soon" and labelled
- *      "Behind chat (coming soon)",
- *   3. it is never marked active, has no click handler, and clicking it moves
- *      the film nowhere and writes no settings (it is not in FILM_PLACES, so
- *      currentFilmPlace()/moveFilmTo() cannot see it),
- *   4. the watch window's "Send to" row carries the same disabled pill, last, after
- *      Right panel and Desktop, also inert,
- *   5. nothing about it touches the host page: plugin.js contains no
- *      'data-aura-backdrop' and no 'data-hermes-glass-on', and no filmBehind
- *      setting was added.
+ *   1. the Right panel's Watch in row offers exactly Panel, Window, Desktop,
+ *   2. the watch window's Send to row offers exactly Right panel, Desktop,
+ *   3. no control anywhere is labelled Behind chat, and the greyed rule is gone,
+ *   4. plugin.js still carries no backdrop hook and FILM_PLACES holds three.
  *
  * The harness is the same fake host tests/test_desktop_plugin.mjs and
  * tests/test_fresh_install.mjs use: a temp copy of the plugin has its three
@@ -24,7 +16,7 @@
  * document/getComputedStyle, makeCtx provides the host ctx, and the docked
  * panel is mounted through its real ref exactly as the host lays it out.
  *
- * Run: node tests/test_behind_chat_soon.mjs
+ * Run: node tests/test_no_behind_chat.mjs
  */
 
 import assert from 'node:assert/strict'
@@ -513,7 +505,7 @@ const videoBar = () => [...bodyChildren, ...floatingNodes()].find(node => node.a
 
 // -------------------------------------------------------------- static rules
 
-record('plugin.js carries no backdrop hook for Behind chat', () => {
+record('4. plugin.js carries no backdrop hook', () => {
   assert.ok(!source.includes('data-aura-backdrop'), 'plugin.js mentions data-aura-backdrop')
   assert.ok(!source.includes('data-hermes-glass-on'), 'plugin.js mentions data-hermes-glass-on')
 })
@@ -525,7 +517,7 @@ record('Behind chat is not a real place: FILM_PLACES still holds only the three'
 })
 
 // ===================================================================
-// The Right panel's Watch in row: four pills, the new one inert.
+// The Right panel's Watch in row: the three real places only.
 // ===================================================================
 
 {
@@ -541,64 +533,24 @@ record('Behind chat is not a real place: FILM_PLACES still holds only the three'
   const pillsRow = domFind(pane, node => node.className === 'ap-pills')
   assert.ok(pillsRow, 'the panel has no Watch in pills row')
   const pills = pillsRow.children.slice()
-  const soon = domByAria(pane, 'Behind chat (coming soon)')
-
-  record('1. Watch in offers four pills: Panel, Window, Desktop, Behind chat', () => {
-    assert.equal(pills.length, 4, `Watch in has ${pills.length} pills: ${pills.map(pill => pill.textContent).join(', ')}`)
-    assert.deepEqual(pills.map(pill => pill.textContent), ['Panel', 'Window', 'Desktop', 'Behind chat'],
-      'the Behind chat pill is not last')
+  record('1. Watch in offers exactly Panel, Window, Desktop', () => {
+    assert.deepEqual(pills.map(pill => pill.textContent), ['Panel', 'Window', 'Desktop'],
+      `Watch in has: ${pills.map(pill => pill.textContent).join(', ')}`)
   })
 
-  record('2. the Behind chat pill is disabled, greyed by Aura\'s own rule, and labelled as coming soon', () => {
-    assert.ok(soon, 'no Behind chat pill')
-    assert.equal(soon.attributes['aria-label'], 'Behind chat (coming soon)')
-    assert.equal(soon.title, 'Coming soon', `tooltip is "${soon.title}"`)
-    assert.equal(soon.disabled, true, 'the pill is not disabled')
-    assert.equal(Object.prototype.hasOwnProperty.call(soon.attributes, 'disabled'), true,
-      'the disabled attribute is missing')
-    assert.equal(soon.attributes['aria-disabled'], 'true', 'aria-disabled is not set')
-    assert.match(String(soon.className), /\bap-pill-soon\b/, 'the pill does not carry the greyed class')
+  record('3. no Behind chat control and no greyed rule in the panel', () => {
+    assert.equal(domFind(pane, node => node.textContent === 'Behind chat'), null, 'the panel still shows Behind chat')
+    assert.equal(domByAria(pane, 'Behind chat (coming soon)'), null, 'the coming-soon pill is still there')
     const style = domFind(pane, node => node.tagName === 'STYLE' && node.attributes && node.attributes.id === 'aura-panel-style')
     assert.ok(style, 'the panel stylesheet is missing')
-    const css = String(style.textContent || '')
-    const rule = /\.ap-pill-soon\s*\{([^}]*)\}/.exec(css)
-    assert.ok(rule, 'no .ap-pill-soon rule in Aura\'s stylesheet')
-    assert.match(rule[1], /opacity:\s*0\.45/, 'the pill is not greyed in the stylesheet')
-    assert.match(rule[1], /cursor:\s*not-allowed/, 'the pill does not show the not-allowed cursor')
-  })
-
-  record('3. the Behind chat pill is never marked active', () => {
-    assert.notEqual(soon.attributes['data-active'], 'true', 'Behind chat is marked as the current place')
-    assert.equal(domByAria(pane, 'Watch the film in the Right panel').attributes['data-active'], 'true',
-      'the film is not marked in the Right panel')
-  })
-
-  await recordAsync('4. clicking it moves nothing and writes no settings', async () => {
-    assert.equal(clickHandlers(soon).length, 0, 'the disabled pill has a click handler')
-    const settingsBefore = JSON.stringify(bucket.storage.get('settings'))
-    const controlsBefore = bucket.controls.length
-    const storageBefore = new Map(bucket.storage)
-    // Even if something did dispatch a click, the disabled pill must stay put.
-    for (const handler of clickHandlers(soon)) handler({ preventDefault() {} })
-    await sleep(60)
-    await tickPoll(bucket)
-    assert.equal(JSON.stringify(bucket.storage.get('settings')), settingsBefore, 'the film\'s settings changed')
-    assert.equal(bucket.controls.length, controlsBefore, 'clicking Behind chat sent a /control command')
-    assert.deepEqual([...bucket.storage.entries()], [...storageBefore.entries()], 'storage was written')
-    assert.equal(bucket.storage.get('settings').filmBehind, false, 'Behind chat wrote filmBehind')
-    assert.equal(bucket.storage.get('settings').videoWindow, false, 'the film moved to the watch window')
-    assert.equal(domByAria(pane, 'Watch the film in the Right panel').attributes['data-active'], 'true',
-      'the film left the Right panel')
-    assert.equal(domByAria(pane, 'Watch the film in the watch window').attributes['data-active'], 'false',
-      'the watch window is marked as the current place')
+    assert.ok(!/\.ap-pill-soon/.test(String(style.textContent || '')), 'the greyed pill rule is still in the stylesheet')
   })
 
   dispose()
 }
 
 // ===================================================================
-// The watch window's "Send to" row: the same disabled pill, after the two
-// real places, and equally inert.
+// The watch window's "Send to" row: the two real places only.
 // ===================================================================
 
 {
@@ -619,36 +571,14 @@ record('Behind chat is not a real place: FILM_PLACES still holds only the three'
   assert.ok(right, 'the strip has no Right panel send')
   const sendRow = right.parentNode
   const sendChildren = sendRow.children.slice()
-  const soon = domByAria(bar, 'Behind chat (coming soon)')
-
-  record('5. the Send to row ends with the disabled Behind chat pill', () => {
-    assert.ok(soon, 'the strip has no Behind chat pill')
-    assert.equal(soon.title, 'Coming soon')
-    assert.equal(soon.disabled, true, 'the strip pill is not disabled')
-    assert.equal(soon.attributes['aria-disabled'], 'true')
-    assert.equal(soon.attributes['disabled'], '')
-    assert.match(String(soon.className), /\bap-pill-soon\b/, 'the strip pill does not carry the greyed class')
+  record('2. the Send to row offers exactly Right panel, Desktop', () => {
     const labels = sendChildren.map(node => (node.attributes && node.attributes['aria-label']) || node.textContent)
     assert.deepEqual(labels, [
       'Send to',
       'Send the film to the Right panel',
-      'Pop the film out to the desktop',
-      'Behind chat (coming soon)'
-    ], 'the strip order is not Right panel, Desktop, Behind chat')
-    assert.notEqual(soon.attributes['data-active'], 'true', 'the strip pill is marked active')
-  })
-
-  await recordAsync('6. clicking the strip pill sends the film nowhere and writes no settings', async () => {
-    assert.equal(clickHandlers(soon).length, 0, 'the strip pill has a click handler')
-    const settingsBefore = JSON.stringify(bucket.storage.get('settings'))
-    const controlsBefore = bucket.controls.length
-    for (const handler of clickHandlers(soon)) handler({ preventDefault() {} })
-    await sleep(60)
-    await tickPoll(bucket)
-    assert.equal(JSON.stringify(bucket.storage.get('settings')), settingsBefore, 'the strip pill changed settings')
-    assert.equal(bucket.controls.length, controlsBefore, 'clicking the strip pill sent a /control command')
-    assert.equal(bucket.storage.get('settings').filmBehind, false, 'the film was sent behind the chat')
-    assert.equal(bucket.storage.get('settings').videoWindow, true, 'the watch window closed')
+      'Pop the film out to the desktop'
+    ], 'the strip still carries more than Right panel and Desktop')
+    assert.equal(domByAria(bar, 'Behind chat (coming soon)'), null, 'the strip still has the coming-soon pill')
   })
 
   dispose()

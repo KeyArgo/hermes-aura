@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The greyed "Behind chat — coming soon" pill is gone from Watch in and both Send to rows: the backdrop is
+  removed outright, with nothing in the UI pointing at it.
 - Desktop window and mode-switch races: two clicks at once open one window (one shared operation lock, the
   lease written with the pid), a reused pid is never signalled for holding the profile, a stalled page swap no
   longer hides a server refusal or survives a hot reload, and Off cannot re-adopt the window it is closing.

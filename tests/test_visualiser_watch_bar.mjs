@@ -2,13 +2,13 @@
  * The visualiser's watch window (owner bug): in Visualizer mode Aura's own
  * floating pane carried only the visualiser, with none of the controls the
  * film's watch window has. It must offer the same Size presets and the same
- * "Send to" row — Panel, Window, Desktop, Behind chat — with Panel returning
+ * "Send to" row — Panel, Window, Desktop — with Panel returning
  * the visualiser to the Right panel, Desktop opening the desktop OS window on
- * the visualiser page, and Behind chat staying a greyed, inert signpost.
+ * the visualiser page.
  * Video mode must be byte-for-byte what it was: film rows, Right panel and
  * Desktop sends, five sizes.
  *
- * The harness is the one tests/test_behind_chat_soon.mjs uses: a temp copy of
+ * The harness is the one tests/test_no_behind_chat.mjs uses: a temp copy of
  * the plugin has its three import specifiers rewritten to local stub modules,
  * a fake DOM stands in for document/getComputedStyle, makeCtx provides the
  * host ctx, and floating panes are mounted through their real refs.
@@ -566,13 +566,8 @@ const allNodes = root => {
       'Send to',
       'Send the visualiser to the Right panel',
       'Keep the visualiser in the watch window',
-      'Pop the visualiser out to the desktop',
-      'Behind chat (coming soon)'
-    ], 'the Send to row is not Panel, Window, Desktop, Behind chat')
-    const soon = visualRow.children[visualRow.children.length - 1]
-    assert.equal(soon.disabled, true, 'the Behind chat pill is not disabled')
-    assert.equal(soon.attributes['aria-disabled'], 'true')
-    assert.match(String(soon.className), /\bap-pill-soon\b/, 'the pill is not greyed')
+      'Pop the visualiser out to the desktop'
+    ], 'the Send to row is not Panel, Window, Desktop')
     assert.equal(visualRow.children[1].textContent, 'Panel')
     assert.equal(visualRow.children[2].textContent, 'Window')
     assert.equal(visualRow.children[3].textContent, 'Desktop')
@@ -696,8 +691,7 @@ const allNodes = root => {
     assert.deepEqual(labels, [
       'Send to',
       'Send the film to the Right panel',
-      'Pop the film out to the desktop',
-      'Behind chat (coming soon)'
+      'Pop the film out to the desktop'
     ], 'the film Send to row changed')
     // The visualiser row did not exist before this change; if it is present it
     // must stay hidden on the film.
