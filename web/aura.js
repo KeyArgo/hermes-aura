@@ -314,6 +314,16 @@
 
   const SCRIM_BASE = { a: 82, b: 38, c: 62 };
   const SCRIM_MIN_OPACITY = 0.85;
+  // A saved opacity of 0 (the strength slider at the bottom) used to paint a
+  // black stage that looked like a broken visualiser. The canvas never drops
+  // below this faint floor; `enabled` is what turns Aura off, and the silence
+  // fade to 0 is a deliberate pause, not a strength.
+  const MIN_VISIBLE_OPACITY = 0.1;
+
+  // The strength that is actually painted, from the user's saved opacity.
+  function visibleOpacity(opacity) {
+    return Math.max(clamp(num(opacity, 0.75), 0, 1), MIN_VISIBLE_OPACITY);
+  }
 
   function scrimOpacityFor(opacity) {
     const o = clamp(num(opacity, 0.75), 0, 1);
@@ -330,7 +340,7 @@
       // While the silence gate holds, the canvas must stay faded out: its
       // drawing buffer is cleared, so revealing it here would paint an opaque
       // black panel. Only audio (resumeVisual) restores the user's opacity.
-      dom.canvas.style.opacity = state.renderPaused ? '0' : String(target);
+      dom.canvas.style.opacity = state.renderPaused ? '0' : String(visibleOpacity(target));
     }
     if (dom.scrim) {
       dom.scrim.style.opacity = String(scrim);
@@ -344,10 +354,10 @@
   function setOpacityUI(value) {
     state.opacity = clamp(num(value, 0.75), 0, 1);
     if (dom.opacity) {
-      dom.opacity.value = String(Math.round(state.opacity * 100));
-      dom.opacity.setAttribute('aria-valuetext', Math.round(state.opacity * 100) + ' percent');
+      dom.opacity.value = String(Math.round(visibleOpacity(state.opacity) * 100));
+      dom.opacity.setAttribute('aria-valuetext', Math.round(visibleOpacity(state.opacity) * 100) + ' percent');
     }
-    if (dom.opacityOut) dom.opacityOut.textContent = Math.round(state.opacity * 100) + '%';
+    if (dom.opacityOut) dom.opacityOut.textContent = Math.round(visibleOpacity(state.opacity) * 100) + '%';
     applyVisualOpacity();
   }
 
@@ -395,7 +405,7 @@
     if (dom.canvas) {
       dom.canvas.style.visibility = fallback ? 'hidden' : 'visible';
       dom.canvas.style.opacity = state.renderPaused ? '0'
-        : (state.enabled ? String(state.opacity) : String(state.opacity * 0.35));
+        : String(visibleOpacity(state.enabled ? state.opacity : state.opacity * 0.35));
     }
     if (dom.conn) {
       dom.conn.dataset.state = socket.state === 'connected' ? 'connected'
@@ -1618,7 +1628,7 @@
   function resumeVisual() {
     if (!state.renderPaused) return;
     state.renderPaused = false;
-    if (dom.canvas) dom.canvas.style.opacity = state.enabled ? String(state.opacity) : String(state.opacity * 0.35);
+    if (dom.canvas) dom.canvas.style.opacity = String(visibleOpacity(state.enabled ? state.opacity : state.opacity * 0.35));
     if (dom.root) dom.root.dataset.silence = '0';
     lastRenderAt = 0;
     if (viz) { try { renderFrame(); } catch (_) {} }

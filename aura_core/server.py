@@ -1919,6 +1919,14 @@ def _reassert_lease() -> bool:
     """
     if not _holds_lock():
         return False
+    # The user deleted this profile (the folder is gone): writing the lease or
+    # the token would mkdir it back and Hermes then refuses the profile with
+    # "Named profile home does not exist". A server whose home is gone has
+    # nothing left to serve, so stop it instead of resurrecting the folder.
+    if not config.hermes_home().is_dir():
+        _log("aura: profile home is gone; stopping server")
+        stop_server()
+        return False
     with _STATE.lock:
         token, port = _STATE.token, _STATE.port
     if not token or not port or not _server_running():

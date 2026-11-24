@@ -1181,11 +1181,16 @@ await recordAsync('opacity slider persists and pushes the display control', asyn
     if (!slider && node.type === 'input' && node.props && node.props['aria-label'] === 'Visual opacity') slider = node
   })
   assert.ok(slider, 'no opacity slider rendered')
-  assert.equal(slider.props.min, 0)
+  // 0 used to be offered and painted a black stage; the slider starts at the
+  // faint floor instead (the writer clamps even if a stale value reaches it).
+  assert.equal(slider.props.min, 10)
   assert.equal(slider.props.max, 100)
   slider.props.onChange({ target: { value: '40' } })
   await sleep(30)
   assert.deepEqual(a.controls.at(-1), { opacity: 0.4 })
+  slider.props.onChange({ target: { value: '0' } })
+  await sleep(30)
+  assert.deepEqual(a.controls.at(-1), { opacity: 0.1 }, 'a 0 was written instead of the floor')
 })
 
 await recordAsync('behaviour select offers calm/balanced/intense and pushes the choice', async () => {

@@ -166,7 +166,11 @@ load; only `/api/control` rejects with 400.
 
 ### 9.2 Opacity
 
-The page applies `opacity` to the visualizer canvas and computes the scrim from it. The scrim's
+The page applies `opacity` to the visualizer canvas and computes the scrim from it. The canvas
+never paints below 0.1 (`MIN_VISIBLE_OPACITY`): a saved 0 is a faint visual, not an unexplained
+black stage, and the desktop controls ("Visual opacity", "Visual strength") start at 10%. The
+stored value keeps the full 0..1 range the server accepts; only the painted strength is floored.
+The silence fade to 0 is a deliberate pause and is unaffected. The scrim's
 element opacity is `0.85 + 0.15 * opacity` (0.85..1.0) and its gradient alphas are multiplied by
 the inverse of that opacity, so the scrim's effective contrast is never below the pre-opacity
 behaviour at any user opacity, and neither layer is ever fully transparent. Text and control

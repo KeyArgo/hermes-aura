@@ -344,6 +344,13 @@ const clamp01 = value => {
   return Number.isFinite(n) ? clamp(n, 0, 1) : 0
 }
 
+// The faintest a visual may be. A saved 0 used to paint a black stage that
+// looked like a broken visualiser, so every control and the writer stop at the
+// floor (web/aura.js keeps the canvas above it too).
+const MIN_VISUAL_OPACITY = 0.1
+
+const visualOpacity = value => Math.min(1, Math.max(MIN_VISUAL_OPACITY, clamp01(value)))
+
 /** Normalise #rgb/#rrggbb/#rrggbbaa to a lowercase #rrggbb, or null. */
 function normalizeHex(value) {
   if (typeof value !== 'string') return null
@@ -656,7 +663,7 @@ function readSettings(ctx) {
     // Only read enabled from storage if it exists; fresh installs always default to true.
     if (!isNewInstall && typeof raw.enabled === 'boolean') out.enabled = raw.enabled
     if (Number.isFinite(raw.intensity)) out.intensity = clamp01(raw.intensity)
-    if (Number.isFinite(raw.opacity)) out.opacity = clamp01(raw.opacity)
+    if (Number.isFinite(raw.opacity)) out.opacity = visualOpacity(raw.opacity)
     if (typeof raw.behavior === 'string' && BEHAVIORS.includes(raw.behavior)) out.behavior = raw.behavior
     if (typeof raw.moodReactive === 'boolean') out.moodReactive = raw.moodReactive
     if (typeof raw.accentPulse === 'boolean') out.accentPulse = raw.accentPulse
@@ -1978,7 +1985,7 @@ async function setEnabled(next, fromNewBuild = false) {
 
 async function setOpacity(next) {
   if (!ctxRef || disposed) return
-  const opacity = clamp01(next)
+  const opacity = visualOpacity(next)
   writeSettings({ opacity })
   await pushControl({ opacity })
 }
@@ -5920,14 +5927,14 @@ function AuraStatusPower() {
  *  handlers. `ui` carries the surface's own row/select/slider styling. */
 function visualControlRows(settings, ui) {
   const { row, selectStyle, sliderStyle, readout, locked, auraTitle, showTitle } = ui
-  const slider = (label, value, onValue) =>
+  const slider = (label, value, onValue, minPercent = 0) =>
     jsxs('div', {
       style: { display: 'flex', alignItems: 'center', gap: 8 },
       children: [
         jsx('input', {
           key: 'slider',
           type: 'range',
-          min: 0,
+          min: minPercent,
           max: 100,
           step: 1,
           value: Math.round(clamp01(value) * 100),
@@ -5959,7 +5966,8 @@ function visualControlRows(settings, ui) {
     row('Intensity', slider('Intensity', settings.intensity, value => applyIntensity(value)),
       'How hard the visual reacts to sound. 0 = barely moves; Style still sets its look.'),
     // The value is how solid the visual is (the Settings page's "Visual opacity").
-    row('Visual strength', slider('Visual strength', settings.opacity, value => { void setOpacity(clamp01(value)) }),
+    // It floors at MIN_VISUAL_OPACITY: 0 would be a black stage, not a faint one.
+    row('Visual strength', slider('Visual strength', visualOpacity(settings.opacity), value => { void setOpacity(value) }, MIN_VISUAL_OPACITY * 100),
       'How solid the visual is on screen; lower values are fainter.'),
     row(
       'Style',
@@ -7685,24 +7693,24 @@ function AuraSettings(props) {
               jsx('input', {
                 key: 'slider',
                 type: 'range',
-                min: 0,
+                min: 10,
                 max: 100,
                 step: 1,
-                value: Math.round(settings.opacity * 100),
+                value: Math.round(visualOpacity(settings.opacity) * 100),
                 'aria-label': 'Visual opacity',
                 disabled: locked,
                 title: auraTitle,
                 style: { width: 140, accentColor: 'var(--ui-accent)' },
                 onChange: event => {
                   const raw = Number(event && event.target ? event.target.value : 75)
-                  const opacity = clamp01(raw / 100)
+                  const opacity = visualOpacity(raw / 100)
                   void setOpacity(opacity)
                 }
               }),
               jsx('span', {
                 key: 'out',
                 style: { fontSize: 11, color: 'var(--ui-text-tertiary)', minWidth: 32, fontVariantNumeric: 'tabular-nums' },
-                children: `${Math.round(settings.opacity * 100)}%`
+                children: `${Math.round(visualOpacity(settings.opacity) * 100)}%`
               })
             ]
           })

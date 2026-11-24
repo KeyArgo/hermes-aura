@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A visual strength of 0 is no longer a black stage. The visualizer canvas keeps a faint floor of
+  10%, the Settings "Visual opacity" and status-bar "Visual strength" sliders (and the page's own Opacity
+  slider) start at 10%, and a saved 0 is painted at 10%; any real value (0.6, 1.0) is untouched, and the silence fade still
+  goes fully dark.
+- A deleted Hermes profile stays deleted. The lease watcher no longer re-creates
+  `<profile>/aura/` behind the user's back (which made Hermes refuse the profile with "Named profile
+  home does not exist"); a server whose profile home is gone now stops instead.
+
 - The REVamp card points at REVamp itself: Marketplace opens its own page (with Install in Hermes), the
   terminal line is the catalog install `hermes plugins install revamp`, and Find in Plugins says where to
   install it when it is not installed yet.
