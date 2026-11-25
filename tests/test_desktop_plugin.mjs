@@ -470,7 +470,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, panelHost: typeof panelHostRef === "function" ? panelHostRef : null, video: $video, settings: $settings, remember: typeof rememberPosition === "function" ? rememberPosition : null, refreshFilm: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null, filmSurface: typeof $filmSurface === "object" ? $filmSurface : null, owned: () => desktopOwned, command: (cmd, value) => videoCommand(cmd, value), lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : 0), polling: () => polling === true, pending: () => controlPushPending, live: $live, setEnabled: typeof setEnabled === "function" ? setEnabled : null };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, panelHost: typeof panelHostRef === "function" ? panelHostRef : null, video: $video, settings: $settings, remember: typeof rememberPosition === "function" ? rememberPosition : null, refreshFilm: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null, filmSurface: typeof $filmSurface === "object" ? $filmSurface : null, owned: () => desktopOwned, command: (cmd, value) => videoCommand(cmd, value), lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : 0), polling: () => polling === true, pending: () => controlPushPending, live: $live, setEnabled: typeof setEnabled === "function" ? setEnabled : null, close: typeof closeVideo === "function" ? closeVideo : null, open: typeof openVideo === "function" ? openVideo : null };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -4437,6 +4437,127 @@ await recordAsync('an Off from the replaced profile cannot switch the new one of
 
 // --------------------------------------------------------------- reporting
 
+// ------------------------------------------------ review 3: the film's volume
+// The saved videoVolume has to reach the player's own document in every
+// placement. The panel and the page each carry their own transport, and the
+// only push lived behind the floating strip's "is it on screen" test, so their
+// films played at the player's default 100% with the slider showing the saved
+// level.
+const filmFrameFor = (bucket, id) => {
+  const film = filmNodes(renderContribution(bucket.contributions.find(c => c.id === id)))
+  assert.equal(film.length, 1, 'no film to mount')
+  return mountFilm(film[0]).frame
+}
+const volumePosts = frame => frame.contentWindow.posted.filter(entry =>
+  entry.message && entry.message.aura === 'transport' && entry.message.cmd === 'volume')
+
+await recordAsync('review 3: a panel film is given the saved volume, not the player default', async () => {
+  const panel = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, videoWindow: false,
+    videoVolume: 0.2, videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  const dispose = pluginModule.default.register(panel.ctx)
+  try {
+    panel.timers.find(t => t.ms === 250).fn()
+    await sleep(60)
+    const frame = filmFrameFor(panel, 'panel')
+    await pollTick(panel)
+    // The push waits for the player to boot, exactly as it does on screen.
+    await sleep(1400)
+    const posts = volumePosts(frame)
+    assert.ok(posts.length > 0, 'the panel film never received a volume command')
+    assert.equal(posts.at(-1).message.value, 0.2, 'the panel film kept the player default')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('review 3: closing and reopening the same film sends the volume again', async () => {
+  const url = 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  const panel = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, videoWindow: false,
+    videoVolume: 0.2, videoUrl: url, videoPositions: { [url]: { position: 120, duration: 600 } }
+  })
+  const dispose = pluginModule.default.register(panel.ctx)
+  try {
+    panel.timers.find(t => t.ms === 250).fn()
+    await sleep(60)
+    const first = filmFrameFor(panel, 'panel')
+    await pollTick(panel)
+    await sleep(1400)
+    assert.ok(volumePosts(first).length > 0, 'precondition: the first film never got its volume')
+    // A fresh document starts at the player's own default, so the same address
+    // must be pushed again rather than remembered as done.
+    pluginModule.wiringTest.close()
+    pluginModule.wiringTest.open()
+    await pollTick(panel)
+    const second = filmFrameFor(panel, 'panel')
+    assert.notEqual(second, first, 'the reopened film is the same document')
+    await sleep(1400)
+    const posts = volumePosts(second)
+    assert.ok(posts.length > 0, 'the reopened film never received a volume command')
+    assert.equal(posts.at(-1).message.value, 0.2, 'the reopened film kept the player default')
+    assert.ok(second.contentWindow.posted.some(entry => entry.message &&
+      entry.message.aura === 'transport' && entry.message.cmd === 'seekTo' &&
+      entry.message.value === 120), 'the reopened film was not sent back to its saved point')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('review 3: a muted panel film comes back muted, not at its volume', async () => {
+  const panel = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, videoWindow: false,
+    videoMuted: true, videoVolume: 0.2, videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  const dispose = pluginModule.default.register(panel.ctx)
+  try {
+    panel.timers.find(t => t.ms === 250).fn()
+    await sleep(60)
+    const frame = filmFrameFor(panel, 'panel')
+    await pollTick(panel)
+    await sleep(1400)
+    // Any volume above zero unmutes the player, so the push has to say mute.
+    assert.equal(volumePosts(frame).length, 0, 'a muted film was given a volume, which unmutes it')
+    assert.ok(frame.contentWindow.posted.some(entry => entry.message &&
+      entry.message.aura === 'transport' && entry.message.cmd === 'mute'),
+      'the muted film was never told to stay muted')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('review 3: the Aura page film is given the saved volume too', async () => {
+  const page = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: false, videoWindow: false,
+    videoVolume: 0.2, videoUrl: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ'
+  })
+  const dispose = pluginModule.default.register(page.ctx)
+  try {
+    page.timers.find(t => t.ms === 250).fn()
+    await sleep(40)
+    const route = () => page.contributions.find(c => c.area === 'routes')
+    let stageRef = null
+    walk(renderContribution(route()), node => {
+      if (!stageRef && node.props && typeof node.props.ref === 'function') stageRef = node.props.ref
+    })
+    assert.equal(typeof stageRef, 'function', 'the page has no stage ref')
+    stageRef({ getBoundingClientRect: () => ({ left: 40, top: 60, width: 800, height: 450 }) })
+    await pollTick(page)
+    const film = filmNodes(renderContribution(route()))
+    assert.equal(film.length, 1, 'no page film to mount')
+    const frame = mountFilm(film[0]).frame
+    await pollTick(page)
+    await sleep(1400)
+    const posts = volumePosts(frame)
+    assert.ok(posts.length > 0, 'the page film never received a volume command')
+    assert.equal(posts.at(-1).message.value, 0.2, 'the page film kept the player default')
+  } finally {
+    dispose()
+  }
+})
+
+// --------------------------------------------------------------- reporting
 console.log(results.join('\n'))
 console.log(`\n${results.length - failed} passed, ${failed} failed`)
 

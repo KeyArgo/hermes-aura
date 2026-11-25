@@ -2323,6 +2323,10 @@ function closeVideo() {
   // at 4 Hz. The radio keeps its own state — its carrier may still be open.
   forgetVideoPlaying()
   writeSettings({ videoClosed: true })
+  // The document this level was sent to is about to go: reopening it is a new
+  // player that needs the volume again.
+  volumePushedFor = ''
+  volumePushedFrame = null
   resetShow()
   removeBackdrop()
   refreshFilmSurface()
@@ -3316,6 +3320,10 @@ function beginWindowDrag(event) {
 }
 
 let volumePushedFor = ''
+// Which film frame that address was pushed to. A reopened film is a new
+// document at the same address, so the address alone would say "already done"
+// and leave it at the player's own volume.
+let volumePushedFrame = null
 // Where the movie was when we last saw it. Kept across a plugin remount so
 // switching to another plugin (Omniscience and friends) and back does not drop
 // you to the start of the film: the player is reloaded, then seeked to here.
@@ -5480,10 +5488,51 @@ function setPanelCollapsed(on) {
   syncPanel(true)
 }
 
+/** Send the saved volume (and the resume point) into the film's document. Every
+ *  placement needs it: the panel and the page carry their own transport, so the
+ *  strip's copy was the only sender and their films played at 100%. Runs before
+ *  the strip decides whether it is on screen. */
+function syncFilmVolume() {
+  const settings = $settings.get()
+  const player = settings.backdropMode === 'video' ? liveFilmFrame() : null
+  const playerSrc = player && typeof player.src === 'string' ? player.src : ''
+  if (!player || !playerSrc) return
+  if (player === volumePushedFrame && playerSrc === volumePushedFor) return
+  volumePushedFor = playerSrc
+  volumePushedFrame = player
+  const forUrl = playerSrc
+  const resumeAt = resumeTargetFor($settings.get().videoUrl)
+  const poke = () => {
+    const live = liveFilmFrame()
+    if (disposed || !live || live.src !== forUrl) return
+    const now = $settings.get()
+    // A muted film must come back muted: the player takes any volume above
+    // zero as "unmute me".
+    if (now.videoMuted) postToBackdrop({ cmd: 'mute' })
+    else postToBackdrop({ cmd: 'volume', value: now.videoVolume })
+    if (resumeAt > 0) {
+      postToBackdrop({ cmd: 'seekTo', value: resumeAt })
+      note(`Resumed at ${fmtClock(resumeAt)}`, 7000)
+    }
+  }
+  setTimeout(poke, 1200)
+  // The player ignores commands until it is ready. If the film is still
+  // near the start a few seconds later, ask again — that is what "resume"
+  // failing looked like from the outside.
+  setTimeout(() => {
+    const live = liveFilmFrame()
+    if (disposed || !live || live.src !== forUrl || resumeAt <= 0) return
+    if ($video.get().position < Math.max(5, resumeAt * 0.6)) poke()
+  }, 3500)
+}
+
 /** Keep the pill in step with settings/transport state. Called from the poll
  *  tick (4 Hz), so it costs one comparison per node at most. */
 function syncVideoBar(force) {
   syncStripPane()
+  // The player's own document starts silent-of-our-level in every placement,
+  // so its volume is pushed before the strip is consulted.
+  syncFilmVolume()
   if (!videoBarActive()) {
     removeVideoBar()
     return
@@ -5545,35 +5594,6 @@ function syncVideoBar(force) {
     ? settings.videoBarOpacity
     : VIDEO_BAR_OPACITY)
   videoBarEl.style.background = `rgba(12, 10, 22, ${barAlpha})`
-
-  // A new player document starts at its own default volume: re-send ours
-  // shortly after each (re)load so a source swap keeps the level. Visualiser
-  // pages are not players, so this stays in video mode.
-  const player = settings.backdropMode === 'video' ? liveFilmFrame() : null
-  const playerSrc = player && typeof player.src === 'string' ? player.src : ''
-  if (player && playerSrc && playerSrc !== volumePushedFor) {
-    volumePushedFor = playerSrc
-    const forUrl = playerSrc
-    const resumeAt = resumeTargetFor($settings.get().videoUrl)
-    const poke = () => {
-      const live = liveFilmFrame()
-      if (disposed || !live || live.src !== forUrl) return
-      postToBackdrop({ cmd: 'volume', value: $settings.get().videoVolume })
-      if (resumeAt > 0) {
-        postToBackdrop({ cmd: 'seekTo', value: resumeAt })
-        note(`Resumed at ${fmtClock(resumeAt)}`, 7000)
-      }
-    }
-    setTimeout(poke, 1200)
-    // The player ignores commands until it is ready. If the film is still
-    // near the start a few seconds later, ask again — that is what "resume"
-    // failing looked like from the outside.
-    setTimeout(() => {
-      const live = liveFilmFrame()
-      if (disposed || !live || live.src !== forUrl || resumeAt <= 0) return
-      if ($video.get().position < Math.max(5, resumeAt * 0.6)) poke()
-    }, 3500)
-  }
 
   const playGlyph = state.playing ? '⏸' : '▶'
   if (parts.play.textContent !== playGlyph) {
@@ -8327,6 +8347,8 @@ function teardown() {
   filmFrame = null
   videoEnded = false
   videoReportedUrl = ''
+  volumePushedFor = ''
+  volumePushedFrame = null
   $filmSurface.set({ placement: '', src: '' })
   pageStageEl = null
   removeVideoBar()
