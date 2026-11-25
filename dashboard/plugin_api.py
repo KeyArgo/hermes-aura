@@ -13,6 +13,7 @@ while the dashboard is mounting routes.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -260,6 +261,18 @@ def window_payload() -> dict:
     return payload
 
 
+async def _off_loop(fn, *args):
+    """Run a blocking forward in a worker thread and await it.
+
+    ``urlopen`` waits on the Aura server — a fresh pop-out spends 1.5 s there
+    learning Chromium stayed up, and a slow launch can hold its 15 s. Called
+    straight from an ``async`` route that wait holds the event loop, so every
+    other dashboard request queued behind the pop-out.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, fn, *args)
+
+
 # ---------------------------------------------------------------------------
 # FastAPI routes mounted at /api/plugins/aura/
 # ---------------------------------------------------------------------------
@@ -292,7 +305,7 @@ async def player_report(request: Request) -> JSONResponse:
         body = None
     if not isinstance(body, dict):
         return JSONResponse({"ok": False, "error": "body_must_be_object"}, status_code=400)
-    code, payload = _forward_json("/api/player/report", body, timeout=5.0)
+    code, payload = await _off_loop(_forward_json, "/api/player/report", body, 5.0)
     return JSONResponse(payload, status_code=code)
 
 
@@ -304,7 +317,7 @@ async def player_command(request: Request) -> JSONResponse:
         body = None
     if not isinstance(body, dict):
         return JSONResponse({"ok": False, "error": "body_must_be_object"}, status_code=400)
-    code, payload = _forward_json("/api/player/command", body, timeout=5.0)
+    code, payload = await _off_loop(_forward_json, "/api/player/command", body, 5.0)
     return JSONResponse(payload, status_code=code)
 
 
@@ -325,13 +338,13 @@ async def window_open(request: Request) -> JSONResponse:
         body = {}
     if not isinstance(body, dict):
         return JSONResponse({"ok": False, "error": "body_must_be_object"}, status_code=400)
-    code, payload = _forward_json("/api/window/open", body, timeout=15.0)
+    code, payload = await _off_loop(_forward_json, "/api/window/open", body, 15.0)
     return JSONResponse(payload, status_code=code)
 
 
 @router.post("/window/close")
 async def window_close() -> JSONResponse:
-    code, payload = _forward_json("/api/window/close", {}, timeout=15.0)
+    code, payload = await _off_loop(_forward_json, "/api/window/close", {}, 15.0)
     return JSONResponse(payload, status_code=code)
 
 
@@ -344,7 +357,7 @@ async def window_manage(request: Request) -> JSONResponse:
         body = {}
     if not isinstance(body, dict):
         return JSONResponse({"ok": False, "error": "body_must_be_object"}, status_code=400)
-    code, payload = _forward_json("/api/window/manage", body, timeout=15.0)
+    code, payload = await _off_loop(_forward_json, "/api/window/manage", body, 15.0)
     return JSONResponse(payload, status_code=code)
 
 
@@ -775,5 +788,5 @@ async def control(request: Request) -> JSONResponse:
         body = {}
     if not isinstance(body, dict):
         return JSONResponse({"ok": False, "error": "body_must_be_object"}, status_code=400)
-    code, payload = control_payload(body)
+    code, payload = await _off_loop(control_payload, body)
     return JSONResponse(payload, status_code=code)
