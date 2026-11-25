@@ -102,6 +102,7 @@ def _cdp_session(url: str):
          # No GPU on hosted runners: render WebGL in software (CI only).
          *(["--enable-unsafe-swiftshader", "--use-angle=swiftshader", "--use-gl=angle", "--ignore-gpu-blocklist"]
            if os.environ.get("CI") == "true" else []),
+         "--force-prefers-no-reduced-motion",
          "about:blank"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     import websocket  # provided by the shared venv

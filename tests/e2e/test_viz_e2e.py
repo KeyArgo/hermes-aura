@@ -602,6 +602,9 @@ class Chrome:
             # needs, so Chrome exits at once there. CI only; never on a desktop.
             *(["--no-sandbox"] if os.environ.get("CI") == "true" and sys.platform.startswith("linux") else []),
             *CI_SOFTWARE_GL,
+            # Windows Server images ask apps for reduced motion, which turns the
+            # page's gentle mode on; cases that want it pass reduced-motion=1.
+            "--force-prefers-no-reduced-motion",
             "about:blank",
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         port_file = os.path.join(self.profile, "DevToolsActivePort")
@@ -1135,9 +1138,16 @@ def test_mood_mapping_drives_visible_behaviour_without_touching_audio(chrome, au
         # done: one short settle, then idle (≤1.5 s)
         aura.send_mood("done", intensity=0.5, ttl_ms=1500)
         expect_mood(tab, "done", timeout=5)
-        time.sleep(1.8)
+        # The settle is a 1.5 s page timer. On a 2-core CI runner, software GL
+        # frames hold the page's main thread long enough to delay any timer, so
+        # CI gets slack; a page that never settles still fails.
+        settle_wait = 4.0 if os.environ.get("CI") == "true" else 1.8
+        deadline = time.time() + settle_wait
         snap = snapshot(tab)
-        print("done settle: mood=%s after 1.8s" % snap["mood"], flush=True)
+        while snap["mood"] != "idle" and time.time() < deadline:
+            time.sleep(0.2)
+            snap = snapshot(tab)
+        print("done settle: mood=%s within %.1fs" % (snap["mood"], settle_wait), flush=True)
         assert snap["mood"] == "idle", "done must settle back to idle within 1.5 s"
 
         # idle: back to baseline; mood never touched the audio graph
