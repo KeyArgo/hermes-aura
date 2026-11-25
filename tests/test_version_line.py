@@ -1,7 +1,7 @@
-"""The version line (owner, 11-24): 1.0.0 is the catalog-merged commit, 1.0.1 its bug-fix release.
+"""The version line (owner): 1.0.0 is the catalog-merged commit; 1.0.1 and 1.0.2 are bug-fix releases.
 
-plugin.yaml names the release target, ``1.0.1``. The chip reads the build:
-``1.0.1`` only for the exact catalog pin (or a v1.0.1 tag), ``1.0.1-dev.N`` for every
+plugin.yaml names the release target, ``1.0.2``. The chip reads the build:
+``1.0.2`` only for the exact catalog pin (or a v1.0.2 tag), ``1.0.2-dev.N`` for every
 other build, where N only climbs: ``dev_base`` carries the builds numbered in the
 old private repo (the last chip there read 1.0.0-dev.94), so no new build reads
 older than one already installed. A move to 1.1.0 is the owner's decision.
@@ -16,13 +16,13 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
-def test_manifest_is_on_the_1_0_1_line():
+def test_manifest_is_on_the_1_0_2_line():
     text = (ROOT / "plugin.yaml").read_text(encoding="utf-8")
     match = re.search(r'^version:\s*"?([^"\s]+)"?\s*$', text, re.M)
     assert match, "plugin.yaml has no version"
-    assert match.group(1) == "1.0.1", (
+    assert match.group(1) == "1.0.2", (
         f"plugin.yaml version is {match.group(1)!r}; 1.0.0 is the catalog-merged commit and "
-        "1.0.1 its bug-fix release (owner, 11-24). Change this test only with the owner's OK."
+        "1.0.2 the current bug-fix release (owner, 11-25). Change this test only with the owner's OK."
     )
 
 
@@ -31,7 +31,7 @@ def test_dev_numbers_continue_above_the_old_repo():
     assert isinstance(base, int) and base >= 95, "dev_base must keep N above the old repo's dev.94"
 
 
-def test_a_dev_checkout_reads_1_0_1_dev_n(monkeypatch):
+def test_a_dev_checkout_reads_1_0_2_dev_n(monkeypatch):
     stamp = importlib.import_module("aura_core.version_stamp")
     stamp = importlib.reload(stamp)
     shallow = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-shallow-repository"],
@@ -41,12 +41,12 @@ def test_a_dev_checkout_reads_1_0_1_dev_n(monkeypatch):
     version = stamp.as_dict()["version"]
     tagged = subprocess.run(["git", "-C", str(ROOT), "describe", "--tags", "--exact-match", "HEAD"],
                             capture_output=True, text=True).stdout.strip()
-    if tagged == "v1.0.1":
+    if tagged == "v1.0.2":
         # The release commit itself reads the plain version.
-        assert version == "1.0.1"
+        assert version == "1.0.2"
     elif shallow == "true":
-        assert version == "1.0.1-dev"
+        assert version == "1.0.2-dev"
     else:
-        match = re.fullmatch(r"1\.0\.1-dev\.(\d+)", version)
-        assert match, f"a dev build reads {version!r}, not 1.0.1-dev.N"
+        match = re.fullmatch(r"1\.0\.2-dev\.(\d+)", version)
+        assert match, f"a dev build reads {version!r}, not 1.0.2-dev.N"
         assert int(match.group(1)) > 94

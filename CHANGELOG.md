@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.0.2 — 2026-11-25
+
+Bug fixes from a second review of 1.0.1; each has a regression test that fails on 1.0.1.
+
 - Closing the "Manage playlist" window no longer leaves both stages blank. The pop-out stayed "in flight", so the panel, page and watch window drew nothing and polling stayed at 4 Hz until Aura was restarted; a closed desktop window now settles that flag too.
 - Moving the film between the Right panel, the Aura page and the watch window — or resizing or
   re-cornering the watch window — no longer restarts it at `0:00`. The surface being drawn again was
