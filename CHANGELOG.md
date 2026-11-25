@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.0.3 — 2026-11-25
+
+The update listed in the plugin catalog after 1.0.0. Same code as 1.0.2 (tagged, never listed); it
+carries the 1.0.2 and 1.0.1 fixes below.
+
 ## 1.0.2 — 2026-11-25
 
 Bug fixes from a second review of 1.0.1; each has a regression test that fails on 1.0.1.
