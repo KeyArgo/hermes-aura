@@ -774,7 +774,10 @@ def _capture_loop(stop_event: threading.Event) -> None:
         except Exception:  # noqa: BLE001
             pass
         with _STATE.lock:
-            _STATE.capture_obj = None
+            # Only forget this loop's own recorder: a restarted server may already
+            # have published its own.
+            if _STATE.capture_obj is cap:
+                _STATE.capture_obj = None
 
 
 # ---------------------------------------------------------------------------
@@ -1821,12 +1824,24 @@ def _start_server() -> None:
     # _try_become_leader calls this again the moment _server_running() goes false.
     with _STATE.lock:
         stale = _STATE.httpd
+        stale_stop = _STATE.stop_event
+        stale_capture = _STATE.capture_thread
         _STATE.httpd = None
     if stale is not None:
         try:
             stale.server_close()
         except Exception:  # noqa: BLE001 - the old socket may already be gone
             pass
+    if stale is not None or stale_capture is not None:
+        # The replaced generation's capture and lease loops wait on THIS event, and
+        # it is about to be dropped. Signalling it is what retires them: left unset,
+        # the old recorder kept capturing beside the new one -- both publishing into
+        # the same state -- and stop_server() only ever knew the replacement.
+        stale_stop.set()
+        if stale_capture is not None and stale_capture.is_alive():
+            # Let its finally block close the recorder before the successor opens
+            # one, so the dying loop cannot clear the new capture's state afterwards.
+            stale_capture.join(timeout=3.0)
 
     token = secrets.token_urlsafe(32)
     try:

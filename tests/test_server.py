@@ -873,6 +873,92 @@ def test_restart_closes_the_previous_listener(live):
     assert not bound(old_port), "the replaced listener socket was leaked"
 
 
+class _TrackedCapture:
+    """A recorder that records its reads and close, so a leak is visible."""
+
+    name = "tracked"
+
+    def __init__(self):
+        self.closed = False
+        self.reads = 0
+
+    def read(self, n=server.FRAME_SAMPLES):
+        if self.closed:
+            return None
+        time.sleep(0.02)
+        self.reads += 1
+        return b"\x00" * (4 * n)
+
+    def close(self):
+        self.closed = True
+
+
+def test_recovery_stops_the_replaced_capture(tmp_path, monkeypatch):
+    # Restarting over a dead http thread must retire the old capture loop with its
+    # stop event and recorder. Both loops used to publish into the same state, and
+    # stop_server() only knew the replacement: the old recorder kept capturing.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("AURA_CAPTURE", "none")
+    opened = []
+
+    def fake_open(preferred=None):
+        opened.append(_TrackedCapture())
+        return opened[-1]
+
+    monkeypatch.setattr(server.capture, "open_capture", fake_open)
+    monkeypatch.setattr(server, "_audio_wanted", lambda: True)
+    monkeypatch.setattr(server, "publish_config", lambda: None)
+    server.stop_server()
+    server.ensure_server()
+    try:
+        deadline = time.time() + 3
+        while not opened and time.time() < deadline:
+            time.sleep(0.01)
+        assert opened, "the tracked recorder never opened"
+        with server._STATE.lock:
+            old_stop = server._STATE.stop_event
+            old_thread = server._STATE.capture_thread
+        old_cap = opened[0]
+        assert old_thread is not None and old_thread.is_alive()
+
+        class Dead:
+            """The http serving thread, after it exited on its own."""
+
+            def is_alive(self):
+                return False
+
+            def join(self, timeout=None):
+                pass
+
+        with server._STATE.lock:
+            server._STATE.thread = Dead()
+        server.ensure_server()
+        with server._STATE.lock:
+            new_stop = server._STATE.stop_event
+            new_thread = server._STATE.capture_thread
+        assert new_stop is not old_stop
+        deadline = time.time() + 3
+        while len(opened) < 2 and time.time() < deadline:
+            time.sleep(0.01)
+        assert len(opened) == 2, "recovery did not reopen capture"
+
+        deadline = time.time() + 3
+        while old_thread.is_alive() and time.time() < deadline:
+            time.sleep(0.02)
+        assert old_stop.is_set(), "recovery left the replaced stop event unset"
+        assert not old_thread.is_alive(), "the replaced capture loop is still running"
+        assert old_cap.closed, "recovery left the replaced recorder open"
+    finally:
+        server.stop_server()
+
+    assert new_thread is not None and not new_thread.is_alive(), \
+        "a capture loop outlived stop_server"
+    assert all(cap.closed for cap in opened), "a recorder outlived stop_server"
+    reads = [cap.reads for cap in opened]
+    time.sleep(0.2)
+    assert [cap.reads for cap in opened] == reads, "a recorder kept capturing after shutdown"
+
+
 # ---------------------------------------------------------------------------
 # redaction (used on every URL that reaches the model)
 # ---------------------------------------------------------------------------
