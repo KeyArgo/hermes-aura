@@ -1974,13 +1974,18 @@ def _reassert_lease() -> bool:
         stop_server()
         return False
     with _STATE.lock:
-        token, port = _STATE.token, _STATE.port
+        token, port, capture_name = _STATE.token, _STATE.port, _STATE.capture_name
     if not token or not port or not _server_running():
         return False
     changed = False
     lease = config.read_lease()
+    # ``capture`` is compared too: a follower's /status reads the backend name
+    # from the lease, and a device that appears after start swaps the capture in
+    # the leader's live state without touching pid/port/token. Ignoring it left
+    # the dashboard showing "no capture" for as long as the leader ran.
     if not (isinstance(lease, dict) and lease.get("pid") == os.getpid()
-            and lease.get("port") == port and lease.get("token") == token):
+            and lease.get("port") == port and lease.get("token") == token
+            and lease.get("capture") == capture_name):
         _write_lease(token, port)
         changed = True
     if config.read_token() != token:
