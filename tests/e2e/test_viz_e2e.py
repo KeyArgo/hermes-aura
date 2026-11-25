@@ -576,6 +576,14 @@ class Tab:
             pass
 
 
+# GitHub's hosted runners have no GPU, so Chrome gives the page no WebGL and
+# every pixel check sees nothing. CI renders through SwiftShader instead (the
+# same software GL the Titan runner uses). CI only; never on a desktop.
+CI_SOFTWARE_GL = ([
+    "--enable-unsafe-swiftshader", "--use-angle=swiftshader", "--use-gl=angle", "--ignore-gpu-blocklist",
+] if os.environ.get("CI") == "true" else [])
+
+
 class Chrome:
     def __init__(self):
         binary = _chrome_binary()
@@ -593,6 +601,7 @@ class Chrome:
             # GitHub's Ubuntu runners forbid the user namespaces Chrome's sandbox
             # needs, so Chrome exits at once there. CI only; never on a desktop.
             *(["--no-sandbox"] if os.environ.get("CI") == "true" and sys.platform.startswith("linux") else []),
+            *CI_SOFTWARE_GL,
             "about:blank",
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         port_file = os.path.join(self.profile, "DevToolsActivePort")

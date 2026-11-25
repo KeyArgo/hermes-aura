@@ -102,7 +102,7 @@ jobs:
         run: printf 'CHROME_PATH=%s\n' '${{ steps.chrome.outputs.chrome-path }}' >> "$GITHUB_ENV"
       # -rs prints every skip with its reason, so each OS shows what it did NOT
       # prove as well as what it did.
-      - run: python -m pytest tests/integration tests/e2e/test_viz_e2e.py tests/e2e/test_display_controls_e2e.py -q -rs -p no:cacheprovider
+      - run: python -m pytest tests/integration tests/e2e/test_viz_e2e.py tests/e2e/test_display_controls_e2e.py tests/e2e/test_visible_on_screen_e2e.py tests/e2e/test_webgl_context_restore_e2e.py -q -rs -p no:cacheprovider
 
   macos-install-smoke:
     name: install smoke (${{ matrix.os }})
