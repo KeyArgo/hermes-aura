@@ -867,8 +867,12 @@ function filmPlacement() {
     // keep in-app: one picture, one render loop.
     return ''
   }
-  // The visualiser uses the same watch window as the film.
-  if (watchWindowOpen()) return 'window'
+  // The visualiser uses the same watch window as the film, but only while one
+  // of them is the picture. Closing the film takes the window's card with it,
+  // and the radio it leaves behind is a hidden carrier: claiming the window
+  // put that carrier nowhere (pane, page and window all empty), so the radio
+  // went silent with the Right panel open.
+  if (watchWindowOpen() && !audioCarrierActive()) return 'window'
   if (pageVisible()) return 'page'
   if (filmInPanel()) return 'panel'
   return ''

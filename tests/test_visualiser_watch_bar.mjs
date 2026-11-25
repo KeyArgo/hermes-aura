@@ -8,6 +8,10 @@
  * Video mode must be byte-for-byte what it was: film rows, Right panel and
  * Desktop sends, five sizes.
  *
+ * The last scenarios close the film from that window and then start the radio:
+ * the closed film's carrier has to reach the Right panel, or the channel has no
+ * frame to play into and music fails silently with the panel open.
+ *
  * The harness is the one tests/test_no_behind_chat.mjs uses: a temp copy of
  * the plugin has its three import specifiers rewritten to local stub modules,
  * a fake DOM stands in for document/getComputedStyle, makeCtx provides the
@@ -304,6 +308,9 @@ export const SandboxedFrame = props => {
     attributes: {},
     dataset: {},
     contentWindow: { posted, postMessage: (message, origin) => posted.push({ message, origin }) },
+    // A browser fires this once the document is ready: the plugin restarts the
+    // audio channel from it.
+    onLoad: typeof props.onLoad === 'function' ? props.onLoad : null,
     getBoundingClientRect: () => ({ width: 320, height: 180, left: 0, top: 0, right: 320, bottom: 180 })
   }
   if (typeof props.ref === 'function') props.ref(node)
@@ -698,6 +705,65 @@ const allNodes = root => {
     if (visualRow) assert.equal(visualRow.style.display, 'none', 'the visualiser Send to row shows on the film')
     assert.equal(sizePills.length, 5, `the film window offers ${sizePills.length} sizes, not five`)
     assert.equal(sizePills[0].parentNode.style.display, 'flex', 'the film Size row is hidden')
+  })
+
+  dispose()
+}
+
+// ===================================================================
+// Radio after the film is closed from the watch window. A closed film is no
+// longer in the window, so the radio's carrier must live where it lives with
+// the window switched off: the Right panel.
+// ===================================================================
+
+{
+  const bucket = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true, videoWindow: true,
+    videoUrl: SINTEL_URL, videoClosed: false
+  })
+  const dispose = pluginModule.default.register(bucket.ctx)
+  await tickPoll(bucket)
+
+  record('R1. an open film still plays in the watch window', () => {
+    assert.equal(pluginModule.wiringTest.surface().placement, 'window',
+      'the film did not take the watch window')
+  })
+
+  await recordAsync('R2. Stop in the watch window closes the film and takes the strip with it', async () => {
+    const stopBtn = domByAria(videoBar(), 'Stop')
+    assert.ok(stopBtn, 'the watch window strip has no Stop button')
+    const handler = (stopBtn.__handlers.click || [])[0]
+    assert.equal(typeof handler, 'function', 'the Stop button has no click handler')
+    handler({ preventDefault() {} })
+    await sleep(40)
+    assert.equal(bucket.storage.get('settings').videoClosed, true, 'Stop did not close the film')
+    assert.equal(pluginModule.wiringTest.surface().placement, '', 'a closed film kept a surface on screen')
+  })
+
+  await recordAsync('R3. radio started after Stop mounts a carrier the audio channel can reach', async () => {
+    const started = await pluginModule.playAudioSource('https://ice.example/live.mp3', 'Live')
+    assert.equal(started, true, 'playAudioSource refused a plain mp3 stream')
+    await sleep(20)
+    await tickPoll(bucket)
+    const surface = pluginModule.wiringTest.surface()
+    assert.equal(surface.placement, 'panel',
+      'the radio carrier was placed in a watch window that holds no picture: nothing would play')
+    assert.equal(bucket.contributions.some(c => c.id === 'watch' && c.removed !== true), false,
+      'a watch window card was left on screen with no picture in it')
+    assert.match(surface.src, /overlay=1/, 'the carrier is not the visualiser page')
+    // Mount the panel the way the host does, then let its frame load: that load
+    // is what restarts a channel settings already say is playing.
+    mountPane(bucket)
+    const frame = pluginModule.wiringTest.frame()
+    assert.ok(frame && frame.contentWindow, 'no iframe was mounted for the radio carrier')
+    assert.match(String(frame.src), /overlay=1/, 'the mounted frame is not the visualiser page')
+    assert.equal(typeof frame.onLoad, 'function', 'the carrier frame carries no load handler')
+    frame.onLoad()
+    const played = (frame.contentWindow.posted || [])
+      .map(entry => entry.message)
+      .filter(message => message && message.aura === 'audio' && message.cmd === 'play')
+    assert.equal(played.length, 1, 'the radio never restarted in the mounted carrier')
+    assert.equal(played[0].url, 'https://ice.example/live.mp3')
   })
 
   dispose()
