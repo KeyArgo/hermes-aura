@@ -1312,6 +1312,10 @@ async function syncPlayerOwnership() {
     }
     if (desktopOwned) {
       desktopOwned = false
+      // The window we claimed is gone, so a pop-out still parked for it is
+      // settled too — otherwise the in-app stages and the watch window stay
+      // shut for good ("Manage playlist" left it set).
+      desktopPending = false
       const handoff = player.desktop === true ? player : lastDesktopPlayer
       lastDesktopPlayer = null
       if (handoff && handoff.url) restoreDesktopPlayback(handoff)
@@ -2505,7 +2509,12 @@ function videoCommand(cmd, value) {
       // A failed close resolves { open: true, error }. Ownership stays with
       // the window that is still open, so Stop does not start a second film.
       void closeDesktopWindow().then(result => {
-        if (result && result.open === false) desktopOwned = false
+        if (result && result.open === false) {
+          desktopOwned = false
+          // The parked flag belongs to the same pop-out: leaving it set would
+          // keep every stage shut after the window is already gone.
+          desktopPending = false
+        }
       })
     }
     closeVideo()
@@ -8511,5 +8520,8 @@ export const __test = {
   popoutSurface,
   hiddenVideoIds,
   hideCurrentEpisode,
-  managePlaylist
+  managePlaylist,
+  // Where the film or visualiser lands, and where the plugin thinks it is.
+  filmPlacement,
+  currentFilmPlace
 }

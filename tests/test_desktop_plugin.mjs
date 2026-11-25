@@ -4036,6 +4036,74 @@ await recordAsync('manage playlist opens the real list page in the window', asyn
   }
 })
 
+await recordAsync('closing the playlist window gives both stages back', async () => {
+  // Manage playlist parks the in-app film for the playlist window. When the
+  // user closes that window, the next poll must settle the pop-out: the panel
+  // stage comes back, and the watch window can open again. Before this, the
+  // in-flight flag was never cleared, so both stages stayed blank until restart.
+  const ctx = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true,
+    videoUrl: 'https://www.youtube.com/watch?v=abc123def45&list=PL0123456789'
+  })
+  let open = false
+  const original = ctx.ctx.rest
+  ctx.ctx.rest = async (route, options = {}) => {
+    if (route === '/window/manage') { open = true; return { ok: true, already: false } }
+    if (route === '/player') return { ok: true, window: { open }, player: {} }
+    if (route === '/player/report') return { ok: true }
+    if (route.startsWith('/player/commands?')) return { ok: true, head_seq: 0, commands: [] }
+    return original(route, options)
+  }
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await pollTick(ctx) // the film is in the panel and polling, as when the button is clicked
+    await tx.managePlaylist()
+    assert.equal(tx.filmPlacement(), '', 'precondition: the film stayed in the panel under the playlist window')
+    open = false // the user closed the Chromium playlist window
+    await pollTick(ctx)
+    assert.equal(tx.currentFilmPlace(), 'panel', 'the film is still pinned to the closed desktop window')
+    assert.equal(tx.filmPlacement(), 'panel', 'the panel stage stayed blank after the playlist window closed')
+    tx.setVideoWindow(true)
+    assert.equal(tx.filmPlacement(), 'window', 'the watch window still refuses to open')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('Stop on the playlist window does not leave the stages parked', async () => {
+  // Same pop-out, other exit: Stop closes the window from the film's transport.
+  // That path dropped ownership but kept the parked flag, so the next film was
+  // just as invisible as after a manual close.
+  const ctx = makeCtx({
+    enabled: true, backdropMode: 'video', panelEnabled: true,
+    videoUrl: 'https://www.youtube.com/watch?v=abc123def45&list=PL0123456789'
+  })
+  let open = false
+  const original = ctx.ctx.rest
+  ctx.ctx.rest = async (route, options = {}) => {
+    if (route === '/window/manage') { open = true; return { ok: true, already: false } }
+    if (route === '/window/close') { open = false; return { ok: true, closed: true, window: { open: false } } }
+    if (route === '/player') return { ok: true, window: { open }, player: {} }
+    if (route === '/player/report') return { ok: true }
+    if (route.startsWith('/player/commands?')) return { ok: true, head_seq: 0, commands: [] }
+    return original(route, options)
+  }
+  const dispose = pluginModule.default.register(ctx.ctx)
+  try {
+    await pollTick(ctx)
+    await tx.managePlaylist()
+    pluginModule.wiringTest.command('stop')
+    await sleep(40)
+    assert.equal(open, false, 'precondition: the window was not closed')
+    // What the transport's Open video does: the film is no longer closed.
+    pluginModule.wiringTest.settings.set({ ...pluginModule.wiringTest.settings.get(), videoClosed: false })
+    await pollTick(ctx)
+    assert.equal(tx.filmPlacement(), 'panel', 'the stage stayed parked after Stop closed the window')
+  } finally {
+    dispose()
+  }
+})
+
 // Scenario U: the dev-stats readout is explicit (Ctrl+Shift+A only), appends
 // exactly one node when asked, and is removed on dispose even when a later
 // host call throws before teardown reaches its end.
