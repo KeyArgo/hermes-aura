@@ -830,7 +830,11 @@ def report_player(data: Any) -> dict:
         url = _player_text(data.get("url"))
         if url:
             if url != player.get("url"):
-                player.pop("videoId", None)
+                # A report that only names a new film says nothing about where
+                # that film is: the old episode's clip and clock must not
+                # follow it, or a plain window open would inherit both.
+                for key in ("videoId", "position", "duration", "playing"):
+                    player.pop(key, None)
             player["url"] = url
         label = _player_text(data.get("label"), 200)
         if label:

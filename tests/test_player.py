@@ -411,6 +411,28 @@ def test_changing_reported_source_clears_old_episode():
     assert not server.player_payload()['player'].get('videoId')
 
 
+def test_new_film_opens_at_its_own_start(monkeypatch):
+    # A report that only names a new film says nothing about where that film
+    # is; the previous film's clock and pause must not follow it to the
+    # pop-out. (A partial report for the same film still keeps them.)
+    monkeypatch.setattr(server._STATE, 'player', {})
+    seen = {}
+
+    def fake_open(port, token, url, **kwargs):
+        seen.update(kwargs)
+        return {'open': True}
+
+    monkeypatch.setattr(server.desktop_window, 'open_window', fake_open)
+    monkeypatch.setattr(server.desktop_window, 'status', lambda: {'open': True})
+    monkeypatch.setattr(server._STATE, 'port', 4321)
+    server.report_player({'url': 'https://example.test/first.mp4',
+                          'position': 600, 'duration': 900, 'playing': False})
+    server.report_player({'url': 'https://example.test/second.mp4'})
+    server.open_window({})
+    assert seen['position'] == 0.0
+    assert 'paused' not in seen
+
+
 def test_bootstrap_ticket_is_single_use(live):
     ticket = server.desktop_window.issue_ticket(live['token'])
     status, result = call(live['port'], 'POST', '/api/window/bootstrap', body={'ticket': ticket})
