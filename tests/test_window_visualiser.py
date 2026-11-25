@@ -463,6 +463,18 @@ def call(port, method, path, token=None, body=None):
     return resp.status, payload
 
 
+def page_get(port, path, cookie=""):
+    """GET like a browser does: replay the cookie the previous load was given."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    headers = {"Cookie": cookie} if cookie else {}
+    conn.request("GET", path, headers=headers)
+    resp = conn.getresponse()
+    payload = resp.read()
+    issued = resp.getheader("Set-Cookie") or ""
+    conn.close()
+    return resp.status, payload, issued.split(";", 1)[0]
+
+
 def test_window_open_visualizer_needs_no_film(live, monkeypatch):
     seen = {}
 
@@ -519,6 +531,31 @@ def test_index_loads_with_a_valid_ticket_and_no_token(live):
     assert json.loads(payload.decode())["token"] == live["token"]
     status, _payload = call(live["port"], "POST", "/api/window/bootstrap", None,
                             {"ticket": ticket})
+    assert status == 401
+
+
+def test_a_reload_after_the_ticket_is_redeemed_still_serves_the_page(live):
+    # The window loads with a one-time ticket and its own bootstrap scrubs that
+    # ticket from the address before the page draws. Ctrl+R then asks for the
+    # same document with nothing left in the URL, and a 401 replaces the
+    # visualiser the owner was watching with an error body.
+    ticket = server.desktop_window.issue_ticket(live["token"])
+    status, _payload, cookie = page_get(live["port"], f"/index.html?desktop=1&ticket={ticket}")
+    assert status == 200
+    # The page trades the ticket for the token, one time only, as before.
+    status, _payload = call(live["port"], "POST", "/api/window/bootstrap", None,
+                            {"ticket": ticket})
+    assert status == 200
+    status, payload, _cookie = page_get(live["port"], "/index.html?desktop=1", cookie)
+    assert status == 200, "a reload of the visualiser answered 401 instead of the page"
+    assert b"aura" in payload.lower()
+    assert cookie, "the ticket load left nothing behind for a reload"
+    assert live["token"] not in cookie, "the reload credential is the server token"
+    # What it carries opens the document and nothing else: data stays token-only.
+    status, _payload, _cookie = page_get(live["port"], "/api/state", cookie)
+    assert status == 401
+    # A window that never loaded the page is still refused.
+    status, _payload, _cookie = page_get(live["port"], "/index.html?desktop=1")
     assert status == 401
 
 

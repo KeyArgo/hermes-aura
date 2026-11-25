@@ -226,6 +226,9 @@ class _State:
         self.thread: threading.Thread | None = None
         self.port: int | None = None
         self.token: str | None = None
+        #: Random key the pop-out's document cookie carries (never the token);
+        #: regenerated with the token so an old window cannot reopen the page.
+        self.page_key: str | None = None
         self.capture_obj: Any = None
         self.capture_thread: threading.Thread | None = None
         self.capture_name = "none"
@@ -1030,10 +1033,20 @@ def close_window() -> dict:
 # HTTP handler
 # ---------------------------------------------------------------------------
 
+#: The pop-out's document credential. Once the page has scrubbed its one-time
+#: ticket from the address, a reload asks for the document with no ticket and no
+#: Authorization header (a browser never attaches one to a navigation), so the
+#: window would be replaced by a 401. This cookie carries a per-server random
+#: key, not the token, and reopens the page and nothing else.
+PAGE_COOKIE = "aura_page"
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = f"Aura/{VERSION}"
     sys_version = ""
+    #: Set by _grant_page() on an authorised index response, sent by _serve_index().
+    _page_cookie_header = ""
 
     # -- logging (never the token) ----------------------------------------
     def log_message(self, format, *args):  # noqa: A002,N802
@@ -1098,6 +1111,34 @@ class _Handler(BaseHTTPRequestHandler):
             return False
         return bool(ticket) and desktop_window.ticket_valid(ticket)
 
+    def _page_cookie(self) -> str:
+        header = self.headers.get("Cookie") or ""
+        for part in header.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == PAGE_COOKIE:
+                return value
+        return ""
+
+    def _page_ok(self) -> bool:
+        """Reload of the pop-out's own document: the bootstrap has already
+        scrubbed the one-time ticket from the address, and a navigation carries
+        no Authorization header, so the page must be able to refetch itself."""
+        key = _STATE.page_key
+        supplied = self._page_cookie()
+        if not key or not supplied:
+            return False
+        try:
+            return hmac.compare_digest(supplied, key)
+        except (TypeError, ValueError):
+            return False
+
+    def _grant_page(self) -> None:
+        """Leave the document credential on an authorised index response."""
+        key = _STATE.page_key
+        if key:
+            self._page_cookie_header = (f"{PAGE_COOKIE}={key}; Path=/; "
+                                        "HttpOnly; SameSite=Strict")
+
     def _send_json(self, obj: dict, code: int = 200) -> None:
         try:
             payload = json.dumps(obj, separators=(",", ":")).encode("utf-8")
@@ -1144,9 +1185,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._handle_ws()
                 return
             if path == "/" or path == "/index.html":
-                if not (self._query_ok() or self._bearer_ok() or self._ticket_ok()):
+                if not (self._query_ok() or self._bearer_ok() or self._ticket_ok()
+                        or self._page_ok()):
                     self._send_json({"ok": False, "error": "unauthorized"}, 401)
                     return
+                self._grant_page()
                 self._serve_index()
                 return
             if path == "/favicon.ico":
@@ -1478,6 +1521,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
+        if self._page_cookie_header:
+            self.send_header("Set-Cookie", self._page_cookie_header)
         self.end_headers()
         try:
             self.wfile.write(payload)
@@ -1863,6 +1908,7 @@ def _start_server() -> None:
 
     with _STATE.lock:
         _STATE.token = token
+        _STATE.page_key = secrets.token_urlsafe(32)
         _STATE.httpd = httpd
         _STATE.port = port
         _STATE.stop_event = stop_event
@@ -2463,6 +2509,7 @@ def _stop_server_locked() -> None:
         with _STATE.lock:
             _STATE.clients.clear()
             _STATE.token = None
+            _STATE.page_key = None
             _STATE.capture_name = "none"
             _STATE.features = analysis.silence_features()
             _STATE.mood = "idle"
