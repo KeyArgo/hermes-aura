@@ -1237,12 +1237,24 @@ function rampShow(target) {
  */
 async function pushControl(patch) {
   if (!ctxRef || disposed) return false
+  // Every push is a local edit in flight. A /state that started before it (or
+  // that lands while it runs) carries the value the user just replaced, so the
+  // poll skips its sync until this one settles (see poll's syncFromServer call).
+  controlPushPending += 1
+  const mine = instanceSeq
   try {
     await ctxRef.rest('/control', { method: 'POST', body: patch, timeoutMs: 5000 })
     return true
   } catch {
     setError('Aura could not apply that change — the local server is not answering.')
     return false
+  } finally {
+    // The next instance counts its own pushes from zero: a push the replaced
+    // one left in flight must not take one of them away.
+    if (mine === instanceSeq) {
+      controlPushPending -= 1
+      controlPushEpoch += 1
+    }
   }
 }
 
@@ -1605,8 +1617,9 @@ async function desktopWindowOpen() {
 /**
  * The server is the single source of truth for the display controls. Without
  * this, a quick menu built from stale local storage showed a different motion
- * or behaviour than the one actually driving the visual. Sync the five keys
- * the server owns; local-only preferences (windowVisual, showWhen)
+ * or behaviour than the one actually driving the visual. Sync the nine keys
+ * the server owns — the agent tool (`aura_control`) can flip any of them
+ * behind this half's back; local-only preferences (windowVisual, showWhen)
  * are never touched here.
  */
 function syncFromServer(frame) {
@@ -1629,6 +1642,18 @@ function syncFromServer(frame) {
   }
   if (typeof frame.reduced_motion === 'boolean' && frame.reduced_motion !== current.reducedMotion) {
     patch.reducedMotion = frame.reduced_motion
+  }
+  if (typeof frame.mood_reactive === 'boolean' && frame.mood_reactive !== current.moodReactive) {
+    patch.moodReactive = frame.mood_reactive
+  }
+  if (typeof frame.accent_pulse === 'boolean' && frame.accent_pulse !== current.accentPulse) {
+    patch.accentPulse = frame.accent_pulse
+  }
+  if (typeof frame.auto_preset === 'boolean' && frame.auto_preset !== current.autoPreset) {
+    patch.autoPreset = frame.auto_preset
+  }
+  if (typeof frame.idle_motion === 'string' && IDLE_MOTIONS.includes(frame.idle_motion) && frame.idle_motion !== current.idleMotion) {
+    patch.idleMotion = frame.idle_motion
   }
   if (Object.keys(patch).length) writeSettings(patch)
 }
@@ -1764,7 +1789,11 @@ async function poll() {
     if (disposed || mine !== instanceSeq) return
 
     liveFrame = frame
-    syncFromServer(frame)
+    // A /state that started before a local control push — or whose answer
+    // landed while that push was in flight — carries the value the user just
+    // replaced. Skipping one sync is cheaper than snapping a slider back; the
+    // next tick (250 ms while busy) reads the server's new value.
+    if (controlPushPending === 0 && controlPushEpoch === controlEpochAtStart) syncFromServer(frame)
     // [listen lane] One delivery path for the agent's "play this / mute the
     // film": the server keeps the request, this consumes a new seq only.
     handleAudioRequests(frame)
@@ -2078,14 +2107,13 @@ async function setEnabled(next, fromNewBuild = false) {
       })
     }
   }
-  controlPushPending += 1
+  // pushControl marks itself pending and bumps the epoch: one door for every
+  // control (a poll in flight then trusts the local value, never its answer).
   const ok = await pushControl({ enabled })
   // A profile switch (or a hot reload) while the POST was in flight: its answer
-  // belongs to the old instance. The new one counted its own pushes from zero,
-  // and a late Off must not switch a profile the user never touched.
+  // belongs to the old instance, and a late Off must not switch a profile the
+  // user never touched.
   if (disposed || mine !== instanceSeq) return
-  controlPushPending -= 1
-  controlPushEpoch += 1
   if (ok) {
     setLive({ enabled, error: '' })
     refreshFilmSurface()
@@ -7791,7 +7819,7 @@ function AuraSettings(props) {
           'Aura enabled',
           'Listens to system audio and drives the backdrop and accent.',
           jsx(Switch, {
-            checked: settings.enabled,
+            checked: auraOn,
             'aria-label': 'Aura enabled',
             onCheckedChange: value => {
               void setEnabled(value)

@@ -67,6 +67,14 @@
 - A short Popular Radio request no longer caps the next one: the ranked list was cached at the size that was asked for, so a `limit=1` call left one station cached for fifteen minutes and a following `limit=24` answered with that single row instead of the presets that were already on hand — the pool is now built at least a default page long, and a cached list only answers a request it covers.
 - The popped-out window's Next/Previous on a playlist steps its episodes in that window, not in the
   parked in-app frame.
+- The Settings page now follows the server's own display controls: an Off pressed by the agent tool or
+  the CLI shows as Off (and one click turns Aura back on), `accent_pulse`, `idle_motion`,
+  `mood_reactive` and `auto_preset` set on the server reach the switches and the accent pulse, and a
+  `/state` poll that started before a slider or select edit no longer puts the old value back.
+- Closing a named profile's pop-out no longer removes the default profile's window lease. The watcher runs on
+  its own thread, where the profile's context-local home is gone, so it resolved the process-wide default: it
+  left its own lease behind and deleted the default home's (and with it, on Windows, the pid restart cleanup
+  uses to find a surviving window); it now runs in the context that opened the window.
 
 ## 1.0.1 — 2026-11-24
 

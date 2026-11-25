@@ -233,7 +233,14 @@ function makeCtx(settings) {
     behavior: settings && typeof settings.behavior === 'string' ? settings.behavior : 'calm',
     intensity: settings && Number.isFinite(settings.intensity) ? settings.intensity : 0,
     opacity: settings && Number.isFinite(settings.opacity) ? settings.opacity : 0.25,
-    reduced_motion: settings && typeof settings.reducedMotion === 'boolean' ? settings.reducedMotion : false
+    reduced_motion: settings && typeof settings.reducedMotion === 'boolean' ? settings.reducedMotion : false,
+    mood_reactive: settings && typeof settings.moodReactive === 'boolean' ? settings.moodReactive : true,
+    accent_pulse: settings && typeof settings.accentPulse === 'boolean'
+      ? settings.accentPulse
+      // The legacy `followAudio` key reads back as accent_pulse (readSettings).
+      : Boolean(settings && typeof settings.followAudio === 'boolean' ? settings.followAudio : false),
+    auto_preset: settings && typeof settings.autoPreset === 'boolean' ? settings.autoPreset : true,
+    idle_motion: settings && typeof settings.idleMotion === 'string' ? settings.idleMotion : 'always'
   }
   const serverFrame = {
     level: 0.55,
@@ -325,6 +332,10 @@ function makeCtx(settings) {
           behavior: serverSettings.behavior,
           motion: serverSettings.motion,
           reduced_motion: serverSettings.reduced_motion,
+          mood_reactive: serverSettings.mood_reactive,
+          accent_pulse: serverSettings.accent_pulse,
+          auto_preset: serverSettings.auto_preset,
+          idle_motion: serverSettings.idle_motion,
           enabled: serverEnabled
         }
       }
@@ -336,6 +347,10 @@ function makeCtx(settings) {
         if (options.body && Number.isFinite(options.body.intensity)) serverSettings.intensity = options.body.intensity
         if (options.body && Number.isFinite(options.body.opacity)) serverSettings.opacity = options.body.opacity
         if (options.body && typeof options.body.reduced_motion === 'boolean') serverSettings.reduced_motion = options.body.reduced_motion
+        if (options.body && typeof options.body.mood_reactive === 'boolean') serverSettings.mood_reactive = options.body.mood_reactive
+        if (options.body && typeof options.body.accent_pulse === 'boolean') serverSettings.accent_pulse = options.body.accent_pulse
+        if (options.body && typeof options.body.auto_preset === 'boolean') serverSettings.auto_preset = options.body.auto_preset
+        if (options.body && typeof options.body.idle_motion === 'string') serverSettings.idle_motion = options.body.idle_motion
         return { ok: true }
       }
           if (route === '/window') {
@@ -367,7 +382,10 @@ function makeCtx(settings) {
   return {
     ctx, contributions, timers, controls, disposers, listeners, requests, storage, serverSettings, serverFrame,
     windowState: () => ({ available: windowAvailable, open: windowOpen }),
-    setWindowAvailable: value => { windowAvailable = value }
+    setWindowAvailable: value => { windowAvailable = value },
+    // The agent tool / CLI can flip the server switch without the plugin: a
+    // test that means to prove the server wins needs the same door.
+    setServerEnabled: value => { serverEnabled = Boolean(value) }
   }
 }
 
@@ -4617,6 +4635,88 @@ await recordAsync('an Off from the replaced profile cannot switch the new one of
     disposeB()
   }
 })
+
+// ---------------------------- regression H3: the server's display toggles
+// The server owns the display controls. An agent tool (`aura_control`) or the
+// CLI can turn Aura off, or flip accent_pulse / idle_motion / mood_reactive /
+// auto_preset, without this half: Settings must render the server's answer,
+// not the last saved one. And a /state that started before a local edit must
+// not put the old value back when its answer lands late.
+{
+  const s = makeCtx({ enabled: true, intensity: 0.35, reducedMotion: false })
+  const disposeS = pluginModule.default.register(s.ctx)
+  await sleep(40)
+  const page = () => renderContribution(s.contributions.find(c => c.area === 'settings.plugins'))
+
+  try {
+    await recordAsync('a server Off beats the saved On in the Settings switch', async () => {
+      s.setServerEnabled(false)
+      await pollTick(s)
+      const sw = findByAria(page(), 'Aura enabled')
+      assert.ok(sw, 'no Aura enabled switch rendered')
+      assert.equal(sw.props.checked, false, 'the switch still shows the saved On while the server says Off')
+      // A click hands over the opposite of what the switch draws: from Off that
+      // is On again, not a second Off.
+      const controlBefore = s.controls.length
+      sw.props.onCheckedChange(!sw.props.checked)
+      await sleep(40)
+      assert.ok(
+        s.controls.slice(controlBefore).some(patch => patch && patch.enabled === true),
+        'the click did not turn Aura back on'
+      )
+    })
+
+    await recordAsync('accent pulse, idle motion, mood reactive and auto preset follow the server', async () => {
+      s.serverSettings.accent_pulse = true
+      s.serverSettings.idle_motion = 'stop'
+      s.serverSettings.mood_reactive = false
+      s.serverSettings.auto_preset = false
+      const accentsBefore = sdk.calls.accent.length
+      await pollTick(s)
+      const tree = page()
+      assert.equal(findByAria(tree, 'Accent pulse').props.checked, true, 'the settings still show the stale accent pulse')
+      assert.equal(findByAria(tree, 'React to agent mood').props.checked, false, 'the settings still show the stale mood reaction')
+      assert.equal(findByAria(tree, 'Automatic presets').props.checked, false, 'the settings still show the stale auto presets')
+      assert.equal(findByAria(tree, 'While idle').props.value, 'stop', 'the settings still show the stale idle motion')
+      const saved = s.storage.get('settings')
+      assert.equal(saved.accentPulse, true, 'the synced accent pulse never reached storage')
+      assert.equal(saved.idleMotion, 'stop', 'the synced idle motion never reached storage')
+      const applied = sdk.calls.accent.slice(accentsBefore).filter(value => typeof value === 'string')
+      assert.ok(applied.length >= 1, 'accentStep never applied an override after the server turned the pulse on')
+    })
+
+    await recordAsync('a /state that started before a control push does not undo the edit', async () => {
+      const plainRest = s.ctx.rest
+      let release = null
+      let held = null
+      s.ctx.rest = async (route, options) => {
+        // Capture the answer first: the server would give this stale value if
+        // the poll had finished before the edit, which is exactly the race.
+        const answer = await plainRest(route, options)
+        if (route === '/state' && held) await held
+        return answer
+      }
+      s.serverSettings.intensity = 0.2
+      held = new Promise(resolve => { release = resolve })
+      try {
+        await pollTick(s)   // the poll is now parked on the held /state
+        findByAria(page(), 'Reaction strength').props.onChange({ target: { value: '0.8' } })
+        await sleep(30)
+        assert.equal(s.storage.get('settings').intensity, 0.8, 'the slider edit was not saved')
+        release()
+        held = null
+        await sleep(60)
+        assert.equal(s.storage.get('settings').intensity, 0.8, 'a stale /state put the old intensity back')
+        assert.equal(findByAria(page(), 'Reaction strength').props.value, 0.8, 'the slider snapped back to the old value')
+      } finally {
+        if (release) release()
+        s.ctx.rest = plainRest
+      }
+    })
+  } finally {
+    disposeS()
+  }
+}
 
 // --------------------------------------------------------------- reporting
 
