@@ -234,6 +234,12 @@ def load_config() -> dict:
             text = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return dict(DEFAULTS)
+        except UnicodeDecodeError:
+            # An editor that saves as UTF-16 (or UTF-8 with a BOM) leaves a file we
+            # cannot decode; it is one more corrupt config, not an exception out of
+            # a reader the capture loop and the HTTP routes treat as infallible.
+            logger.info("aura: config is not UTF-8; using defaults")
+            return dict(DEFAULTS)
         except OSError as exc:
             logger.info("aura: config unreadable (%s); using defaults", type(exc).__name__)
             return dict(DEFAULTS)
