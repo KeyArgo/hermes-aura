@@ -1,7 +1,7 @@
 name: aura
 label: Aura
 kind: standalone
-version: "1.0.0"
+version: "1.0.1"
 author: InovinLabs
 description: >
   Aura plays a film, a lecture, or a YouTube playlist in the Right panel, on the Aura page, or in

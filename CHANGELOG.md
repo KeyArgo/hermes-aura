@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.0.1 — 2026-11-24
+
+Bug fixes after the catalog listing; each has a regression test that fails on 1.0.0.
+
 - A command aimed at another profile no longer reaches this one's film. A mood, an audio request or a
   config push made under a profile with no server of its own is now dropped instead of landing on the
   profile this process serves, so one profile's audio could start here and its `enabled=false` could stop
@@ -48,6 +52,8 @@
 - A deleted Hermes profile stays deleted. The lease watcher no longer re-creates
   `<profile>/aura/` behind the user's back (which made Hermes refuse the profile with "Named profile
   home does not exist"); a server whose profile home is gone now stops instead.
+
+## 1.0.0 — 2026-11-24 (catalog pin 6a87c2f; changes since the 11-11 submission)
 
 - The REVamp card points at REVamp itself: Marketplace opens its own page (with Install in Hermes), the
   terminal line is the catalog install `hermes plugins install revamp`, and Find in Plugins says where to
