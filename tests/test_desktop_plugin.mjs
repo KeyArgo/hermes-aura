@@ -3800,10 +3800,14 @@ await recordAsync('player coordinator reports, consumes commands, and restores a
   await pluginModule.wiringTest.sync()
   assert.equal(pluginModule.wiringTest.video.get().playing, false)
   pluginModule.wiringTest.video.set({ ...pluginModule.wiringTest.video.get(), playing: true })
+  // [finding 12] A muted film must come out muted: the OS window's own player
+  // has no idea the in-app one was silenced unless the handoff says so.
+  pluginModule.wiringTest.settings.set({ ...pluginModule.wiringTest.settings.get(), videoMuted: true })
   await pluginModule.wiringTest.setWindow(true)
   const sent = calls.find(c => c.route === '/window/open').options.body
   assert.equal(sent.videoId, 'abcdefghijk')
   assert.equal(sent.position, 12)
+  assert.equal(sent.muted, true, 'the pop-out dropped the film\'s mute, so the window plays it aloud')
   assert.equal(pluginModule.wiringTest.video.get().playing, false)
   player = { desktop: true, url: 'https://youtube.com/playlist?list=abcdefghij', videoId: 'zyxwvutsrqp', position: 35, duration: 300, playing: true }
   await pluginModule.wiringTest.sync()

@@ -127,6 +127,10 @@
     presetFamily: null,
     presetStrobe: false,
     presetAnchor: null,
+    // A preset the server holds but no visualiser could take yet: boot reads the
+    // config before initViz() exists, so the name waits here instead of being
+    // dropped (and replaced by the family default on the first frame).
+    pendingPreset: null,
     frames: 0,
     badFrames: 0,
     droppedFrames: 0,
@@ -575,11 +579,12 @@
     setTimeout(() => dom.glow.classList.remove('peak'), 220);
   }
 
-  function applyMood(name, intensity, ttlMs) {
+  function applyMood(name, intensity, ttlMs, agentMood) {
     if (!MOODS.includes(name)) name = 'idle';
     // The agent activity gate always sees the RAW mood, even when mood colours
-    // are off or Aura is disabled (the gate itself respects disabled).
-    noteAgentMood(name);
+    // are off, Aura is disabled, or the server already rewrote it to idle
+    // (mood_reactive=false sends the raw activity as `agent_mood`).
+    noteAgentMood(MOODS.includes(agentMood) ? agentMood : name);
     if (!state.enabled) name = 'idle';
     // mood_reactive=false: the agent-mood layer is off, so every incoming
     // mood is treated as idle. Nothing latches; turning it back on applies
@@ -946,7 +951,9 @@
     }
     const blend = num(blendMs, num(activeProfile().blend_ms, 1200));
     try {
-      viz.loadPreset(map[name], clamp(blend, 0, 8000));
+      // Everything here is milliseconds; butterchurn's loadPreset() blends over
+      // seconds of renderer time. Passing 1200 built a ~20-minute crossfade.
+      viz.loadPreset(map[name], clamp(blend, 0, 8000) / 1000);
       state.presetName = name;
       state.presetFamily = meta ? meta.family : null;
       state.presetStrobe = meta ? meta.strobe : false;
@@ -1324,7 +1331,13 @@
       block('webgl', 'The visualizer could not start on this GPU — showing the accent-only fallback.');
       return false;
     }
-    const initial = pickInitialPreset();
+    // The server's saved preset wins over a family default. It was only held
+    // back because config is read before the visualiser exists; a name this
+    // page cannot load (unknown, or a strobe preset while they are not allowed)
+    // still falls back to the usual opening pick.
+    const saved = state.pendingPreset;
+    state.pendingPreset = null;
+    const initial = (saved && loadPresetByName(saved, 0)) ? null : pickInitialPreset();
     if (initial) loadPresetByName(initial, 0);
     if (state.enabled) startLoop();
     if (!silenceTimer) silenceTimer = setInterval(tickSilence, 250);
@@ -2106,7 +2119,9 @@
         break;
       }
       case 'mood':
-        applyMood(ev.mood, num(ev.intensity, 0.6), num(ev.ttl_ms, 0));
+        // mood_reactive=false makes the server rewrite `mood` to idle; the raw
+        // activity rides along as `agent_mood`, so the agent gate still wakes.
+        applyMood(ev.mood, num(ev.intensity, 0.6), num(ev.ttl_ms, 0), ev.agent_mood);
         break;
       case 'preset':
         // auto_preset=false: rotation stops cleanly. A manual preset still
@@ -2265,7 +2280,15 @@
     // A manually chosen preset arrives through the config event; preset
     // *rotation* arrives as its own event and is gated by auto_preset.
     if (typeof cfg.preset === 'string' && cfg.preset && cfg.preset !== state.presetName) {
-      loadPresetByName(cfg.preset, num(activeProfile().blend_ms, 1200));
+      if (state.autoPreset) {
+        // Rotation owns the selection while it is on.
+        state.pendingPreset = null;
+      } else if (viz) {
+        loadPresetByName(cfg.preset, num(activeProfile().blend_ms, 1200));
+      } else {
+        // Boot reads the config before initViz() runs; initViz() applies it.
+        state.pendingPreset = cfg.preset;
+      }
     }
     if (typeof cfg.capture === 'string') syncCaptureFallback(cfg.capture);
   }
@@ -2738,6 +2761,9 @@
     },
     // e2e hook: let the test drive mood without a server (still used by WS events).
     applyMood,
+    // the WS text-frame path, so a unit test can feed the exact event JSON the
+    // server publishes without a socket.
+    _handleEvent: handleText,
     noteAgentMood,
     noteAudio,
     agentMotionGate,

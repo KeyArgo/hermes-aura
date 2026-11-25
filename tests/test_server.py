@@ -537,6 +537,42 @@ def test_config_event_carries_display_controls(live):
     assert isinstance(event["reduced_motion"], bool)
 
 
+def test_control_preset_reaches_open_pages(live):
+    """A manual preset must reach the page, not just the config file.
+
+    With auto presets off the page applies whatever the config event carries, so
+    a selection the broadcast leaves out is saved and never shown.
+    """
+    catalog = json.loads((Path(server.WEB_DIR) / "presets.json").read_text(encoding="utf-8"))
+    allowed = {p["name"] for p in catalog["presets"]}
+    name = "Flexi + Martin - cascading decay swing"
+    assert name in allowed and name != catalog["default"], "not a distinct core preset"
+
+    ws = WSClient(live["port"], live["token"])
+    try:
+        time.sleep(0.2)
+        status, _ = http_call(live["port"], "POST", "/api/control", token=live["token"],
+                              body={"auto_preset": False, "preset": name})
+        assert status == 200
+        deadline = time.time() + 5
+        event = None
+        while event is None and time.time() < deadline:
+            try:
+                opcode, payload = ws.recv()
+            except (socket.timeout, EOFError):
+                break
+            if opcode != 0x1:
+                continue
+            frame = json.loads(payload.decode("utf-8"))
+            if frame.get("type") == "config":
+                event = frame
+        assert event is not None, "the selection was saved but never published"
+        assert event["auto_preset"] is False
+        assert event["preset"] == name
+    finally:
+        ws.close()
+
+
 def test_presets_shape(live):
     status, payload = http_call(live["port"], "GET", "/api/presets", token=live["token"])
     assert status == 200
@@ -703,8 +739,43 @@ def test_publish_mood_reaches_connected_client(live):
         assert 0.0 <= mood["intensity"] <= 1.0
         assert mood["ttl_ms"] == 2000
         assert isinstance(mood["seq"], int)
+        # Reactive mood: the raw activity is the mood itself, no extra field.
+        assert "agent_mood" not in mood
     finally:
         ws.close()
+
+
+def test_publish_mood_keeps_raw_agent_activity_with_mood_colours_off(live):
+    """mood_reactive=false hides the visual mood, not the running turn (§9.5)."""
+    status, payload = http_call(live["port"], "POST", "/api/control", token=live["token"],
+                                body={"mood_reactive": False, "motion": "agent"})
+    assert status == 200
+    ws = WSClient(live["port"], live["token"])
+    try:
+        time.sleep(0.2)
+        status, _ = http_call(live["port"], "POST", "/api/mood", token=live["token"],
+                              body={"mood": "thinking", "intensity": 0.8})
+        assert status == 200
+        event = None
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            opcode, frame = ws.recv()
+            if opcode != 0x1:
+                continue
+            candidate = json.loads(frame.decode("utf-8"))
+            if candidate.get("type") == "mood":
+                event = candidate
+                break
+        assert event is not None, "the mood event never reached the page"
+        # Neutral visuals, raw activity: the page's agent-motion gate reads the
+        # latter, so a turn that starts after the page settled still wakes it.
+        assert event["mood"] == "idle", "mood colours off must display idle"
+        assert event["agent_mood"] == "thinking", "the raw agent activity was dropped"
+    finally:
+        ws.close()
+    # Nothing latched: the held mood is still idle.
+    status, payload = http_call(live["port"], "GET", "/api/state", token=live["token"])
+    assert json_body(payload)["mood"] == "idle"
 
 
 def test_publish_mood_without_clients_is_safe(live):

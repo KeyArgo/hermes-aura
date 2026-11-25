@@ -52,7 +52,7 @@ when the socket is backed up.
 **Text frame = JSON event.** `{"type": "features"|"mood"|"preset"|"config"|"error", ...}`
 
 - `features`: `{"type":"features","seq":<int>,"ts_ms":<int>,"level":<0..1>,"bands":[8 floats 0..1],"onset":<bool>,"centroid":<0..1>,"flatness":<0..1>,"silence":<bool>}` — at most 10 Hz.
-- `mood`: `{"type":"mood","mood":<mood>,"intensity":<0..1>,"ttl_ms":<int>,"seq":<int>}` — emitted on every transition and every 2 s while a non-idle mood holds.
+- `mood`: `{"type":"mood","mood":<mood>,"intensity":<0..1>,"ttl_ms":<int>,"seq":<int>}` — emitted on every transition and every 2 s while a non-idle mood holds. With `mood_reactive=false` the event also carries `agent_mood` (the raw activity, e.g. `thinking`) while `mood` itself stays `idle` (§9.5).
 - `preset`: `{"type":"preset","name":<str>,"blend_ms":<int>}` — server-selected preset change.
 - `config`: `{"type":"config", ...same as /api/config}` — pushed when control changes state.
 - `error`: `{"type":"error","code":<str>,"message":<str>}` — e.g. `capture_lost`.
@@ -220,7 +220,9 @@ with no extra plumbing.
 - Pause waits `AGENT_IDLE_GRACE_MS` = 2500 ms of raw idle so tool-call gaps do not flicker; any
   new active mood cancels the pending pause.
 - The gate uses the raw mood independently of the mood visuals: `mood_reactive=false` forces the
-  visual mood to `idle` but does not freeze `agent`/`agent_music`.
+  visual mood to `idle` but does not freeze `agent`/`agent_music`. Because the server rewrites the
+  visual mood before publishing it, the mood event carries the raw activity as `agent_mood`; the
+  gate reads that field when it is present.
 - At page load, if `/api/state` (or the first events) reports an active mood, the visual starts
   moving. Disabled Aura behaves as before.
 

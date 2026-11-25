@@ -250,6 +250,26 @@ def test_window_open_passes_token_and_position(live, monkeypatch):
     assert live["token"] not in json.dumps(body)
 
 
+def test_window_open_forwards_a_muted_film(live, monkeypatch):
+    # [finding 12] The pop-out carried position and playing but dropped the
+    # mute, so a muted film came back loud in the OS window (audible next to
+    # the radio). The window's page can only start silent if it is told.
+    seen = {}
+
+    def fake_open(port, token, url, **options):
+        seen.update(options)
+        return {"open": True, "already": False, "url": url, "pid": 1}
+
+    monkeypatch.setattr(server.desktop_window, "open_window", fake_open)
+    monkeypatch.setattr(server.desktop_window, "status",
+                        lambda: {"open": True, "available": True})
+    status, body = call(live["port"], "POST", "/api/window/open", live["token"],
+                        {"url": "https://example.test/film.mp4", "position": 42,
+                         "playing": True, "muted": True})
+    assert status == 200 and body["ok"] is True
+    assert seen.get("muted") is True, "the pop-out dropped the film's mute"
+
+
 def test_window_open_falls_back_to_the_reported_film(live, monkeypatch):
     seen = {}
 

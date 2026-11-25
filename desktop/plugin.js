@@ -1482,7 +1482,10 @@ async function openDesktopWindow() {
         position: Number.isFinite(video.position) ? Math.max(0, video.position) : 0,
         label: typeof video.title === 'string' ? video.title : '',
         videoId: typeof video.videoId === 'string' ? video.videoId : '',
-        playing: video.playing === true
+        playing: video.playing === true,
+        // [listen lane] The window's own player starts unmuted; a film muted
+        // here (radio on beside it) must stay silent when it moves out.
+        muted: settings.videoMuted === true
       }
   try {
     const result = await ctxRef.rest('/window/open', { method: 'POST', body, timeoutMs: 15000 })

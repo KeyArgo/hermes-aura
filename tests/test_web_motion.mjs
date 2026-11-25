@@ -194,6 +194,24 @@ record('moodReactive=false does not freeze the raw agent gate', () => {
   aura.setMoodReactiveUI(true)
 })
 
+record('a server mood event carrying raw agent activity wakes agent motion', () => {
+  // The server rewrites `mood` to idle when mood_reactive=false and sends the
+  // raw activity as `agent_mood`; the gate has to read that field, or a turn
+  // that starts after the page settled can never wake the visual.
+  const { aura, time } = freshAura()
+  aura.setMotionUI('agent')
+  aura.setMoodReactiveUI(false)
+  aura._handleEvent(JSON.stringify({ type: 'mood', mood: 'idle', intensity: 0, ttl_ms: 0,
+                                     agent_mood: 'idle', seq: 1 }))
+  time.advance(2500)
+  assert.equal(aura._state.renderPaused, true, 'an idle agent did not pause the visual')
+  aura._handleEvent(JSON.stringify({ type: 'mood', mood: 'idle', intensity: 0, ttl_ms: 0,
+                                     agent_mood: 'thinking', seq: 2 }))
+  assert.equal(aura._state.agentActive, true, 'the raw agent activity was dropped')
+  assert.equal(aura._state.renderPaused, false, 'agent motion stayed frozen with mood colours off')
+  assert.equal(aura.snapshot().mood, 'idle', 'the displayed mood must stay neutral')
+})
+
 console.log(results.join('\n'))
 console.log(`\n${results.length - failed} passed, ${failed} failed`)
 

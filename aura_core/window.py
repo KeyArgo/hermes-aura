@@ -140,13 +140,17 @@ def find_browser() -> Optional[str]:
 
 
 def player_url(port: int, token: Optional[str], url: str, position: float = 0.0,
-               video_id: str = "", paused: bool = False) -> str:
+               video_id: str = "", paused: bool = False, muted: bool = False) -> str:
     """The exact page the window opens, with the same auth the player already uses."""
     query: Dict[str, str] = {"desktop": "1", "url": str(url or "")}
     if token:
         query["ticket"] = str(token)
     if paused:
         query["paused"] = "1"
+    # The page reads ?mute=1 and sets it on the player before playback starts;
+    # without it a muted film talks as soon as the window opens.
+    if muted:
+        query["mute"] = "1"
     if re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id or ""):
         query["video"] = video_id
     try:
@@ -612,7 +616,7 @@ def open_page(url: str, title: str = "") -> Dict[str, Any]:
 def open_window(port: int, token: Optional[str], url: str,
                 position: float = 0.0, label: str = "", video_id: str = "",
                 paused: bool = False, page: str = "player",
-                reduced_motion: bool = False) -> Dict[str, Any]:
+                reduced_motion: bool = False, muted: bool = False) -> Dict[str, Any]:
     """Open the window (or report the one already open). Raises WindowError.
 
     ``page`` picks what the window shows: "player" (the film, Video mode) or
@@ -659,7 +663,8 @@ def open_window(port: int, token: Optional[str], url: str,
         def build_args() -> List[str]:
             ticket = issue_ticket(token) if token else ""
             target = (visualizer_url(port, ticket, reduced_motion) if page == "visualizer"
-                      else player_url(port, ticket, url, position, video_id, paused))
+                      else player_url(port, ticket, url, position, video_id, paused,
+                                      muted))
             args: List[str] = [
                 browser, f"--app={target}", f"--user-data-dir={profile}",
                 f"--window-size={WINDOW_SIZE[0]},{WINDOW_SIZE[1]}",

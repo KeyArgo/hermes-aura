@@ -275,6 +275,9 @@ def test_toggles_stop_and_resume_without_reload(chrome, aura):
             off_preset["preset"], "Flexi - area 51"), flush=True)
         assert off_preset["preset"] == before
 
+        # The server says auto_preset off too: a config push carries the saved
+        # preset now, and with rotation on the page keeps rotation's pick.
+        aura.auto_preset = False
         aura.preset = "Flexi - alien fish pond"
         aura.send_config()
         resumed = wait_for(tab, "window.__aura.snapshot().preset",

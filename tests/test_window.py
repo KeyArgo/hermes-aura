@@ -347,6 +347,20 @@ def test_window_preserves_paused_state(popen):
     assert 'paused=1' in app
 
 
+def test_window_preserves_muted_state(popen):
+    # [finding 12] The in-app page carries `mute=1`; the popped-out window's
+    # page must too, or a muted film starts talking in the OS window.
+    window.open_window(4567, 'token', 'https://example.test/film.mp4', muted=True)
+    app = next(arg for arg in popen[0][0] if arg.startswith('--app='))
+    assert 'mute=1' in app
+
+
+def test_window_leaves_the_sound_on_unless_muted(popen):
+    window.open_window(4567, 'token', 'https://example.test/film.mp4')
+    app = next(arg for arg in popen[0][0] if arg.startswith('--app='))
+    assert 'mute' not in app
+
+
 def test_open_page_loads_the_raw_page_not_the_player(popen):
     """Manage opens YouTube's own page in the window, not Aura's player.
 

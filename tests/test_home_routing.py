@@ -24,9 +24,13 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 HELPER = r'''
+import base64
 import json
 import os
+import socket
+import struct
 import sys
+import threading
 import time
 import types
 import urllib.request
@@ -95,6 +99,72 @@ def wait_mood(port, token, want, deadline=1.0):
     return last
 
 
+def ws_connect(port, token):
+    """Open the page's WebSocket and return (sock, leftover bytes)."""
+    sock = socket.create_connection(("127.0.0.1", port), timeout=5.0)
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    sock.sendall((
+        f"GET /api/stream?token={token} HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{port}\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\n"
+        "Sec-WebSocket-Version: 13\r\n\r\n"
+    ).encode("ascii"))
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise RuntimeError("ws handshake closed")
+        buf += chunk
+    head, _, rest = buf.partition(b"\r\n\r\n")
+    if b" 101" not in head.split(b"\r\n", 1)[0]:
+        raise RuntimeError("ws handshake refused")
+    return sock, rest
+
+
+def ws_event(frame, offset):
+    """One unmasked server frame -> parsed JSON text payload, else None."""
+    if frame[0] & 0x0F != 0x1:
+        return None
+    try:
+        return json.loads(frame[offset:].decode("utf-8"))
+    except ValueError:
+        return None
+
+
+def ws_collect(sock, frames, start=b""):
+    """Append every text event the server pushes until the socket closes."""
+    buf = start
+    while True:
+        try:
+            chunk = sock.recv(65536)
+        except OSError:
+            return
+        if not chunk:
+            return
+        buf += chunk
+        while len(buf) >= 2:
+            length = buf[1] & 0x7F
+            offset = 2
+            if length == 126:
+                if len(buf) < 4:
+                    break
+                length = struct.unpack(">H", buf[2:4])[0]
+                offset = 4
+            elif length == 127:
+                if len(buf) < 10:
+                    break
+                length = struct.unpack(">Q", buf[2:10])[0]
+                offset = 10
+            if len(buf) < offset + length:
+                break
+            frame, buf = buf[:offset + length], buf[offset + length:]
+            event = ws_event(frame, offset)
+            if event is not None:
+                frames.append(event)
+
+
 server.ensure_server()
 port = server.get_port()
 token = server.get_token()
@@ -126,6 +196,38 @@ if MODE == "override_ensure":
     server.ensure_server()
     server.publish_mood("thinking")
     emit("OVERRIDE", {"port": server.get_port(), "token": server.get_token()})
+    while True:
+        time.sleep(1)
+
+if MODE == "foreign_no_leader":
+    # A page is open on this home, then a turn enters another profile that has
+    # no live lease and publishes there: nothing may reach this home's state or
+    # its page.
+    sock, rest = ws_connect(port, token)
+    frames = []
+    threading.Thread(target=ws_collect, args=(sock, frames, rest), daemon=True).start()
+    deadline = time.time() + 3.0
+    while not frames and time.time() < deadline:
+        time.sleep(0.02)
+    time.sleep(0.2)
+    mark = len(frames)
+    set_hermes_home_override(OVERRIDE)
+    try:
+        audio = server.publish_audio_request("https://example.invalid/other.mp3",
+                                            "other profile", "play")
+        server.publish_mood("thinking")
+        server.publish_config()
+        time.sleep(0.8)
+        state = get_state(port, token)
+    finally:
+        set_hermes_home_override(None)
+    emit("RESULT", {
+        "seen": mark,
+        "audio": audio,
+        "mood": state.get("mood"),
+        "queued": len(state.get("audio_requests") or []),
+        "events": [e for e in frames[mark:] if e.get("type") in ("mood", "config")],
+    })
     while True:
         time.sleep(1)
 '''
@@ -357,3 +459,45 @@ def test_override_never_starts_a_second_server(tmp_path, homes):
         assert _listen_count(b_port) == 1
     finally:
         _stop(leader, *([other] if other else []))
+
+
+def test_foreign_home_without_leader_publishes_nothing(tmp_path, homes):
+    """Profile B's audio, mood and config must never reach profile A.
+
+    ``_forward_target()`` answered ``None`` both for "publish to this server"
+    and for "the other profile has no leader", so a B-scoped publish fell
+    through to the home this process serves: A's queue took B's audio request
+    and A's pages took B's settings (B's ``enabled=false`` stopped A's
+    renderer).
+    """
+    # B's own settings: Aura off there, and an intensity A does not use.
+    b_aura = homes["root"] / "aura"
+    b_aura.mkdir(parents=True)
+    (b_aura / "config.json").write_text(
+        json.dumps({"enabled": False, "mood_reactive": True, "intensity": 0.9,
+                    "opacity": 0.9}), encoding="utf-8")
+
+    leader = _spawn(tmp_path, homes["profile"], "foreign_no_leader", homes["root"])
+    try:
+        lines = _reader(leader)
+        ready = _next(lines, 15.0)
+        assert ready["tag"] == "READY"
+        assert ready["data"]["port"] and ready["data"]["token"]
+
+        result = _next(lines, 15.0)
+        assert result["tag"] == "RESULT"
+        data = result["data"]
+        # The page must have been live before the publish, or the stream check
+        # below would pass for the wrong reason.
+        assert data["seen"] > 0, "the page received no frame at all"
+        leaked = []
+        if data["queued"]:
+            leaked.append(f"audio queue ({data['queued']}): {data['audio']}")
+        if data["mood"] != "idle":
+            leaked.append(f"mood: {data['mood']}")
+        if data["events"]:
+            leaked.append(f"page events: {data['events']}")
+        assert not leaked, "profile B reached profile A: " + "; ".join(leaked)
+        assert not (b_aura / "lease.json").exists()
+    finally:
+        _stop(leader)

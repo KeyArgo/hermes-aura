@@ -278,6 +278,10 @@ _LOCK_FD: int | None = None
 # under a context-local override pointing at another profile; such a call must
 # never start a second server here, it only forwards to that home's leader.
 _LOCK_HOME: str | None = None
+# The home whose folder was deleted while this process served it. Election must
+# not run there until the folder is back: it would mkdir the profile into
+# existence again, and Hermes then refuses that profile.
+_HOME_GONE: str | None = None
 _TAKEOVER_AT = 0.0
 _TAKEOVER_LOCK = threading.Lock()
 _START_LOCK = threading.RLock()
@@ -526,23 +530,35 @@ def _config_event() -> dict:
         "mood_reactive": bool(cfg["mood_reactive"]),
         "accent_pulse": bool(cfg["accent_pulse"]),
         "auto_preset": bool(cfg["auto_preset"]),
+        # The manual selection: with auto presets off this is the only way the
+        # page can learn a preset was chosen (/api/state also carries it, but
+        # nothing pushes that). Null means "no choice" and the page keeps what
+        # rotation picked.
+        "preset": cfg["preset"],
         "motion": cfg["motion"],
         "idle_motion": cfg["idle_motion"],
         "behavior_profile": behavior.profile(cfg["behavior"]),
     }
 
 
-def _mood_event(mood: str, intensity: float, ttl_ms: int) -> dict:
+def _mood_event(mood: str, intensity: float, ttl_ms: int,
+                agent_mood: str | None = None) -> dict:
     with _STATE.lock:
         _STATE.feature_seq += 1
         seq = _STATE.feature_seq
-    return {
+    event = {
         "type": "mood",
         "mood": mood,
         "intensity": max(0.0, min(1.0, float(intensity))),
         "ttl_ms": max(0, int(ttl_ms)),
         "seq": seq,
     }
+    # mood_reactive=false rewrites the visual mood to idle, but the page's agent
+    # motion gate follows the RAW activity (CONTRACT §9.5): hand it over, or a
+    # turn can never wake the visual.
+    if agent_mood is not None and agent_mood != mood:
+        event["agent_mood"] = agent_mood
+    return event
 
 
 def _mood_tick(now: float) -> None:
@@ -970,6 +986,10 @@ def open_window(data: Any) -> dict:
         playing = reported.get("playing")
     if playing is False:
         options["paused"] = True
+    # [listen lane] A film muted in Aura comes back muted: the window's page
+    # starts its player unmuted unless the address carries mute=1.
+    if body.get("muted") is True:
+        options["muted"] = True
     result = desktop_window.open_window(int(port), _STATE.token, url, **options)
     result["ok"] = True
     result["window"] = desktop_window.status()
@@ -1926,6 +1946,7 @@ def _reassert_lease() -> bool:
     follower module in this same process, the CLI, the tools) then finds no server at all.
     Only the lock holder rewrites, so two servers can never take turns overwriting each other.
     """
+    global _HOME_GONE
     if not _holds_lock():
         return False
     # The user deleted this profile (the folder is gone): writing the lease or
@@ -1934,6 +1955,7 @@ def _reassert_lease() -> bool:
     # nothing left to serve, so stop it instead of resurrecting the folder.
     if not config.hermes_home().is_dir():
         _log("aura: profile home is gone; stopping server")
+        _HOME_GONE = _home_key()
         stop_server()
         return False
     with _STATE.lock:
@@ -2062,7 +2084,16 @@ def _try_become_leader() -> bool:
 
     The caller must hold ``_START_LOCK``.
     """
-    global _TAKEOVER_AT, _FOLLOWING, _LOCK_HOME
+    global _TAKEOVER_AT, _FOLLOWING, _LOCK_HOME, _HOME_GONE
+    # The profile this process served was deleted (the watcher stopped the
+    # server and dropped the lock): electing again -- from a /status poll, a
+    # get_port retry or a hook -- would find itself "own home" and mkdir the
+    # folder back through the lock open and the token write. Stay down until
+    # the folder exists again.
+    if _HOME_GONE is not None and _home_key() == _HOME_GONE:
+        if not config.hermes_home().is_dir():
+            return False
+        _HOME_GONE = None
     if not _is_own_home():
         # A per-turn override points at another profile: never elect/start a
         # second server here; the caller forwards to that home's leader.
@@ -2100,8 +2131,21 @@ def _current_lease() -> dict | None:
     return lease
 
 
-def _forward_target() -> dict | None:
-    """Lease to forward to for the current home, or ``None`` to publish locally."""
+class _NoTarget:
+    """``_forward_target()`` result for another profile's home with no leader.
+
+    Publishing must be dropped: the local state and the connected pages belong
+    to the home this process serves, so a publish here would reach the wrong
+    profile (a profile-B mood, or its ``enabled=false``, stopping profile A).
+    """
+
+
+_NO_TARGET = _NoTarget()
+
+
+def _forward_target() -> dict | None | _NoTarget:
+    """Where the current home's publish goes: a lease, ``None`` (this server),
+    or ``_NO_TARGET`` (another profile with no live leader: publish nowhere)."""
     if _is_own_home():
         with _START_LOCK:
             leader = _is_leader()
@@ -2112,7 +2156,8 @@ def _forward_target() -> dict | None:
             return None
         lease = _follower_lease()
         return lease
-    return _current_lease()
+    lease = _current_lease()
+    return _NO_TARGET if lease is None else lease
 
 
 def _forward(path: str, body: dict, lease: dict) -> None:
@@ -2242,12 +2287,17 @@ def publish_mood(mood: str, intensity: float = 1.0, ttl_ms: int = 0) -> None:
             reactive = bool(config.get("mood_reactive", True))
         except Exception:  # noqa: BLE001
             reactive = True
+        # The agent-motion gate follows the RAW activity, so keep it before the
+        # visual mood is forced neutral.
+        agent_mood = mood
         if not reactive:
             mood, intensity, ttl_ms = "idle", 0.0, 0
         # Route at call time: the current home may be a per-turn profile
         # override, not the home this process serves.
         lease = _forward_target()
-        if lease is not None:
+        if lease is _NO_TARGET:
+            return
+        if isinstance(lease, dict):
             _forward("/api/mood", {"mood": mood, "intensity": intensity,
                                    "ttl_ms": ttl_ms}, lease)
             return
@@ -2262,7 +2312,7 @@ def publish_mood(mood: str, intensity: float = 1.0, ttl_ms: int = 0) -> None:
             _STATE.mood_expiry = (now + ttl_ms / 1000.0) if ttl_ms > 0 else None
             _STATE.mood_last_sent = now
         if _clients_snapshot():
-            _broadcast_event(_mood_event(mood, intensity, ttl_ms))
+            _broadcast_event(_mood_event(mood, intensity, ttl_ms, agent_mood))
     except Exception as exc:  # noqa: BLE001 - a broken mood must not break a turn
         _log("aura: publish_mood failed (%s)", type(exc).__name__)
 
@@ -2292,7 +2342,11 @@ def publish_audio_request(url: str = "", label: str = "", action: str = "play",
         frame_extra["value"] = value
     try:
         lease = _forward_target()
-        if lease is not None:
+        if lease is _NO_TARGET:
+            # Another profile with no live leader: nothing is stored, and the
+            # page it would reach is not that profile's.
+            return {**frame_extra, "seq": 0, "at": int(time.time() * 1000)}
+        if isinstance(lease, dict):
             _forward("/api/audio", frame_extra, lease)
             # The follower cannot know the leader's seq; it reports what it sent.
             return {**frame_extra, "seq": 0, "at": int(time.time() * 1000), "forwarded": True}
@@ -2319,7 +2373,9 @@ def publish_config() -> None:
     """Push the current config to connected pages (after a control change)."""
     try:
         lease = _forward_target()
-        if lease is not None:
+        if lease is _NO_TARGET:
+            return
+        if isinstance(lease, dict):
             _forward("/api/config/push", {}, lease)
             return
         if _clients_snapshot():

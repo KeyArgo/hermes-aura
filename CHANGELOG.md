@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- A command aimed at another profile no longer reaches this one's film. A mood, an audio request or a
+  config push made under a profile with no server of its own is now dropped instead of landing on the
+  profile this process serves, so one profile's audio could start here and its `enabled=false` could stop
+  this renderer.
+- Turning mood colours off no longer stops agent motion. `mood_reactive=false` rewrote every mood
+  event to `idle` before publishing it, so an agent turn that started after the page settled could
+  never wake the visual; the event now carries the raw activity as `agent_mood` (the displayed mood
+  still stays neutral) and the page's agent gate reads it.
+- A dashboard `/status` poll no longer recreates a deleted profile. Once the lease watcher stopped the
+  server for a profile whose folder was deleted, the next poll (or any `get_port()` retry) re-elected
+  itself and mkdir'd the profile back, so Hermes refused it with "Named profile home does not exist";
+  election now stays down for a home whose folder was deleted while it was being served.
+- A manually chosen preset now reaches the screen. With auto presets off the server saved the selection
+  but left `preset` out of the config event the page listens to, and a reload applied the saved name
+  before the visualiser existed, so the stage opened on the behaviour's family default; the push and the
+  boot both show the chosen preset now.
+- Preset crossfades last the time they are configured for. The blend is carried in milliseconds but
+  was handed to butterchurn as seconds, so a balanced-profile 1200 ms transition mixed for ~20 minutes
+  (with the new preset name already recorded); the page now converts at the renderer boundary, and
+  0 ms still switches instantly.
+- A muted film stays muted when it is popped out. The Desktop hand-off now carries the mute, so the
+  window's player starts silent instead of talking over the radio.
 - Capture recovery reaches the page. When system audio comes back after a `capture_lost` (on the same
   backend or a reopened one), the server publishes the capture name, so the canvas and render loop
   return without touching a control; a backend that keeps returning nothing is now probed again
