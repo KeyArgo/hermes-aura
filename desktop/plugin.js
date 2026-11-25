@@ -246,6 +246,12 @@ const PULSE_LEVELS = Object.freeze([0.18, 0.45, 0.8, 1, 0.8, 0.45])
 const PULSE_REDUCED_OPACITY = 0.55
 // Above this audio level, and not flagged silent, counts as "music playing".
 const PULSE_MUSIC_LEVEL = 0.02
+// The visualiser page wakes on its own PCM peak (web/aura.js SILENCE_PEAK,
+// 0.0015), which is quieter than the silence line above: a tone at that peak
+// still draws there but reports a level of ~0.018 *and* the server's silence
+// bit. The "Only while active" fade follows the page, so its gate sits at the
+// quietest sine that page renders (0.0015 peak -> ~0.0085 level).
+const SHOW_AUDIO_LEVEL = 0.008
 
 // "Show: Only while active" timing. The visual is mounted only after 300 ms
 // of sustained activity, stays through short idle gaps (hysteresis so tool
@@ -1722,7 +1728,11 @@ function visualIsMoving() {
   const settings = $settings.get()
   const frame = liveFrame || {}
   const level = Number.isFinite(frame.level) ? clamp01(frame.level) : 0
-  const musicPlaying = frame.silence !== true && level > PULSE_MUSIC_LEVEL
+  // Judge the frame's own level and ignore the server's silence bit, exactly as
+  // the page does: that bit is the 0.02 silence line, and a quiet capture below
+  // it is still drawn above the page's much lower peak floor. Fading on it hid
+  // a visualiser that was visibly reacting.
+  const musicPlaying = level > SHOW_AUDIO_LEVEL
   const agentActive = typeof frame.mood === 'string' && frame.mood !== '' && frame.mood !== 'idle'
   if (settings.motion === 'agent') return agentActive
   if (settings.motion === 'agent_music') return agentActive || musicPlaying

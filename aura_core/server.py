@@ -671,10 +671,13 @@ def _capture_loop(stop_event: threading.Event) -> None:
                     publish_config()
                 elif wanted and not was_wanted:
                     last_probe = now - CAPTURE_RETRY_S  # reopen right away
-            if (wanted and not idle_holding and cap.name == "none" and preferred != "none"
+            if (wanted and not idle_holding and preferred != "none"
+                    and (cap.name == "none" or now - last_data > 2.0)
                     and now - last_probe >= CAPTURE_RETRY_S):
                 # The first probe can miss audio (busy host at startup, sound
                 # server or device not ready yet); never lock in silence.
+                # A handle that stopped delivering counts too: it keeps its real
+                # backend name, so without this it is never probed again.
                 last_probe = now
                 try:
                     retry = capture.open_capture(preferred)
@@ -683,6 +686,7 @@ def _capture_loop(stop_event: threading.Event) -> None:
                 if retry is not None and retry.name != "none":
                     cap = _swap_capture(cap, retry)
                     frame_silence.reset()
+                    _STATE.capture_lost_reported = False  # a fresh handle has no loss
                     _log("aura: capture backend %s (after retry)", cap.name)
                     publish_config()  # open pages still show "no system audio"
                 now = time.monotonic()
@@ -701,7 +705,12 @@ def _capture_loop(stop_event: threading.Event) -> None:
                 frame = b"\x00" * (FRAME_SAMPLES * 4)
             else:
                 last_data = now
-                _STATE.capture_lost_reported = False
+                if _STATE.capture_lost_reported:
+                    # The loss healed on the same handle. Pages are still parked
+                    # on their hard 'capture' blocker (hidden canvas, stopped
+                    # loop), and only a capture name lifts it.
+                    _STATE.capture_lost_reported = False
+                    publish_config()
             if cap.name == "none":
                 # NullCapture returns silence instantly; pace it to real time or
                 # this thread spins a full core and starves the host's GIL.

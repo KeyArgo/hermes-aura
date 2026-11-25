@@ -91,11 +91,20 @@ def _file_token() -> str:
 
 
 def _enabled() -> bool:
+    """Whether Aura is on, resolved the way the server resolves it.
+
+    A missing file or one without ``enabled`` means the defaults, and the
+    default is on. Reading the file by hand here made /status answer off for a
+    server that was running on, so the desktop removed a stage nobody switched
+    off.
+    """
     try:
         raw = json.loads((_hermes_home() / "aura" / "config.json").read_text(encoding="utf-8"))
-        return bool(raw.get("enabled"))
-    except (OSError, ValueError, TypeError, AttributeError):
-        return False
+    except (OSError, ValueError, TypeError):
+        return True
+    if not isinstance(raw, dict):
+        return True
+    return bool(raw.get("enabled", True))
 
 
 def _live():

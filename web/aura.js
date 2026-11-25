@@ -2168,6 +2168,11 @@
       socket.attempt = 0;
       socket.state = 'connected';
       renderStatus();
+      // The socket was down, so a config push made meanwhile (Aura turned on,
+      // a setting changed) reached only the pages still connected. Re-read the
+      // config or the page keeps its boot-time snapshot — enabled=false parks
+      // the loop while PCM keeps arriving.
+      refreshConfig();
     };
     ws.onmessage = (event) => {
       if (typeof event.data === 'string') handleText(event.data);
@@ -2235,7 +2240,10 @@
     // `enabled` is the server-side truth: desktop settings and aura_control turn
     // Aura on through /api/control, and the page must follow that change.
     if (typeof cfg.enabled === 'boolean' && cfg.enabled !== state.enabled) setEnabledUI(cfg.enabled);
-    if (typeof cfg.reduced_motion === 'boolean') setReducedMotion(cfg.reduced_motion || FORCE_REDUCED);
+    if (typeof cfg.reduced_motion === 'boolean') {
+      savedReducedMotion = cfg.reduced_motion;
+      setReducedMotion(reducedMotionWanted());
+    }
     if (typeof cfg.intensity === 'number' && !draggingIntensity) {
       setIntensityUI(clamp(cfg.intensity, 0, 1));
     }
@@ -2260,6 +2268,14 @@
       loadPresetByName(cfg.preset, num(activeProfile().blend_ms, 1200));
     }
     if (typeof cfg.capture === 'string') syncCaptureFallback(cfg.capture);
+  }
+
+  // The page's config is only as fresh as the last push or fetch, and a push
+  // only reaches the pages that were connected. Every (re)connect re-reads it
+  // so a page that missed a change catches up with the server's truth.
+  async function refreshConfig() {
+    const cfg = await getJson('/api/config');
+    if (cfg.ok && cfg.json) applyConfig(cfg.json);
   }
 
   function setBehaviorUI(name, serverProfile) {
@@ -2353,6 +2369,16 @@
       else startLoop();
     }
     renderStatus();
+  }
+
+  // Reduced motion is the OR of three asks: the URL force flag, the saved
+  // config choice, and the OS preference. Recomputing it from only one of them
+  // (as the boot re-read and the visibility handler used to) silently drops the
+  // others, so every path goes through this one answer.
+  let motionQuery = null;
+  let savedReducedMotion = false;
+  function reducedMotionWanted() {
+    return FORCE_REDUCED || savedReducedMotion || !!(motionQuery && motionQuery.matches);
   }
 
   function setReducedMotion(on) {
@@ -2496,11 +2522,16 @@
     dom.canvas.addEventListener('webglcontextrestored', () => {
       unblock('webgl');
       renderErrorStreak = 0;
-      if (viz) {
-        try { resizeCanvas(); } catch (_) {}
-        startLoop();
-      } else {
-        initViz();
+      // A restored context is the same object with every program, buffer and
+      // texture it made now invalid. Butterchurn has no restoration path of its
+      // own and a same-size setRendererSize recreates nothing, so the old
+      // instance can only ever draw black: build a new one on the restored
+      // context and put back the preset that was showing.
+      const resumePreset = state.presetName;
+      viz = null;
+      if (!initViz()) return;
+      if (resumePreset && state.presetName !== resumePreset) {
+        loadPresetByName(resumePreset, 0);
       }
     }, false);
   }
@@ -2530,18 +2561,18 @@
     if (dom.motion) dom.motion.value = state.motion;
     if (dom.slider) dom.slider.disabled = state.motion === 'designs';
 
-    const mq = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
-    state.reducedMotion = FORCE_REDUCED || !!(mq && mq.matches);
+    motionQuery = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+    state.reducedMotion = reducedMotionWanted();
     if (dom.root) dom.root.dataset.reducedMotion = state.reducedMotion ? '1' : '0';
-    if (mq && mq.addEventListener) {
-      mq.addEventListener('change', (e) => setReducedMotion(e.matches || FORCE_REDUCED));
+    if (motionQuery && motionQuery.addEventListener) {
+      motionQuery.addEventListener('change', () => setReducedMotion(reducedMotionWanted()));
     }
     // Some embedders apply the media emulation a beat after the first script run;
     // re-read once the document is live so the preference is never missed.
-    if (mq) {
-      setTimeout(() => setReducedMotion(FORCE_REDUCED || mq.matches), 350);
+    if (motionQuery) {
+      setTimeout(() => setReducedMotion(reducedMotionWanted()), 350);
       document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) setReducedMotion(FORCE_REDUCED || mq.matches);
+        if (!document.hidden) setReducedMotion(reducedMotionWanted());
       });
     }
 
@@ -2571,8 +2602,7 @@
       }
     }
 
-    const cfg = await getJson('/api/config');
-    if (cfg.ok && cfg.json) applyConfig(cfg.json);
+    await refreshConfig();
 
     const st = await getJson('/api/state');
     if (st.ok && st.json) {

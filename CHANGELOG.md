@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Capture recovery reaches the page. When system audio comes back after a `capture_lost` (on the same
+  backend or a reopened one), the server publishes the capture name, so the canvas and render loop
+  return without touching a control; a backend that keeps returning nothing is now probed again
+  instead of being skipped for still carrying a real name.
+- A reconnecting page re-reads the config: a page opened while Aura was off picks up an enable made
+  during the disconnect and resumes drawing instead of staying paused with PCM arriving.
+- A restored WebGL context rebuilds the visualizer instead of reusing the dead instance: the old
+  programs, buffers and textures are gone after a GPU reset, so the backdrop used to stay black.
+- Reduced motion stays on when it is saved in the config. Waiting out the 350 ms boot re-read or
+  leaving and returning to the page no longer re-enables full motion (only the OS preference and the
+  URL flag were re-read, so the saved choice was dropped), and the strobe presets stay out of rotation.
+- "Only while active" no longer fades out a visualiser that is still drawing quiet music. The frame's
+  visibility follows the page's own PCM wake floor instead of the server's 0.02 silence line, so a quiet
+  capture that the page renders (e.g. a tone at 0.0016 peak) stays on screen; true silence still fades it.
+- Dashboard /status now reports Aura on when no config is saved. A missing `aura/config.json`, or one
+  holding `{}`, made /status say off while the server ran the defaults (on), so the desktop removed the
+  stage without any enable click; a missing or empty file now reads as on, like the server.
 - A visual strength of 0 is no longer a black stage. The visualizer canvas keeps a faint floor of
   10%, the Settings "Visual opacity" and status-bar "Visual strength" sliders (and the page's own Opacity
   slider) start at 10%, and a saved 0 is painted at 10%; any real value (0.6, 1.0) is untouched, and the silence fade still

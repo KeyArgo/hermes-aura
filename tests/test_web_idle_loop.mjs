@@ -20,7 +20,9 @@
  *   e. 50 preset loads and 5 automatic quality steps during steady playback
  *      never re-open the dense probe window: still at most one readPixels per
  *      120 frames afterwards (a warm window on every preset/mood/agent change
- *      brought the stall back all evening).
+ *      brought the stall back all evening);
+ *   i. a reconnect re-reads the config, so a page opened with Aura off picks up
+ *      an enable that happened while its socket was down and renders again.
  *
  * Set AURA_WEB=<path> to point the same test at another copy of the page (used
  * to prove the checks fail on the parent commit without touching this tree).
@@ -346,6 +348,13 @@ async function makePage(opts = {}) {
       ws.readyState = 1
       ws.onopen({})
     },
+    /** Drop the live socket the way a killed server does (onclose, no 1008). */
+    closeSocket() {
+      const ws = sockets[sockets.length - 1]
+      assert.ok(ws, 'the page never opened a stream socket')
+      ws.readyState = 3
+      ws.onclose({ code: 1006 })
+    },
     /** Drive a CONTRACT.md §2 binary PCM frame through the live socket. */
     sendPcm(fields = {}) {
       const ws = sockets[sockets.length - 1]
@@ -518,6 +527,32 @@ await record('h. a reduced-motion change re-measures: the dense probe window ope
   assert.ok(frames > 0, 'no frames after the reduced-motion change')
   assert.ok(probes > Math.ceil(frames / 120) + 1,
     `${probes} probes for ${frames} frames: the reduced-motion change did not re-open the warm window`)
+})
+
+await record('i. a reconnect re-reads the config: Aura switched on while the socket was down resumes', async () => {
+  // Regression: onopen only updated the connection badge. A page opened with
+  // Aura off stayed switched off after the push that enabled Aura, because a
+  // push only reaches the pages still connected; PCM arrived and the loop
+  // stayed parked until some other config change happened.
+  const opts = { motion: 'designs', config: { enabled: false }, state: { enabled: false } }
+  const page = await makePage(opts)
+  page.advance(500)
+  assert.equal(page.aura._state.enabled, false, 'the page did not boot switched off')
+  assert.equal(page.pendingRaf(), 0, 'a rAF callback is pending while Aura is off')
+
+  page.closeSocket()
+  opts.config.enabled = true // turned on while this page was disconnected
+  opts.state.enabled = true
+  page.advance(1000) // the reconnect timer fires
+  page.openSocket()
+  for (let i = 0; i < 10; i += 1) await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(page.aura._state.enabled, true,
+    'the reconnected page kept its stale enabled=false without another config change')
+  page.sendPcm({})
+  const before = page.frames()
+  page.advance(200)
+  assert.ok(page.frames() > before, 'the reconnected page rendered no frames')
 })
 
 // ------------------------------------------------------------------ report
