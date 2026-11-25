@@ -17,6 +17,7 @@ browser raises :class:`WindowError` with a plain sentence, nothing else.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
@@ -444,6 +445,18 @@ def _watch(proc: subprocess.Popen) -> None:
         _clear_lease()
 
 
+def _start_watcher(proc: subprocess.Popen) -> None:
+    """Watch the window in the context that opened it.
+
+    A profile's home is context-local, and a plain thread resolves the
+    process-wide default: the watcher's own close then removed the default
+    home's lease and left this profile's behind (its pid too, on Windows).
+    """
+    context = contextvars.copy_context()
+    threading.Thread(target=context.run, args=(_watch, proc),
+                     name="aura-window", daemon=True).start()
+
+
 # -- bring to front --------------------------------------------------------------
 # A window opened by a background server does not get focus by itself; it opens
 # (or stays) behind Hermes. Best-effort per OS, never raises.
@@ -608,7 +621,7 @@ def open_page(url: str, title: str = "") -> Dict[str, Any]:
         except subprocess.TimeoutExpired:
             pass
         _write_lease(proc.pid, target)
-        threading.Thread(target=_watch, args=(proc,), name="aura-window", daemon=True).start()
+        _start_watcher(proc)
         threading.Thread(target=_raise_when_shown, args=(proc,), name="aura-window-raise", daemon=True).start()
         return {"open": True, "already": False, "url": target}
 
@@ -686,7 +699,7 @@ def open_window(port: int, token: Optional[str], url: str,
             # The lease is written with the pid it names: a concurrent close
             # must never find a window on record without its lease.
             _write_lease(proc.pid, _film_url)
-    threading.Thread(target=_watch, args=(proc,), name="aura-window", daemon=True).start()
+    _start_watcher(proc)
     threading.Thread(target=_raise_when_shown, args=(proc,), name="aura-window-raise", daemon=True).start()
     return {"open": True, "already": False, "url": str(url or ""),
             "pid": proc.pid, "label": str(label or "")}

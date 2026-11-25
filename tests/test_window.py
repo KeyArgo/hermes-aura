@@ -7,8 +7,15 @@ that is what makes the window load Aura's player with its token.
 
 from __future__ import annotations
 
+import contextvars
 import json
+import os
 import subprocess
+import sys
+import threading
+import time
+import types
+from pathlib import Path
 
 import pytest
 
@@ -444,3 +451,76 @@ def test_windows_raise_declares_pointer_sized_window_handles():
     assert "GetForegroundWindow.restype = wintypes.HWND" in source
     for name in ("IsIconic", "BringWindowToTop", "SetForegroundWindow"):
         assert f'"{name}"' in source, f"{name} has no HWND argtypes"
+
+
+def _context_local_home(monkeypatch):
+    """A stand-in for ``hermes_constants`` whose home follows a context-local override.
+
+    The gateway is one process serving several profiles; during a turn it sets
+    this override, and only that thread sees it.
+    """
+    override = contextvars.ContextVar[str | None]("hermes_home_override", default=None)
+    module = types.ModuleType("hermes_constants")
+
+    def get_hermes_home():
+        value = override.get()
+        if value:
+            return Path(value)
+        raw = os.environ.get("HERMES_HOME")
+        return Path(raw).expanduser() if raw else Path("~/.hermes").expanduser()
+
+    setattr(module, "get_hermes_home", get_hermes_home)
+    monkeypatch.setitem(sys.modules, "hermes_constants", module)
+    return override
+
+
+def test_a_closed_profiles_window_leaves_this_homes_lease_alone(tmp_path, monkeypatch):
+    """The watcher runs on its own thread, where the profile override is gone.
+
+    Closing a named profile's window with its own title bar is observed by the
+    watcher, not by ``close_window()``. A plain thread starts with an empty
+    context, so a watcher resolving the lease path itself cleared the
+    process-default home's lease and left the profile's own behind; on Windows
+    that also took away the pid restart cleanup uses to find the window.
+    """
+    default_home = tmp_path / "a"
+    profile_home = tmp_path / "b"
+    default_home.mkdir()
+    profile_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    override = _context_local_home(monkeypatch)
+
+    lease_a = _write_lease(default_home, 1111, str(default_home / "aura" / window.PROFILE_DIR))
+    lease_b = profile_home / "aura" / window.LEASE
+
+    # The window is the real watcher's: a gate it waits on is the browser exiting.
+    gate = threading.Event()
+
+    class GatedProc(FakeProc):
+        def wait(self, timeout=None):
+            if timeout is not None:
+                return super().wait(timeout)
+            gate.wait(5)
+            self.returncode = 0
+            return 0
+
+    proc = GatedProc()
+    monkeypatch.setattr(window.subprocess, "Popen", lambda args, **kwargs: proc)
+    monkeypatch.setattr(window, "find_browser", lambda: "/usr/bin/chromium")
+    monkeypatch.setattr(window, "_raise_native", lambda pid: True)
+
+    token = override.set(str(profile_home))
+    try:
+        window.open_window(4567, "tok", "https://example.test/film.mp4")
+    finally:
+        override.reset(token)
+    assert lease_a.exists() and lease_b.exists(), "the window did not write its own lease"
+
+    gate.set()  # the title bar closes the window
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and window._proc is not None:
+        time.sleep(0.02)
+
+    assert window._proc is None, "the watcher never saw the browser exit"
+    assert not lease_b.exists(), "the closed window's own lease was left behind"
+    assert lease_a.exists(), "another profile's window removed the default home's lease"
