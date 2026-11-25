@@ -150,7 +150,8 @@ fs.writeFileSync(
   // so the copy exposes a handle on it, like the desktop test's wiringTest.
   '\nexport const audioResumeTest = { resume: typeof resumeAudioIn === "function" ? resumeAudioIn : null,' +
   ' live: typeof liveFilmFrame === "function" ? liveFilmFrame : null, frame: () => filmFrame,' +
-  ' setFilm: node => { filmFrame = node }, surface: $filmSurface };\n'
+  ' setFilm: node => { filmFrame = node }, surface: $filmSurface,' +
+  ' refresh: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null };\n'
 )
 
 fs.writeFileSync(path.join(tmp, 'sdk-stub.mjs'), `
@@ -478,6 +479,40 @@ await record('REVAMP_PITCH names the pitch and revampCard wires both buttons', (
 await record('the video backdrop carries mute=1 when the film is muted', () => {
   // The player page reads ?mute=1; without it a muted film comes back loud.
   assert.match(source, /if \(settings\.videoMuted\) query\.append\('mute', '1'\)/)
+})
+
+// Muting is a live message to the running player (`transport mute`). Rewriting
+// the surface address for it reloaded the iframe instead: the film jumped back
+// to its 5 s bookmark and the radio inside that document restarted.
+await record('muting or unmuting a film keeps the running player mounted', async () => {
+  const film = {
+    windowVisual: false,
+    backdropMode: 'video',
+    panelEnabled: true,
+    videoUrl: 'https://example.test/film.mp4',
+    videoClosed: false,
+    videoMuted: false
+  }
+  const dispose = await remount(film, { frame: false })
+  const before = plugin.audioResumeTest.surface.get()
+  assert.equal(before.placement, 'panel', 'precondition: the film is not in the panel')
+  assert.match(before.src, /player\.html/, 'precondition: the panel holds the player')
+  assert.doesNotMatch(before.src, /mute=1/, 'precondition: the film started muted')
+
+  plugin.setVideoMuted(true)
+  plugin.audioResumeTest.refresh()
+  assert.equal(plugin.audioResumeTest.surface.get().src, before.src, 'muting the film reloaded the player')
+  plugin.setVideoMuted(false)
+  plugin.audioResumeTest.refresh()
+  assert.equal(plugin.audioResumeTest.surface.get().src, before.src, 'unmuting the film reloaded the player')
+  dispose()
+
+  // A film placed while muted still starts muted: the address carries it.
+  const mutedDispose = await remount({ ...film, videoMuted: true }, { frame: false })
+  const muted = plugin.audioResumeTest.surface.get()
+  assert.equal(muted.placement, 'panel', 'precondition: the muted film is not in the panel')
+  assert.match(muted.src, /mute=1/, 'a film placed while muted started loud')
+  mutedDispose()
 })
 
 // Regression F3: the radio lives inside the frame that holds it, so a surface

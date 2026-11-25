@@ -878,12 +878,16 @@ function filmPlacement() {
   return ''
 }
 
-/** A player address without its start hints: same identity = same film, same
- *  server, same token and mute, so the running player is kept. */
+/** A player address without its start hints or its mute flag: same identity =
+ *  same film on the same server with the same token, so the running player is
+ *  kept. Mute is a live transport message (`setVideoMuted` posts `mute` /
+ *  `unmute` into the page); carrying it in the identity rebuilt the address on
+ *  every toggle, which reloaded the iframe — the film jumped back to its 5 s
+ *  bookmark and the radio playing inside that document restarted. */
 function filmIdentity(src) {
   try {
     const u = new URL(src)
-    for (const key of ['resume', 'paused', 'video']) u.searchParams.delete(key)
+    for (const key of ['resume', 'paused', 'video', 'mute']) u.searchParams.delete(key)
     return u.toString()
   } catch {
     return String(src || '')
