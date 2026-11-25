@@ -3826,6 +3826,88 @@ await recordAsync('player coordinator reports, consumes commands, and restores a
   dispose()
 })
 
+await recordAsync('the pop-out resumes the saved bookmark instead of restarting the film at 0:00', async () => {
+  // The film sat in the panel and was closed, or the plugin just started: the
+  // in-memory player reports nothing yet, and the desktop window was opened
+  // with position 0 / videoId '' — so a saved 20-minute bookmark started over
+  // at the first episode.
+  const film = 'https://example.test/film.mp4'
+  const x = makeCtx({
+    enabled: true, backdropMode: 'video', videoUrl: film,
+    videoPositions: { [film]: { position: 1200, duration: 3600, at: 1, videoId: 'ep4abcdefgh' } }
+  })
+  const calls = []
+  const original = x.ctx.rest
+  x.ctx.rest = async (route, options = {}) => {
+    calls.push({ route, options })
+    if (route === '/player') return { ok: true, window: { open: false, page: '' }, player: {}, seq: 0 }
+    if (route.startsWith('/player/commands?')) return { ok: true, head_seq: 0, commands: [] }
+    if (route === '/player/report') return { ok: true }
+    if (route === '/window/open') return { ok: true, open: true }
+    return original(route, options)
+  }
+  const dispose = pluginModule.default.register(x.ctx)
+  try {
+    await sleep(80)
+    assert.equal(pluginModule.wiringTest.video.get().position, 0, 'precondition: the parked film should report nothing')
+    await pluginModule.wiringTest.setWindow(true)
+    const sent = calls.find(c => c.route === '/window/open')
+    assert.ok(sent, 'the desktop window was never asked to open')
+    assert.equal(sent.options.body.position, 1200, 'the pop-out restarted the film at 0:00, ignoring the saved bookmark')
+    assert.equal(sent.options.body.videoId, 'ep4abcdefgh', 'the pop-out restarted the playlist at episode 1')
+  } finally {
+    dispose()
+  }
+})
+
+await recordAsync('closing a Visualizer desktop window leaves a closed film and its bookmark alone', async () => {
+  // Pop the visualiser out while the film is closed, then close the window:
+  // the film must stay closed and its bookmark untouched. The window's
+  // handoff used to write position 0 through and set videoClosed: false.
+  const film = 'https://example.test/film.mp4'
+  const x = makeCtx({
+    enabled: true, backdropMode: 'aura', videoUrl: film, videoClosed: true,
+    videoPositions: { [film]: { position: 1200, duration: 3600, at: 1, videoId: 'ep4abcdefgh' } }
+  })
+  let open = false
+  let player = {}
+  const opens = []
+  const original = x.ctx.rest
+  x.ctx.rest = async (route, options = {}) => {
+    if (route === '/player') return { ok: true, window: { open, page: '' }, player, seq: 0 }
+    if (route.startsWith('/player/commands?')) return { ok: true, head_seq: 0, commands: [] }
+    if (route === '/player/report') return { ok: true }
+    if (route === '/window/open') { opens.push(options.body); open = true; return { ok: true, open: true } }
+    if (route === '/window/close') { open = false; return { ok: true, closed: true, window: { open: false } } }
+    return original(route, options)
+  }
+  const dispose = pluginModule.default.register(x.ctx)
+  try {
+    await sleep(80)
+    await pluginModule.wiringTest.setWindow(true)
+    assert.equal(opens.length, 1, 'the desktop window was never asked to open')
+    assert.equal(opens[0].page, 'visualizer', 'precondition: the pop-out should be the visualiser')
+    // The server still remembers a film window that reported earlier; the
+    // visualiser window itself reports nothing.
+    player = { desktop: true, url: film, position: 0, duration: 3600, videoId: 'ep4abcdefgh' }
+    open = false
+    await pluginModule.wiringTest.sync()
+    let settings = pluginModule.wiringTest.settings.get()
+    assert.equal(settings.videoClosed, true, 'closing the visualiser window reopened the closed film')
+    assert.equal(settings.videoPositions[film].position, 1200, 'closing the visualiser window erased the film bookmark')
+    // And again when the plugin adopts a window it did not open itself.
+    open = true
+    await pluginModule.wiringTest.sync()
+    open = false
+    await pluginModule.wiringTest.sync()
+    settings = pluginModule.wiringTest.settings.get()
+    assert.equal(settings.videoClosed, true, 'adopting and closing a visualiser window reopened the closed film')
+    assert.equal(settings.videoPositions[film].position, 1200, 'adopting and closing a visualiser window erased the film bookmark')
+  } finally {
+    dispose()
+  }
+})
+
 await recordAsync('the playing film keeps its address when Aura saves its position (no reload every 5 s)', async () => {
   // Owner, 11-15: the film stuttered (play/pause flipping) and Stop did not
   // stop. The film's address carried &resume=<saved position>; Aura saves the

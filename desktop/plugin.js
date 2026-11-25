@@ -1300,7 +1300,10 @@ async function syncPlayerOwnership() {
     // Off already decided: a close still in flight is never adopted back.
     if (open && !desktopClosing) {
       if (!desktopOwned) {
-        lastDesktopPlayer = { ...$video.get(), url: $settings.get().videoUrl || '' }
+        // Only a film window hands a film back; the visualiser window has none.
+        lastDesktopPlayer = snapshot.window.page === 'player'
+          ? { ...$video.get(), url: $settings.get().videoUrl || '' }
+          : null
         videoCommand('pause')
         desktopOwned = true
         // The desktop window is the picture: no in-app watch window as well.
@@ -1380,11 +1383,22 @@ function restoreDesktopPlayback(player) {
   if (!url) return
   const settings = $settings.get()
   const positions = { ...(settings.videoPositions || {}) }
-  positions[url] = { position: Math.max(0, Number(player.position) || 0),
-    duration: Math.max(0, Number(player.duration) || 0), at: Date.now(),
-    videoId: String(player.videoId || '') }
-  handoffPlayback = { url, position: positions[url].position, videoId: positions[url].videoId,
-    paused: player.playing !== true }
+  const saved = positions[url] && typeof positions[url] === 'object' ? positions[url] : null
+  const reported = Math.max(0, Number(player.position) || 0)
+  const playing = player.playing === true
+  // A handoff with nothing in it (position 0, stopped) is not the film coming
+  // back — the window was showing the visualiser, or the server still held an
+  // old report. Both losses are permanent, so such a handoff is dropped.
+  if (reported < 5 && !playing && settings.videoClosed === true) return
+  const videoId = String(player.videoId || '') || (saved && saved.videoId) || ''
+  // Position 0 is never evidence either: writing it through bypassed
+  // rememberPosition's guard and erased the saved bookmark.
+  if (reported >= 5) {
+    positions[url] = { position: reported,
+      duration: Math.max(0, Number(player.duration) || 0), at: Date.now(), videoId }
+  }
+  handoffPlayback = { url, position: reported >= 5 ? reported : Math.max(0, Number(saved && saved.position) || 0),
+    videoId, paused: !playing }
   // The film comes back; the mode stays whatever the user chose.
   writeSettings({ videoUrl: url, videoPositions: positions, videoClosed: false })
   $video.set({ ...$video.get(), ...player, desktop: false, reportedAt: Date.now() })
@@ -1437,7 +1451,13 @@ async function setDesktopWindow(on) {
       if (status && status.ok === true && status.available === false) available = false
     } catch { /* unknown: try to open, and fall back below */ }
     if (available) {
-      const previousPlayer = { ...$video.get(), url: $settings.get().videoUrl || '' }
+      const now = $settings.get()
+      // Only a film pop-out hands the film back. The visualiser window has no
+      // film, and remembering the parked atom as if it had one reopened a
+      // closed film at 0:00 when the window shut.
+      const previousPlayer = now.backdropMode === 'video'
+        ? { ...$video.get(), url: now.videoUrl || '' }
+        : null
       const result = await openDesktopWindow()
       desktopPending = false
       if (generation !== desktopGeneration || disposed) {
@@ -1497,14 +1517,24 @@ async function openDesktopWindow() {
   const videoUrl = typeof settings.videoUrl === 'string' ? settings.videoUrl.trim() : ''
   if (!visual && !videoUrl) return { open: false, error: 'Choose a film first.' }
   const video = $video.get()
+  const bookmark = resumeBookmark(videoUrl)
+  // The in-memory player only knows what the in-app frame last reported, and a
+  // parked film (panel closed, plugin restarted) reports nothing. Sending that
+  // nothing opened the window at 0:00 / episode 1, so fall back to the saved
+  // bookmark whenever the atom holds no real position for this film.
+  const sameFilm = videoReportedUrl === videoUrl || videoReportedUrl === ''
+  const position = Number(video.position)
+  const live = sameFilm && Number.isFinite(position) && position >= 5
   const body = visual
     ? { page: 'visualizer', reducedMotion: settings.reducedMotion === true }
     : {
         page: 'player',
         url: videoUrl,
-        position: Number.isFinite(video.position) ? Math.max(0, video.position) : 0,
+        position: live ? Math.max(0, position) : resumeTargetFor(videoUrl),
         label: typeof video.title === 'string' ? video.title : '',
-        videoId: typeof video.videoId === 'string' ? video.videoId : '',
+        videoId: sameFilm && typeof video.videoId === 'string' && video.videoId
+          ? video.videoId
+          : (bookmark && typeof bookmark.videoId === 'string' ? bookmark.videoId : ''),
         playing: video.playing === true,
         // [listen lane] The window's own player starts unmuted; a film muted
         // here (radio on beside it) must stay silent when it moves out.
