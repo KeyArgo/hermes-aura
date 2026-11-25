@@ -27,7 +27,20 @@
  *      at most 6 /status calls — routine reports are not "using Aura",
  *   n. a new build with saved enabled:false and no user-chosen flag leaves
  *      Aura off and sends no /control {enabled:true},
- *   o. a first install with no saved settings at all still starts switched on.
+ *   o. a first install with no saved settings at all still starts switched on,
+ *   p. playing, then turning Aura off: both channels are retracted and 10 s
+ *      makes at most 6 /status calls,
+ *   q. playing, then Close video: the film's stale "playing" is retracted and
+ *      the radio channel is left alone,
+ *   r. playing, then the Right panel hidden: both are retracted and 10 s makes
+ *      at most 6 /status calls,
+ *   s. playing, then leaving the Aura page with nothing else open: both are
+ *      retracted and 10 s makes at most 6 /status calls.
+ *
+ * p, q, r and s fail on the tree before the fix: Off, Close video, hiding the
+ * panel and leaving the page unmounted the frame that reported "playing" and
+ * left the state true, so the poll stayed at 4 Hz all day and every Play button
+ * showed pause.
  *
  * (a), (b), (d), (f) and (g) fail on the commit before the fix — they are the
  * CPU bill. (c), (h) and (k) are the anti-regression guards: a live surface
@@ -185,6 +198,9 @@ fs.writeFileSync(
   ' auraBusy: typeof auraBusy === "function" ? auraBusy : null,' +
   ' onVideoBarMouseMove: typeof onVideoBarMouseMove === "function" ? onVideoBarMouseMove : null,' +
   ' onBackdropMessage: typeof onBackdropMessage === "function" ? onBackdropMessage : null,' +
+  ' setPanelEnabled: typeof setPanelEnabled === "function" ? setPanelEnabled : null,' +
+  ' closeVideo: typeof closeVideo === "function" ? closeVideo : null,' +
+  ' pageStageRef: typeof pageStageRef === "function" ? pageStageRef : null,' +
   ' setFilm: node => { filmFrame = node },' +
   ' refreshFilmSurface: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null,' +
   ' settings: $settings, live: $live, surface: $filmSurface, audio: $audio, video: $video,' +
@@ -692,6 +708,120 @@ await record('o. a first install with no saved settings still starts switched on
   await advance(bucket, 3000)
   assert.equal(plugin.idleTest.settings.get().enabled, true,
     'a first install no longer starts switched on')
+  bucket.dispose()
+  await settle()
+})
+
+await record('p. turning Aura off with a film and the radio playing retracts both and goes idle', async () => {
+  // Off is a stop as well as a switch. The pane's frame is unmounted on the
+  // click, so its last "playing" report would stand for ever: 4 Hz all day
+  // with Aura off, and the transport buttons stuck on pause.
+  const bucket = mount({
+    enabled: true, backdropMode: 'video', panelEnabled: true,
+    videoUrl: 'https://www.youtube.com/watch?v=demo', audioUrl: 'https://ice.example/live.mp3'
+  }, true)
+  await settle()
+  mountPanel(bucket)
+  await settle()
+  const video = plugin.idleTest.video.get()
+  plugin.idleTest.video.set({ ...video, title: 'Demo', playing: true, reportedAt: clock.now })
+  const audio = plugin.idleTest.audio.get()
+  plugin.idleTest.audio.set({ ...audio, label: 'Live', playing: true, reportedAt: clock.now })
+  assert.equal(plugin.idleTest.auraBusy(), true, 'precondition: playback must count as busy')
+  assert.equal(typeof plugin.idleTest.setEnabled, 'function', 'setEnabled() is not exposed')
+  await plugin.idleTest.setEnabled(false)
+  await settle()
+  assert.equal(plugin.idleTest.video.get().playing, false,
+    'switching Aura off left $video.playing true: the poll stays at 4 Hz with Aura off')
+  assert.equal(plugin.idleTest.audio.get().playing, false,
+    'switching Aura off left $audio.playing true: the poll stays at 4 Hz with Aura off')
+  await elapse(HOLD_MS + 1000)
+  assert.equal(plugin.idleTest.auraBusy(), false, 'a switched-off Aura is still busy after playback')
+  const before = bucket.status()
+  await advance(bucket, 10000)
+  const made = bucket.status() - before
+  assert.ok(made <= 6, `10 s switched off after playback made ${made} /status calls, expected at most 6`)
+  bucket.dispose()
+  await settle()
+})
+
+await record('q. closing the film retracts its stale "playing" and leaves the radio alone', async () => {
+  const bucket = mount({
+    enabled: true, backdropMode: 'video', panelEnabled: true, videoUrl: 'https://www.youtube.com/watch?v=demo'
+  }, true)
+  await settle()
+  mountPanel(bucket)
+  await settle()
+  const video = plugin.idleTest.video.get()
+  plugin.idleTest.video.set({ ...video, title: 'Demo', playing: true, reportedAt: clock.now })
+  const audio = plugin.idleTest.audio.get()
+  plugin.idleTest.audio.set({ ...audio, label: 'Live', playing: true, reportedAt: clock.now })
+  assert.equal(typeof plugin.idleTest.closeVideo, 'function', 'closeVideo() is not exposed')
+  plugin.idleTest.closeVideo()
+  await settle()
+  assert.equal(plugin.idleTest.video.get().playing, false,
+    'closing the film left $video.playing true: Play still shows pause and the poll stays fast')
+  assert.equal(plugin.idleTest.audio.get().playing, true,
+    'closing the film retracted the radio channel too')
+  bucket.dispose()
+  await settle()
+})
+
+await record('r. hiding the Right panel retracts a stale "playing" and goes idle', async () => {
+  const bucket = mount({
+    enabled: true, backdropMode: 'video', panelEnabled: true,
+    videoUrl: 'https://www.youtube.com/watch?v=demo', audioUrl: 'https://ice.example/live.mp3'
+  }, true)
+  await settle()
+  mountPanel(bucket)
+  await settle()
+  const video = plugin.idleTest.video.get()
+  plugin.idleTest.video.set({ ...video, title: 'Demo', playing: true, reportedAt: clock.now })
+  const audio = plugin.idleTest.audio.get()
+  plugin.idleTest.audio.set({ ...audio, label: 'Live', playing: true, reportedAt: clock.now })
+  assert.equal(typeof plugin.idleTest.setPanelEnabled, 'function', 'setPanelEnabled() is not exposed')
+  plugin.idleTest.setPanelEnabled(false)
+  await settle()
+  assert.equal(plugin.idleTest.surface.get().placement, '', 'precondition: the panel frame is still placed')
+  assert.equal(plugin.idleTest.video.get().playing, false,
+    'hiding the panel left $video.playing true: the poll stays at 4 Hz for a frame that is gone')
+  assert.equal(plugin.idleTest.audio.get().playing, false,
+    'hiding the panel left $audio.playing true: the poll stays at 4 Hz for a frame that is gone')
+  await elapse(HOLD_MS + 1000)
+  assert.equal(plugin.idleTest.auraBusy(), false, 'hiding the panel left Aura busy')
+  const before = bucket.status()
+  await advance(bucket, 10000)
+  const made = bucket.status() - before
+  assert.ok(made <= 6, `10 s with the panel hidden made ${made} /status calls, expected at most 6`)
+  bucket.dispose()
+  await settle()
+})
+
+await record('s. leaving the Aura page retracts a stale "playing" and goes idle', async () => {
+  // The same class as p/r: the page's frame is unmounted by navigation, with
+  // nothing to hand the film back to.
+  const bucket = mount({ enabled: true, backdropMode: 'video', panelEnabled: false, videoUrl: 'https://www.youtube.com/watch?v=demo' }, true)
+  await settle()
+  assert.equal(typeof plugin.idleTest.pageStageRef, 'function', 'pageStageRef() is not exposed')
+  plugin.idleTest.pageStageRef(makeElement('div'))
+  await settle()
+  assert.equal(plugin.idleTest.surface.get().placement, 'page', 'precondition: the page holds no film')
+  const video = plugin.idleTest.video.get()
+  plugin.idleTest.video.set({ ...video, title: 'Demo', playing: true, reportedAt: clock.now })
+  const audio = plugin.idleTest.audio.get()
+  plugin.idleTest.audio.set({ ...audio, label: 'Live', playing: true, reportedAt: clock.now })
+  plugin.idleTest.pageStageRef(null)
+  await settle()
+  assert.equal(plugin.idleTest.video.get().playing, false,
+    'leaving the page left $video.playing true: the poll stays at 4 Hz for a frame that is gone')
+  assert.equal(plugin.idleTest.audio.get().playing, false,
+    'leaving the page left $audio.playing true: the poll stays at 4 Hz for a frame that is gone')
+  await elapse(HOLD_MS + 1000)
+  assert.equal(plugin.idleTest.auraBusy(), false, 'leaving the page left Aura busy')
+  const before = bucket.status()
+  await advance(bucket, 10000)
+  const made = bucket.status() - before
+  assert.ok(made <= 6, `10 s after leaving the page made ${made} /status calls, expected at most 6`)
   bucket.dispose()
   await settle()
 })

@@ -1617,6 +1617,20 @@ function somethingPlaying() {
   return $audio.get().playing === true
 }
 
+/** The frame that reported "playing" is gone: its unmount stops the reports, so
+ *  no later one can ever say "paused". Left true, `somethingPlaying()` holds the
+ *  4 Hz poll for the rest of the day and every transport button stays on ⏸. */
+function forgetVideoPlaying() {
+  if ($video.get().playing !== true) return
+  $video.set({ ...$video.get(), playing: false, reportedAt: Date.now() })
+}
+
+/** Same for the radio channel, whose carrier frame left with the surface. */
+function forgetAudioPlaying() {
+  if ($audio.get().playing !== true) return
+  $audio.set({ ...$audio.get(), playing: false, reportedAt: Date.now() })
+}
+
 /** Is Aura doing anything a 4 Hz poll is worth paying for? A placed surface
  *  is not enough on its own: the Right panel stays registered with Aura off,
  *  and a surface nobody switched on would then poll at 4 Hz all day. Only
@@ -2008,6 +2022,10 @@ async function setEnabled(next, fromNewBuild = false) {
     removeBackdrop()
     // The pane/page/window film goes with Aura now, not one poll later.
     $filmSurface.set({ placement: '', src: '' })
+    // Nothing of Aura's is left to report: the film and the radio carrier are
+    // unmounted, so a "playing" from either would never be corrected.
+    forgetVideoPlaying()
+    forgetAudioPlaying()
     removeVideoBar()
     clearAccent(true)
     restoreTheme()
@@ -2300,6 +2318,10 @@ function closeVideo() {
   if (!ctxRef || disposed) return
   saveCurrentPosition()
   postToBackdrop({ cmd: 'pause' })
+  // The player is unmounted below: the pause it never gets to report is
+  // retracted here, so Close does not leave the transport on ⏸ and the poll
+  // at 4 Hz. The radio keeps its own state — its carrier may still be open.
+  forgetVideoPlaying()
   writeSettings({ videoClosed: true })
   resetShow()
   removeBackdrop()
@@ -5440,6 +5462,14 @@ function setPanelEnabled(on) {
     // in the tick throws.
     disposePaneRegistration()
     removePanel()
+    // The panel was carrying the film and the radio. With no other surface left
+    // their frames are gone, and a stale "playing" would hold the 4 Hz poll and
+    // a stuck ⏸. A popped-out window is the exception: it plays with nothing
+    // placed in the app.
+    if (!desktopOwned && !desktopPending && refreshFilmSurface() === '') {
+      forgetVideoPlaying()
+      forgetAudioPlaying()
+    }
   }
   syncVideoBar(true)
 }
@@ -6690,6 +6720,12 @@ function pageStageRef(node) {
   // Entering the page is a reason to mount the film; leaving it hands the film
   // back to the pane, the watch window or the backdrop.
   refreshFilmSurface()
+  // Leaving it with nothing to hand the film back to unmounts the frame, and no
+  // later report can retract a "playing" from a frame that is gone.
+  if (!node && !desktopOwned && !desktopPending && !$filmSurface.get().placement) {
+    forgetVideoPlaying()
+    forgetAudioPlaying()
+  }
   syncBackdrop()
   applyBackdropLayout()
   applyVideoOpacity()
