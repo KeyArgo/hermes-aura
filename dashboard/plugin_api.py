@@ -402,7 +402,26 @@ _PLAYLIST_TTL = 300.0
 _LIST_RE = re.compile(r"[A-Za-z0-9_-]{10,64}")
 _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
        "Chrome/124.0.0.0 Safari/537.36")
-_INITIAL_DATA_RE = re.compile(r"ytInitialData\s*=\s*(\{.*\});</script>", re.S)
+
+
+def _initial_data(html: str) -> Any:
+    """The page's ``ytInitialData`` object, or None.
+
+    Decoding from the first ``{`` after the assignment is bracket-safe (unlike a
+    greedy regex): the object carries braces of its own, and a later
+    ``<script>`` block would otherwise be pulled into the match.
+    """
+    marker = html.find("ytInitialData")
+    if marker < 0:
+        return None
+    start = html.find("{", marker)
+    if start < 0:
+        return None
+    try:
+        data, _end = json.JSONDecoder().raw_decode(html[start:])
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _walkPlaylist(node: Any, out: list[dict]) -> None:
@@ -470,10 +489,9 @@ def playlistItems(list_id: str) -> list[dict]:
     )
     with urllib.request.urlopen(request, timeout=10) as response:
         html = response.read().decode("utf-8", "replace")
-    match = _INITIAL_DATA_RE.search(html)
-    if not match:
+    data = _initial_data(html)
+    if data is None:
         return []
-    data = json.loads(match.group(1))
     found: list[dict] = []
     _walkPlaylist(data, found)
     seen: set[str] = set()
