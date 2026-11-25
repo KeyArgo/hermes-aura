@@ -895,16 +895,22 @@ function filmIdentity(src) {
 }
 
 /** Publish the current surface into an atom so every React surface (pane,
- *  page, status-bar watch window) agrees on where the ONE film lives. */
-function refreshFilmSurface() {
+ *  page, status-bar watch window) agrees on where the ONE film lives.
+ *  `redrawn` says the surface is being drawn again (the pane was re-registered
+ *  by a Size/Corner pill), which mounts a new player document. */
+function refreshFilmSurface(redrawn) {
   const placement = filmPlacement()
   let src = placement ? surfaceSrc() : ''
   const current = $filmSurface.get()
   // The address carries where to START (resume / paused / episode), and Aura
   // saves the position every 5 s. A film already showing must keep its address:
   // a new one reloads the player, which resumed playing every few seconds
-  // (owner, 11-15: stutter with play/pause flipping, Stop undone).
-  if (src && current.src && filmIdentity(src) === filmIdentity(current.src)) src = current.src
+  // (owner, 11-15: stutter with play/pause flipping, Stop undone). A film that
+  // is being MOVED gets the new surface's address, though: the frame there is a
+  // new player document, and the old address started it at the boot bookmark
+  // (or at 0:00) instead of where the film is.
+  const sameSurface = !redrawn && current.placement === placement
+  if (src && current.src && sameSurface && filmIdentity(src) === filmIdentity(current.src)) src = current.src
   if (current.placement !== placement || current.src !== src) {
     $filmSurface.set({ placement, src })
   }
@@ -3184,6 +3190,10 @@ function syncStripPane() {
   const key = `${watching ? 'window' : 'strip'}:${anchor}:${size.width}x${size.height}`
   if (key === stripPaneKey && stripPaneOff) return
   unregisterStripPane()
+  // The host draws a NEW card for a re-registered pane, so the film frame inside
+  // it is a new player document. Give it an address that says where the film is
+  // now: the old one restarted it at 0:00 (or at the bookmark it booted with).
+  if (watching) refreshFilmSurface(true)
   try {
     const off = ctxRef.register({
       // Two ids, because the host remembers position AND "collapsed" per id: a
@@ -8557,6 +8567,9 @@ export const __test = {
   // one or the other").
   setDesktopWindow,
   setVideoWindow,
+  setVideoWindowSize,
+  setVideoWindowCorner,
+  pageStageRef,
   popoutSurface,
   hiddenVideoIds,
   hideCurrentEpisode,

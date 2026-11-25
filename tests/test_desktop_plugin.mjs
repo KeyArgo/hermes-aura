@@ -3854,6 +3854,50 @@ await recordAsync('the playing film keeps its address when Aura saves its positi
   dispose()
 })
 
+await recordAsync('moving or resizing the film keeps the position it is at, not the one it started with', async () => {
+  // A surface that is drawn again is a new player document: it has to be told
+  // where the film actually is. Reusing the running player's address (the
+  // stutter guard above) handed the new frame the BOOT bookmark, so Pop out,
+  // the Size pills and the Aura page restarted the film at 0:00 at the
+  // player's own volume.
+  const film = 'https://example.test/handover.mp4'
+  const x = makeCtx({ enabled: true, backdropMode: 'video', videoUrl: film, panelEnabled: true, videoPositions: { [film]: { position: 40, duration: 3000, at: 1 } } })
+  const dispose = pluginModule.default.register(x.ctx)
+  tick(x)
+  await sleep(80)
+  const w = pluginModule.wiringTest
+  assert.ok(w.remember && w.refreshFilm && w.filmSurface, 'precondition: test hooks missing')
+  const stillAt = where => assert.ok(w.filmSurface.get().src.includes('resume=2000'),
+    `${where}: the new surface was handed a stale address (${w.filmSurface.get().src})`)
+  w.refreshFilm()
+  assert.equal(w.filmSurface.get().placement, 'panel', 'precondition: the film is not in the Right panel')
+  assert.ok(w.filmSurface.get().src.includes('resume=40'), `precondition: no boot bookmark in the address (${w.filmSurface.get().src})`)
+  // Twenty minutes in: the 5 s bookmark has caught up with playback.
+  w.video.set({ ...w.video.get(), position: 2000, duration: 3000, playing: true })
+  w.remember(film, 2000, 3000, false, '', true)
+  w.refreshFilm()
+  assert.ok(w.filmSurface.get().src.includes('resume=40'), 'a same-surface poll reloaded the playing player')
+  // Pop out: the panel's frame goes, the watch window draws a new one.
+  pluginModule.__test.setVideoWindow(true)
+  assert.equal(w.filmSurface.get().placement, 'window', 'precondition: Pop out did not move the film')
+  stillAt('Pop out (panel to watch window)')
+  // A Size or Corner pill re-registers the pane, which draws the frame again.
+  pluginModule.__test.setVideoWindowSize('huge')
+  stillAt('Size pill (watch window drawn again)')
+  pluginModule.__test.setVideoWindowCorner('bottom-right')
+  stillAt('Corner pill (watch window drawn again)')
+  // Back to the panel, then on to the Aura page.
+  pluginModule.__test.setVideoWindow(false)
+  assert.equal(w.filmSurface.get().placement, 'panel', 'precondition: Bring back did not move the film')
+  stillAt('Bring back (watch window to panel)')
+  const stage = globalThis.document.createElement('div')
+  pluginModule.__test.pageStageRef(stage)
+  assert.equal(w.filmSurface.get().placement, 'page', 'precondition: the page did not take the film')
+  stillAt('the Aura page')
+  pluginModule.__test.pageStageRef(null)
+  dispose()
+})
+
 await recordAsync('Watch in > Desktop opens the OS window and unavailable browsers use the in-app window', async () => {
   // "Pop out" on the page is the in-Hermes watch window (owner's words); the OS
   // window is Watch in > Desktop.
