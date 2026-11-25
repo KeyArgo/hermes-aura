@@ -12,13 +12,19 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+import time
 import warnings
-from typing import Self
+from typing import Any, Self
 
 from . import base
 from .sd_common import SoundDeviceCapture, import_sounddevice
 
 logger = logging.getLogger("aura.capture.wasapi")
+
+# A loopback recorder stays bound to the endpoint it opened, and a device that
+# keeps delivering frames never looks dead to the server's no-data retry. So
+# re-read the default output this often and reopen when it moved.
+DEFAULT_POLL_S = 1.0
 
 
 def import_soundcard():
@@ -51,24 +57,46 @@ class SoundcardLoopbackCapture(SoundDeviceCapture):
                 del self._buffer[: len(self._buffer) - base.MAX_BUFFERED_BYTES]
             self._data.notify_all()
 
+    @staticmethod
+    def _default_speaker(sc):
+        """The current default output, or ``None`` if enumeration fails right now."""
+        try:
+            return sc.default_speaker()
+        except Exception:  # noqa: BLE001 - a transient enumeration failure is not fatal
+            return None
+
     def _run(self) -> None:
         try:
             import ctypes
             ctypes.windll.ole32.CoInitializeEx(None, 0)  # soundcard needs COM on this thread
         except Exception:  # noqa: BLE001
             pass
-        sc = import_soundcard()
+        sc: Any = import_soundcard()  # no stubs: typed as Any so the loop reads as module access
         try:
             speaker = sc.default_speaker()
-            loop = sc.get_microphone(id=str(speaker.name), include_loopback=True)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")  # "data discontinuity" warnings are expected on loopback
-                with loop.recorder(samplerate=self.rate, channels=2, blocksize=base.FRAME_SAMPLES) as rec:
-                    self._ready.set()
-                    while not self._closed:
-                        data = rec.record(numframes=base.FRAME_SAMPLES)
-                        mono = data.mean(axis=1) if getattr(data, "ndim", 1) > 1 else data
-                        self._push(mono.astype("float32").tobytes())
+            while not self._closed:
+                loop = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")  # "data discontinuity" warnings are expected on loopback
+                    with loop.recorder(samplerate=self.rate, channels=2,
+                                       blocksize=base.FRAME_SAMPLES) as rec:
+                        self._ready.set()
+                        checked = time.monotonic()
+                        while not self._closed:
+                            data = rec.record(numframes=base.FRAME_SAMPLES)
+                            mono = data.mean(axis=1) if getattr(data, "ndim", 1) > 1 else data
+                            self._push(mono.astype("float32").tobytes())
+                            now = time.monotonic()
+                            if now - checked < DEFAULT_POLL_S:
+                                continue
+                            checked = now
+                            current = self._default_speaker(sc)
+                            if current is None or str(current.name) == str(speaker.name):
+                                continue
+                            speaker = current
+                            logger.info("soundcard default output moved to %s; reopening loopback",
+                                        speaker.name)
+                            break
         except Exception as exc:  # noqa: BLE001
             self._error = f"{type(exc).__name__}: {exc}"
             logger.warning("soundcard loopback stopped: %s", self._error)
