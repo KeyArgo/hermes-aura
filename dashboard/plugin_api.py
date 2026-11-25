@@ -269,8 +269,9 @@ async def _off_loop(fn, *args):
     straight from an ``async`` route that wait holds the event loop, so every
     other dashboard request queued behind the pop-out.
     """
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, fn, *args)
+    # to_thread carries this request's context along: the profile is
+    # context-local, and a bare executor thread would forward to the default one.
+    return await asyncio.to_thread(fn, *args)
 
 
 # ---------------------------------------------------------------------------

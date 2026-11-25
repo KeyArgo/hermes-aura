@@ -164,3 +164,18 @@ def test_a_held_pop_out_does_not_stall_another_request(
         f"{path} held the event loop for {elapsed:.2f}s: an unrelated request on "
         "the same worker only answered after the pop-out's forward returned"
     )
+
+
+def test_the_offloaded_forward_keeps_the_request_profile(dashboard):
+    """Hermes resolves the profile from a context variable. The worker thread
+    a forward runs on has to see the request's profile, or a named profile's
+    pop-out is sent to the default profile's Aura server."""
+    import contextvars
+
+    profile = contextvars.ContextVar("profile", default="default")
+
+    async def request():
+        profile.set("jester")
+        return await dashboard._off_loop(profile.get)
+
+    assert asyncio.run(request()) == "jester"

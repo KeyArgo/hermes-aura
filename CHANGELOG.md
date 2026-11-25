@@ -2,6 +2,72 @@
 
 ## Unreleased
 
+- Closing the "Manage playlist" window no longer leaves both stages blank. The pop-out stayed "in flight", so the panel, page and watch window drew nothing and polling stayed at 4 Hz until Aura was restarted; a closed desktop window now settles that flag too.
+- Moving the film between the Right panel, the Aura page and the watch window — or resizing or
+  re-cornering the watch window — no longer restarts it at `0:00`. The surface being drawn again was
+  handed the running player's address, which still carried the bookmark from when the film booted (or
+  no start point at all), so its new player began at the top at its own volume; a film that moves now
+  gets an address with the position it is actually at, and the strip re-sends the volume and the seek
+  to the new frame.
+- Popping the film out to the Desktop window resumes its saved bookmark and episode instead of starting
+  at 0:00 / episode 1, and closing a Visualizer Desktop window no longer erases that bookmark or reopens
+  a closed film.
+- The popped-out film window follows every control on the strip. Picking another film, Next/Previous on
+  a single film, muting and **Close video** now reach the OS window instead of the parked in-app frame:
+  the new film loads there (`load` on the command queue), the arrows walk the source queue, `mute`/`unmute`
+  are real queue commands the window's player applies, and Close closes the window instead of leaving it
+  playing while the strip says the film closed. Closing it no longer reverts the chosen film either.
+- Radio keeps a surface after the film is closed from the watch window. A closed film took the window's
+  card away while the surface still claimed the window, so no frame mounted anywhere and play reported
+  "Music needs Aura's panel or page open" with the Right panel open; the carrier goes to the panel now.
+- Muting or unmuting a film no longer reloads it. The player address comparison kept `mute` in the
+  identity, so every toggle (an agent's `mute_video`, the in-app volume slider, the player's own mute
+  report) rewrote the surface `src` on the next poll tick: the `<iframe>` reloaded from scratch, the
+  film jumped back to its 5 s bookmark and the radio playing inside that document restarted. Mute now
+  travels only as a live transport message; a film first placed while muted still carries `mute=1`.
+- The saved film volume now reaches the player in every placement, not just the watch window: the
+  Right panel and the `/aura` page carried their own transport, so their films opened at the player's
+  own 100% with the slider showing the saved level. Closing and reopening the same film, or restarting,
+  sends it again, and a muted film comes back muted.
+- Turning Aura off, closing the film or hiding the Right panel no longer leaves the film or the radio
+  marked as playing. The frame that reported it is unmounted on the click, so no later report could say
+  otherwise: Aura kept polling at 4 Hz all day with nothing on screen (1 Hz hidden) and every Play button
+  stayed on pause. Off and Close video now retract the state themselves, and a hidden panel retracts it
+  when it was the last surface.
+- A profile switch mid-poll no longer leaks the previous profile into the new one. An in-flight
+  `/status`, `/state`, `/player` or on/off answer is dropped once the instance that asked for it is
+  gone, so the old profile's display controls, server URL and Off cannot land on the next, and a
+  `/control` left in flight no longer keeps the new profile from trusting its own `/status`.
+- Reloading the visualiser pop-out keeps the visualiser. The window loads with a one-time ticket and the
+  page scrubs that ticket from its address before drawing, so Ctrl+R asked for the document with nothing
+  left to authenticate with and got a 401 body in place of the page; an authorised page load now also
+  leaves a document-only cookie (a per-server key, never the token) that reopens the page on reload.
+- Opening the pop-out no longer stalls the rest of the dashboard. `/window/open` is an `async` route that
+  called the blocking forward in place, so the dashboard's event loop sat out the launch (1.5 s even on a
+  working launch, up to the proxy's 15 s) with every other request queued behind it; that forward and the
+  other async ones (`/window/close`, `/window/manage`, `/player/report`, `/player/command`, `/control`) now
+  run in a worker thread.
+- A config saved as UTF-16 (or with a BOM) is read as defaults, not raised out of the reader: the
+  capture thread survives it and `/api/config` answers, and the next control change rewrites the file
+  as UTF-8.
+- Recovering a dead HTTP listener no longer leaves the previous audio capture running: the restart signals the replaced server's stop event and joins its capture loop, so its recorder closes before the successor opens one and `stop_server()` leaves nothing capturing.
+- Windows capture follows the default output. The loopback opened the speakers once and stayed bound to
+  them, so switching the default to headphones while the old device kept playing left the visualizer
+  reacting to the old one; it now re-reads the default about once a second and reopens on the new device.
+- A dashboard `status` poll as a follower now shows the capture backend that came back after start. The
+  lease is what a follower reads the backend name from, and lease maintenance compared only pid, port and
+  token, so a leader that started before its audio device existed kept advertising `capture: "none"` while
+  its visualizer reacted to real audio; the live capture name is now part of the check.
+- A newly reported film opens at its own start. A report that only named a new URL dropped the old
+  episode id but kept its position and pause, so a later pop-out with no explicit position began the
+  new film 600 s in and paused.
+- A playlist page that carries a second `<script>` no longer loses its whole episode list: the list was
+  read with a greedy pattern that ran on into the next script, so the page failed to parse and no
+  episode was left to skip; the object is now decoded from its own opening brace.
+- A short Popular Radio request no longer caps the next one: the ranked list was cached at the size that was asked for, so a `limit=1` call left one station cached for fifteen minutes and a following `limit=24` answered with that single row instead of the presets that were already on hand — the pool is now built at least a default page long, and a cached list only answers a request it covers.
+- The popped-out window's Next/Previous on a playlist steps its episodes in that window, not in the
+  parked in-app frame.
+
 ## 1.0.1 — 2026-11-24
 
 Bug fixes after the catalog listing; each has a regression test that fails on 1.0.0.

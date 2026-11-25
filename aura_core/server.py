@@ -1038,8 +1038,14 @@ def close_window() -> dict:
 #: ticket from the address, a reload asks for the document with no ticket and no
 #: Authorization header (a browser never attaches one to a navigation), so the
 #: window would be replaced by a 401. This cookie carries a per-server random
-#: key, not the token, and reopens the page and nothing else.
+#: key, not the token, and reopens the page and nothing else. Browsers share
+#: cookies across ports, so the name carries the port: each profile's server
+#: (one port each) keeps its own and never overwrites another's.
 PAGE_COOKIE = "aura_page"
+
+
+def _page_cookie_name() -> str:
+    return f"{PAGE_COOKIE}_{_STATE.port or 0}"
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -1116,7 +1122,7 @@ class _Handler(BaseHTTPRequestHandler):
         header = self.headers.get("Cookie") or ""
         for part in header.split(";"):
             name, _, value = part.strip().partition("=")
-            if name == PAGE_COOKIE:
+            if name == _page_cookie_name():
                 return value
         return ""
 
@@ -1137,7 +1143,7 @@ class _Handler(BaseHTTPRequestHandler):
         """Leave the document credential on an authorised index response."""
         key = _STATE.page_key
         if key:
-            self._page_cookie_header = (f"{PAGE_COOKIE}={key}; Path=/; "
+            self._page_cookie_header = (f"{_page_cookie_name()}={key}; Path=/; "
                                         "HttpOnly; SameSite=Strict")
 
     def _send_json(self, obj: dict, code: int = 200) -> None:
@@ -1888,7 +1894,8 @@ def _start_server() -> None:
         # the old recorder kept capturing beside the new one -- both publishing into
         # the same state -- and stop_server() only ever knew the replacement.
         stale_stop.set()
-        if stale_capture is not None and stale_capture.is_alive():
+        if (stale_capture is not None and stale_capture.is_alive()
+                and stale_capture is not threading.current_thread()):
             # Let its finally block close the recorder before the successor opens
             # one, so the dying loop cannot clear the new capture's state afterwards.
             stale_capture.join(timeout=3.0)
