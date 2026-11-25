@@ -160,6 +160,15 @@ def test_popular_survives_an_outage(monkeypatch):
     assert all(r["source"] == "preset" for r in rows)
 
 
+def test_popular_small_request_does_not_shrink_the_cache(monkeypatch):
+    """A ``limit=1`` warm-up must not cap the next, larger request."""
+    serve(monkeypatch, [station("a", "Radio Eins", "https://x/eins.mp3")])
+    first = radio.popular(limit=1)
+    rows = radio.popular(limit=radio.POPULAR_LIMIT)
+    assert [r["name"] for r in first] == [radio.PRESETS[0]["name"]]
+    assert [r["name"] for r in rows] == [p["name"] for p in radio.PRESETS[:radio.POPULAR_LIMIT]]
+
+
 # ---------------------------------------------------------------------------
 # favorites
 # ---------------------------------------------------------------------------

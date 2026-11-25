@@ -426,11 +426,14 @@ def popular(limit: int = POPULAR_LIMIT) -> List[Dict[str, Any]]:
         limit = max(1, min(60, int(limit)))
     except (TypeError, ValueError):
         limit = POPULAR_LIMIT
+    # The pool is built at least a default page long, so a small request cannot
+    # cache a short list; a cached list only answers a request it covers.
+    pool = max(limit, POPULAR_LIMIT)
     with _LOCK:
         hit = _POPULAR
-        if hit and time.time() - hit[0] < POPULAR_TTL:
+        if hit and time.time() - hit[0] < POPULAR_TTL and len(hit[1]) >= limit:
             return [dict(s) for s in hit[1][:limit]]
-    out: List[Dict[str, Any]] = [dict(p) for p in PRESETS[:limit]]
+    out: List[Dict[str, Any]] = [dict(p) for p in PRESETS[:pool]]
     seen = {_dedup_key(p["name"], p.get("homepage", "")) for p in PRESETS}
     seen |= {(_norm_name(p["name"]), "") for p in PRESETS}
     per_country: Dict[str, int] = {}
@@ -439,7 +442,7 @@ def popular(limit: int = POPULAR_LIMIT) -> List[Dict[str, Any]]:
     except RadioUnavailable:
         rows = []
     for st in rows:
-        if len(out) >= limit:
+        if len(out) >= pool:
             break
         if st.get("source") != "radiobrowser":
             continue
