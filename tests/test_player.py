@@ -110,6 +110,15 @@ def test_player_page_reports_whether_a_transport_command_applied():
     assert "last_command: lastCommand" in html
 
 
+def test_player_page_mutes_the_window_on_a_queued_mute():
+    # A popped-out film is driven only by the queue, so the page has to apply
+    # mute/unmute itself — and a film swapped while silent has to stay silent.
+    html = (Path(__file__).resolve().parents[1] / "web" / "player.html").read_text()
+    assert "desktopMute(" in html
+    assert "name === 'mute' || name === 'unmute'" in html
+    assert "if (state.muted) next.set('mute', '1')" in html
+
+
 def test_player_page_may_report_with_the_query_token(live):
     port, token = live["port"], live["token"]
     status, body = call(port, "POST", f"/api/player/report?token={token}",
@@ -182,6 +191,17 @@ def test_volume_is_clamped(live):
     _s, body = call(live["port"], "POST", "/api/player/command", live["token"],
                     {"cmd": "volume", "value": 4})
     assert body["command"]["value"] == 1.0
+
+
+def test_the_window_can_be_muted_over_the_queue(live):
+    # A popped-out film is driven only by this queue: the mute switch has
+    # nowhere else to reach it, so these are real commands, not unknown ones.
+    port, token = live["port"], live["token"]
+    for cmd in ("mute", "unmute"):
+        status, body = call(port, "POST", "/api/player/command", token, {"cmd": cmd})
+        assert status == 200 and body["ok"] is True
+    _s, payload = call(port, "GET", "/api/player/commands?after=0", token)
+    assert [c["cmd"] for c in payload["commands"]] == ["mute", "unmute"]
 
 
 def test_queue_is_bounded(live):

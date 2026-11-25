@@ -423,6 +423,8 @@
     var next = new URLSearchParams()
     next.set('desktop', '1')
     next.set('url', String(url || ''))
+    // A film swapped while the window is silent must not start talking.
+    if (state.muted) next.set('mute', '1')
     try {
       sessionStorage.setItem('auraCommandCursor', String(commandCursor))
       next.set('resumeCommands', '1')
@@ -444,6 +446,22 @@
     reportDesktop(true)
   }
 
+  // Muting the film in Aura has to reach this player too: a raw iframe cannot
+  // be silenced, so the window says it did not apply rather than pretend.
+  function desktopMute(silent) {
+    if (kind === 'video' && video) {
+      video.muted = silent
+      state.muted = silent
+      return true
+    }
+    if ((kind === 'youtube' || kind === 'playlist') && frame) {
+      youtubeCommand(silent ? 'mute' : 'unMute')
+      state.muted = silent
+      return true
+    }
+    return false
+  }
+
   // [finding 7] What the last queued command did. A single-file film has no
   // next/prev, so the page reports applied:false instead of silently ignoring
   // it and letting the agent claim the skip worked.
@@ -461,6 +479,12 @@
     if (name === 'load') { markCommand(name, true); desktopLoad(command.url); return }
     if (name === 'seek') { markCommand(name, true); desktopSeek(command.value); return }
     if (name === 'volume') { markCommand(name, true); desktopVolume(command.value); return }
+    if (name === 'mute' || name === 'unmute') {
+      markCommand(name, desktopMute(name === 'mute'))
+      postState(true)
+      reportDesktop(true)
+      return
+    }
     if (name === 'next' || name === 'prev') {
       var canSkip = (kind === 'youtube' || kind === 'playlist') && frame
       markCommand(name, canSkip)

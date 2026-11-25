@@ -1340,7 +1340,9 @@ async function syncPlayerOwnership() {
       desktopPending = false
       const handoff = player.desktop === true ? player : lastDesktopPlayer
       lastDesktopPlayer = null
-      if (handoff && handoff.url) restoreDesktopPlayback(handoff)
+      // The window going away normally brings the film back — except when the
+      // film was closed (Close/Stop) and the poll beat the close's own reply.
+      if (handoff && handoff.url && $settings.get().videoClosed !== true) restoreDesktopPlayback(handoff)
       setVideoWindow(false)
       playerCursor = null
     }
@@ -2198,6 +2200,9 @@ async function setVideoUrl(next) {
   if ($settings.get().showWhen === 'always') syncBackdrop()
   else updateShow()
   await pushControl({ video_url: videoUrl })
+  // The OS window is the picture now: a film picked while it owns the screen
+  // has to load there, or it keeps playing the old one until it is closed.
+  postToDesktop({ cmd: 'load', url: videoUrl })
 }
 
 /** Jump to the next/previous saved source. `dir` is +1 or -1. */
@@ -2352,6 +2357,19 @@ function closeVideo() {
   // retracted here, so Close does not leave the transport on ⏸ and the poll
   // at 4 Hz. The radio keeps its own state — its carrier may still be open.
   forgetVideoPlaying()
+  // Closing the film closes the window showing it: the strip and the film are
+  // the same thing to the eye. A failed close keeps ownership (the window is
+  // still out there), so closing again is still one window, not two films.
+  if (desktopOwned || desktopPending) {
+    void closeDesktopWindow().then(result => {
+      if (result && result.open === false) {
+        desktopOwned = false
+        // The parked flag belongs to the same pop-out: leaving it set would
+        // keep every stage shut after the window is already gone.
+        desktopPending = false
+      }
+    })
+  }
   writeSettings({ videoClosed: true })
   // The document this level was sent to is about to go: reopening it is a new
   // player that needs the volume again.
@@ -2541,7 +2559,13 @@ function clearVideoRecents() {
  *  seek takes an absolute position. */
 function desktopCommandFor(message) {
   const cmd = message && message.cmd
-  if (['play', 'pause', 'toggle', 'next', 'prev'].includes(cmd)) return { cmd }
+  if (['play', 'pause', 'toggle', 'next', 'prev', 'mute', 'unmute'].includes(cmd)) return { cmd }
+  // A film picked while the window owns the screen: the queue's own `load`
+  // swaps the page, the same path a `play` from the chat takes.
+  if (cmd === 'load') {
+    const url = typeof message.url === 'string' ? message.url.trim().slice(0, VIDEO_URL_MAX) : ''
+    return url ? { cmd: 'load', url } : null
+  }
   const value = Number(message.value)
   if (!Number.isFinite(value)) return null
   if (cmd === 'seekTo') return { cmd: 'seek', value: Math.max(0, value) }
@@ -2600,28 +2624,12 @@ function videoCommand(cmd, value) {
   markBusy()
   if (cmd === 'stop') {
     // Stop = stop and leave (owner, 11-18): pausing in place left the film on
-    // screen. It closes wherever it plays, its own window included; Open video
-    // brings it back at the saved point.
+    // screen. It closes wherever it plays, its own window included (closeVideo
+    // owns that, and keeps ownership when the close fails); Open video brings
+    // it back at the saved point.
     postToBackdrop({ cmd: 'pause' })
     $video.set({ ...$video.get(), playing: false, reportedAt: Date.now() })
-    if (desktopOwned || desktopPending) {
-      // A failed close resolves { open: true, error }. Ownership stays with
-      // the window that is still open, so Stop does not start a second film.
-      void closeDesktopWindow().then(result => {
-        if (result && result.open === false) {
-          desktopOwned = false
-          // The parked flag belongs to the same pop-out: leaving it set would
-          // keep every stage shut after the window is already gone.
-          desktopPending = false
-        }
-      })
-    }
     closeVideo()
-    return
-  }
-  if (desktopOwned) {
-    const name = cmd === 'toggle' ? ($video.get().playing ? 'pause' : 'play') : cmd
-    postToDesktop({ cmd: name, value })
     return
   }
   if (cmd === 'next' || cmd === 'prev') {
@@ -2631,8 +2639,18 @@ function videoCommand(cmd, value) {
     // source is a single video. Before this, the arrows silently skipped
     // through saved sources while a playlist played.
     const current = $settings.get().videoUrl || ''
+    // A popped-out playlist steps its episodes in the window that plays it, not
+    // in the parked in-app frame.
+    if (isPlaylistUrl(current) && desktopOwned && postToDesktop({ cmd })) return
     if (isPlaylistUrl(current) && postToBackdrop({ cmd })) return
+    // A single film steps the queue wherever it is playing: in the in-app
+    // frame, and — through the load below — in the window that owns it.
     stepVideo(cmd === 'next' ? 1 : -1)
+    return
+  }
+  if (desktopOwned) {
+    const name = cmd === 'toggle' ? ($video.get().playing ? 'pause' : 'play') : cmd
+    postToDesktop({ cmd: name, value })
     return
   }
   if (cmd === 'play' || cmd === 'pause' || cmd === 'toggle') {

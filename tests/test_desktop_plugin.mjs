@@ -470,7 +470,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, panelHost: typeof panelHostRef === "function" ? panelHostRef : null, video: $video, settings: $settings, remember: typeof rememberPosition === "function" ? rememberPosition : null, refreshFilm: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null, filmSurface: typeof $filmSurface === "object" ? $filmSurface : null, owned: () => desktopOwned, command: (cmd, value) => videoCommand(cmd, value), lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : 0), polling: () => polling === true, pending: () => controlPushPending, live: $live, setEnabled: typeof setEnabled === "function" ? setEnabled : null, close: typeof closeVideo === "function" ? closeVideo : null, open: typeof openVideo === "function" ? openVideo : null };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, panelHost: typeof panelHostRef === "function" ? panelHostRef : null, video: $video, settings: $settings, remember: typeof rememberPosition === "function" ? rememberPosition : null, refreshFilm: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null, filmSurface: typeof $filmSurface === "object" ? $filmSurface : null, owned: () => desktopOwned, command: (cmd, value) => videoCommand(cmd, value), lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : 0), polling: () => polling === true, pending: () => controlPushPending, live: $live, setEnabled: typeof setEnabled === "function" ? setEnabled : null, close: typeof closeVideo === "function" ? closeVideo : null, open: typeof openVideo === "function" ? openVideo : null, applySource: typeof applyVideoSource === "function" ? applyVideoSource : null, muted: typeof setVideoMuted === "function" ? setVideoMuted : null };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -3455,6 +3455,107 @@ await recordAsync('Stop keeps desktop ownership when closing the desktop window 
     assert.equal(pluginModule.wiringTest.filmSurface.get().placement, '', 'Stop started an in-app film after the close failed')
   } finally {
     dispose()
+  }
+})
+
+/** The film in its own OS window, with the queue's commands recorded.
+ *
+ *  The popped-out window is the only player on screen and the command queue is
+ *  its only remote: a control that stops at the parked in-app frame leaves it
+ *  playing the old film, aloud, while the strip says the film closed. Each
+ *  control below is checked on its own so a failure names the control. */
+async function poppedOutFilm() {
+  const filmA = 'https://example.test/a.mp4'
+  const filmB = 'https://example.test/b.mp4'
+  const filmC = 'https://example.test/c.mp4'
+  const x = makeCtx({
+    enabled: true,
+    backdropMode: 'video',
+    panelEnabled: true,
+    videoWindow: false,
+    videoUrl: filmA,
+    videoClosed: false,
+    videoSources: [
+      { label: 'A', url: filmA },
+      { label: 'B', url: filmB },
+      { label: 'C', url: filmC }
+    ]
+  })
+  const commands = []
+  const closes = []
+  const windowState = { open: false }
+  const original = x.ctx.rest.bind(x.ctx)
+  x.ctx.rest = async (route, options = {}) => {
+    if (route === '/player') return { ok: true, window: { open: windowState.open }, player: {} }
+    if (route.startsWith('/player/commands?')) return { ok: true, head_seq: 0, commands: [] }
+    if (route === '/player/report') return { ok: true }
+    if (route === '/player/command') { commands.push(options.body); return { ok: true } }
+    const result = await original(route, options)
+    if (route === '/window/open') windowState.open = true
+    if (route === '/window/close') { windowState.open = false; closes.push(options.body) }
+    return result
+  }
+  const dispose = pluginModule.default.register(x.ctx)
+  const w = pluginModule.wiringTest
+  await sleep(20)
+  await w.setWindow(true)
+  assert.equal(w.owned(), true, 'precondition: the window does not own the film')
+  return { w, commands, closes, dispose, filmA, filmB, filmC }
+}
+
+await recordAsync('a film picked while the window owns the screen loads in that window', async () => {
+  const popped = await poppedOutFilm()
+  try {
+    await popped.w.applySource(popped.filmB)
+    assert.ok(popped.commands.some(c => c && c.cmd === 'load' && c.url === popped.filmB),
+      'the window kept playing the old film after a film switch')
+    assert.equal(popped.w.settings.get().videoUrl, popped.filmB, 'the picked film was not saved')
+  } finally {
+    popped.dispose()
+  }
+})
+
+await recordAsync('Next on a single film walks the queue while the window owns it', async () => {
+  const popped = await poppedOutFilm()
+  try {
+    popped.w.command('next')
+    await sleep(60)
+    assert.ok(popped.commands.some(c => c && c.cmd === 'load' && c.url === popped.filmB),
+      'Next did nothing: a single film has no next episode, and the queue never moved')
+    assert.equal(popped.w.settings.get().videoUrl, popped.filmB, 'Next did not reach the next saved film')
+  } finally {
+    popped.dispose()
+  }
+})
+
+await recordAsync('muting the film reaches the window that is playing it', async () => {
+  const popped = await poppedOutFilm()
+  try {
+    popped.w.muted(true)
+    assert.ok(popped.commands.some(c => c && c.cmd === 'mute'),
+      'the popped-out film kept playing aloud after the film was muted')
+    popped.w.muted(false)
+    assert.ok(popped.commands.some(c => c && c.cmd === 'unmute'),
+      'the popped-out film stayed silent after it was unmuted')
+  } finally {
+    popped.dispose()
+  }
+})
+
+await recordAsync('Close closes the popped-out window and leaves the film closed', async () => {
+  const popped = await poppedOutFilm()
+  try {
+    popped.w.close()
+    await sleep(40)
+    assert.equal(popped.closes.length, 1, 'Close left the OS window open')
+    assert.equal(popped.w.owned(), false, 'the closed window still owns the film')
+    assert.equal(popped.w.settings.get().videoClosed, true, 'Close did not remember that the film is closed')
+    // The poll must not read the close as "bring the film back".
+    await popped.w.sync()
+    assert.equal(popped.w.settings.get().videoClosed, true, 'the ownership poll reopened the film that was just closed')
+    assert.equal(popped.w.settings.get().videoUrl, popped.filmA, 'the ownership poll reverted the chosen film')
+  } finally {
+    popped.dispose()
   }
 })
 

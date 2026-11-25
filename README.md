@@ -120,6 +120,8 @@ Public and unlisted playlists play here. Private playlists cannot be embedded an
 Click **Pop out** and the film leaves the Hermes window: a real OS window (Chrome/Chromium app mode)
 that you can drag to another monitor or full-screen. It opens at the exact second the in-app player had
 reached, and the in-app one pauses so two copies never play with sound. **Pop in** closes it again.
+Everything the strip does follows the film out, too: picking another film, Next/Previous on a single
+film, the mute switch and **Close video** all reach that window.
 
 The pop-out needs Chrome or Chromium. If none is installed Aura says so plainly; set
 `AURA_DESKTOP_BROWSER=/path/to/chrome` to point it at one. The window uses its own browser profile, so

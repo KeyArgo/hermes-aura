@@ -788,7 +788,8 @@ def _capture_loop(stop_event: threading.Event) -> None:
 # ---------------------------------------------------------------------------
 
 PLAYER_COMMANDS = ("play", "pause", "toggle", "next", "prev", "seek",
-                   "volume", "load", "watch_window", "bring_back")
+                   "volume", "mute", "unmute",
+                   "load", "watch_window", "bring_back")
 MAX_QUEUED_COMMANDS = 64
 _PLAYER_TEXT_MAX = 2000
 
