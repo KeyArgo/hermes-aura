@@ -70,8 +70,8 @@ jobs:
     timeout-minutes: 20
     # Report-only: pixel checks on shared runners are timing-sensitive.
     # Every push renders on Linux. The hosted Mac and Windows runners are too
-    # slow for software WebGL, so they run here only from "Run workflow"; real
-    # Windows is covered on a physical machine before each release.
+    # slow for software WebGL, so they run here only from "Run workflow"; each
+    # release is also checked by hand in Hermes Desktop on Windows.
     continue-on-error: true
     strategy:
       fail-fast: false
