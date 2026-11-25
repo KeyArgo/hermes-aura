@@ -1251,8 +1251,13 @@ let lastDesktopPlayer = null
 
 async function syncPlayerOwnership() {
   if (!ctxRef || disposed) return
+  // The snapshot is a round-trip: a profile switch during it makes the answer
+  // stale, and adopting it would drive the new profile's player from the old
+  // profile's window state.
+  const mine = instanceSeq
   try {
     const snapshot = await ctxRef.rest('/player', { timeoutMs: 3000 })
+    if (disposed || mine !== instanceSeq) return
     if (!snapshot || snapshot.ok !== true || !snapshot.window) return
     const open = snapshot.window.open === true
     const player = snapshot.player || {}
@@ -1641,6 +1646,11 @@ async function poll() {
   if (!ctxRef || disposed || polling) return
   polling = true
   lastPollAt = Date.now()
+  // A profile switch (or a hot reload) disposes this instance and registers the
+  // next one while an answer may still be on its way here. `disposed` goes back
+  // to false with the new instance, so the sequence number is what tells the
+  // two apart: every answer below belongs to `mine`.
+  const mine = instanceSeq
   const epochAtStart = enabledEpoch
   const controlEpochAtStart = controlPushEpoch
   try {
@@ -1663,6 +1673,11 @@ async function poll() {
       }
     }
 
+    // The switch landed while /status was in flight. This answer is about a
+    // profile that is no longer registered: drop it before it can reach the new
+    // instance's storage, its server or its atoms, and do not ask it for /state.
+    if (disposed || mine !== instanceSeq) return
+
     const ok = Boolean(status && status.ok === true)
     // A late answer must not undo an Off (or On) pressed while it was in flight —
     // including a /status that STARTED during the on/off POST (it shares the new
@@ -1684,12 +1699,19 @@ async function poll() {
     const mood = frame && typeof frame.mood === 'string' ? frame.mood : ''
     if (!ok && !error) error = 'Aura’s local server is starting…'
 
+    // Same check after /state: the frame is the old profile's, and syncing it
+    // would carry that profile's controls into the new storage.
+    if (disposed || mine !== instanceSeq) return
+
     liveFrame = frame
     syncFromServer(frame)
     // [listen lane] One delivery path for the agent's "play this / mute the
     // film": the server keeps the request, this consumes a new seq only.
     handleAudioRequests(frame)
     if (ok) await syncPlayerOwnership()
+    // The player sync awaits a round-trip too: a switch during it discards this
+    // poll as well, before it can report the old profile's server.
+    if (disposed || mine !== instanceSeq) return
     // Checked again after the awaits above: an Off pressed while /state or the
     // player sync was in flight wins too, as does an on/off POST that was still
     // in flight when this poll started (or settled while it ran).
@@ -1719,7 +1741,9 @@ async function poll() {
     accentStep(Date.now())
     pulseStep()
   } finally {
-    polling = false
+    // A poll from a torn-down instance must not clear the guard the new one is
+    // using: that would let a second poll run beside the one in flight.
+    if (mine === instanceSeq) polling = false
   }
 }
 
@@ -1946,6 +1970,7 @@ function applyPendingTurnOn() {
 
 async function setEnabled(next, fromNewBuild = false) {
   if (!ctxRef || disposed) return
+  const mine = instanceSeq
   // Turning Aura on (or off) is the biggest "already busy" there is: poll at
   // once, and keep the fast cadence while the switch settles.
   markBusy()
@@ -1991,6 +2016,10 @@ async function setEnabled(next, fromNewBuild = false) {
   }
   controlPushPending += 1
   const ok = await pushControl({ enabled })
+  // A profile switch (or a hot reload) while the POST was in flight: its answer
+  // belongs to the old instance. The new one counted its own pushes from zero,
+  // and a late Off must not switch a profile the user never touched.
+  if (disposed || mine !== instanceSeq) return
   controlPushPending -= 1
   controlPushEpoch += 1
   if (ok) {
@@ -8316,6 +8345,9 @@ export default {
     disposed = false
     ctxRef = ctx
     polling = false
+    // A /control POST the previous instance left in flight must not keep this
+    // one from trusting /status: its own pushes count from zero.
+    controlPushPending = 0
     turnOnPending = false
     enabledTouched = false
     pollDisposer = null

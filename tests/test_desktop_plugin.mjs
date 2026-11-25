@@ -470,7 +470,7 @@ const rewritten = source
   .replace(/from\s+'react'/g, "from './react-stub.mjs'")
   .replace(/from\s+'react\/jsx-runtime'/g, "from './jsx-runtime-stub.mjs'")
 
-fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, panelHost: typeof panelHostRef === "function" ? panelHostRef : null, video: $video, settings: $settings, remember: typeof rememberPosition === "function" ? rememberPosition : null, refreshFilm: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null, filmSurface: typeof $filmSurface === "object" ? $filmSurface : null, owned: () => desktopOwned, command: (cmd, value) => videoCommand(cmd, value), lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : 0) };\n')
+fs.writeFileSync(pluginCopy, rewritten + '\nexport const wiringTest = { sync: typeof syncPlayerOwnership === "function" ? syncPlayerOwnership : null, urlBinding: typeof pageUrlInputBinding === "function" ? pageUrlInputBinding : null, setWindow: typeof setDesktopWindow === "function" ? setDesktopWindow : null, positionVideoBar: typeof positionVideoBar === "function" ? positionVideoBar : null, beginStripDrag: typeof beginStripDrag === "function" ? beginStripDrag : null, onStripDragMove: typeof onStripDragMove === "function" ? onStripDragMove : null, endStripDrag: typeof endStripDrag === "function" ? endStripDrag : null, post: typeof postToBackdrop === "function" ? postToBackdrop : null, audio: typeof audioCommand === "function" ? audioCommand : null, devStatsKey: typeof onDevStatsKeydown === "function" ? onDevStatsKeydown : null, panelHost: typeof panelHostRef === "function" ? panelHostRef : null, video: $video, settings: $settings, remember: typeof rememberPosition === "function" ? rememberPosition : null, refreshFilm: typeof refreshFilmSurface === "function" ? refreshFilmSurface : null, filmSurface: typeof $filmSurface === "object" ? $filmSurface : null, owned: () => desktopOwned, command: (cmd, value) => videoCommand(cmd, value), lastPollAt: () => (typeof lastPollAt === "number" ? lastPollAt : 0), polling: () => polling === true, pending: () => controlPushPending, live: $live, setEnabled: typeof setEnabled === "function" ? setEnabled : null };\n')
 
 fs.writeFileSync(
   sdkStub,
@@ -4223,6 +4223,173 @@ async function watchPaneFor(settings) {
     fallback.dispose()
   }
 }
+
+// ---------------------- regression: an answer that outlives its own profile
+// A profile switch disposes one instance and registers the next while a poll,
+// an ownership sync or an on/off POST may still be awaiting its answer. That
+// answer belongs to the profile that is gone: applying it wrote that profile's
+// controls into the new storage, mounted its server and cleared the new
+// instance's poll guard.
+
+const holdAnswer = () => {
+  let release = null
+  const wait = new Promise(resolve => { release = resolve })
+  return { wait, release: () => release() }
+}
+
+await recordAsync('a /status that lands after a profile switch cannot reach the new instance', async () => {
+  const w = pluginModule.wiringTest
+  assert.ok(w.live && typeof w.polling === 'function', 'precondition: test hooks missing')
+  // Profile A answers /status late, so its poll is still waiting when the host
+  // switches profiles.
+  const profileA = makeCtx({ enabled: true })
+  const statusA = holdAnswer()
+  const restA = profileA.ctx.rest
+  profileA.ctx.rest = async (route, options = {}) => {
+    if (route === '/status') {
+      await statusA.wait
+      return { ok: true, port: 4101, url: 'http://127.0.0.1:4101/?token=profile-a', capture: 'pipewire', enabled: true }
+    }
+    return restA(route, options)
+  }
+  const disposeA = pluginModule.default.register(profileA.ctx)
+  // Profile B starts its own poll, which is still waiting too.
+  const profileB = makeCtx({ enabled: true })
+  const statusB = holdAnswer()
+  const restB = profileB.ctx.rest
+  profileB.ctx.rest = async (route, options = {}) => {
+    if (route === '/status') {
+      await statusB.wait
+      return { ok: true, port: 4202, url: 'http://127.0.0.1:4202/?token=profile-b', capture: 'pipewire', enabled: true }
+    }
+    return restB(route, options)
+  }
+  disposeA()
+  const disposeB = pluginModule.default.register(profileB.ctx)
+  try {
+    assert.equal(w.polling(), true, 'precondition: the new instance polls')
+    statusA.release()
+    await sleep(30)
+    assert.equal(w.live.get().url, '', 'a stale poll mounted the replaced profile server')
+    assert.equal(w.polling(), true, 'a stale poll cleared the new instance poll guard')
+    statusB.release()
+    await sleep(30)
+    assert.equal(w.live.get().url, 'http://127.0.0.1:4202/?token=profile-b', 'the new profile never reported its own server')
+  } finally {
+    statusB.release()
+    disposeB()
+  }
+})
+
+await recordAsync('a /state that lands after a profile switch cannot write the old profile controls', async () => {
+  const w = pluginModule.wiringTest
+  assert.ok(w.live && typeof w.polling === 'function', 'precondition: test hooks missing')
+  // Profile A answers /status at once and /state late, so its poll is waiting
+  // on the frame when the host switches profiles.
+  const profileA = makeCtx({ enabled: true, motion: 'agent_music', behavior: 'calm', intensity: 0.1 })
+  const stateA = holdAnswer()
+  const restA = profileA.ctx.rest
+  profileA.ctx.rest = async (route, options = {}) => {
+    if (route === '/state') {
+      await stateA.wait
+      return {
+        level: 0.2,
+        bands: [0, 0, 0, 0, 0, 0, 0, 0],
+        onset: false,
+        centroid: 0.4,
+        flatness: 0.2,
+        silence: false,
+        mood: 'thinking',
+        motion: 'music',
+        behavior: 'intense',
+        intensity: 0.9,
+        opacity: 0.9,
+        reduced_motion: true
+      }
+    }
+    return restA(route, options)
+  }
+  const disposeA = pluginModule.default.register(profileA.ctx)
+  await sleep(20)
+  const profileB = makeCtx({ enabled: true, motion: 'agent', behavior: 'calm', intensity: 0.25, opacity: 0.5 })
+  disposeA()
+  const disposeB = pluginModule.default.register(profileB.ctx)
+  try {
+    await sleep(20)
+    stateA.release()
+    await sleep(30)
+    const saved = profileB.storage.get('settings') || {}
+    assert.equal(saved.motion, 'agent', 'a stale frame wrote the replaced profile motion')
+    assert.equal(saved.behavior, 'calm', 'a stale frame wrote the replaced profile behaviour')
+    assert.equal(saved.intensity, 0.25, 'a stale frame wrote the replaced profile intensity')
+    assert.equal(saved.opacity, 0.5, 'a stale frame wrote the replaced profile opacity')
+    assert.notEqual(saved.reducedMotion, true, 'a stale frame wrote the replaced profile motion setting')
+  } finally {
+    stateA.release()
+    disposeB()
+  }
+})
+
+await recordAsync('an Off from the replaced profile cannot switch the new one off', async () => {
+  const w = pluginModule.wiringTest
+  assert.ok(typeof w.pending === 'function' && typeof w.setEnabled === 'function', 'precondition: test hooks missing')
+  // Profile A's /control never answers, so the Off is still in flight across
+  // the switch: the case where a leaked counter would silence the new profile.
+  const profileA = makeCtx({ enabled: true })
+  const controlA = holdAnswer()
+  const restA = profileA.ctx.rest
+  profileA.ctx.rest = async (route, options = {}) => {
+    if (route === '/control') {
+      await controlA.wait
+      return { ok: true }
+    }
+    return restA(route, options)
+  }
+  const disposeA = pluginModule.default.register(profileA.ctx)
+  await sleep(20)
+  const staleOff = w.setEnabled(false)
+  await sleep(10)
+  assert.equal(w.pending(), 1, 'precondition: the Off POST is in flight')
+  // Profile B saved Aura off while its own server says on: only the server can
+  // switch it on, so a stuck counter shows up as Off staying off.
+  const profileB = makeCtx({ enabled: false })
+  const statusB = holdAnswer()
+  const restB = profileB.ctx.rest
+  profileB.ctx.rest = async (route, options = {}) => {
+    if (route === '/status') {
+      await statusB.wait
+      return { ok: true, port: 4203, url: 'http://127.0.0.1:4203/?token=profile-b', capture: 'pipewire', enabled: true }
+    }
+    return restB(route, options)
+  }
+  disposeA()
+  const disposeB = pluginModule.default.register(profileB.ctx)
+  try {
+    assert.equal(w.pending(), 0, 'the replaced instance left a /control POST counted as pending')
+    statusB.release()
+    await sleep(30)
+    assert.equal(w.live.get().enabled, true, 'the new profile ignored its own server switch')
+    // Hold the new profile's next /status, so a late Off that also polls cannot
+    // hide behind a fresher answer: the Off itself must never be applied.
+    const heldB = holdAnswer()
+    const restB2 = profileB.ctx.rest
+    profileB.ctx.rest = async (route, options = {}) => {
+      if (route === '/status') {
+        await heldB.wait
+        return { ok: true, port: 4203, url: 'http://127.0.0.1:4203/?token=profile-b', capture: 'pipewire', enabled: true }
+      }
+      return restB2(route, options)
+    }
+    controlA.release()
+    await staleOff
+    assert.equal(w.live.get().enabled, true, 'a late Off from the replaced profile switched the new one off')
+    heldB.release()
+  } finally {
+    controlA.release()
+    statusB.release()
+    disposeB()
+  }
+})
 
 // --------------------------------------------------------------- reporting
 
