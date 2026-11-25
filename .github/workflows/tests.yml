@@ -3,6 +3,7 @@ name: tests
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   python:
@@ -67,14 +68,15 @@ jobs:
     name: browser suite (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
-    # Report-only for now: two display-control e2e tests miss frames on a loaded
-    # machine (they fail on be9d76f too). Red here shows what a Mac or Windows
-    # browser could not do, without blocking the gating jobs above.
+    # Report-only: pixel checks on shared runners are timing-sensitive.
+    # Every push renders on Linux. The hosted Mac and Windows runners are too
+    # slow for software WebGL, so they run here only from "Run workflow"; real
+    # Windows is covered on a physical machine before each release.
     continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["ubuntu-latest","macos-latest","windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
